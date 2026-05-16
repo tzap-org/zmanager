@@ -1,0 +1,25 @@
+[package]
+name = "zmanager-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+brotli = "8.0.2"
+bzip2 = "0.6.1"
+flate2 = "1.1.9"
+libarchive2 = "0.2.1"
+lz4_flex = "0.13.1"
+lzma-rust2 = { version = "0.16.2", default-features = false, features = ["lzip", "std", "xz"] }
+sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
+tar = "0.4.45"
+zip = "8.6.0"
+zmanager-unrar = { path = "../zmanager-unrar" }
+zstd = { version = "0.13.3", features = ["zstdmt"] }
+
+[lints]
+workspace = true

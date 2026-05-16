@@ -1,0 +1,20 @@
+[package]
+name = "zmanager-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zmanager-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "zm"
+path = "src/bin/zm.rs"
+
+[dependencies]
+zmanager-core = { path = "../zmanager-core" }
+
+[lints]
+workspace = true

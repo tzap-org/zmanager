@@ -1,0 +1,36 @@
+[package]
+name = "zmanager-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zip = "8.6.0"
+zmanager-core = { path = "../crates/zmanager-core" }
+
+[[bin]]
+name = "path_normalization"
+path = "fuzz_targets/path_normalization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zip_metadata"
+path = "fuzz_targets/zip_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "libarchive_input"
+path = "fuzz_targets/libarchive_input.rs"
+test = false
+doc = false
+bench = false

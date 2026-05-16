@@ -1,0 +1,20 @@
+[package]
+name = "zmanager-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+zmanager-core = { path = "../zmanager-core" }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

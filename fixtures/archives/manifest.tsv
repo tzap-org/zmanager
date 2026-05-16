@@ -1,0 +1,10 @@
+# filename	format	extract	password	notes
+basic.zip	ZIP	true		ZIP Deflate fixture created by Z-Manager
+basic.7z	7Z	true		7Z LZMA2 solid fixture created by Z-Manager
+basic.tar.gz	TAR.GZ	true		Tar fixture compressed with gzip
+basic.tar.xz	TAR.XZ	true		Tar fixture compressed with xz
+basic.tar.zst	TAR.ZST	true		Tar fixture compressed with zstd
+basic.cpio	CPIO	true		CPIO fixture created by bsdtar
+basic.xar	XAR	true		XAR fixture created by macOS xar
+basic.iso	ISO	true		ISO fixture created by hdiutil makehybrid
+basic.deb	DEB	true		Debian ar package fixture

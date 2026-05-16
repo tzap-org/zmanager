@@ -1,0 +1,26 @@
+# Rust build outputs
+/target/
+/fuzz/target/
+
+# cargo-fuzz generated data
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/
+
+# Local scratch outputs
+/dist/
+/tmp/
+/*.profraw
+/*.profdata
+
+# macOS metadata
+.DS_Store
+
+# Local AI/agent instructions and runtime state
+/AGENTS.md
+/CLAUDE.md
+/.agents/
+/.claude/
+/.codex/
+
+# Cargo.lock is intentionally tracked for this CLI workspace.

@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/zmanager-cli",
+    "crates/zmanager-core",
+    "crates/zmanager-ffi",
+    "crates/zmanager-unrar",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/frankmanzhu/zmanager"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
