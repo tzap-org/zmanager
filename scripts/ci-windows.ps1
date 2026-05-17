@@ -13,6 +13,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $PSNativeCommandUseErrorActionPreference = $true
 }
@@ -247,12 +248,16 @@ function Invoke-CargoTest {
     $cargoConfigPath = Join-Path `
         ([System.IO.Path]::GetTempPath()) `
         "zmanager-windows-cargo-$TargetTriple.toml"
+    $libarchivePatchPath = (Resolve-Path `
+        (Join-Path $RepositoryRoot "vendor\rust\libarchive2-sys")).Path
+    $libarchivePatchPath = $libarchivePatchPath.Replace("\", "/")
+
     Set-Content `
         -Path $cargoConfigPath `
         -Encoding UTF8 `
         -Value @(
             "[patch.crates-io.libarchive2-sys]",
-            'path = "vendor/rust/libarchive2-sys"'
+            ('path = "' + $libarchivePatchPath + '"')
         )
 
     Invoke-NativeLogged `
