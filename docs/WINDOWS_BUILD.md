@@ -142,6 +142,19 @@ cargo clean -p zmanager-unrar
 cargo test --config "patch.crates-io.libarchive2-sys.path='vendor/rust/libarchive2-sys'" --workspace
 ```
 
+If CMake fails while configuring vendored libarchive with:
+
+```text
+libarchive/build/cmake/config.h.in does not exist
+```
+
+the checkout is missing a required libarchive CMake template. Pull the commit
+that force-tracks the ignored upstream template, then verify it exists:
+
+```bat
+dir vendor\rust\libarchive2-sys\libarchive\build\cmake\config.h.in
+```
+
 If `libarchive2-sys` builds `archive.lib` successfully and then bindgen fails
 with:
 

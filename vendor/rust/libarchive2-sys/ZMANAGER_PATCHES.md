@@ -12,6 +12,10 @@ The local build-script patch is intentionally narrow:
   instead of assuming `x64-windows`;
 - MSVC zlib linking uses vcpkg's `z.lib` name.
 
+The vendored libarchive CMake templates are part of the source payload. Some
+of them match upstream libarchive ignore patterns, so verify they are tracked
+when refreshing this directory.
+
 Do not edit bundled libarchive C sources here unless the change is required for
 Z-Manager and has been documented in this file. Prefer upstreaming build-script
 fixes and removing this vendor patch when a compatible `libarchive2-sys`
