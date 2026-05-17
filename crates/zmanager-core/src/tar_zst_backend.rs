@@ -375,6 +375,15 @@ fn extract_tar_zst_inner(
         let archive_entry_path = entry_path_string(&entry)?;
         let entry_size = entry.header().size().unwrap_or(0);
         let kind = extraction_kind(&mut entry, &archive_entry_path)?;
+        if is_archive_root_directory(&archive_entry_path, &kind) {
+            report.skipped_entries += 1;
+            let warning = "skipped archive root directory entry".to_owned();
+            report.warnings.push(warning.clone());
+            if let Some(context) = context.as_deref_mut() {
+                context.warning(warning);
+            }
+            continue;
+        }
         let safety_entry = ExtractionEntry {
             archive_path: archive_entry_path,
             kind,
@@ -786,6 +795,15 @@ fn entry_path_string<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String, TarZs
     Ok(path.to_string_lossy().into_owned())
 }
 
+fn is_archive_root_directory(path: &str, kind: &ExtractionEntryKind) -> bool {
+    matches!(kind, ExtractionEntryKind::Directory) && is_root_entry_path(path)
+}
+
+fn is_root_entry_path(path: &str) -> bool {
+    let trimmed = path.trim_matches('/');
+    trimmed.is_empty() || trimmed == "."
+}
+
 fn extraction_kind<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     archive_path: &str,
@@ -858,7 +876,7 @@ mod tests {
     use crate::jobs::{CancellationToken, JobContext, JobEvent};
     use crate::safety::{ExtractionPolicy, ExtractionSafetyError};
     use std::fs::{self, File};
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1026,6 +1044,29 @@ mod tests {
     }
 
     #[test]
+    fn extraction_skips_archive_root_directory_entries() {
+        let temp = TestDir::new("extracts_tar_zst_with_root_directory");
+        let archive = temp.path("archive.tar.zst");
+        write_tar_zst_with_root_directory(&archive, "payload/file.txt", b"payload");
+
+        let report =
+            extract_tar_zst(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        assert_eq!(report.written_entries, 1);
+        assert_eq!(report.skipped_entries, 1);
+        assert_eq!(
+            fs::read(temp.path("out/payload/file.txt")).unwrap(),
+            b"payload"
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning == "skipped archive root directory entry")
+        );
+    }
+
+    #[test]
     fn extraction_rejects_traversal() {
         let temp = TestDir::new("extraction_rejects_traversal_tar_zst");
         let archive = temp.path("archive.tar.zst");
@@ -1087,6 +1128,35 @@ mod tests {
         link_header.set_cksum();
         builder
             .append_link(&mut link_header, link_path, Path::new(target_path))
+            .unwrap();
+
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
+
+    fn write_tar_zst_with_root_directory(path: &Path, entry_path: &str, contents: &[u8]) {
+        let file = File::create(path).unwrap();
+        let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut root_header = tar::Header::new_gnu();
+        root_header.set_entry_type(tar::EntryType::Directory);
+        root_header.set_size(0);
+        root_header.set_mode(0o755);
+        root_header.set_mtime(0);
+        root_header.set_cksum();
+        builder
+            .append_data(&mut root_header, ".", io::empty())
+            .unwrap();
+
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_entry_type(tar::EntryType::Regular);
+        file_header.set_size(contents.len().try_into().unwrap());
+        file_header.set_mode(0o644);
+        file_header.set_mtime(0);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, entry_path, contents)
             .unwrap();
 
         let encoder = builder.into_inner().unwrap();
