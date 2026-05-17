@@ -169,8 +169,9 @@ function Ensure-Llvm {
         throw "libclang.dll was not found"
     }
 
-    $env:LIBCLANG_PATH = $llvmBin
-    $env:Path = "{0};{1}" -f $llvmBin, $env:Path
+    [Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmBin, "Process")
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
+    [Environment]::SetEnvironmentVariable("Path", ($llvmBin + ";" + $currentPath), "Process")
     Write-Host "Using LLVM at $llvmBin"
 }
 
@@ -204,12 +205,21 @@ function Ensure-Vcpkg {
             "openssl:$Triplet"
         )
 
-    $env:CMAKE_TOOLCHAIN_FILE = Join-Path $vcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-    $env:VCPKG_INSTALLATION_ROOT = $vcpkgRoot
-    $env:VCPKG_DEFAULT_TRIPLET = $Triplet
-    $env:VCPKG_TARGET_TRIPLET = $Triplet
-    $env:LIB = "{0}\installed\{1}\lib;{2}" -f $vcpkgRoot, $Triplet, $env:LIB
-    $env:INCLUDE = "{0}\installed\{1}\include;{2}" -f $vcpkgRoot, $Triplet, $env:INCLUDE
+    [Environment]::SetEnvironmentVariable(
+        "CMAKE_TOOLCHAIN_FILE",
+        (Join-Path $vcpkgRoot "scripts\buildsystems\vcpkg.cmake"),
+        "Process"
+    )
+    [Environment]::SetEnvironmentVariable("VCPKG_INSTALLATION_ROOT", $vcpkgRoot, "Process")
+    [Environment]::SetEnvironmentVariable("VCPKG_DEFAULT_TRIPLET", $Triplet, "Process")
+    [Environment]::SetEnvironmentVariable("VCPKG_TARGET_TRIPLET", $Triplet, "Process")
+
+    $libraryPath = Join-Path $vcpkgRoot "installed\$Triplet\lib"
+    $includePath = Join-Path $vcpkgRoot "installed\$Triplet\include"
+    $currentLibraryPath = [Environment]::GetEnvironmentVariable("LIB", "Process")
+    $currentIncludePath = [Environment]::GetEnvironmentVariable("INCLUDE", "Process")
+    [Environment]::SetEnvironmentVariable("LIB", ($libraryPath + ";" + $currentLibraryPath), "Process")
+    [Environment]::SetEnvironmentVariable("INCLUDE", ($includePath + ";" + $currentIncludePath), "Process")
 }
 
 function Invoke-CargoTest {
@@ -238,7 +248,7 @@ Write-Host "cmake:"
 cmake --version
 Write-Host "clang:"
 clang --version
-Write-Host ("INCLUDE={0}" -f $env:INCLUDE)
+Write-Host ("INCLUDE=" + [Environment]::GetEnvironmentVariable("INCLUDE", "Process"))
 
 Invoke-NativeLogged `
     -Title "rustup toolchain install failed for $Target" `
