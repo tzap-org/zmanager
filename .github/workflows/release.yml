@@ -91,12 +91,25 @@ jobs:
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
           CMAKE_GENERATOR: Ninja
-          CMAKE_PREFIX_PATH: C:/msys64/mingw64
-          LIBCLANG_PATH: C:/msys64/mingw64/bin
           PKG_CONFIG_ALL_STATIC: "1"
-          PKG_CONFIG_PATH: C:/msys64/mingw64/lib/pkgconfig
           RUSTFLAGS: -C target-feature=+crt-static -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++
         run: |
+          unset CMAKE_TOOLCHAIN_FILE
+          unset VCPKG_DEFAULT_TRIPLET
+          unset VCPKG_INSTALLATION_ROOT
+          unset VCPKG_ROOT
+          unset VCPKG_TARGET_TRIPLET
+
+          mingw_prefix="$(cygpath -m "$MINGW_PREFIX")"
+          export CMAKE_PREFIX_PATH="$mingw_prefix"
+          export LIBCLANG_PATH="$mingw_prefix/bin"
+          export PKG_CONFIG_PATH="$MINGW_PREFIX/lib/pkgconfig"
+
+          echo "MINGW_PREFIX=$MINGW_PREFIX"
+          echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+
           scripts/package-release.sh "${{ matrix.target }}" dist
           objdump -p target/x86_64-pc-windows-gnu/release/zm.exe | tee windows-dlls.txt
           if grep -Ei 'DLL Name: (libgcc|libstdc\+\+|libwinpthread|zlib|bz2|libbz2|liblzma|zstd|libzstd|lz4|liblz4|libcrypto|libssl)' windows-dlls.txt; then
