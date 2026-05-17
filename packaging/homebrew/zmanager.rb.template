@@ -1,7 +1,17 @@
 class Zmanager < Formula
   desc "Fast, safe archive utility for ZIP, 7z, TAR.ZST, and broad extraction"
   homepage "https://github.com/frankmanzhu/zmanager"
+  version "__PACKAGE_VERSION__"
   license all_of: ["Apache-2.0", :cannot_represent]
+
+  depends_on "libb2"
+  depends_on "lz4"
+  depends_on "xz"
+  depends_on "zstd"
+
+  uses_from_macos "bzip2"
+  uses_from_macos "libxml2"
+  uses_from_macos "zlib"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -28,15 +38,6 @@ class Zmanager < Formula
     depends_on "openssl@3"
     depends_on "zlib"
   end
-
-  depends_on "libb2"
-  depends_on "lz4"
-  depends_on "xz"
-  depends_on "zstd"
-
-  uses_from_macos "bzip2"
-  uses_from_macos "libxml2"
-  uses_from_macos "zlib"
 
   def install
     bin.install "zm"
