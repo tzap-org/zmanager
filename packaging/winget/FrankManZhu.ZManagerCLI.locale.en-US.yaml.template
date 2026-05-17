@@ -1,7 +1,7 @@
 PackageIdentifier: FrankManZhu.ZManagerCLI
 PackageVersion: __PACKAGE_VERSION__
 PackageLocale: en-US
-Publisher: Frank Man Zhu
+Publisher: Frank Zhu
 PublisherUrl: https://github.com/frankmanzhu
 PackageName: Z-Manager CLI
 PackageUrl: https://github.com/frankmanzhu/zmanager
