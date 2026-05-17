@@ -1114,7 +1114,11 @@ mod tests {
         assert_eq!(file.file_type, ManifestFileType::File);
         assert_eq!(file.size, 7);
         assert!(file.modified.is_some());
+        assert!(!file.permissions.readonly);
+        #[cfg(unix)]
         assert!(file.permissions.unix_mode.is_some());
+        #[cfg(not(unix))]
+        assert!(file.permissions.unix_mode.is_none());
     }
 
     #[cfg(unix)]
