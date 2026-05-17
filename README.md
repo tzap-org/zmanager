@@ -183,6 +183,9 @@ cargo build -p zmanager-cli --release
 ./target/release/zm --help
 ```
 
+Windows build support is being validated. The current local ARM64 and future CI
+settings are tracked in [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md).
+
 ## Test
 
 ```sh
