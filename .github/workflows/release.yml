@@ -30,35 +30,20 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
           - os: windows-2025
-            target: x86_64-pc-windows-gnu
+            target: x86_64-pc-windows-msvc
+            triplet: x64-windows
+            vcarch: x64
+            component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            triplet: arm64-windows
+            vcarch: arm64
+            component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
 
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
-
-      - uses: msys2/setup-msys2@v2
-        if: runner.os == 'Windows'
-        with:
-          msystem: MINGW64
-          path-type: inherit
-          update: true
-          install: >-
-            mingw-w64-x86_64-bzip2
-            mingw-w64-x86_64-clang
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-libb2
-            mingw-w64-x86_64-libiconv
-            mingw-w64-x86_64-libxml2
-            mingw-w64-x86_64-lz4
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-xz
-            mingw-w64-x86_64-zip
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-zstd
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -90,35 +75,15 @@ jobs:
 
       - name: Package Windows
         if: runner.os == 'Windows'
-        shell: msys2 {0}
-        env:
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
-          CMAKE_GENERATOR: Ninja
-          PKG_CONFIG_ALL_STATIC: "1"
-          RUSTFLAGS: -C target-feature=+crt-static -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-lxml2 -C link-arg=-liconv -C link-arg=-lcharset -C link-arg=-lb2
-        run: |
-          unset CMAKE_TOOLCHAIN_FILE
-          unset VCPKG_DEFAULT_TRIPLET
-          unset VCPKG_INSTALLATION_ROOT
-          unset VCPKG_ROOT
-          unset VCPKG_TARGET_TRIPLET
-
-          mingw_prefix="$(cygpath -m "$MINGW_PREFIX")"
-          export CMAKE_PREFIX_PATH="$mingw_prefix"
-          export LIBCLANG_PATH="$mingw_prefix/bin"
-          export PKG_CONFIG_PATH="$MINGW_PREFIX/lib/pkgconfig"
-
-          echo "MINGW_PREFIX=$MINGW_PREFIX"
-          echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
-          echo "LIBCLANG_PATH=$LIBCLANG_PATH"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
-
-          scripts/package-release.sh "${{ matrix.target }}" dist
-          objdump -p target/x86_64-pc-windows-gnu/release/zm.exe | tee windows-dlls.txt
-          if grep -Ei 'DLL Name: (libgcc|libstdc\+\+|libwinpthread|zlib|bz2|libbz2|liblzma|zstd|libzstd|lz4|liblz4|libcrypto|libssl|libxml2|libiconv|libcharset|libb2)' windows-dlls.txt; then
-            echo "Windows GNU release still depends on third-party DLLs" >&2
-            exit 1
-          fi
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1
+          -Target "${{ matrix.target }}"
+          -Triplet "${{ matrix.triplet }}"
+          -VcArch "${{ matrix.vcarch }}"
+          -VsComponent "${{ matrix.component }}"
+          -Package
+          -OutDir dist
 
       - uses: actions/upload-artifact@v6
         with:

@@ -3,6 +3,8 @@ members = [
     "crates/zmanager-cli",
     "crates/zmanager-core",
     "crates/zmanager-ffi",
+    "crates/zmanager-libarchive",
+    "crates/zmanager-libarchive-sys",
     "crates/zmanager-unrar",
 ]
 resolver = "2"

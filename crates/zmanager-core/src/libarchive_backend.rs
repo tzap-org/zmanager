@@ -2,13 +2,13 @@ use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner,
 };
-use libarchive2::{FileType, ReadArchive};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use zmanager_libarchive::{FileType, ReadArchive};
 
 /// One libarchive listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -70,7 +70,7 @@ pub struct LibarchiveExtractReport {
 #[derive(Debug)]
 pub enum LibarchiveError {
     /// libarchive returned an error.
-    Archive(libarchive2::Error),
+    Archive(zmanager_libarchive::Error),
     /// Filesystem I/O failed.
     Io { path: PathBuf, source: io::Error },
     /// Extraction safety rejected an entry.
@@ -109,8 +109,8 @@ impl std::error::Error for LibarchiveError {
     }
 }
 
-impl From<libarchive2::Error> for LibarchiveError {
-    fn from(source: libarchive2::Error) -> Self {
+impl From<zmanager_libarchive::Error> for LibarchiveError {
+    fn from(source: zmanager_libarchive::Error) -> Self {
         Self::Archive(source)
     }
 }
@@ -290,10 +290,7 @@ fn extract_archive_inner(
     Ok(report)
 }
 
-fn open_archive(
-    path: &Path,
-    password: Option<&str>,
-) -> Result<ReadArchive<'static>, LibarchiveError> {
+fn open_archive(path: &Path, password: Option<&str>) -> Result<ReadArchive, LibarchiveError> {
     let password = password.filter(|password| !password.is_empty());
     let parts = discover_multi_volume_paths(path);
 
@@ -399,7 +396,7 @@ struct OwnedEntry {
 }
 
 impl OwnedEntry {
-    fn from_entry(entry: &libarchive2::Entry<'_>) -> Result<Self, LibarchiveError> {
+    fn from_entry(entry: &zmanager_libarchive::Entry) -> Result<Self, LibarchiveError> {
         let path = entry.pathname().ok_or(LibarchiveError::MissingPath)?;
         let kind = entry_kind(entry);
         let extraction_kind = extraction_kind(entry, kind, &path)?;
@@ -426,7 +423,7 @@ fn nonnegative_size(size: i64) -> Option<u64> {
     u64::try_from(size).ok()
 }
 
-fn entry_kind(entry: &libarchive2::Entry<'_>) -> LibarchiveEntryKind {
+fn entry_kind(entry: &zmanager_libarchive::Entry) -> LibarchiveEntryKind {
     if entry.hardlink().is_some() {
         return LibarchiveEntryKind::Hardlink;
     }
@@ -441,7 +438,7 @@ fn entry_kind(entry: &libarchive2::Entry<'_>) -> LibarchiveEntryKind {
 }
 
 fn extraction_kind(
-    entry: &libarchive2::Entry<'_>,
+    entry: &zmanager_libarchive::Entry,
     kind: LibarchiveEntryKind,
     path: &str,
 ) -> Result<ExtractionEntryKind, LibarchiveError> {
@@ -474,7 +471,7 @@ fn extraction_kind(
 }
 
 fn write_entry(
-    archive: &mut ReadArchive<'_>,
+    archive: &mut ReadArchive,
     entry: &OwnedEntry,
     destination_path: &Path,
     replace_existing: bool,
@@ -538,7 +535,7 @@ fn write_entry(
 }
 
 fn write_file_entry(
-    archive: &mut ReadArchive<'_>,
+    archive: &mut ReadArchive,
     destination_path: &Path,
     replace_existing: bool,
 ) -> Result<u64, LibarchiveError> {

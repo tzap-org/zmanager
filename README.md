@@ -52,10 +52,12 @@ The release workflow publishes these archives when a `v*` tag is created:
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows x64 | `zm-x86_64-pc-windows-gnu.zip` |
+| Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 
 Each archive contains the `zm` executable, `README.md`, `LICENSE`, and
-`THIRD_PARTY_NOTICES.md`. Every release also includes a `SHA256SUMS` file for
+`THIRD_PARTY_NOTICES.md`. Windows archives also include the runtime DLLs needed
+by the packaged executable. Every release also includes a `SHA256SUMS` file for
 download verification.
 
 ### Homebrew

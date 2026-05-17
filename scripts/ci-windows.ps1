@@ -9,7 +9,11 @@ param(
     [string]$VcArch,
 
     [Parameter(Mandatory = $true)]
-    [string]$VsComponent
+    [string]$VsComponent,
+
+    [switch]$Package,
+
+    [string]$OutDir = "dist"
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,30 +72,6 @@ function Import-VisualStudioEnvironment {
     }
 }
 
-function Find-LibclangBin {
-    $candidates = @()
-
-    if ($env:LIBCLANG_PATH) {
-        $candidates += $env:LIBCLANG_PATH
-    }
-
-    $candidates += "C:\Program Files\LLVM\bin"
-
-    if ($env:VCToolsInstallDir) {
-        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\$VcArch\bin"
-        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\$($VcArch.ToUpperInvariant())\bin"
-        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\x64\bin"
-    }
-
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path (Join-Path $candidate "libclang.dll"))) {
-            return $candidate
-        }
-    }
-
-    return $null
-}
-
 function Write-GitHubFailure {
     param(
         [Parameter(Mandatory = $true)]
@@ -143,38 +123,6 @@ function Invoke-NativeLogged {
     }
 }
 
-function Ensure-Llvm {
-    $llvmBin = Find-LibclangBin
-
-    if (-not $llvmBin) {
-        Write-Host "Installing LLVM"
-        Invoke-NativeLogged `
-            -Title "LLVM install failed" `
-            -LogName "winget-llvm.log" `
-            -FilePath "winget" `
-            -Arguments @(
-                "install",
-                "--id",
-                "LLVM.LLVM",
-                "--source",
-                "winget",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-                "--silent"
-            )
-    }
-
-    $llvmBin = Find-LibclangBin
-    if (-not $llvmBin) {
-        throw "libclang.dll was not found"
-    }
-
-    [Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmBin, "Process")
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
-    [Environment]::SetEnvironmentVariable("Path", ($llvmBin + ";" + $currentPath), "Process")
-    Write-Host "Using LLVM at $llvmBin"
-}
-
 function Ensure-Vcpkg {
     $vcpkgRoot = "C:\vcpkg"
     $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
@@ -215,11 +163,17 @@ function Ensure-Vcpkg {
     [Environment]::SetEnvironmentVariable("VCPKG_TARGET_TRIPLET", $Triplet, "Process")
 
     $libraryPath = Join-Path $vcpkgRoot "installed\$Triplet\lib"
+    $debugLibraryPath = Join-Path $vcpkgRoot "installed\$Triplet\debug\lib"
+    $runtimePath = Join-Path $vcpkgRoot "installed\$Triplet\bin"
+    $debugRuntimePath = Join-Path $vcpkgRoot "installed\$Triplet\debug\bin"
     $includePath = Join-Path $vcpkgRoot "installed\$Triplet\include"
     $currentLibraryPath = [Environment]::GetEnvironmentVariable("LIB", "Process")
     $currentIncludePath = [Environment]::GetEnvironmentVariable("INCLUDE", "Process")
-    [Environment]::SetEnvironmentVariable("LIB", ($libraryPath + ";" + $currentLibraryPath), "Process")
+    [Environment]::SetEnvironmentVariable("LIB", ($debugLibraryPath + ";" + $libraryPath + ";" + $currentLibraryPath), "Process")
     [Environment]::SetEnvironmentVariable("INCLUDE", ($includePath + ";" + $currentIncludePath), "Process")
+
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
+    [Environment]::SetEnvironmentVariable("Path", ($debugRuntimePath + ";" + $runtimePath + ";" + $currentPath), "Process")
 }
 
 function Invoke-CargoTest {
@@ -228,30 +182,86 @@ function Invoke-CargoTest {
         [string]$TargetTriple
     )
 
-    $cargoConfigPath = Join-Path `
-        ([System.IO.Path]::GetTempPath()) `
-        "zmanager-windows-cargo-$TargetTriple.toml"
-    $libarchivePatchPath = (Resolve-Path `
-        (Join-Path $RepositoryRoot "vendor\rust\libarchive2-sys")).Path
-    $libarchivePatchPath = $libarchivePatchPath.Replace("\", "/")
-
-    Set-Content `
-        -Path $cargoConfigPath `
-        -Encoding UTF8 `
-        -Value @(
-            "[patch.crates-io.libarchive2-sys]",
-            ('path = "' + $libarchivePatchPath + '"')
-        )
-
     Invoke-NativeLogged `
         -Title "cargo test failed on $TargetTriple" `
         -LogName "cargo-test-windows-$TargetTriple.log" `
         -FilePath "cargo" `
-        -Arguments @("test", "--config", $cargoConfigPath, "--workspace", "--target", $TargetTriple)
+        -Arguments @("test", "--workspace", "--target", $TargetTriple)
+}
+
+function Invoke-CargoBuildRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetTriple
+    )
+
+    Invoke-NativeLogged `
+        -Title "cargo release build failed on $TargetTriple" `
+        -LogName "cargo-build-windows-$TargetTriple.log" `
+        -FilePath "cargo" `
+        -Arguments @("build", "--locked", "--release", "--target", $TargetTriple, "-p", "zmanager-cli", "--bin", "zm")
+}
+
+function Copy-ReleaseFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetTriple,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Stage
+    )
+
+    Copy-Item (Join-Path $RepositoryRoot "target\$TargetTriple\release\zm.exe") (Join-Path $Stage "zm.exe")
+    Copy-Item (Join-Path $RepositoryRoot "README.md") $Stage
+    Copy-Item (Join-Path $RepositoryRoot "LICENSE") $Stage
+    Copy-Item (Join-Path $RepositoryRoot "THIRD_PARTY_NOTICES.md") $Stage
+}
+
+function Copy-VcpkgRuntimeDlls {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Stage
+    )
+
+    $runtimePath = Join-Path "C:\vcpkg" "installed\$Triplet\bin"
+    if (-not (Test-Path $runtimePath)) {
+        return
+    }
+
+    Get-ChildItem -Path $runtimePath -Filter "*.dll" | ForEach-Object {
+        Copy-Item $_.FullName $Stage
+    }
+}
+
+function New-ReleasePackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetTriple
+    )
+
+    $outRoot = Join-Path $RepositoryRoot $OutDir
+    New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
+
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("zmanager-release-" + [System.Guid]::NewGuid())
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    try {
+        Copy-ReleaseFiles -TargetTriple $TargetTriple -Stage $stage
+        Copy-VcpkgRuntimeDlls -Stage $stage
+
+        $archive = Join-Path $outRoot ("zm-$TargetTriple.zip")
+        if (Test-Path $archive) {
+            Remove-Item $archive
+        }
+        Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive
+        $hash = Get-FileHash -Algorithm SHA256 -Path $archive
+        Set-Content -Path ($archive + ".sha256") -Value ($hash.Hash.ToLowerInvariant() + "  " + (Split-Path -Leaf $archive))
+        Write-Host $archive
+    } finally {
+        Remove-Item -Recurse -Force $stage
+    }
 }
 
 Import-VisualStudioEnvironment -Architecture $VcArch -RequiredComponent $VsComponent
-Ensure-Llvm
 Ensure-Vcpkg
 
 Write-Host "rustc:"
@@ -260,8 +270,6 @@ Write-Host "cargo:"
 cargo -V
 Write-Host "cmake:"
 cmake --version
-Write-Host "clang:"
-clang --version
 Write-Host ("INCLUDE=" + [Environment]::GetEnvironmentVariable("INCLUDE", "Process"))
 
 Invoke-NativeLogged `
@@ -275,4 +283,10 @@ Invoke-NativeLogged `
     -FilePath "rustup" `
     -Arguments @("default", "stable")
 
-Invoke-CargoTest -TargetTriple $Target
+if ($Package) {
+    Invoke-CargoBuildRelease -TargetTriple $Target
+    New-ReleasePackage -TargetTriple $Target
+} else {
+    Invoke-CargoTest -TargetTriple $Target
+    Invoke-CargoBuildRelease -TargetTriple $Target
+}

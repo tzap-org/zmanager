@@ -1,0 +1,20 @@
+[package]
+name = "zmanager-libarchive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2.186"
+zmanager-libarchive-sys = { path = "../zmanager-libarchive-sys" }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
