@@ -629,7 +629,9 @@ fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), Libarchi
 mod tests {
     use super::{LibarchiveEntryKind, extract_archive, list_archive};
     use crate::safety::ExtractionPolicy;
-    use std::fs::{self, File};
+    use std::fs;
+    #[cfg(unix)]
+    use std::fs::File;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
