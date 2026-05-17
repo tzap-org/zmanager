@@ -1,6 +1,6 @@
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, normalize_archive_path,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver, normalize_archive_path,
     remove_destination_for_replace,
 };
 use std::collections::BTreeMap;
@@ -177,6 +177,38 @@ pub fn extract_rar_with_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<RarExtractReport, RarBackendError> {
+    extract_rar_inner(archive, destination, policy, password, None)
+}
+
+/// Extracts a RAR archive with an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`RarBackendError`] when `UnRAR` cannot read the archive, an entry is
+/// unsafe, filesystem writes fail, or the resolver aborts extraction.
+pub fn extract_rar_with_overwrite_resolver_and_password(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<RarExtractReport, RarBackendError> {
+    extract_rar_inner(
+        archive,
+        destination,
+        policy,
+        password,
+        Some(overwrite_resolver),
+    )
+}
+
+fn extract_rar_inner(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<RarExtractReport, RarBackendError> {
     let archive = archive.as_ref();
     let destination = destination.as_ref();
     let destination_root =
@@ -192,7 +224,7 @@ pub fn extract_rar_with_password(
         selections,
         deferred_links,
         mut report,
-    } = plan_rar_entries(entries, &destination_root, policy)?;
+    } = plan_rar_entries(entries, &destination_root, policy, overwrite_resolver)?;
 
     zmanager_unrar::extract_selected(archive, password, &selections)?;
     report.written_entries += selections.len();
@@ -212,9 +244,15 @@ fn plan_rar_entries(
     entries: Vec<zmanager_unrar::RarEntry>,
     destination: &Path,
     policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<PlannedRarExtraction, RarBackendError> {
     let target_policy = policy.clone();
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => {
+            ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
+        }
+        None => ExtractionSafetyPlanner::new(destination, policy),
+    };
     let mut selections = BTreeMap::new();
     let mut deferred_links = Vec::new();
     let mut report = RarExtractReport {

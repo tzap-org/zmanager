@@ -108,17 +108,38 @@ jobs:
       - name: Prepare checksums
         run: |
           cd release-artifacts
-          sha256sum *.tar.gz *.zip > SHA256SUMS
+          sha256sum *.tar.gz *.zip *.deps.txt > SHA256SUMS
+
+      - name: Prepare package metadata
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          scripts/generate-package-metadata.sh \
+            "$TAG_NAME" \
+            "https://github.com/frankmanzhu/zmanager/releases/download/$TAG_NAME" \
+            release-artifacts/SHA256SUMS \
+            release-artifacts/package-metadata
+          tar -C release-artifacts/package-metadata -czf release-artifacts/package-metadata.tar.gz .
+          (
+            cd release-artifacts
+            sha256sum package-metadata.tar.gz >> SHA256SUMS
+          )
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          NOTES_FILE="docs/release-notes/${TAG_NAME#v}.md"
+          if [ ! -f "$NOTES_FILE" ]; then
+            echo "release notes file not found: $NOTES_FILE" >&2
+            exit 1
+          fi
           gh release create "$TAG_NAME" \
             release-artifacts/*.tar.gz \
             release-artifacts/*.zip \
+            release-artifacts/*.deps.txt \
             release-artifacts/SHA256SUMS \
             --verify-tag \
             --title "$TAG_NAME" \
-            --notes "Z-Manager CLI $TAG_NAME"
+            --notes-file "$NOTES_FILE"

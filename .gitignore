@@ -10,8 +10,13 @@
 # Local scratch outputs
 /dist/
 /tmp/
+/third-party-licenses/
 /*.profraw
 /*.profdata
+
+# Python/tool caches
+__pycache__/
+*.py[cod]
 
 # macOS metadata
 .DS_Store

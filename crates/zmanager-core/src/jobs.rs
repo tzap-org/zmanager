@@ -14,6 +14,10 @@ pub enum JobKind {
     ZipCreate,
     /// ZIP extraction.
     ZipExtract,
+    /// 7z creation.
+    SevenZCreate,
+    /// 7z extraction.
+    SevenZExtract,
     /// TAR.ZST creation.
     TarZstdCreate,
     /// TAR.ZST extraction.

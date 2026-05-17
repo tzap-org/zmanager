@@ -791,6 +791,8 @@ fn job_kind_name(kind: JobKind) -> &'static str {
     match kind {
         JobKind::ZipCreate => "zip_create",
         JobKind::ZipExtract => "zip_extract",
+        JobKind::SevenZCreate => "7z_create",
+        JobKind::SevenZExtract => "7z_extract",
         JobKind::TarZstdCreate => "tar_zst_create",
         JobKind::TarZstdExtract => "tar_zst_extract",
         JobKind::ArchiveExtract => "archive_extract",

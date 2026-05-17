@@ -4,7 +4,7 @@ use crate::manifest::{
 };
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::secrets::SecretString;
 use std::fmt;
@@ -454,7 +454,7 @@ pub fn extract_zip_with_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<ZipExtractReport, ZipBackendError> {
-    extract_zip_inner(archive_path, destination, policy, password, None)
+    extract_zip_inner(archive_path, destination, policy, password, None, None)
 }
 
 /// Copies selected regular ZIP file entries to a writer in archive order.
@@ -542,7 +542,38 @@ pub fn extract_zip_with_context_and_password(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<ZipExtractReport, ZipBackendError> {
-    extract_zip_inner(archive_path, destination, policy, password, Some(context))
+    extract_zip_inner(
+        archive_path,
+        destination,
+        policy,
+        password,
+        Some(context),
+        None,
+    )
+}
+
+/// Extracts a ZIP archive with an overwrite resolver and optional password.
+///
+/// # Errors
+///
+/// Returns [`ZipBackendError`] when the archive cannot be read, a password is
+/// required/incorrect, an entry is unsafe, filesystem writes fail, or the
+/// resolver aborts extraction.
+pub fn extract_zip_with_overwrite_resolver_and_password(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<ZipExtractReport, ZipBackendError> {
+    extract_zip_inner(
+        archive_path,
+        destination,
+        policy,
+        password,
+        None,
+        Some(overwrite_resolver),
+    )
 }
 
 fn extract_zip_inner(
@@ -551,6 +582,7 @@ fn extract_zip_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     mut context: Option<&mut JobContext<'_>>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<ZipExtractReport, ZipBackendError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
@@ -568,7 +600,14 @@ fn extract_zip_inner(
     })?;
     let mut archive = ZipArchive::new(file)?;
     let password = password_bytes(password);
-    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            &destination_root,
+            policy,
+            resolver,
+        ),
+        None => ExtractionSafetyPlanner::new(&destination_root, policy),
+    };
     let mut report = ZipExtractReport {
         written_entries: 0,
         skipped_entries: 0,

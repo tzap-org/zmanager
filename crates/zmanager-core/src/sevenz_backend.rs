@@ -3,7 +3,7 @@ use crate::manifest::{
 };
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::secrets::SecretString;
 use sevenz_rust2::encoder_options::{AesEncoderOptions, Lzma2Options};
@@ -285,6 +285,39 @@ pub fn extract_7z(
     password: Option<&str>,
     policy: ExtractionPolicy,
 ) -> Result<SevenZExtractReport, SevenZError> {
+    extract_7z_inner(archive_path, destination, password, policy, None)
+}
+
+/// Extracts a `.7z` archive with an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when the archive cannot be read, an entry is unsafe,
+/// password validation fails, filesystem writes fail, or the resolver aborts
+/// extraction.
+pub fn extract_7z_with_overwrite_resolver(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<SevenZExtractReport, SevenZError> {
+    extract_7z_inner(
+        archive_path,
+        destination,
+        password,
+        policy,
+        Some(overwrite_resolver),
+    )
+}
+
+fn extract_7z_inner(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<SevenZExtractReport, SevenZError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
     let destination_root =
@@ -299,7 +332,12 @@ pub fn extract_7z(
     })?;
     let password = archive_password(password);
     let mut reader = ArchiveReader::new(file, password)?;
-    let decisions = plan_extraction(reader.archive().files.as_slice(), &destination_root, policy)?;
+    let decisions = plan_extraction(
+        reader.archive().files.as_slice(),
+        &destination_root,
+        policy,
+        overwrite_resolver,
+    )?;
     let mut report = SevenZExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -563,8 +601,14 @@ fn plan_extraction(
     entries: &[ArchiveEntry],
     destination: &Path,
     policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<HashMap<String, ExtractionDecision>, SevenZError> {
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => {
+            ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
+        }
+        None => ExtractionSafetyPlanner::new(destination, policy),
+    };
     let mut decisions = HashMap::with_capacity(entries.len());
 
     for entry in entries {

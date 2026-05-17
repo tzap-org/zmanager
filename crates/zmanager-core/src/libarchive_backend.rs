@@ -1,6 +1,6 @@
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -81,6 +81,8 @@ pub enum LibarchiveError {
     MissingLinkTarget { path: String },
     /// Requested archive entry was not found.
     EntryNotFound { path: String },
+    /// Stdout extraction must resolve to one regular file.
+    StdoutSelectionNotSingleFile { selected_files: usize },
 }
 
 impl fmt::Display for LibarchiveError {
@@ -94,6 +96,10 @@ impl fmt::Display for LibarchiveError {
                 write!(f, "libarchive link entry has no target: {path}")
             }
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
+            Self::StdoutSelectionNotSingleFile { selected_files } => write!(
+                f,
+                "extract --to-stdout requires exactly one selected regular file; selected {selected_files}"
+            ),
         }
     }
 }
@@ -104,7 +110,10 @@ impl std::error::Error for LibarchiveError {
             Self::Archive(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
-            Self::MissingPath | Self::MissingLinkTarget { .. } | Self::EntryNotFound { .. } => None,
+            Self::MissingPath
+            | Self::MissingLinkTarget { .. }
+            | Self::EntryNotFound { .. }
+            | Self::StdoutSelectionNotSingleFile { .. } => None,
         }
     }
 }
@@ -186,7 +195,30 @@ pub fn extract_archive_with_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
-    extract_archive_inner(archive_path, destination, policy, password, None)
+    extract_archive_inner(archive_path, destination, policy, password, None, None)
+}
+
+/// Extracts an archive with an overwrite resolver and optional password.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when libarchive cannot read the archive, an entry
+/// is unsafe, filesystem writes fail, or the resolver aborts extraction.
+pub fn extract_archive_with_overwrite_resolver_and_password(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<LibarchiveExtractReport, LibarchiveError> {
+    extract_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        password,
+        None,
+        Some(overwrite_resolver),
+    )
 }
 
 /// Extracts one selected archive entry through the shared extraction safety
@@ -202,7 +234,71 @@ pub fn extract_archive_entry(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
-    extract_archive_inner(archive_path, destination, policy, None, Some(entry_path))
+    extract_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        None,
+        Some(entry_path),
+        None,
+    )
+}
+
+/// Copies the one selected regular file entry to a writer.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when the archive cannot be read, the selection
+/// does not resolve to exactly one regular file, or output writing fails.
+pub fn copy_archive_files_to_writer<W: Write>(
+    archive_path: impl AsRef<Path>,
+    password: Option<&str>,
+    mut selected: impl FnMut(&str) -> bool,
+    output: &mut W,
+) -> Result<LibarchiveExtractReport, LibarchiveError> {
+    let archive_path = archive_path.as_ref();
+    let selected_paths = selected_regular_file_paths(archive_path, password, &mut selected)?;
+    if selected_paths.len() != 1 {
+        return Err(LibarchiveError::StdoutSelectionNotSingleFile {
+            selected_files: selected_paths.len(),
+        });
+    }
+    let selected_path = selected_paths[0].clone();
+    let mut archive = open_archive(archive_path, password)?;
+    let mut report = LibarchiveExtractReport {
+        written_entries: 0,
+        skipped_entries: 0,
+        written_bytes: 0,
+        warnings: Vec::new(),
+    };
+    let mut copied_selected = false;
+
+    while let Some(entry) = archive.next_entry()? {
+        let owned_entry = OwnedEntry::from_entry(&entry)?;
+        if copied_selected || owned_entry.path != selected_path {
+            archive.skip_data()?;
+            report.skipped_entries += 1;
+            continue;
+        }
+        if !matches!(owned_entry.extraction_kind, ExtractionEntryKind::File) {
+            archive.skip_data()?;
+            report.skipped_entries += 1;
+            continue;
+        }
+
+        let copied = copy_file_entry_to_writer(&mut archive, output, &owned_entry.path)?;
+        report.written_entries += 1;
+        report.written_bytes += copied;
+        copied_selected = true;
+    }
+
+    if copied_selected {
+        Ok(report)
+    } else {
+        Err(LibarchiveError::EntryNotFound {
+            path: selected_path,
+        })
+    }
 }
 
 fn extract_archive_inner(
@@ -211,6 +307,7 @@ fn extract_archive_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     selected_entry: Option<&str>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
     let destination = destination.as_ref();
     let destination_root =
@@ -222,7 +319,14 @@ fn extract_archive_inner(
         })?;
 
     let mut archive = open_archive(archive_path.as_ref(), password)?;
-    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            &destination_root,
+            policy,
+            resolver,
+        ),
+        None => ExtractionSafetyPlanner::new(&destination_root, policy),
+    };
     let mut report = LibarchiveExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -423,6 +527,27 @@ fn nonnegative_size(size: i64) -> Option<u64> {
     u64::try_from(size).ok()
 }
 
+fn selected_regular_file_paths(
+    archive_path: &Path,
+    password: Option<&str>,
+    selected: &mut impl FnMut(&str) -> bool,
+) -> Result<Vec<String>, LibarchiveError> {
+    let mut archive = open_archive(archive_path, password)?;
+    let mut selected_paths = Vec::new();
+
+    while let Some(entry) = archive.next_entry()? {
+        let owned_entry = OwnedEntry::from_entry(&entry)?;
+        if selected(&owned_entry.path)
+            && matches!(owned_entry.extraction_kind, ExtractionEntryKind::File)
+        {
+            selected_paths.push(owned_entry.path);
+        }
+        archive.skip_data()?;
+    }
+
+    Ok(selected_paths)
+}
+
 fn entry_kind(entry: &zmanager_libarchive::Entry) -> LibarchiveEntryKind {
     if entry.hardlink().is_some() {
         return LibarchiveEntryKind::Hardlink;
@@ -581,6 +706,31 @@ fn write_file_entry(
             path: destination_path.to_path_buf(),
             source,
         })?;
+
+    Ok(written_bytes)
+}
+
+fn copy_file_entry_to_writer<W: Write>(
+    archive: &mut ReadArchive,
+    output: &mut W,
+    entry_path: &str,
+) -> Result<u64, LibarchiveError> {
+    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+    let mut written_bytes = 0_u64;
+
+    loop {
+        let read = archive.read_data(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|source| LibarchiveError::Io {
+                path: PathBuf::from(entry_path),
+                source,
+            })?;
+        written_bytes += read as u64;
+    }
 
     Ok(written_bytes)
 }

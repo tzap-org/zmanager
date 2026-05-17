@@ -4,7 +4,7 @@
 [![Release](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml/badge.svg)](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
 [![Release version](https://img.shields.io/github/v/release/frankmanzhu/zmanager?include_prereleases&label=release)](https://github.com/frankmanzhu/zmanager/releases)
 [![Downloads](https://img.shields.io/github/downloads/frankmanzhu/zmanager/total)](https://github.com/frankmanzhu/zmanager/releases)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 `zm` is a fast, safe archive utility for macOS, Linux, and Windows. Its goal is
 simple: extract almost anything safely, and create new archives only with
@@ -15,7 +15,7 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Current source version: `v0.1.0`
+Current source version: `v1.0.0`
 
 ## Product Direction
 
@@ -39,7 +39,7 @@ Z-Manager treats extraction and creation differently:
 ### Current Version
 
 Release builds are published from GitHub tags. Until the first public tag is
-cut, install from source or use the Homebrew formula with `--HEAD`.
+cut, install from source.
 
 - [Latest release](https://github.com/frankmanzhu/zmanager/releases/latest)
 - [All releases](https://github.com/frankmanzhu/zmanager/releases)
@@ -55,30 +55,45 @@ The release workflow publishes these archives when a `v*` tag is created:
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 
-Each archive contains the `zm` executable, `README.md`, `LICENSE`, and
-`THIRD_PARTY_NOTICES.md`. Windows archives are built with vcpkg static-library
-triplets so third-party compression and crypto libraries are linked into
-`zm.exe`. Every release also includes a `SHA256SUMS` file for download
-verification.
+Each archive contains the `zm` executable, `README.md`, `LICENSE`, `NOTICE`,
+`THIRD_PARTY_NOTICES.md`, and `third-party-licenses/`. Windows archives are
+built with vcpkg static-library triplets so third-party compression and crypto
+libraries are linked into `zm.exe`. Every release also includes a `SHA256SUMS`
+file for download verification.
+
+Full installation details, checksum verification examples, and package-channel
+maintenance notes are in [docs/INSTALL.md](docs/INSTALL.md).
 
 ### Homebrew
 
 Once the tap repository is published, install with:
 
 ```sh
-brew install frankmanzhu/zmanager/zm
+brew install frankmanzhu/zmanager/zmanager
 ```
 
-Equivalent explicit form:
+Equivalent explicit form after tapping:
 
 ```sh
 brew tap frankmanzhu/zmanager
-brew install zm
+brew install zmanager
 ```
 
-The Homebrew formula lives at [Formula/zm.rb](Formula/zm.rb). The tap repository
-should be named `homebrew-zmanager` on GitHub so Homebrew can resolve
-`frankmanzhu/zmanager` to `frankmanzhu/homebrew-zmanager`.
+The release workflow renders the Homebrew formula from
+[packaging/homebrew/zmanager.rb.template](packaging/homebrew/zmanager.rb.template)
+using release checksums. Copy the generated
+`package-metadata/homebrew/Formula/zmanager.rb` into the separate
+`frankmanzhu/homebrew-zmanager` tap.
+
+### WinGet
+
+The release workflow also renders WinGet manifests from
+[packaging/winget](packaging/winget). After validation and submission, install
+with:
+
+```powershell
+winget install FrankManZhu.ZManagerCLI
+```
 
 ### Install Script
 
@@ -92,7 +107,7 @@ Install a specific version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v0.1.0 sh
+  | ZMANAGER_VERSION=v1.0.0 sh
 ```
 
 Install somewhere else:
@@ -208,6 +223,7 @@ the core suite is deterministic and should pass without network access.
 - [Issues](https://github.com/frankmanzhu/zmanager/issues)
 - [CI](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml)
 - [Release workflow](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
+- [Install guide](docs/INSTALL.md)
 - [Release maintainer notes](RELEASE.md)
 
 ## Repository Layout
@@ -220,7 +236,7 @@ the core suite is deterministic and should pass without network access.
   RAR extraction.
 - `fixtures/`: committed compatibility fixtures used by integration tests.
 - `fuzz/`: `cargo-fuzz` targets for hostile archive and parser surfaces.
-- `Formula/`: Homebrew formula for the CLI.
+- `packaging/`: Homebrew and WinGet metadata templates.
 - `scripts/`: release packaging helpers.
 - `.github/workflows/`: CI and release automation.
 
@@ -230,6 +246,7 @@ Release notes and maintainer steps are in [RELEASE.md](RELEASE.md).
 
 ## License
 
-This workspace is released under the MIT license. The bundled UnRAR source has
-its own extraction-only license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-and `vendor/unrar/license.txt`.
+This workspace is released under the Apache License 2.0. The bundled UnRAR
+source has its own extraction-only license; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+`vendor/unrar/license.txt`.

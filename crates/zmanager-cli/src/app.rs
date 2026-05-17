@@ -6,7 +6,17 @@ use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zmanager_core::jobs::{CancellationToken, JobContext, JobEvent, JobKind};
+use zmanager_core::safety::{
+    OverwriteConflict, OverwriteDecision, OverwritePolicy, OverwriteResolver,
+};
 use zmanager_core::secrets::SecretString;
+
+const PROGRESS_PREFIX: &str = "progress";
+const PROGRESS_PERCENT_STEP: u64 = 5;
+const PROGRESS_BYTE_STEP: u64 = 1024 * 1024;
+const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
+const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or quit";
 
 const USAGE: &str = "\
 Z-Manager archive utility
@@ -309,8 +319,11 @@ Use --json in scripts and bug reports.
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
 const FORMAT_SEVEN_Z: &str = "7z";
+const FORMAT_RAR: &str = "rar";
+const FORMAT_DEB: &str = "deb";
 const FORMAT_RAW_STREAM: &str = "raw-stream";
 const FORMAT_LIBARCHIVE: &str = "libarchive";
+const BACKEND_DEB_NESTED: &str = "deb-nested";
 
 const TEMP_ARCHIVE_PREFIX: &str = ".";
 const TEMP_ARCHIVE_MARKER: &str = ".tmp";
@@ -451,11 +464,227 @@ enum OutputMode {
     Never,
 }
 
+#[derive(Debug)]
+struct ProgressReporter {
+    enabled: bool,
+    total_bytes: Option<u64>,
+    last_percent: Option<u64>,
+    last_reported_bytes: u64,
+}
+
+impl ProgressReporter {
+    fn from_global(global: Option<&GlobalOptions>) -> Self {
+        let enabled = global.is_some_and(|global| match global.progress {
+            OutputMode::Always => true,
+            OutputMode::Auto => !global.quiet && io::stderr().is_terminal(),
+            OutputMode::Never => false,
+        });
+
+        Self {
+            enabled,
+            total_bytes: None,
+            last_percent: None,
+            last_reported_bytes: 0,
+        }
+    }
+
+    fn emit(&mut self, event: JobEvent) {
+        if !self.enabled {
+            return;
+        }
+
+        match event {
+            JobEvent::Started { kind, total_bytes } => {
+                self.total_bytes = total_bytes;
+                self.last_percent = None;
+                self.last_reported_bytes = 0;
+                match total_bytes {
+                    Some(total_bytes) => eprintln!(
+                        "{PROGRESS_PREFIX}: {} started ({total_bytes} bytes)",
+                        progress_job_label(kind)
+                    ),
+                    None => eprintln!("{PROGRESS_PREFIX}: {} started", progress_job_label(kind)),
+                }
+            }
+            JobEvent::BytesProcessed {
+                total_bytes_processed,
+                ..
+            } => {
+                if let Some(total_bytes) = self.total_bytes {
+                    self.emit_percent(total_bytes_processed, total_bytes);
+                } else {
+                    self.emit_byte_count(total_bytes_processed);
+                }
+            }
+            JobEvent::Completed { entries, bytes } => {
+                eprintln!("{PROGRESS_PREFIX}: complete ({entries} entries, {bytes} bytes)");
+            }
+            JobEvent::Failed { message } => {
+                eprintln!("{PROGRESS_PREFIX}: failed: {message}");
+            }
+            JobEvent::Cancelled { message } => {
+                eprintln!("{PROGRESS_PREFIX}: cancelled: {message}");
+            }
+            JobEvent::EntryStarted { .. }
+            | JobEvent::EntryFinished { .. }
+            | JobEvent::Warning { .. } => {}
+        }
+    }
+
+    fn emit_percent(&mut self, total_bytes_processed: u64, total_bytes: u64) {
+        let percent = total_bytes_processed
+            .saturating_mul(100)
+            .checked_div(total_bytes)
+            .unwrap_or(100)
+            .clamp(1, 100);
+
+        let should_emit = self
+            .last_percent
+            .is_none_or(|last| percent == 100 || percent >= last + PROGRESS_PERCENT_STEP);
+        if should_emit {
+            self.last_percent = Some(percent);
+            eprintln!(
+                "{PROGRESS_PREFIX}: {percent}% ({total_bytes_processed}/{total_bytes} bytes)"
+            );
+        }
+    }
+
+    fn emit_byte_count(&mut self, total_bytes_processed: u64) {
+        let should_emit = self.last_reported_bytes == 0
+            || total_bytes_processed.saturating_sub(self.last_reported_bytes) >= PROGRESS_BYTE_STEP;
+        if should_emit {
+            self.last_reported_bytes = total_bytes_processed;
+            eprintln!("{PROGRESS_PREFIX}: {total_bytes_processed} bytes");
+        }
+    }
+}
+
+fn progress_job_label(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::ZipCreate => "zip create",
+        JobKind::ZipExtract => "zip extract",
+        JobKind::SevenZCreate => "7z create",
+        JobKind::SevenZExtract => "7z extract",
+        JobKind::TarZstdCreate => "tar.zst create",
+        JobKind::TarZstdExtract => "tar.zst extract",
+        JobKind::ArchiveExtract => "archive extract",
+    }
+}
+
+#[derive(Debug)]
+struct InteractiveOverwriteResolver<R, W> {
+    input: R,
+    output: W,
+    replace_all: bool,
+}
+
+impl<R, W> InteractiveOverwriteResolver<R, W>
+where
+    R: io::BufRead,
+    W: io::Write,
+{
+    fn new(input: R, output: W) -> Self {
+        Self {
+            input,
+            output,
+            replace_all: false,
+        }
+    }
+
+    fn read_decision(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
+        if self.replace_all {
+            return OverwriteDecision::Replace;
+        }
+
+        let mut answer = String::new();
+        loop {
+            answer.clear();
+            if write!(
+                self.output,
+                "overwrite {} from {}?{OVERWRITE_PROMPT_SUFFIX}",
+                conflict.destination_path.display(),
+                conflict.archive_path
+            )
+            .and_then(|()| self.output.flush())
+            .is_err()
+            {
+                return OverwriteDecision::Quit;
+            }
+            match self.input.read_line(&mut answer) {
+                Ok(0) | Err(_) => return OverwriteDecision::Quit,
+                Ok(_) => match normalize_overwrite_answer(&answer) {
+                    Some((decision, replace_all)) => {
+                        if replace_all {
+                            self.replace_all = true;
+                        }
+                        return decision;
+                    }
+                    None => {
+                        let _ = writeln!(self.output, "{OVERWRITE_INVALID_CHOICE}");
+                    }
+                },
+            }
+        }
+    }
+}
+
+impl<R, W> OverwriteResolver for InteractiveOverwriteResolver<R, W>
+where
+    R: io::BufRead,
+    W: io::Write,
+{
+    fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
+        self.read_decision(conflict)
+    }
+}
+
+fn normalize_overwrite_answer(answer: &str) -> Option<(OverwriteDecision, bool)> {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Some((OverwriteDecision::Replace, false)),
+        "n" | "no" => Some((OverwriteDecision::Skip, false)),
+        "a" | "all" => Some((OverwriteDecision::Replace, true)),
+        "r" | "rename" => Some((OverwriteDecision::Rename, false)),
+        "q" | "quit" => Some((OverwriteDecision::Quit, false)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ArchiveFormat {
     Zip,
     TarZst,
     SevenZ,
+}
+
+#[derive(Debug)]
+struct CreateOutcome {
+    summary: String,
+    format: &'static str,
+    backend: &'static str,
+    entries: usize,
+    bytes: u64,
+    warnings: usize,
+    encrypted: Option<bool>,
+    solid: Option<bool>,
+}
+
+#[derive(Debug)]
+struct ExtractOutcome {
+    label: &'static str,
+    format: &'static str,
+    backend: &'static str,
+    written_entries: usize,
+    skipped_entries: usize,
+    written_bytes: u64,
+    warnings: Vec<String>,
+}
+
+fn create_progress_kind(format: ArchiveFormat) -> JobKind {
+    match format {
+        ArchiveFormat::Zip => JobKind::ZipCreate,
+        ArchiveFormat::TarZst => JobKind::TarZstdCreate,
+        ArchiveFormat::SevenZ => JobKind::SevenZCreate,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1125,6 +1354,13 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         return ExitCode::FAILURE;
     }
 
+    let mut progress = ProgressReporter::from_global(Some(global));
+    progress.emit(JobEvent::Started {
+        kind: create_progress_kind(format),
+        total_bytes: Some(manifest.total_bytes),
+    });
+    let token = CancellationToken::new();
+
     let result = match format {
         ArchiveFormat::Zip => {
             let (compression, level) = match zip_compression_options(request) {
@@ -1140,15 +1376,32 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 preserve_metadata: !request.no_metadata,
                 password,
             };
-            zmanager_core::zip_backend::create_zip_from_manifest(&manifest, &temp, &options)
-                .map(|report| {
-                    format!(
+            let result = {
+                let mut sink = |event| progress.emit(event);
+                let mut context = JobContext::new(&token, &mut sink);
+                zmanager_core::zip_backend::create_zip_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
+                )
+            };
+            result
+                .map(|report| CreateOutcome {
+                    summary: format!(
                         "created zip: {} entries, {} bytes, encrypted {}, {} warnings",
                         report.written_entries,
                         report.written_bytes,
                         report.encrypted,
                         report.warnings.len()
-                    )
+                    ),
+                    format: FORMAT_ZIP,
+                    backend: FORMAT_ZIP,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: Some(report.encrypted),
+                    solid: None,
                 })
                 .map_err(|error| error.to_string())
         }
@@ -1160,20 +1413,35 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 preserve_metadata: !request.no_metadata,
                 ..zmanager_core::tar_zst_backend::TarZstdCreateOptions::default()
             };
-            zmanager_core::tar_zst_backend::create_tar_zst_from_manifest(
-                &manifest, &temp, &options,
-            )
-            .map(|report| {
-                format!(
-                    "created tar.zst: {} entries, {} bytes, level {}, threads {:?}, {} warnings",
-                    report.written_entries,
-                    report.written_bytes,
-                    report.level,
-                    report.threads,
-                    report.warnings.len()
+            let result = {
+                let mut sink = |event| progress.emit(event);
+                let mut context = JobContext::new(&token, &mut sink);
+                zmanager_core::tar_zst_backend::create_tar_zst_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
                 )
-            })
-            .map_err(|error| error.to_string())
+            };
+            result
+                .map(|report| CreateOutcome {
+                    summary: format!(
+                        "created tar.zst: {} entries, {} bytes, level {}, threads {:?}, {} warnings",
+                        report.written_entries,
+                        report.written_bytes,
+                        report.level,
+                        report.threads,
+                        report.warnings.len()
+                    ),
+                    format: FORMAT_TAR_ZST,
+                    backend: FORMAT_TAR_ZST,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: None,
+                    solid: None,
+                })
+                .map_err(|error| error.to_string())
         }
         ArchiveFormat::SevenZ => {
             let options = zmanager_core::sevenz_backend::SevenZCreateOptions {
@@ -1183,24 +1451,34 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 password,
             };
             zmanager_core::sevenz_backend::create_7z_from_manifest(&manifest, &temp, &options)
-                .map(|report| {
-                    format!(
+                .map(|report| CreateOutcome {
+                    summary: format!(
                         "created 7z: {} entries, {} bytes, solid {}, encrypted {}, {} warnings",
                         report.written_entries,
                         report.written_bytes,
                         report.solid,
                         report.encrypted,
                         report.warnings.len()
-                    )
+                    ),
+                    format: FORMAT_SEVEN_Z,
+                    backend: FORMAT_SEVEN_Z,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: Some(report.encrypted),
+                    solid: Some(report.solid),
                 })
                 .map_err(|error| error.to_string())
         }
     };
 
     match result {
-        Ok(summary) => {
+        Ok(outcome) => {
             if let Err(error) = fs::rename(&temp, &destination) {
                 let _ = fs::remove_file(&temp);
+                progress.emit(JobEvent::Failed {
+                    message: error.to_string(),
+                });
                 eprintln!(
                     "create failed: failed to move {} to {}: {error}",
                     temp.display(),
@@ -1208,9 +1486,11 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 );
                 return ExitCode::FAILURE;
             }
-            if !global.quiet {
-                println!("{summary}");
-            }
+            progress.emit(JobEvent::Completed {
+                entries: outcome.entries,
+                bytes: outcome.bytes,
+            });
+            print_create_summary(&destination, &outcome, global);
             if request.test_after {
                 let archive = destination.to_string_lossy().into_owned();
                 return run_test_request(
@@ -1225,6 +1505,9 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         }
         Err(error) => {
             let _ = fs::remove_file(&temp);
+            progress.emit(JobEvent::Failed {
+                message: error.clone(),
+            });
             eprintln!("create failed: {error}");
             ExitCode::FAILURE
         }
@@ -1559,6 +1842,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             password.as_deref(),
             policy,
             global.no_password_prompt,
+            Some(global),
         )
     } else if is_7z_archive(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "7z") {
@@ -1571,23 +1855,23 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             password.as_deref(),
             policy,
             global.no_password_prompt,
+            Some(global),
         )
     } else if is_rar_archive(&request.archive) && request.password_stdin {
         let password = match read_optional_password_stdin(request.password_stdin, "RAR") {
             Ok(password) => password,
             Err(code) => return code,
         };
-        run_rar_extract_with_policy(request.archive, destination, policy, password.as_deref())
+        run_rar_extract_with_policy(
+            request.archive,
+            destination,
+            policy,
+            password.as_deref(),
+            Some(global),
+        )
     } else if is_tar_zst_archive(&request.archive) {
-        run_tar_zst_extract_with_policy(request.archive, destination, policy)
+        run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
     } else {
-        if !request.include.is_empty()
-            || !request.exclude.is_empty()
-            || request.strip_components > 0
-        {
-            eprintln!("extract filters are not supported for libarchive fallback yet");
-            return ExitCode::from(2);
-        }
         let password = match read_optional_password_stdin(request.password_stdin, "archive") {
             Ok(password) => password,
             Err(code) => return code,
@@ -1597,6 +1881,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             destination,
             policy,
             password.as_deref(),
+            Some(global),
         )
     }
 }
@@ -1607,17 +1892,31 @@ fn run_deb_nested_extract(
     policy: zmanager_core::safety::ExtractionPolicy,
     global: &GlobalOptions,
 ) -> ExitCode {
-    match zmanager_core::deb_backend::extract_deb_nested(archive, destination, policy) {
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::deb_backend::extract_deb_nested_with_overwrite_resolver(
+            archive,
+            destination,
+            policy,
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::deb_backend::extract_deb_nested(archive, destination, policy)
+    };
+    match result {
         Ok(report) => {
-            if !global.quiet {
-                println!(
-                    "deb nested extract ok: {} written, {} skipped, {} bytes",
-                    report.written_entries, report.skipped_entries, report.written_bytes
-                );
-                for warning in report.warnings {
-                    println!("warning\t{warning}");
-                }
-            }
+            let outcome = ExtractOutcome {
+                label: "deb nested",
+                format: FORMAT_DEB,
+                backend: BACKEND_DEB_NESTED,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(Path::new(archive), destination, &outcome, Some(global));
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1634,32 +1933,23 @@ fn run_raw_stream_extract(
     policy: zmanager_core::safety::ExtractionPolicy,
     global: &GlobalOptions,
 ) -> ExitCode {
-    match zmanager_core::raw_stream_backend::extract_raw_stream(
-        archive,
-        format,
-        destination,
-        policy,
-    ) {
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::raw_stream_backend::extract_raw_stream_with_overwrite_resolver(
+            archive,
+            format,
+            destination,
+            policy,
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::raw_stream_backend::extract_raw_stream(archive, format, destination, policy)
+    };
+    match result {
         Ok(report) => {
-            if !global.quiet {
-                if let Some(output_path) = &report.output_path {
-                    println!(
-                        "extracted {} stream: {} bytes -> {}",
-                        format.name(),
-                        report.written_bytes,
-                        output_path.display()
-                    );
-                } else {
-                    println!(
-                        "extracted {} stream: {} entries skipped",
-                        format.name(),
-                        report.skipped_entries
-                    );
-                }
-                for warning in report.warnings {
-                    println!("warning\t{warning}");
-                }
-            }
+            print_raw_stream_extract_summary(Path::new(archive), format, &report, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1853,8 +2143,30 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             }
         }
     } else {
-        eprintln!("extract --to-stdout is supported for zip, tar.zst, 7z, and raw streams");
-        ExitCode::from(2)
+        let password = match read_optional_password_stdin(request.password_stdin, "archive") {
+            Ok(password) => password,
+            Err(code) => return code,
+        };
+        match zmanager_core::libarchive_backend::copy_archive_files_to_writer(
+            &request.archive,
+            password.as_deref(),
+            |name| entry_selected(name, &request.include, &request.exclude),
+            &mut stdout,
+        ) {
+            Ok(report) => {
+                if global.verbose > 0 && !global.quiet {
+                    eprintln!(
+                        "extract to stdout ok: {} entries, {} skipped, {} bytes",
+                        report.written_entries, report.skipped_entries, report.written_bytes
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("extract to stdout failed: {error}");
+                ExitCode::FAILURE
+            }
+        }
     }
 }
 
@@ -1862,14 +2174,10 @@ fn extraction_policy(
     request: &ExtractRequest,
 ) -> Result<zmanager_core::safety::ExtractionPolicy, String> {
     let overwrite = match request.overwrite.as_deref().unwrap_or("never") {
-        "never" => zmanager_core::safety::OverwritePolicy::Refuse,
-        "always" => zmanager_core::safety::OverwritePolicy::Replace,
-        "rename" => zmanager_core::safety::OverwritePolicy::Rename,
-        "ask" if io::stdin().is_terminal() => {
-            return Err(
-                "--overwrite ask is not implemented for interactive prompts yet".to_owned(),
-            );
-        }
+        "never" => OverwritePolicy::Refuse,
+        "always" => OverwritePolicy::Replace,
+        "rename" => OverwritePolicy::Rename,
+        "ask" if io::stdin().is_terminal() => OverwritePolicy::Ask,
         "ask" => return Err("--overwrite ask requires an interactive terminal".to_owned()),
         value => return Err(format!("unsupported overwrite policy: {value}")),
     };
@@ -2836,6 +3144,113 @@ fn print_entries_json(entries: &[GenericEntry]) {
     println!("]}}");
 }
 
+fn print_create_summary(archive: &Path, outcome: &CreateOutcome, global: &GlobalOptions) {
+    if global.json {
+        print_create_summary_json(archive, outcome);
+    } else if !global.quiet {
+        println!("{}", outcome.summary);
+    }
+}
+
+fn print_create_summary_json(archive: &Path, outcome: &CreateOutcome) {
+    print!(
+        "{{\"status\":\"ok\",\"operation\":\"create\",\"archive\":\"{}\",\"format\":\"{}\",\"backend\":\"{}\",\"written_entries\":{},\"written_bytes\":{},\"warnings\":{}",
+        json_escape(&archive.display().to_string()),
+        json_escape(outcome.format),
+        json_escape(outcome.backend),
+        outcome.entries,
+        outcome.bytes,
+        outcome.warnings
+    );
+    if let Some(encrypted) = outcome.encrypted {
+        print!(",\"encrypted\":{encrypted}");
+    }
+    if let Some(solid) = outcome.solid {
+        print!(",\"solid\":{solid}");
+    }
+    println!("}}");
+}
+
+fn print_extract_summary(
+    archive: &Path,
+    destination: &Path,
+    outcome: &ExtractOutcome,
+    global: Option<&GlobalOptions>,
+) {
+    match global {
+        Some(global) if global.json => print_extract_summary_json(archive, destination, outcome),
+        Some(global) if global.quiet => {}
+        _ => print_extract_summary_text(outcome),
+    }
+}
+
+fn print_extract_summary_text(outcome: &ExtractOutcome) {
+    println!(
+        "{} extract ok: {} written, {} skipped, {} bytes",
+        outcome.label, outcome.written_entries, outcome.skipped_entries, outcome.written_bytes
+    );
+    for warning in &outcome.warnings {
+        println!("warning\t{warning}");
+    }
+}
+
+fn print_extract_summary_json(archive: &Path, destination: &Path, outcome: &ExtractOutcome) {
+    println!(
+        "{{\"status\":\"ok\",\"operation\":\"extract\",\"archive\":\"{}\",\"destination\":\"{}\",\"format\":\"{}\",\"backend\":\"{}\",\"written_entries\":{},\"skipped_entries\":{},\"written_bytes\":{},\"warnings\":{}}}",
+        json_escape(&archive.display().to_string()),
+        json_escape(&destination.display().to_string()),
+        json_escape(outcome.format),
+        json_escape(outcome.backend),
+        outcome.written_entries,
+        outcome.skipped_entries,
+        outcome.written_bytes,
+        outcome.warnings.len()
+    );
+}
+
+fn print_raw_stream_extract_summary(
+    archive: &Path,
+    format: zmanager_core::raw_stream_backend::RawStreamFormat,
+    report: &zmanager_core::raw_stream_backend::RawStreamExtractReport,
+    global: &GlobalOptions,
+) {
+    if global.json {
+        print!(
+            "{{\"status\":\"ok\",\"operation\":\"extract\",\"archive\":\"{}\",\"format\":\"{}\",\"backend\":\"{}\",\"written_entries\":{},\"skipped_entries\":{},\"written_bytes\":{},\"warnings\":{},\"output_path\":",
+            json_escape(&archive.display().to_string()),
+            json_escape(format.name()),
+            FORMAT_RAW_STREAM,
+            usize::from(report.output_path.is_some()),
+            report.skipped_entries,
+            report.written_bytes,
+            report.warnings.len()
+        );
+        match &report.output_path {
+            Some(output_path) => print!("\"{}\"", json_escape(&output_path.display().to_string())),
+            None => print!("null"),
+        }
+        println!("}}");
+    } else if !global.quiet {
+        if let Some(output_path) = &report.output_path {
+            println!(
+                "extracted {} stream: {} bytes -> {}",
+                format.name(),
+                report.written_bytes,
+                output_path.display()
+            );
+        } else {
+            println!(
+                "extracted {} stream: {} entries skipped",
+                format.name(),
+                report.skipped_entries
+            );
+        }
+        for warning in &report.warnings {
+            println!("warning\t{warning}");
+        }
+    }
+}
+
 fn print_manifest(manifest: &zmanager_core::manifest::ArchiveManifest, global: &GlobalOptions) {
     if global.json {
         print!(
@@ -3591,6 +4006,7 @@ fn run_zip_extract(
         password,
         zmanager_core::safety::ExtractionPolicy::default(),
         false,
+        None,
     )
 }
 
@@ -3600,28 +4016,66 @@ fn run_zip_extract_with_policy(
     password: Option<&str>,
     policy: zmanager_core::safety::ExtractionPolicy,
     no_password_prompt: bool,
+    global: Option<&GlobalOptions>,
 ) -> ExitCode {
-    match zmanager_core::zip_backend::extract_zip_with_password(
-        archive.as_ref(),
-        destination.as_ref(),
-        policy.clone(),
-        password,
-    ) {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::ZipExtract,
+        total_bytes: None,
+    });
+    let token = CancellationToken::new();
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::zip_backend::extract_zip_with_overwrite_resolver_and_password(
+            &archive_path,
+            &destination_path,
+            policy.clone(),
+            password,
+            &mut overwrite_resolver,
+        )
+    } else {
+        let mut sink = |event| progress.emit(event);
+        let mut context = JobContext::new(&token, &mut sink);
+        zmanager_core::zip_backend::extract_zip_with_context_and_password(
+            &archive_path,
+            &destination_path,
+            policy.clone(),
+            password,
+            &mut context,
+        )
+    };
+
+    match result {
         Ok(report) => {
-            println!(
-                "zip extract ok: {} written, {} skipped, {} bytes",
-                report.written_entries, report.skipped_entries, report.written_bytes
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_ZIP,
+                format: FORMAT_ZIP,
+                backend: FORMAT_ZIP,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
         Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired)
             if password.is_none() =>
         {
             if no_password_prompt {
-                eprintln!("zip extract failed: password required and prompts are disabled");
+                let message = "zip extract failed: password required and prompts are disabled";
+                progress.emit(JobEvent::Failed {
+                    message: message.to_owned(),
+                });
+                eprintln!("{message}");
                 return ExitCode::from(2);
             }
             let password = match prompt_password("ZIP password: ") {
@@ -3634,9 +4088,13 @@ fn run_zip_extract_with_policy(
                 Some(password.expose_secret()),
                 policy,
                 no_password_prompt,
+                global,
             )
         }
         Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
             eprintln!("zip extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -3714,6 +4172,7 @@ fn run_tar_zst_extract(
         archive,
         destination,
         zmanager_core::safety::ExtractionPolicy::default(),
+        None,
     )
 }
 
@@ -3721,19 +4180,59 @@ fn run_tar_zst_extract_with_policy(
     archive: impl AsRef<std::path::Path>,
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
+    global: Option<&GlobalOptions>,
 ) -> ExitCode {
-    match zmanager_core::tar_zst_backend::extract_tar_zst(archive, destination, policy) {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::TarZstdExtract,
+        total_bytes: None,
+    });
+    let token = CancellationToken::new();
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::tar_zst_backend::extract_tar_zst_with_overwrite_resolver(
+            &archive_path,
+            &destination_path,
+            policy,
+            &mut overwrite_resolver,
+        )
+    } else {
+        let mut sink = |event| progress.emit(event);
+        let mut context = JobContext::new(&token, &mut sink);
+        zmanager_core::tar_zst_backend::extract_tar_zst_with_context(
+            &archive_path,
+            &destination_path,
+            policy,
+            &mut context,
+        )
+    };
+
+    match result {
         Ok(report) => {
-            println!(
-                "tar.zst extract ok: {} written, {} skipped, {} bytes",
-                report.written_entries, report.skipped_entries, report.written_bytes
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_TAR_ZST,
+                format: FORMAT_TAR_ZST,
+                backend: FORMAT_TAR_ZST,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
             eprintln!("tar.zst extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -3884,6 +4383,7 @@ fn run_7z_extract(
         password,
         zmanager_core::safety::ExtractionPolicy::default(),
         false,
+        None,
     )
 }
 
@@ -3893,26 +4393,59 @@ fn run_7z_extract_with_policy(
     password: Option<&str>,
     policy: zmanager_core::safety::ExtractionPolicy,
     no_password_prompt: bool,
+    global: Option<&GlobalOptions>,
 ) -> ExitCode {
-    match zmanager_core::sevenz_backend::extract_7z(
-        archive.as_ref(),
-        destination.as_ref(),
-        password,
-        policy.clone(),
-    ) {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::SevenZExtract,
+        total_bytes: None,
+    });
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::sevenz_backend::extract_7z_with_overwrite_resolver(
+            &archive_path,
+            &destination_path,
+            password,
+            policy.clone(),
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::sevenz_backend::extract_7z(
+            &archive_path,
+            &destination_path,
+            password,
+            policy.clone(),
+        )
+    };
+    match result {
         Ok(report) => {
-            println!(
-                "7z extract ok: {} written, {} skipped, {} bytes",
-                report.written_entries, report.skipped_entries, report.written_bytes
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_SEVEN_Z,
+                format: FORMAT_SEVEN_Z,
+                backend: FORMAT_SEVEN_Z,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
         Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired) if password.is_none() => {
             if no_password_prompt {
-                eprintln!("7z extract failed: password required and prompts are disabled");
+                let message = "7z extract failed: password required and prompts are disabled";
+                progress.emit(JobEvent::Failed {
+                    message: message.to_owned(),
+                });
+                eprintln!("{message}");
                 return ExitCode::from(2);
             }
             let password = match prompt_password("7z password: ") {
@@ -3925,9 +4458,13 @@ fn run_7z_extract_with_policy(
                 Some(password.expose_secret()),
                 policy,
                 no_password_prompt,
+                global,
             )
         }
         Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
             eprintln!("7z extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -3991,6 +4528,7 @@ fn run_libarchive_extract(
         destination,
         zmanager_core::safety::ExtractionPolicy::default(),
         None,
+        None,
     )
 }
 
@@ -3999,21 +4537,41 @@ fn run_rar_extract_with_policy(
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
     password: Option<&str>,
+    global: Option<&GlobalOptions>,
 ) -> ExitCode {
-    match zmanager_core::rar_backend::extract_rar_with_password(
-        archive,
-        destination,
-        policy,
-        password,
-    ) {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::rar_backend::extract_rar_with_overwrite_resolver_and_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::rar_backend::extract_rar_with_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+        )
+    };
+    match result {
         Ok(report) => {
-            println!(
-                "rar extract ok: {} written, {} skipped, {} bytes",
-                report.written_entries, report.skipped_entries, report.written_bytes
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
+            let outcome = ExtractOutcome {
+                label: FORMAT_RAR,
+                format: FORMAT_RAR,
+                backend: FORMAT_RAR,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -4028,24 +4586,56 @@ fn run_libarchive_extract_with_policy(
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
     password: Option<&str>,
+    global: Option<&GlobalOptions>,
 ) -> ExitCode {
-    match zmanager_core::libarchive_backend::extract_archive_with_password(
-        archive,
-        destination,
-        policy,
-        password,
-    ) {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::ArchiveExtract,
+        total_bytes: None,
+    });
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::libarchive_backend::extract_archive_with_overwrite_resolver_and_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::libarchive_backend::extract_archive_with_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+        )
+    };
+    match result {
         Ok(report) => {
-            println!(
-                "libarchive extract ok: {} written, {} skipped, {} bytes",
-                report.written_entries, report.skipped_entries, report.written_bytes
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_LIBARCHIVE,
+                format: FORMAT_LIBARCHIVE,
+                backend: FORMAT_LIBARCHIVE,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
             eprintln!("libarchive extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -4094,7 +4684,12 @@ fn plan_command(mut args: impl Iterator<Item = String>) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_prompted_password, password_arg_or_prompt};
+    use super::{
+        InteractiveOverwriteResolver, normalize_prompted_password, password_arg_or_prompt,
+    };
+    use std::io::Cursor;
+    use std::path::PathBuf;
+    use zmanager_core::safety::{OverwriteConflict, OverwriteDecision, OverwriteResolver};
 
     #[test]
     fn password_prompt_treats_eof_as_cancelled() {
@@ -4117,5 +4712,60 @@ mod tests {
     #[test]
     fn direct_password_arguments_are_rejected() {
         assert!(password_arg_or_prompt(Some("secret"), "Password: ").is_err());
+    }
+
+    #[test]
+    fn overwrite_prompt_maps_single_entry_choices() {
+        assert_eq!(overwrite_decision_for("yes\n"), OverwriteDecision::Replace);
+        assert_eq!(overwrite_decision_for("no\n"), OverwriteDecision::Skip);
+        assert_eq!(
+            overwrite_decision_for("rename\n"),
+            OverwriteDecision::Rename
+        );
+        assert_eq!(overwrite_decision_for("quit\n"), OverwriteDecision::Quit);
+    }
+
+    #[test]
+    fn overwrite_prompt_all_replaces_subsequent_conflicts_without_prompting() {
+        let input = Cursor::new("all\n");
+        let output = Vec::new();
+        let mut resolver = InteractiveOverwriteResolver::new(input, output);
+        let first = overwrite_conflict("first.txt");
+        let second = overwrite_conflict("second.txt");
+
+        assert_eq!(resolver.decide(&first), OverwriteDecision::Replace);
+        assert_eq!(resolver.decide(&second), OverwriteDecision::Replace);
+
+        let output = String::from_utf8(resolver.output).unwrap();
+        assert_eq!(output.matches("overwrite ").count(), 1);
+    }
+
+    #[test]
+    fn overwrite_prompt_retries_invalid_answers() {
+        let input = Cursor::new("maybe\ny\n");
+        let output = Vec::new();
+        let mut resolver = InteractiveOverwriteResolver::new(input, output);
+
+        assert_eq!(
+            resolver.decide(&overwrite_conflict("file.txt")),
+            OverwriteDecision::Replace
+        );
+
+        let output = String::from_utf8(resolver.output).unwrap();
+        assert!(output.contains("please answer yes, no, all, rename, or quit"));
+    }
+
+    fn overwrite_decision_for(input: &str) -> OverwriteDecision {
+        let input = Cursor::new(input.as_bytes());
+        let output = Vec::new();
+        let mut resolver = InteractiveOverwriteResolver::new(input, output);
+        resolver.decide(&overwrite_conflict("file.txt"))
+    }
+
+    fn overwrite_conflict(path: &str) -> OverwriteConflict {
+        OverwriteConflict {
+            archive_path: path.to_owned(),
+            destination_path: PathBuf::from(path),
+        }
     }
 }

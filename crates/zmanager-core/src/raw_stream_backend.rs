@@ -1,6 +1,6 @@
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use std::fmt;
 use std::fs::{self, File};
@@ -229,6 +229,38 @@ pub fn extract_raw_stream(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
+    extract_raw_stream_inner(archive_path, format, destination, policy, None)
+}
+
+/// Extracts a raw single-file compression stream with an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`RawStreamError`] when the stream cannot be decoded, the output
+/// name is unsafe, filesystem writes fail, or the resolver aborts extraction.
+pub fn extract_raw_stream_with_overwrite_resolver(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<RawStreamExtractReport, RawStreamError> {
+    extract_raw_stream_inner(
+        archive_path,
+        format,
+        destination,
+        policy,
+        Some(overwrite_resolver),
+    )
+}
+
+fn extract_raw_stream_inner(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<RawStreamExtractReport, RawStreamError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
     let output_name = output_name_for_raw_stream(archive_path, format).ok_or_else(|| {
@@ -246,7 +278,14 @@ pub fn extract_raw_stream(
         })?;
 
     let max_expanded_bytes = policy.limits.max_expanded_bytes;
-    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            &destination_root,
+            policy,
+            resolver,
+        ),
+        None => ExtractionSafetyPlanner::new(&destination_root, policy),
+    };
     let mut report = RawStreamExtractReport {
         written_entries: 0,
         skipped_entries: 0,

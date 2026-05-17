@@ -1,7 +1,7 @@
 use crate::libarchive_backend::{self, LibarchiveError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::tar_zst_backend::{self, TarZstdError};
 use std::fmt;
@@ -104,6 +104,31 @@ pub fn extract_deb_nested(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<DebExtractReport, DebError> {
+    extract_deb_nested_inner(archive_path, destination, policy, None)
+}
+
+/// Extracts a `.deb` package-aware layout with an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`DebError`] when the package is malformed, a payload archive cannot
+/// be read, a safety policy rejects an entry, filesystem writes fail, or the
+/// resolver aborts extraction.
+pub fn extract_deb_nested_with_overwrite_resolver(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<DebExtractReport, DebError> {
+    extract_deb_nested_inner(archive_path, destination, policy, Some(overwrite_resolver))
+}
+
+fn extract_deb_nested_inner(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    mut overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<DebExtractReport, DebError> {
     let destination = destination.as_ref();
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| DebError::Io {
@@ -133,30 +158,59 @@ pub fn extract_deb_nested(
     };
 
     if debian_binary.is_file() {
-        copy_synthetic_file(
-            &debian_binary,
-            DEBIAN_BINARY_MEMBER,
-            &destination_root,
-            policy.clone(),
-            &mut report,
-        )?;
+        match overwrite_resolver {
+            Some(ref mut resolver) => copy_synthetic_file(
+                &debian_binary,
+                DEBIAN_BINARY_MEMBER,
+                &destination_root,
+                policy.clone(),
+                Some(&mut **resolver),
+                &mut report,
+            )?,
+            None => copy_synthetic_file(
+                &debian_binary,
+                DEBIAN_BINARY_MEMBER,
+                &destination_root,
+                policy.clone(),
+                None,
+                &mut report,
+            )?,
+        }
     } else {
         report.warnings.push(format!(
             "deb package did not include {DEBIAN_BINARY_MEMBER}"
         ));
     }
 
-    let control_report = extract_payload_archive(
-        &control_member,
-        &destination_root.join(CONTROL_OUTPUT_DIR),
-        policy.clone(),
-    )?;
+    let control_report = match overwrite_resolver {
+        Some(ref mut resolver) => extract_payload_archive(
+            &control_member,
+            &destination_root.join(CONTROL_OUTPUT_DIR),
+            policy.clone(),
+            Some(&mut **resolver),
+        )?,
+        None => extract_payload_archive(
+            &control_member,
+            &destination_root.join(CONTROL_OUTPUT_DIR),
+            policy.clone(),
+            None,
+        )?,
+    };
     absorb_archive_report(CONTROL_OUTPUT_DIR, control_report, &mut report);
-    let data_report = extract_payload_archive(
-        &data_member,
-        &destination_root.join(DATA_OUTPUT_DIR),
-        policy,
-    )?;
+    let data_report = match overwrite_resolver {
+        Some(ref mut resolver) => extract_payload_archive(
+            &data_member,
+            &destination_root.join(DATA_OUTPUT_DIR),
+            policy,
+            Some(&mut **resolver),
+        )?,
+        None => extract_payload_archive(
+            &data_member,
+            &destination_root.join(DATA_OUTPUT_DIR),
+            policy,
+            None,
+        )?,
+    };
     absorb_archive_report(DATA_OUTPUT_DIR, data_report, &mut report);
 
     Ok(report)
@@ -167,6 +221,7 @@ fn copy_synthetic_file(
     archive_path: &str,
     destination: &Path,
     policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     report: &mut DebExtractReport,
 ) -> Result<(), DebError> {
     let source_size = source_path
@@ -182,7 +237,12 @@ fn copy_synthetic_file(
         uncompressed_size: Some(source_size),
         compressed_size: Some(source_size),
     };
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => {
+            ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
+        }
+        None => ExtractionSafetyPlanner::new(destination, policy),
+    };
     match planner.validate_entry(&entry)? {
         ExtractionDecision::Write {
             destination_path,
@@ -232,15 +292,39 @@ fn extract_payload_archive(
     archive_path: &Path,
     destination: &Path,
     policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<ArchiveReport, DebError> {
     if is_tar_zst_archive(archive_path) {
-        tar_zst_backend::extract_tar_zst(archive_path, destination, policy)
+        match overwrite_resolver {
+            Some(resolver) => tar_zst_backend::extract_tar_zst_with_overwrite_resolver(
+                archive_path,
+                destination,
+                policy,
+                resolver,
+            )
             .map(ArchiveReport::from)
-            .map_err(DebError::from)
+            .map_err(DebError::from),
+            None => tar_zst_backend::extract_tar_zst(archive_path, destination, policy)
+                .map(ArchiveReport::from)
+                .map_err(DebError::from),
+        }
     } else {
-        libarchive_backend::extract_archive(archive_path, destination, policy)
-            .map(ArchiveReport::from)
-            .map_err(DebError::from)
+        match overwrite_resolver {
+            Some(resolver) => {
+                libarchive_backend::extract_archive_with_overwrite_resolver_and_password(
+                    archive_path,
+                    destination,
+                    policy,
+                    None,
+                    resolver,
+                )
+                .map(ArchiveReport::from)
+                .map_err(DebError::from)
+            }
+            None => libarchive_backend::extract_archive(archive_path, destination, policy)
+                .map(ArchiveReport::from)
+                .map_err(DebError::from),
+        }
     }
 }
 

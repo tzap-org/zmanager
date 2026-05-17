@@ -229,7 +229,54 @@ function Copy-ReleaseFiles {
     Copy-Item (Join-Path $RepositoryRoot "target\$TargetTriple\release\zm.exe") (Join-Path $Stage "zm.exe")
     Copy-Item (Join-Path $RepositoryRoot "README.md") $Stage
     Copy-Item (Join-Path $RepositoryRoot "LICENSE") $Stage
-    Copy-Item (Join-Path $RepositoryRoot "THIRD_PARTY_NOTICES.md") $Stage
+    Copy-Item (Join-Path $RepositoryRoot "NOTICE") $Stage
+
+    $completionStage = Join-Path $Stage "completions"
+    New-Item -ItemType Directory -Force -Path $completionStage | Out-Null
+    Copy-Item (Join-Path $RepositoryRoot "completions\zm.bash") $completionStage
+    Copy-Item (Join-Path $RepositoryRoot "completions\_zm") $completionStage
+    Copy-Item (Join-Path $RepositoryRoot "completions\zm.fish") $completionStage
+
+    $manStage = Join-Path $Stage "man\man1"
+    New-Item -ItemType Directory -Force -Path $manStage | Out-Null
+    Copy-Item (Join-Path $RepositoryRoot "docs\man\zm.1") $manStage
+}
+
+function Invoke-ThirdPartyNoticeGeneration {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Stage
+    )
+
+    $pythonCommand = Get-Command "python" -ErrorAction SilentlyContinue
+    $pythonArguments = @()
+    if ($pythonCommand) {
+        $python = $pythonCommand.Source
+    } else {
+        $python3Command = Get-Command "python3" -ErrorAction SilentlyContinue
+        if ($python3Command) {
+            $python = $python3Command.Source
+        } else {
+            $pyCommand = Get-Command "py" -ErrorAction SilentlyContinue
+            if (-not $pyCommand) {
+                throw "python, python3, or py is required to generate third-party notices"
+            }
+            $python = $pyCommand.Source
+            $pythonArguments = @("-3")
+        }
+    }
+
+    Invoke-NativeLogged `
+        -Title "third-party notice generation failed" `
+        -LogName "third-party-notices.log" `
+        -FilePath $python `
+        -Arguments ($pythonArguments + @(
+            (Join-Path $RepositoryRoot "scripts\generate-third-party-notices.py"),
+            "--out-notices",
+            (Join-Path $Stage "THIRD_PARTY_NOTICES.md"),
+            "--license-dir",
+            (Join-Path $Stage "third-party-licenses")
+        ))
 }
 
 function Copy-VcpkgRuntimeDlls {
@@ -252,6 +299,53 @@ function Copy-VcpkgRuntimeDlls {
     }
 }
 
+function Write-RuntimeDependencyReport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetTriple
+    )
+
+    $outRoot = Join-Path $RepositoryRoot $OutDir
+    New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
+
+    $binary = Join-Path $RepositoryRoot "target\$TargetTriple\release\zm.exe"
+    if (-not (Test-Path $binary)) {
+        throw "release binary was not found at $binary"
+    }
+
+    $report = Join-Path $outRoot ("zm-$TargetTriple.deps.txt")
+    if (Test-Path $report) {
+        Remove-Item $report
+    }
+
+    Add-Content -Path $report -Value "target: $TargetTriple"
+    Add-Content -Path $report -Value "binary: target\$TargetTriple\release\zm.exe"
+    Add-Content -Path $report -Value ("generated_at_utc: " + (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))
+    Add-Content -Path $report -Value ""
+    Add-Content -Path $report -Value "tool: dumpbin /dependents"
+    Add-Content -Path $report -Value ""
+
+    Write-Host "Running: dumpbin /dependents $binary"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & dumpbin /dependents $binary 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            Write-Host $line
+            Add-Content -Path $report -Value $line
+        }
+        $status = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($status -ne 0) {
+        Add-Content -Path $report -Value ("Exited with code " + $status)
+        Write-GitHubFailure -Title "dumpbin failed on $TargetTriple" -LogPath $report
+        exit $status
+    }
+}
+
 function New-ReleasePackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -265,6 +359,7 @@ function New-ReleasePackage {
     New-Item -ItemType Directory -Path $stage | Out-Null
     try {
         Copy-ReleaseFiles -TargetTriple $TargetTriple -Stage $stage
+        Invoke-ThirdPartyNoticeGeneration -Stage $stage
         Copy-VcpkgRuntimeDlls -Stage $stage
 
         $archive = Join-Path $outRoot ("zm-$TargetTriple.zip")
@@ -274,6 +369,7 @@ function New-ReleasePackage {
         Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive
         $hash = Get-FileHash -Algorithm SHA256 -Path $archive
         Set-Content -Path ($archive + ".sha256") -Value ($hash.Hash.ToLowerInvariant() + "  " + (Split-Path -Leaf $archive))
+        Write-RuntimeDependencyReport -TargetTriple $TargetTriple
         Write-Host $archive
     } finally {
         Remove-Item -Recurse -Force $stage

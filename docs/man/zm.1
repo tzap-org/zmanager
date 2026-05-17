@@ -1,0 +1,351 @@
+.Dd May 18, 2026
+.Dt ZM 1
+.Os
+.Sh NAME
+.Nm zm
+.Nd Z-Manager archive utility
+.Sh SYNOPSIS
+.Nm
+.Op Ar options
+.Ar command
+.Nm
+.Fl cf
+.Ar archive
+.Op Ar create-options
+.Ar paths ...
+.Nm
+.Fl xf
+.Ar archive
+.Op Ar extract-options
+.Nm
+.Fl tf
+.Ar archive
+.Op Ar list-options
+.Nm
+.Fl Tf
+.Ar archive
+.Op Ar test-options
+.Sh DESCRIPTION
+.Nm
+creates, extracts, lists, tests, and plans archives.
+The public command surface is designed for scriptable stdout and human-readable
+diagnostics on stderr.
+.Pp
+ZIP, TAR.ZST, and 7z have native backends.
+RAR extraction uses the bundled extraction-only RAR backend.
+Other supported archive formats fall back to libarchive.
+.Sh COMMANDS
+.Bl -tag -width "formats"
+.It Cm create Ar archive Ar paths ...
+Create an archive.
+.It Cm extract Ar archive
+Extract an archive.
+.It Cm list Ar archive
+List archive contents.
+.It Cm test Ar archive
+Test archive readability or integrity.
+.It Cm plan Ar paths ...
+Show what
+.Cm create
+would archive.
+.It Cm formats
+Show supported archive formats.
+.It Cm doctor
+Verify the installed CLI and archive engine.
+.It Cm help Op Ar command
+Show top-level help or command-specific help.
+.El
+.Sh GLOBAL OPTIONS
+.Bl -tag -width "--no-password-prompt"
+.It Fl h , Fl -help
+Show help.
+.It Fl V , Fl -version
+Show version.
+.It Fl q , Fl -quiet
+Reduce output.
+.It Fl v , Fl -verbose
+Increase diagnostics.
+.It Fl -json
+Emit JSON where supported.
+.It Fl -color Cm auto Ns | Ns Cm always Ns | Ns Cm never
+Control color output.
+.It Fl -no-color
+Alias for
+.Fl -color Cm never .
+.It Fl -progress Cm auto Ns | Ns Cm always Ns | Ns Cm never
+Control progress output.
+.It Fl -no-progress
+Alias for
+.Fl -progress Cm never .
+.It Fl -no-password-prompt
+Fail instead of prompting interactively.
+.It Fl c , Fl -create
+Create an archive in classic syntax.
+.It Fl x , Fl -extract
+Extract an archive in classic syntax.
+.It Fl t , Fl -list
+List archive contents in classic syntax.
+.It Fl T , Fl -test
+Test archive integrity in classic syntax.
+.It Fl f , Fl -file Ar archive
+Archive file path in classic syntax.
+.El
+.Sh CREATE OPTIONS
+.Bl -tag -width "--preserve-symlinks"
+.It Fl r , Fl -recursive
+Accepted for ZIP familiarity; directories recurse by default.
+.It Fl C , Fl -directory Ar dir
+Use
+.Ar dir
+as the base for following input paths.
+.It Fl @
+Read input paths from stdin.
+.It Fl -files-from Ar file|-
+Read input paths from a file, or stdin with
+.Sq - .
+.It Fl -null
+Read NUL-delimited path lists with
+.Fl @
+or
+.Fl -files-from .
+.It Fl -clean
+Apply clean source exclusions.
+.It Fl -no-ignore
+Ignore
+.Pa .gitignore
+and default exclusion rules.
+.It Fl -hidden
+Accepted for compatibility; hidden files are included by default.
+.It Fl -no-hidden
+Exclude hidden dotfiles.
+.It Fl i , Fl -include Ar glob
+Include archive paths matching
+.Ar glob .
+.It Fl -exclude Ar glob
+Exclude archive paths matching
+.Ar glob .
+.It Fl -exclude-from Ar file
+Read exclude globs from
+.Ar file .
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm 7z
+Override format inference from the archive extension.
+.It Fl -method Ar method
+Select compression method.
+.It Fl -level Ar level
+Compression level.
+.It Fl 0 ... Fl 9
+Compression presets; level 0 stores ZIP entries.
+.It Fl -store
+Store ZIP entries without compression.
+.It Fl -solid
+Use solid 7z mode.
+.It Fl -no-solid
+Disable solid 7z mode.
+.It Fl j , Fl -junk-paths
+Store basenames only; fail if flattened names collide.
+.It Fl y , Fl -preserve-symlinks
+Store symlink entries where the backend supports them.
+.It Fl -follow-symlinks
+Archive symlink target contents.
+.It Fl -preserve-metadata
+Preserve portable metadata where supported.
+.It Fl X , Fl -no-metadata
+Omit portable metadata where supported.
+.It Fl -force
+Replace an existing output archive.
+.It Fl -dry-run
+Print planned entries without writing the archive.
+.It Fl T , Fl -test-after
+Test the archive after writing.
+.It Fl -encrypt
+Prompt for an archive password where supported.
+.It Fl -password-stdin
+Read one password line from stdin.
+.El
+.Sh EXTRACT OPTIONS
+.Bl -tag -width "--strip-components"
+.It Fl C , Fl d , Fl -directory Ar dir
+Extract into
+.Ar dir .
+.It Fl -here
+Extract into the current directory.
+.It Fl -overwrite Cm never Ns | Ns Cm always Ns | Ns Cm ask Ns | Ns Cm rename
+Existing file policy.
+The default is
+.Cm never .
+.It Fl i , Fl -include Ar glob
+Extract archive paths matching
+.Ar glob .
+.It Fl -exclude Ar glob
+Exclude archive paths matching
+.Ar glob .
+.It Fl -strip-components Ar n
+Remove
+.Ar n
+leading path components before writing.
+.It Fl -to-stdout
+Write selected regular file bytes to stdout.
+.It Fl -extract-nested
+Expand known package payloads; currently
+.Pa .deb .
+.It Fl -password-stdin
+Read one password line from stdin.
+.El
+.Sh LIST OPTIONS
+.Bl -tag -width "--password-stdin"
+.It Fl l , Fl -long
+Show type, size, compressed size, and path.
+.It Fl -name-only
+Print archive paths only.
+.It Fl -tree
+Print a simple hierarchical tree.
+.It Fl i , Fl -include Ar glob
+List archive paths matching
+.Ar glob .
+.It Fl -exclude Ar glob
+Exclude archive paths matching
+.Ar glob .
+.It Fl -password-stdin
+Read one password line from stdin.
+.It Fl -json
+Emit machine-readable JSON.
+.El
+.Sh TEST OPTIONS
+.Bl -tag -width "--password-stdin"
+.It Fl i , Fl -include Ar glob
+Test archive paths matching
+.Ar glob .
+.It Fl -exclude Ar glob
+Exclude archive paths matching
+.Ar glob .
+.It Fl -password-stdin
+Read one password line from stdin.
+.It Fl -json
+Emit machine-readable JSON.
+.El
+.Sh PLAN OPTIONS
+.Bl -tag -width "--exclude-from"
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm 7z
+Plan for a specific archive format.
+.It Fl C , Fl -directory Ar dir
+Use
+.Ar dir
+as the base for following input paths.
+.It Fl @
+Read input paths from stdin.
+.It Fl -files-from Ar file|-
+Read input paths from a file, or stdin with
+.Sq - .
+.It Fl -null
+Read NUL-delimited path lists with
+.Fl @
+or
+.Fl -files-from .
+.It Fl -clean
+Apply clean source exclusions.
+.It Fl -no-ignore
+Ignore
+.Pa .gitignore
+and default exclusion rules.
+.It Fl i , Fl -include Ar glob
+Include archive paths matching
+.Ar glob .
+.It Fl -exclude Ar glob
+Exclude archive paths matching
+.Ar glob .
+.It Fl -exclude-from Ar file
+Read exclude globs from
+.Ar file .
+.It Fl -json
+Emit machine-readable JSON.
+.El
+.Sh GLOB FILTERS
+Glob patterns match archive paths after command-specific path processing.
+Quote patterns so the shell does not expand them first.
+Use
+.Sq dir/**
+for a whole tree;
+.Sq *
+can match
+.Sq / .
+.Sh SUPPORTED FORMATS
+.Bl -tag -width "tar.zst"
+.It Cm zip
+Create
+.Pa .zip ;
+extract/list/test
+.Pa .zip ,
+.Pa .zipx ,
+.Pa .jar ,
+.Pa .war ,
+.Pa .ipa ,
+.Pa .apk ,
+.Pa .appx ,
+and
+.Pa .xpi .
+.It Cm tar.zst
+Create and extract
+.Pa .tar.zst
+and
+.Pa .tzst .
+.It Cm 7z
+Create and extract
+.Pa .7z .
+.It Cm raw
+Extract raw single-file streams:
+.Pa .zst ,
+.Pa .gz ,
+.Pa .bz2 ,
+.Pa .xz ,
+.Pa .lzma ,
+.Pa .lz ,
+.Pa .br ,
+.Pa .lz4 ,
+.Pa .lzo ,
+.Pa .Z ,
+and
+.Pa .lrz .
+.It Cm rar
+Extract
+.Pa .rar
+and
+.Pa .cbr .
+Passworded RAR list/extract uses the bundled RAR backend with
+.Fl -password-stdin .
+.It Cm fallback
+Other libarchive-supported formats.
+.El
+.Sh PASSWORD HANDLING
+Passwords should flow through stdin or the interactive prompt.
+Do not pass passwords as command arguments.
+Use
+.Fl -password-stdin
+with a single line on stdin in scripts.
+.Sh STDOUT AND JSON
+Human diagnostics, progress, and errors are written to stderr.
+Data modes such as
+.Fl -to-stdout
+and JSON modes write their payloads to stdout.
+.Sh EXIT STATUS
+.Bl -tag -width "2"
+.It 0
+Success.
+.It 1
+Operation failed.
+.It 2
+Usage error.
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+zm -cf project.zip project/
+zm create source.tar.zst src README.md --format tar.zst
+zm extract project.zip -C out/ --include 'docs/**'
+zm extract project.tar.zst --strip-components 1 -C out/
+zm list project.zip --tree
+zm test project.zip --json
+printf '%s\n' "$ZM_PASSWORD" | zm create secret.7z private/ --encrypt --password-stdin
+printf '%s\n' "$RAR_PASSWORD" | zm extract secret.rar -C out/ --password-stdin
+.Ed
+.Sh SEE ALSO
+.Xr tar 1 ,
+.Xr zip 1

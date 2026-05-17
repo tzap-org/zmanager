@@ -31,12 +31,30 @@ fi
 cargo build --locked --release --target "$TARGET" -p zmanager-cli --bin zm
 
 cp "target/$TARGET/release/$BINARY" "$STAGE/$BINARY"
-cp README.md LICENSE THIRD_PARTY_NOTICES.md "$STAGE/"
+cp README.md LICENSE NOTICE "$STAGE/"
+PYTHON_BIN=${PYTHON:-}
+if [[ -z "$PYTHON_BIN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN=python3
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN=python
+  else
+    echo "python3 or python is required to generate third-party notices" >&2
+    exit 1
+  fi
+fi
+"$PYTHON_BIN" scripts/generate-third-party-notices.py \
+  --out-notices "$STAGE/THIRD_PARTY_NOTICES.md" \
+  --license-dir "$STAGE/third-party-licenses" >/dev/null
+mkdir -p "$STAGE/completions"
+cp completions/zm.bash completions/_zm completions/zm.fish "$STAGE/completions/"
+mkdir -p "$STAGE/man/man1"
+cp docs/man/zm.1 "$STAGE/man/man1/"
 
 if [[ "$TARGET" == *windows* ]]; then
-  (cd "$STAGE" && zip -q -9 "$OUT_ABS/$ARCHIVE" "$BINARY" README.md LICENSE THIRD_PARTY_NOTICES.md)
+  (cd "$STAGE" && zip -q -9 -r "$OUT_ABS/$ARCHIVE" "$BINARY" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man)
 else
-  tar -C "$STAGE" -czf "$OUT_ABS/$ARCHIVE" "$BINARY" README.md LICENSE THIRD_PARTY_NOTICES.md
+  tar -C "$STAGE" -czf "$OUT_ABS/$ARCHIVE" "$BINARY" README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man
 fi
 
 if command -v shasum >/dev/null 2>&1; then
@@ -44,5 +62,7 @@ if command -v shasum >/dev/null 2>&1; then
 else
   sha256sum "$OUT_ABS/$ARCHIVE" > "$OUT_ABS/$ARCHIVE.sha256"
 fi
+
+scripts/inspect-runtime-deps.sh "$TARGET" "$OUT_ABS" >/dev/null
 
 echo "$OUT_DIR/$ARCHIVE"

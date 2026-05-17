@@ -4,7 +4,7 @@ use crate::manifest::{
 };
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use std::fmt;
 use std::fs::{self, File};
@@ -251,7 +251,7 @@ pub fn extract_tar_zst(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
-    extract_tar_zst_inner(archive_path, destination, policy, None)
+    extract_tar_zst_inner(archive_path, destination, policy, None, None)
 }
 
 /// Copies selected regular `.tar.zst` file entries to a writer in archive order.
@@ -325,7 +325,28 @@ pub fn extract_tar_zst_with_context(
     policy: ExtractionPolicy,
     context: &mut JobContext<'_>,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
-    extract_tar_zst_inner(archive_path, destination, policy, Some(context))
+    extract_tar_zst_inner(archive_path, destination, policy, Some(context), None)
+}
+
+/// Extracts a `.tar.zst` archive with an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`TarZstdError`] when the archive cannot be read, an entry is unsafe,
+/// filesystem writes fail, or the resolver aborts extraction.
+pub fn extract_tar_zst_with_overwrite_resolver(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<TarZstdExtractReport, TarZstdError> {
+    extract_tar_zst_inner(
+        archive_path,
+        destination,
+        policy,
+        None,
+        Some(overwrite_resolver),
+    )
 }
 
 fn extract_tar_zst_inner(
@@ -333,6 +354,7 @@ fn extract_tar_zst_inner(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     mut context: Option<&mut JobContext<'_>>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
@@ -353,7 +375,14 @@ fn extract_tar_zst_inner(
         source,
     })?;
     let mut archive = Archive::new(decoder);
-    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut planner = match overwrite_resolver {
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            &destination_root,
+            policy,
+            resolver,
+        ),
+        None => ExtractionSafetyPlanner::new(&destination_root, policy),
+    };
     let mut report = TarZstdExtractReport {
         written_entries: 0,
         skipped_entries: 0,

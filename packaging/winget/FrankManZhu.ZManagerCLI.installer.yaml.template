@@ -1,0 +1,20 @@
+PackageIdentifier: FrankManZhu.ZManagerCLI
+PackageVersion: __PACKAGE_VERSION__
+InstallerType: zip
+NestedInstallerType: portable
+ReleaseDate: __RELEASE_DATE__
+Installers:
+  - Architecture: x64
+    InstallerUrl: __RELEASE_BASE_URL__/zm-x86_64-pc-windows-msvc.zip
+    InstallerSha256: __SHA_X86_64_PC_WINDOWS_MSVC__
+    NestedInstallerFiles:
+      - RelativeFilePath: zm.exe
+        PortableCommandAlias: zm
+  - Architecture: arm64
+    InstallerUrl: __RELEASE_BASE_URL__/zm-aarch64-pc-windows-msvc.zip
+    InstallerSha256: __SHA_AARCH64_PC_WINDOWS_MSVC__
+    NestedInstallerFiles:
+      - RelativeFilePath: zm.exe
+        PortableCommandAlias: zm
+ManifestType: installer
+ManifestVersion: 1.6.0

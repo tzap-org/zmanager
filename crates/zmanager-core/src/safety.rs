@@ -68,6 +68,36 @@ pub enum OverwritePolicy {
     Replace,
     /// Write conflicting entries to deterministic renamed paths.
     Rename,
+    /// Ask a caller-provided resolver for each conflicting destination path.
+    Ask,
+}
+
+/// Destination conflict presented to an overwrite resolver.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OverwriteConflict {
+    /// Raw archive path for the conflicting entry.
+    pub archive_path: String,
+    /// Existing destination path.
+    pub destination_path: PathBuf,
+}
+
+/// Decision returned by an overwrite resolver.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OverwriteDecision {
+    /// Replace the existing destination path.
+    Replace,
+    /// Skip this archive entry.
+    Skip,
+    /// Write this archive entry to a deterministic non-conflicting path.
+    Rename,
+    /// Abort extraction.
+    Quit,
+}
+
+/// Provides decisions for interactive overwrite conflicts.
+pub trait OverwriteResolver {
+    /// Returns a decision for one destination conflict.
+    fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision;
 }
 
 /// Unsafe archive entry handling.
@@ -155,12 +185,12 @@ pub enum ExtractionDecision {
 }
 
 /// Stateful extraction safety planner for one destination directory.
-#[derive(Debug, Clone)]
-pub struct ExtractionSafetyPlanner {
+pub struct ExtractionSafetyPlanner<'a> {
     destination_root: PathBuf,
     policy: ExtractionPolicy,
     seen_paths: HashMap<String, String>,
     planned_expanded_bytes: u64,
+    overwrite_resolver: Option<&'a mut dyn OverwriteResolver>,
 }
 
 struct PlannedWrite {
@@ -181,7 +211,21 @@ impl PlannedWrite {
     }
 }
 
-impl ExtractionSafetyPlanner {
+enum PlannedDestination {
+    Write(PlannedWrite),
+    Skip {
+        normalized_archive_path: String,
+        reason: String,
+    },
+}
+
+impl From<PlannedWrite> for PlannedDestination {
+    fn from(plan: PlannedWrite) -> Self {
+        Self::Write(plan)
+    }
+}
+
+impl<'a> ExtractionSafetyPlanner<'a> {
     /// Creates a planner for one extraction destination.
     #[must_use]
     pub fn new(destination_root: impl Into<PathBuf>, policy: ExtractionPolicy) -> Self {
@@ -192,6 +236,25 @@ impl ExtractionSafetyPlanner {
             policy,
             seen_paths: HashMap::new(),
             planned_expanded_bytes: 0,
+            overwrite_resolver: None,
+        }
+    }
+
+    /// Creates a planner that can resolve [`OverwritePolicy::Ask`] conflicts.
+    #[must_use]
+    pub fn new_with_overwrite_resolver(
+        destination_root: impl Into<PathBuf>,
+        policy: ExtractionPolicy,
+        overwrite_resolver: &'a mut dyn OverwriteResolver,
+    ) -> Self {
+        let destination_root = lexically_normalize(&destination_root.into());
+
+        Self {
+            destination_root,
+            policy,
+            seen_paths: HashMap::new(),
+            planned_expanded_bytes: 0,
+            overwrite_resolver: Some(overwrite_resolver),
         }
     }
 
@@ -266,18 +329,28 @@ impl ExtractionSafetyPlanner {
             link_target_path,
         )?;
 
-        self.reserve_expanded_size(entry)?;
-
-        Ok(plan.into_decision())
+        match plan {
+            PlannedDestination::Write(plan) => {
+                self.reserve_expanded_size(entry)?;
+                Ok(plan.into_decision())
+            }
+            PlannedDestination::Skip {
+                normalized_archive_path,
+                reason,
+            } => Ok(ExtractionDecision::Skip {
+                normalized_archive_path,
+                reason,
+            }),
+        }
     }
 
     fn plan_destination_write(
-        &self,
+        &mut self,
         entry: &ExtractionEntry,
         normalized_archive_path: String,
         mut destination_path: PathBuf,
         link_target_path: Option<PathBuf>,
-    ) -> Result<PlannedWrite, ExtractionSafetyError> {
+    ) -> Result<PlannedDestination, ExtractionSafetyError> {
         let mut replace_existing = false;
         let destination_metadata = std::fs::symlink_metadata(&destination_path);
         if let Ok(metadata) = destination_metadata {
@@ -291,7 +364,8 @@ impl ExtractionSafetyPlanner {
                             destination_path,
                             link_target_path,
                             replace_existing: false,
-                        });
+                        }
+                        .into());
                     }
                     return Err(ExtractionSafetyError::DestinationExists {
                         archive_path: entry.archive_path.clone(),
@@ -311,9 +385,44 @@ impl ExtractionSafetyPlanner {
                             destination_path,
                             link_target_path,
                             replace_existing: false,
-                        });
+                        }
+                        .into());
                     }
                     destination_path = next_available_destination_path(&destination_path);
+                }
+                OverwritePolicy::Ask => {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory)
+                        && metadata.file_type().is_dir()
+                    {
+                        return Ok(PlannedWrite {
+                            normalized_archive_path,
+                            destination_path,
+                            link_target_path,
+                            replace_existing: false,
+                        }
+                        .into());
+                    }
+                    let decision = self.resolve_overwrite_conflict(entry, &destination_path)?;
+                    match decision {
+                        OverwriteDecision::Replace => {
+                            replace_existing = true;
+                        }
+                        OverwriteDecision::Skip => {
+                            return Ok(PlannedDestination::Skip {
+                                normalized_archive_path,
+                                reason: "skipped by overwrite prompt".to_owned(),
+                            });
+                        }
+                        OverwriteDecision::Rename => {
+                            destination_path = next_available_destination_path(&destination_path);
+                        }
+                        OverwriteDecision::Quit => {
+                            return Err(ExtractionSafetyError::OverwriteAborted {
+                                archive_path: entry.archive_path.clone(),
+                                destination_path,
+                            });
+                        }
+                    }
                 }
             }
         } else if let Err(error) = destination_metadata
@@ -331,7 +440,25 @@ impl ExtractionSafetyPlanner {
             destination_path,
             link_target_path,
             replace_existing,
-        })
+        }
+        .into())
+    }
+
+    fn resolve_overwrite_conflict(
+        &mut self,
+        entry: &ExtractionEntry,
+        destination_path: &Path,
+    ) -> Result<OverwriteDecision, ExtractionSafetyError> {
+        let Some(resolver) = self.overwrite_resolver.as_deref_mut() else {
+            return Err(ExtractionSafetyError::OverwritePromptUnavailable {
+                archive_path: entry.archive_path.clone(),
+                destination_path: destination_path.to_path_buf(),
+            });
+        };
+        Ok(resolver.decide(&OverwriteConflict {
+            archive_path: entry.archive_path.clone(),
+            destination_path: destination_path.to_path_buf(),
+        }))
     }
 
     fn reject_collision(
@@ -505,6 +632,16 @@ pub enum ExtractionSafetyError {
         archive_path: String,
         destination_path: PathBuf,
     },
+    /// Interactive overwrite was requested without a resolver.
+    OverwritePromptUnavailable {
+        archive_path: String,
+        destination_path: PathBuf,
+    },
+    /// User aborted extraction from an overwrite prompt.
+    OverwriteAborted {
+        archive_path: String,
+        destination_path: PathBuf,
+    },
     /// Destination existence could not be checked safely.
     DestinationProbe {
         archive_path: String,
@@ -572,6 +709,22 @@ impl fmt::Display for ExtractionSafetyError {
             } => write!(
                 f,
                 "archive path {archive_path} would overwrite {}",
+                destination_path.display()
+            ),
+            Self::OverwritePromptUnavailable {
+                archive_path,
+                destination_path,
+            } => write!(
+                f,
+                "archive path {archive_path} requires an overwrite decision for {}",
+                destination_path.display()
+            ),
+            Self::OverwriteAborted {
+                archive_path,
+                destination_path,
+            } => write!(
+                f,
+                "overwrite prompt aborted while handling archive path {archive_path} for {}",
                 destination_path.display()
             ),
             Self::DestinationProbe {
@@ -821,8 +974,9 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 mod tests {
     use super::{
         ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits,
-        ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy,
-        UnsafeFilePolicy, normalize_archive_path, prepare_destination_root,
+        ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteConflict,
+        OverwriteDecision, OverwritePolicy, OverwriteResolver, UnsafeFilePolicy,
+        normalize_archive_path, prepare_destination_root,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -942,6 +1096,52 @@ mod tests {
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
 
         assert!(matches!(decision, ExtractionDecision::Write { .. }));
+    }
+
+    #[test]
+    fn asks_overwrite_resolver_for_conflicts() {
+        let temp = TestDir::new("asks_overwrite_resolver_for_conflicts");
+        temp.write_file("out/file.txt", b"existing");
+        let policy = ExtractionPolicy {
+            overwrite: OverwritePolicy::Ask,
+            ..ExtractionPolicy::default()
+        };
+        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Skip);
+        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            temp.path("out"),
+            policy,
+            &mut resolver,
+        );
+
+        let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
+
+        assert!(matches!(decision, ExtractionDecision::Skip { .. }));
+    }
+
+    #[test]
+    fn ask_overwrite_renames_conflicts_safely() {
+        let temp = TestDir::new("ask_overwrite_renames_conflicts_safely");
+        temp.write_file("out/file.txt", b"existing");
+        let policy = ExtractionPolicy {
+            overwrite: OverwritePolicy::Ask,
+            ..ExtractionPolicy::default()
+        };
+        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Rename);
+        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(
+            temp.path("out"),
+            policy,
+            &mut resolver,
+        );
+
+        let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
+
+        let ExtractionDecision::Write {
+            destination_path, ..
+        } = decision
+        else {
+            panic!("expected renamed write decision");
+        };
+        assert_eq!(destination_path, temp.path("out/file (1).txt"));
     }
 
     #[test]
@@ -1166,6 +1366,15 @@ mod tests {
             kind: ExtractionEntryKind::File,
             uncompressed_size: Some(uncompressed_size),
             compressed_size,
+        }
+    }
+
+    struct FixedOverwriteResolver(OverwriteDecision);
+
+    impl OverwriteResolver for FixedOverwriteResolver {
+        fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
+            assert_eq!(conflict.archive_path, "file.txt");
+            self.0
         }
     }
 

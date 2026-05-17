@@ -1399,6 +1399,43 @@ fn zm_extract_7z_honors_filters_and_strip_components() {
 }
 
 #[test]
+fn zm_extract_libarchive_tar_honors_filters_and_strip_components() {
+    let temp = TestDir::new("zm_extract_libarchive_tar_filters");
+    let archive = temp.path("project.tar");
+    write_tar_entries(
+        &archive,
+        &[
+            ("project/keep.txt", b"keep\n"),
+            ("project/drop.txt", b"drop\n"),
+            ("project/nested/deep.txt", b"deep\n"),
+        ],
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--include")
+        .arg("project/nested/deep.txt")
+        .arg("--strip-components")
+        .arg("2")
+        .output()
+        .unwrap();
+    assert_success(
+        "zm extract libarchive tar --include --strip-components",
+        &extract,
+    );
+
+    assert_eq!(
+        fs::read_to_string(temp.path("out/deep.txt")).unwrap(),
+        "deep\n"
+    );
+    assert!(!temp.path("out/project/keep.txt").exists());
+    assert!(!temp.path("out/drop.txt").exists());
+}
+
+#[test]
 fn zm_test_zip_honors_filters_and_reports_skipped_entries() {
     let temp = TestDir::new("zm_test_zip_filters");
     fs::create_dir_all(temp.path("project")).unwrap();
@@ -1539,6 +1576,55 @@ fn zm_extract_tar_zst_and_7z_to_stdout_match_selected_file_bytes() {
 }
 
 #[test]
+fn zm_extract_libarchive_tar_to_stdout_requires_one_selected_regular_file() {
+    let temp = TestDir::new("zm_libarchive_tar_to_stdout");
+    let archive = temp.path("project.tar");
+    write_tar_entries(
+        &archive,
+        &[
+            ("project/keep.txt", b"keep\n"),
+            ("project/drop.txt", b"drop\n"),
+        ],
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("--to-stdout")
+        .arg("--include")
+        .arg("project/keep.txt")
+        .output()
+        .unwrap();
+    assert_success("zm extract libarchive tar --to-stdout", &extract);
+    assert_eq!(String::from_utf8_lossy(&extract.stdout), "keep\n");
+    assert!(
+        extract.stderr.is_empty(),
+        "stderr should stay quiet unless verbose/error:\n{}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+
+    let multiple = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("--to-stdout")
+        .arg("--include")
+        .arg("project/**")
+        .output()
+        .unwrap();
+    assert_failure("zm extract libarchive tar --to-stdout multiple", &multiple);
+    assert!(
+        multiple.stdout.is_empty(),
+        "failed stdout extraction must not write partial bytes:\n{}",
+        String::from_utf8_lossy(&multiple.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&multiple.stderr).contains("exactly one selected regular file"),
+        "expected single-file selection error:\n{}",
+        String::from_utf8_lossy(&multiple.stderr)
+    );
+}
+
+#[test]
 fn zm_list_tree_prints_hierarchical_archive_paths() {
     let temp = TestDir::new("zm_list_tree");
     fs::create_dir_all(temp.path("project/src")).unwrap();
@@ -1597,6 +1683,184 @@ fn zm_global_modes_validate_values_and_do_not_break_json() {
         String::from_utf8_lossy(&invalid.stderr).contains("invalid value for --color"),
         "{}",
         String::from_utf8_lossy(&invalid.stderr)
+    );
+}
+
+#[test]
+fn zm_progress_always_writes_create_and_extract_progress_to_stderr() {
+    let temp = TestDir::new("zm_progress_always");
+    fs::create_dir_all(temp.path("project/nested")).unwrap();
+    fs::write(temp.path("project/README.md"), "readme\n").unwrap();
+    fs::write(temp.path("project/nested/data.bin"), vec![b'x'; 16 * 1024]).unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("--progress")
+        .arg("always")
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create --progress always", &create);
+    let create_stdout = String::from_utf8_lossy(&create.stdout);
+    let create_stderr = String::from_utf8_lossy(&create.stderr);
+    assert!(create_stdout.contains("created zip:"), "{create_stdout}");
+    assert!(
+        !create_stdout.contains("progress:"),
+        "progress must stay off stdout:\n{create_stdout}"
+    );
+    assert!(
+        create_stderr.contains("progress: zip create started"),
+        "{create_stderr}"
+    );
+    assert!(create_stderr.contains("progress: 100%"), "{create_stderr}");
+    assert!(
+        create_stderr.contains("progress: complete"),
+        "{create_stderr}"
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("--progress")
+        .arg("always")
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract --progress always", &extract);
+    let extract_stdout = String::from_utf8_lossy(&extract.stdout);
+    let extract_stderr = String::from_utf8_lossy(&extract.stderr);
+    assert!(
+        extract_stdout.contains("zip extract ok:"),
+        "{extract_stdout}"
+    );
+    assert!(
+        !extract_stdout.contains("progress:"),
+        "progress must stay off stdout:\n{extract_stdout}"
+    );
+    assert!(
+        extract_stderr.contains("progress: zip extract started"),
+        "{extract_stderr}"
+    );
+    assert!(extract_stderr.contains("progress:"), "{extract_stderr}");
+    assert!(extract_stderr.contains("bytes"), "{extract_stderr}");
+    assert!(
+        extract_stderr.contains("progress: complete"),
+        "{extract_stderr}"
+    );
+}
+
+#[test]
+fn zm_progress_never_suppresses_progress() {
+    let temp = TestDir::new("zm_progress_never");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "payload\n").unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("--progress")
+        .arg("never")
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create --progress never", &create);
+    assert!(
+        !String::from_utf8_lossy(&create.stderr).contains("progress:"),
+        "{}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+}
+
+#[test]
+fn zm_create_json_summary_is_machine_readable() {
+    let temp = TestDir::new("zm_create_json_summary");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "payload\n").unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm create --json", &create);
+    assert!(
+        create.stderr.is_empty(),
+        "stderr should stay quiet unless verbose/error:\n{}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&create.stdout);
+    assert_json_object(&stdout);
+    assert!(stdout.contains("\"operation\":\"create\""), "{stdout}");
+    assert!(stdout.contains("\"archive\":\""), "{stdout}");
+    assert!(stdout.contains("\"format\":\"zip\""), "{stdout}");
+    assert!(stdout.contains("\"backend\":\"zip\""), "{stdout}");
+    assert!(stdout.contains("\"written_entries\":"), "{stdout}");
+    assert!(stdout.contains("\"written_bytes\":"), "{stdout}");
+
+    let refused = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_failure("zm create --json refuses existing destination", &refused);
+    assert!(
+        refused.stdout.is_empty(),
+        "failed create must not emit partial success JSON:\n{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+}
+
+#[test]
+fn zm_extract_json_summary_is_machine_readable() {
+    let temp = TestDir::new("zm_extract_json_summary");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "payload\n").unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create json extract fixture", &create);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm extract --json", &extract);
+    assert!(
+        extract.stderr.is_empty(),
+        "stderr should stay quiet unless verbose/error:\n{}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&extract.stdout);
+    assert_json_object(&stdout);
+    assert!(stdout.contains("\"operation\":\"extract\""), "{stdout}");
+    assert!(stdout.contains("\"archive\":\""), "{stdout}");
+    assert!(stdout.contains("\"destination\":\""), "{stdout}");
+    assert!(stdout.contains("\"format\":\"zip\""), "{stdout}");
+    assert!(stdout.contains("\"backend\":\"zip\""), "{stdout}");
+    assert!(stdout.contains("\"written_entries\":"), "{stdout}");
+    assert!(stdout.contains("\"skipped_entries\":"), "{stdout}");
+    assert!(stdout.contains("\"written_bytes\":"), "{stdout}");
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/file.txt")).unwrap(),
+        "payload\n"
     );
 }
 
@@ -1766,6 +2030,13 @@ fn assert_failure(label: &str, output: &std::process::Output) {
     );
 }
 
+fn assert_json_object(stdout: &str) {
+    assert!(
+        stdout.starts_with('{') && stdout.trim_end().ends_with('}'),
+        "stdout is not a single JSON object:\n{stdout}"
+    );
+}
+
 fn write_zip_entries(path: &Path, method: CompressionMethod, entries: &[(&str, &[u8])]) {
     let file = File::create(path).unwrap();
     let mut writer = ZipWriter::new(file);
@@ -1777,6 +2048,25 @@ fn write_zip_entries(path: &Path, method: CompressionMethod, entries: &[(&str, &
     }
 
     writer.finish().unwrap();
+}
+
+fn write_tar_entries(path: &Path, entries: &[(&str, &[u8])]) {
+    let file = File::create(path).unwrap();
+    let mut builder = tar::Builder::new(file);
+
+    for (entry_path, contents) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(contents.len().try_into().unwrap());
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, *entry_path, *contents)
+            .unwrap();
+    }
+
+    builder.finish().unwrap();
 }
 
 #[cfg(unix)]

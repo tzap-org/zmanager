@@ -1,0 +1,148 @@
+#compdef zm
+
+local -a commands global_options create_options extract_options list_options test_options plan_options
+
+commands=(
+  'create:Create an archive'
+  'extract:Extract an archive'
+  'list:List archive contents'
+  'test:Test archive readability'
+  'plan:Show planned archive entries'
+  'formats:Show supported formats'
+  'doctor:Verify the archive engine'
+  'help:Show help for a command'
+)
+
+global_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '(-V --version)'{-V,--version}'[Show version]'
+  '(-q --quiet)'{-q,--quiet}'[Reduce output]'
+  '(-v --verbose)'{-v,--verbose}'[Increase diagnostics]'
+  '--json[Emit JSON where supported]'
+  '--color[Control color output]:mode:(auto always never)'
+  '--no-color[Disable color output]'
+  '--progress[Control progress output]:mode:(auto always never)'
+  '--no-progress[Disable progress output]'
+  '--no-password-prompt[Fail instead of prompting interactively]'
+  '(-c --create)'{-c,--create}'[Create an archive]'
+  '(-x --extract)'{-x,--extract}'[Extract an archive]'
+  '(-t --list)'{-t,--list}'[List archive contents]'
+  '(-T --test)'{-T,--test}'[Test archive integrity]'
+  '(-f --file)'{-f,--file}'[Archive file path]:archive:_files'
+)
+
+create_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '(-r --recursive)'{-r,--recursive}'[Accept recursive directory input]'
+  '(-C --directory)'{-C,--directory}'[Use directory as input base]:directory:_directories'
+  '-@[Read input paths from stdin]'
+  '--files-from[Read input paths from a file]:file:_files'
+  '--null[Read NUL-delimited path lists]'
+  '--clean[Apply clean source exclusions]'
+  '--no-ignore[Ignore .gitignore/default exclusions]'
+  '--hidden[Include hidden files]'
+  '--no-hidden[Exclude hidden dotfiles]'
+  '(-i --include)'{-i,--include}'[Include archive paths matching glob]:glob'
+  '--exclude[Exclude archive paths matching glob]:glob'
+  '--exclude-from[Read exclude globs from file]:file:_files'
+  '--format[Override archive format]:format:(zip tar.zst 7z)'
+  '--method[Select compression method]:method'
+  '--level[Compression level]:level'
+  '-0[Store ZIP entries]'
+  '-1[Compression preset 1]'
+  '-2[Compression preset 2]'
+  '-3[Compression preset 3]'
+  '-4[Compression preset 4]'
+  '-5[Compression preset 5]'
+  '-6[Compression preset 6]'
+  '-7[Compression preset 7]'
+  '-8[Compression preset 8]'
+  '-9[Compression preset 9]'
+  '--store[Store ZIP entries without compression]'
+  '--solid[Use solid 7z mode]'
+  '--no-solid[Disable solid 7z mode]'
+  '(-j --junk-paths)'{-j,--junk-paths}'[Store basenames only]'
+  '(-y --preserve-symlinks)'{-y,--preserve-symlinks}'[Store symlink entries where supported]'
+  '--follow-symlinks[Archive symlink target contents]'
+  '--preserve-metadata[Preserve portable metadata]'
+  '(-X --no-metadata)'{-X,--no-metadata}'[Omit portable metadata]'
+  '(-f --file)'{-f,--file}'[Archive file path]:archive:_files'
+  '--force[Replace existing output archive]'
+  '--dry-run[Print planned entries without writing]'
+  '(-T --test-after)'{-T,--test-after}'[Test archive after writing]'
+  '--encrypt[Prompt for an archive password where supported]'
+  '--password-stdin[Read one password line from stdin]'
+)
+
+extract_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '(-C -d --directory)'{-C,-d,--directory}'[Extract into directory]:directory:_directories'
+  '--here[Extract into the current directory]'
+  '--overwrite[Existing file policy]:policy:(never always ask rename)'
+  '(-i --include)'{-i,--include}'[Extract archive paths matching glob]:glob'
+  '--exclude[Exclude archive paths matching glob]:glob'
+  '--strip-components[Remove leading path components]:count'
+  '--to-stdout[Write selected regular file bytes to stdout]'
+  '--extract-nested[Expand known package payloads]'
+  '--password-stdin[Read one password line from stdin]'
+)
+
+list_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '(-f --file)'{-f,--file}'[Archive file path]:archive:_files'
+  '(-l --long)'{-l,--long}'[Show long listing]'
+  '--name-only[Print archive paths only]'
+  '--tree[Print a hierarchical tree]'
+  '(-i --include)'{-i,--include}'[List archive paths matching glob]:glob'
+  '--exclude[Exclude archive paths matching glob]:glob'
+  '--password-stdin[Read one password line from stdin]'
+  '--json[Emit machine-readable JSON]'
+)
+
+test_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '(-f --file)'{-f,--file}'[Archive file path]:archive:_files'
+  '(-i --include)'{-i,--include}'[Test archive paths matching glob]:glob'
+  '--exclude[Exclude archive paths matching glob]:glob'
+  '--password-stdin[Read one password line from stdin]'
+  '--json[Emit machine-readable JSON]'
+)
+
+plan_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '--format[Plan for a specific archive format]:format:(zip tar.zst 7z)'
+  '(-C --directory)'{-C,--directory}'[Use directory as input base]:directory:_directories'
+  '-@[Read input paths from stdin]'
+  '--files-from[Read input paths from a file]:file:_files'
+  '--null[Read NUL-delimited path lists]'
+  '--clean[Apply clean source exclusions]'
+  '--no-ignore[Ignore .gitignore/default exclusions]'
+  '(-i --include)'{-i,--include}'[Include archive paths matching glob]:glob'
+  '--exclude[Exclude archive paths matching glob]:glob'
+  '--exclude-from[Read exclude globs from file]:file:_files'
+  '--json[Emit machine-readable JSON]'
+)
+
+_zm_command() {
+  local context state line
+  _arguments -C $global_options '1:command:->command' '*::argument:->argument'
+
+  case $state in
+    command)
+      _describe -t commands 'zm command' commands
+      ;;
+    argument)
+      case $words[1] in
+        create) _arguments $create_options '*:path:_files' ;;
+        extract) _arguments $extract_options '*:archive:_files' ;;
+        list) _arguments $list_options '*:archive:_files' ;;
+        test) _arguments $test_options '*:archive:_files' ;;
+        plan) _arguments $plan_options '*:path:_files' ;;
+        formats|doctor) _arguments '(-h --help)'{-h,--help}'[Show help]' '--json[Emit JSON]' ;;
+        help) _describe -t commands 'zm command' commands ;;
+      esac
+      ;;
+  esac
+}
+
+_zm_command "$@"

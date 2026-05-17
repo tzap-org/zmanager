@@ -1191,7 +1191,7 @@ checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
 name = "zmanager-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rpassword",
  "sha2 0.10.9",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brotli",
  "bzip2",
@@ -1222,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-ffi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde_json",
  "zmanager-core",
@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "zmanager-libarchive-sys",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive-sys"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cmake",
  "libc",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cc",
  "zeroize",

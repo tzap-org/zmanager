@@ -1043,7 +1043,7 @@ fn competitor_unix_package_wrappers_extract_with_zm() {
         let spec = topdir.join("SPECS/zmanager-compat.spec");
         fs::write(
             &spec,
-            "Name: zmanager-compat\nVersion: 1.0\nRelease: 1\nSummary: ZManager compatibility fixture\nLicense: MIT\nBuildArch: noarch\n\n%description\nZManager compatibility fixture\n\n%install\nmkdir -p %{buildroot}/usr/share/zmanager-compat\nprintf 'zmanager compatibility payload\\n' > %{buildroot}/usr/share/zmanager-compat/file.txt\n\n%files\n/usr/share/zmanager-compat/file.txt\n",
+            "Name: zmanager-compat\nVersion: 1.0\nRelease: 1\nSummary: ZManager compatibility fixture\nLicense: Apache-2.0\nBuildArch: noarch\n\n%description\nZManager compatibility fixture\n\n%install\nmkdir -p %{buildroot}/usr/share/zmanager-compat\nprintf 'zmanager compatibility payload\\n' > %{buildroot}/usr/share/zmanager-compat/file.txt\n\n%files\n/usr/share/zmanager-compat/file.txt\n",
         )
         .unwrap();
         let create = Command::new(rpmbuild)
