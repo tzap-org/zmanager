@@ -244,12 +244,22 @@ function Invoke-CargoTest {
         [string]$TargetTriple
     )
 
-    $libarchivePatch = 'patch.crates-io.libarchive2-sys.path="vendor/rust/libarchive2-sys"'
+    $cargoConfigPath = Join-Path `
+        ([System.IO.Path]::GetTempPath()) `
+        "zmanager-windows-cargo-$TargetTriple.toml"
+    Set-Content `
+        -Path $cargoConfigPath `
+        -Encoding UTF8 `
+        -Value @(
+            "[patch.crates-io.libarchive2-sys]",
+            'path = "vendor/rust/libarchive2-sys"'
+        )
+
     Invoke-NativeLogged `
         -Title "cargo test failed on $TargetTriple" `
         -LogName "cargo-test-windows-$TargetTriple.log" `
         -FilePath "cargo" `
-        -Arguments @("test", "--config", $libarchivePatch, "--workspace", "--target", $TargetTriple)
+        -Arguments @("test", "--config", $cargoConfigPath, "--workspace", "--target", $TargetTriple)
 }
 
 Import-VisualStudioEnvironment -Architecture $VcArch -RequiredComponent $VsComponent
