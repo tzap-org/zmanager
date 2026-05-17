@@ -14,7 +14,15 @@ const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto", "libcryptod"];
 const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma", "lzmad"];
 const VCPKG_LZ4_LIB_NAMES: &[&str] = &["lz4", "lz4d"];
 const VCPKG_PROFILE_DEBUG: &str = "debug";
-const VCPKG_ZLIB_LIB_NAMES: &[&str] = &["zlib", "zlibd", "zlibstatic", "zlibstaticd", "z"];
+const VCPKG_ZLIB_LIB_NAMES: &[&str] = &[
+    "zlib",
+    "zlibd",
+    "zlibstatic",
+    "zlibstaticd",
+    "zs",
+    "zsd",
+    "z",
+];
 const VCPKG_ZSTD_LIB_NAMES: &[&str] = &["zstd", "zstdd"];
 
 struct VcpkgLinkSearch {
