@@ -130,6 +130,17 @@ Unable to find libclang: couldn't find clang.dll / libclang.dll
 That means `LIBCLANG_PATH` does not point to the LLVM `bin` directory, or LLVM
 is not installed.
 
+If the build then fails while linking `zmanager-unrar` with unresolved symbols
+such as `WinNT`, `IsWindows11OrGreater`, `MarkOfTheWeb`, registry APIs,
+`SHGetPathFromIDListW`, token APIs, or `CryptAcquireContextW`, clean and rebuild
+after pulling the fix that added the Windows-only UnRAR source files and system
+libraries:
+
+```bat
+cargo clean -p zmanager-unrar
+cargo test --workspace
+```
+
 ## Expected libarchive Build Behavior
 
 The `libarchive2-sys` build currently:
@@ -147,6 +158,23 @@ that the `LIB` and `INCLUDE` variables point at the same triplet.
 If the next failure says an x64 object conflicts with ARM64, patch our build
 dependency path before claiming Windows ARM64 support. That would indicate the
 upstream `libarchive2-sys` Windows vcpkg path needs target-aware handling.
+
+## Expected UnRAR Build Behavior
+
+The `zmanager-unrar` build keeps `vendor/unrar` close to upstream and compiles
+copied sources from Cargo's build output directory. On Windows it must include
+the extra upstream Windows sources used by the Visual Studio project:
+
+- `isnt.cpp` for Windows version helpers such as `WinNT`.
+- `motw.cpp` for Mark-of-the-Web support.
+
+The build script also links Windows system libraries required by the upstream
+Windows code path:
+
+- `advapi32` for registry, token, security, LSA, and CryptoAPI calls.
+- `shell32` for shell folder and shell execution APIs.
+- `shlwapi`, `powrprof`, and `psapi` to match the libraries requested by
+  upstream Windows headers.
 
 ## Future GitHub Actions Plan
 

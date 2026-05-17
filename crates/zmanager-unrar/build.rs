@@ -53,6 +53,10 @@ const UNRAR_SOURCES: &[&str] = &[
     "qopen.cpp",
 ];
 
+const WINDOWS_UNRAR_SOURCES: &[&str] = &["isnt.cpp", "motw.cpp"];
+
+const WINDOWS_SYSTEM_LIBS: &[&str] = &["advapi32", "shell32", "shlwapi", "powrprof", "psapi"];
+
 const SYSTEM_CPU_FEATURE_NEEDLE: &str =
     "#elif defined(__GNUC__)\n  if (__builtin_cpu_supports(\"avx2\"))";
 const SYSTEM_CPU_FEATURE_REPLACEMENT: &str = concat!(
@@ -119,7 +123,8 @@ fn main() {
         .flag_if_supported("-Wno-dangling-else")
         .flag_if_supported("-Wno-nontrivial-memcall");
 
-    let apply_macos_x86_64_patch = target_os() == "macos" && target_arch() == "x86_64";
+    let target_os = target_os();
+    let apply_macos_x86_64_patch = target_os == "macos" && target_arch() == "x86_64";
     for source in UNRAR_SOURCES {
         let build_source = copy_build_source(
             &unrar_dir,
@@ -133,6 +138,21 @@ fn main() {
             unrar_dir.join(source).display()
         );
     }
+    if target_os == "windows" {
+        for source in WINDOWS_UNRAR_SOURCES {
+            let build_source = copy_build_source(
+                &unrar_dir,
+                &build_source_dir,
+                source,
+                apply_macos_x86_64_patch,
+            );
+            build.file(build_source);
+            println!(
+                "cargo:rerun-if-changed={}",
+                unrar_dir.join(source).display()
+            );
+        }
+    }
     build.file(manifest_dir.join("cpp/zmanager_unrar_bridge.cpp"));
     println!(
         "cargo:rerun-if-changed={}",
@@ -143,6 +163,11 @@ fn main() {
 
     if std::env::var("CARGO_CFG_UNIX").is_ok() {
         println!("cargo:rustc-link-lib=pthread");
+    }
+    if target_os == "windows" {
+        for library in WINDOWS_SYSTEM_LIBS {
+            println!("cargo:rustc-link-lib={library}");
+        }
     }
 }
 
