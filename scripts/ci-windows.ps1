@@ -117,6 +117,40 @@ function Write-GitHubFailure {
     Write-Host ("::error title={0}::{1}" -f $Title, $message)
 }
 
+function Write-LogDelta {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [ref]$Offset
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    $stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+    )
+
+    try {
+        [void]$stream.Seek([int64]$Offset.Value, [System.IO.SeekOrigin]::Begin)
+        $reader = New-Object System.IO.StreamReader($stream)
+        $text = $reader.ReadToEnd()
+        $Offset.Value = $stream.Position
+    } finally {
+        $stream.Dispose()
+    }
+
+    if ($text) {
+        Write-Host -NoNewline $text
+    }
+}
+
 function Invoke-NativeLogged {
     param(
         [Parameter(Mandatory = $true)]
@@ -132,27 +166,42 @@ function Invoke-NativeLogged {
     )
 
     $logPath = Join-Path (Get-Location) $LogName
-    $previousErrorActionPreference = $ErrorActionPreference
-    $nativePreference = Get-Variable `
-        -Name PSNativeCommandUseErrorActionPreference `
-        -ErrorAction SilentlyContinue
-    $previousNativeErrorPreference = $null
+    $stdoutPath = "$logPath.stdout"
+    $stderrPath = "$logPath.stderr"
+    Remove-Item -Path $logPath, $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 
-    if ($nativePreference) {
-        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-    }
+    Write-Host ("Running: " + $FilePath + " " + ($Arguments -join " "))
 
-    try {
-        $ErrorActionPreference = "Continue"
-        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $logPath
-        $status = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-        if ($nativePreference) {
-            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
-        }
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $Arguments `
+        -NoNewWindow `
+        -PassThru `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath
+
+    $stdoutOffset = 0L
+    $stderrOffset = 0L
+    while (-not $process.HasExited) {
+        Start-Sleep -Seconds 5
+        Write-LogDelta -Path $stdoutPath -Offset ([ref]$stdoutOffset)
+        Write-LogDelta -Path $stderrPath -Offset ([ref]$stderrOffset)
+        $process.Refresh()
     }
+    $process.WaitForExit()
+
+    Write-LogDelta -Path $stdoutPath -Offset ([ref]$stdoutOffset)
+    Write-LogDelta -Path $stderrPath -Offset ([ref]$stderrOffset)
+
+    $logContent = @()
+    if (Test-Path $stdoutPath) {
+        $logContent += Get-Content -Path $stdoutPath
+    }
+    if (Test-Path $stderrPath) {
+        $logContent += Get-Content -Path $stderrPath
+    }
+    Set-Content -Path $logPath -Value $logContent
+    $status = $process.ExitCode
 
     if ($status -ne 0) {
         Write-GitHubFailure -Title $Title -LogPath $logPath
