@@ -113,11 +113,25 @@ function Invoke-NativeLogged {
 
     $logPath = Join-Path (Get-Location) $LogName
     Write-Host ("Running: " + $FilePath + " " + ($Arguments -join " "))
-    & $FilePath @Arguments
-    $status = $LASTEXITCODE
+    if (Test-Path $logPath) {
+        Remove-Item $logPath
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            Write-Host $line
+            Add-Content -Path $logPath -Value $line
+        }
+        $status = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     if ($status -ne 0) {
-        Set-Content -Path $logPath -Value ("Exited with code " + $status)
+        Add-Content -Path $logPath -Value ("Exited with code " + $status)
         Write-GitHubFailure -Title $Title -LogPath $logPath
         exit $status
     }
