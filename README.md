@@ -102,24 +102,33 @@ subcommands are there for readable scripts.
 
 ## What It Does
 
-- Creates `.zip`, `.tar.zst`, and `.7z` archives.
-- Extracts ZIP-family archives, 7z, TAR.ZST, compressed TAR, raw streams, RAR,
-  Debian packages, ISO, XAR, CAB, AR, CPIO, and other libarchive-backed formats.
-- Supports passworded ZIP, 7z, and RAR extraction through stdin or prompts.
+- Creates high-quality `.zip`, `.tar.zst`, and `.7z` archives.
+- Opens common desktop, developer, package, and mobile archive formats by name:
+  ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
+  CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
+  compressed files.
+- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts.
 - Protects extraction by default against path traversal, unsafe links,
   duplicate normalized paths, case collisions, and accidental overwrite traps.
 - Provides both classic archive flags and readable subcommands.
 
 ## Format Support
 
-| Task | Supported formats |
+| Workflow | Formats |
 | --- | --- |
-| Create | ZIP, TAR.ZST, 7z |
-| List/test | ZIP family, 7z, TAR.ZST, RAR, raw streams, libarchive-backed archives |
-| Extract | ZIP family, 7z, TAR.ZST, compressed TAR, raw streams, RAR, DEB, RPM, ISO, XAR, CAB, AR, CPIO, and related libarchive-backed formats |
-| Passwords | ZIP, 7z, RAR extraction/list/test through prompt or `--password-stdin` |
+| Create new archives | `.zip`, `.tar.zst`, `.tzst`, `.7z` |
+| ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
+| 7z | `.7z`, including encrypted 7z archives |
+| RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
+| TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tar.zst`, `.tzst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
+| Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
+| Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
+| Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
 
-Z-Manager does not create RAR archives. RAR support is extraction/listing only.
+Creation is intentionally focused on the formats people reach for most: ZIP for
+sharing, TAR.ZST for fast modern project archives, and 7z for high-compression
+or encrypted archives. Extraction is intentionally broad, so `zm` can be the
+one command you try first when someone sends you an archive.
 
 ## Safety Model
 
