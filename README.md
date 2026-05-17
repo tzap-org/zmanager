@@ -6,9 +6,9 @@
 [![Downloads](https://img.shields.io/github/downloads/frankmanzhu/zmanager/total)](https://github.com/frankmanzhu/zmanager/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`zm` is a fast, safe archive utility for macOS and Linux. It gives terminal
-users familiar `zip`/`tar`-style commands, modern compression defaults, and
-guarded extraction for archives from the internet.
+`zm` is a fast, safe archive utility for macOS and Linux. Its goal is simple:
+extract almost anything safely, and create new archives only with modern,
+practical formats.
 
 The CLI is the open-source part of Z-Manager. It shares the Rust archive engine
 with the macOS app, but it is useful on its own: create clean project archives,
@@ -16,6 +16,23 @@ extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
 Current source version: `v0.1.0`
+
+## Product Direction
+
+Z-Manager treats extraction and creation differently:
+
+- **Extract broadly.** Users should be able to open old, obscure, downloaded,
+  package, mobile, and developer archives without knowing which backend or
+  tool normally handles them.
+- **Create deliberately.** New archives should use formats that make sense
+  today: ZIP for universal sharing, TAR.ZST for fast modern compression, and 7z
+  for high-compression encrypted archives.
+- **Avoid legacy creation paths.** Old compression methods still matter for
+  reading existing files, but new archives should not depend on outdated
+  choices when better performance and safer password encryption are available.
+- **Use strong password protection.** Encrypted ZIP and 7z creation use AES-256
+  paths, and passwords are read through prompts or stdin rather than command
+  arguments.
 
 ## Downloads
 
@@ -102,12 +119,15 @@ subcommands are there for readable scripts.
 
 ## What It Does
 
-- Creates high-quality `.zip`, `.tar.zst`, and `.7z` archives.
+- Extracts a broad range of archive, package, disk-image, and raw compression
+  formats with safety checks enabled by default.
+- Creates modern `.zip`, `.tar.zst`, and `.7z` archives with focused defaults.
 - Opens common desktop, developer, package, and mobile archive formats by name:
   ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
   CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
   compressed files.
-- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts.
+- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts; new
+  encrypted ZIP and 7z archives use AES-256 encryption paths.
 - Protects extraction by default against path traversal, unsafe links,
   duplicate normalized paths, case collisions, and accidental overwrite traps.
 - Provides both classic archive flags and readable subcommands.
@@ -116,7 +136,7 @@ subcommands are there for readable scripts.
 
 | Workflow | Formats |
 | --- | --- |
-| Create new archives | `.zip`, `.tar.zst`, `.tzst`, `.7z` |
+| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tar.zst`/`.tzst` with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
 | ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
 | 7z | `.7z`, including encrypted 7z archives |
 | RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
@@ -125,10 +145,9 @@ subcommands are there for readable scripts.
 | Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
 | Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
 
-Creation is intentionally focused on the formats people reach for most: ZIP for
-sharing, TAR.ZST for fast modern project archives, and 7z for high-compression
-or encrypted archives. Extraction is intentionally broad, so `zm` can be the
-one command you try first when someone sends you an archive.
+Creation is intentionally focused on formats people should use today. Extraction
+is intentionally broad, so `zm` can be the one command you try first when
+someone sends you an archive.
 
 ## Safety Model
 
@@ -149,10 +168,11 @@ Passwords are not accepted as command arguments. Use the prompt or
 
 Z-Manager is designed around three priorities:
 
-- Be familiar to users who already know `zip`, `tar`, `unzip`, and `7z`.
-- Make safe extraction the default, not an optional expert mode.
-- Keep creation focused on formats that matter: ZIP for sharing, TAR.ZST for
-  fast modern archives, and 7z for high-compression or encrypted archives.
+- Extract as many real-world archive formats as possible, safely and
+  predictably.
+- Keep new archive creation focused on modern compression and AES-256 password
+  protection instead of preserving every legacy creation method.
+- Stay familiar to users who already know `zip`, `tar`, `unzip`, and `7z`.
 
 ## Build From Source
 
