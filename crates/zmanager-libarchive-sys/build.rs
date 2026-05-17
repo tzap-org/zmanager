@@ -118,6 +118,10 @@ fn vcpkg_root() -> Option<PathBuf> {
     env::var_os("VCPKG_INSTALLATION_ROOT")
         .or_else(|| env::var_os("VCPKG_ROOT"))
         .map(PathBuf::from)
+        .or_else(|| {
+            let default_root = PathBuf::from(r"C:\vcpkg");
+            default_root.exists().then_some(default_root)
+        })
 }
 
 fn link_bundled_archive_library(target: &str) {
