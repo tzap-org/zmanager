@@ -91,17 +91,77 @@ function Find-LibclangBin {
     return $null
 }
 
+function Write-GitHubFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Title,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LogPath
+    )
+
+    $tail = Get-Content -Path $LogPath -Tail 80
+    if ($env:GITHUB_STEP_SUMMARY) {
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### $Title"
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```text"
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $tail
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```"
+    }
+
+    $message = $tail -join "`n"
+    $message = $message.Replace("%", "%25")
+    $message = $message.Replace("`r", "%0D")
+    $message = $message.Replace("`n", "%0A")
+    Write-Host "::error title=$Title::$message"
+}
+
+function Invoke-NativeLogged {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Title,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LogName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [string[]]$Arguments = @()
+    )
+
+    $logPath = Join-Path (Get-Location) $LogName
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $logPath
+    $status = $LASTEXITCODE
+    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+
+    if ($status -ne 0) {
+        Write-GitHubFailure -Title $Title -LogPath $logPath
+        exit $status
+    }
+}
+
 function Ensure-Llvm {
     $llvmBin = Find-LibclangBin
 
     if (-not $llvmBin) {
         Write-Host "Installing LLVM"
-        winget install `
-            --id LLVM.LLVM `
-            --source winget `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --silent
+        Invoke-NativeLogged `
+            -Title "LLVM install failed" `
+            -LogName "winget-llvm.log" `
+            -FilePath "winget" `
+            -Arguments @(
+                "install",
+                "--id",
+                "LLVM.LLVM",
+                "--source",
+                "winget",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--silent"
+            )
     }
 
     $llvmBin = Find-LibclangBin
@@ -119,17 +179,30 @@ function Ensure-Vcpkg {
     $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
 
     if (-not (Test-Path $vcpkg)) {
-        git clone https://github.com/microsoft/vcpkg $vcpkgRoot
-        & (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat")
+        Invoke-NativeLogged `
+            -Title "vcpkg clone failed" `
+            -LogName "vcpkg-clone.log" `
+            -FilePath "git" `
+            -Arguments @("clone", "https://github.com/microsoft/vcpkg", $vcpkgRoot)
+        Invoke-NativeLogged `
+            -Title "vcpkg bootstrap failed" `
+            -LogName "vcpkg-bootstrap.log" `
+            -FilePath (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat")
     }
 
-    & $vcpkg install `
-        "zlib:$Triplet" `
-        "bzip2:$Triplet" `
-        "liblzma:$Triplet" `
-        "zstd:$Triplet" `
-        "lz4:$Triplet" `
-        "openssl:$Triplet"
+    Invoke-NativeLogged `
+        -Title "vcpkg install failed for $Triplet" `
+        -LogName "vcpkg-install-$Triplet.log" `
+        -FilePath $vcpkg `
+        -Arguments @(
+            "install",
+            "zlib:$Triplet",
+            "bzip2:$Triplet",
+            "liblzma:$Triplet",
+            "zstd:$Triplet",
+            "lz4:$Triplet",
+            "openssl:$Triplet"
+        )
 
     $env:CMAKE_TOOLCHAIN_FILE = Join-Path $vcpkgRoot "scripts\buildsystems\vcpkg.cmake"
     $env:VCPKG_INSTALLATION_ROOT = $vcpkgRoot
@@ -137,6 +210,20 @@ function Ensure-Vcpkg {
     $env:VCPKG_TARGET_TRIPLET = $Triplet
     $env:LIB = "$vcpkgRoot\installed\$Triplet\lib;$env:LIB"
     $env:INCLUDE = "$vcpkgRoot\installed\$Triplet\include;$env:INCLUDE"
+}
+
+function Invoke-CargoTest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetTriple
+    )
+
+    $libarchivePatch = 'patch.crates-io.libarchive2-sys.path="vendor/rust/libarchive2-sys"'
+    Invoke-NativeLogged `
+        -Title "cargo test failed on $TargetTriple" `
+        -LogName "cargo-test-windows-$TargetTriple.log" `
+        -FilePath "cargo" `
+        -Arguments @("test", "--config", $libarchivePatch, "--workspace", "--target", $TargetTriple)
 }
 
 Import-VisualStudioEnvironment -Architecture $VcArch -RequiredComponent $VsComponent
@@ -153,8 +240,15 @@ Write-Host "clang:"
 clang --version
 Write-Host "INCLUDE=$env:INCLUDE"
 
-rustup toolchain install stable --profile minimal --target $Target
-rustup default stable
+Invoke-NativeLogged `
+    -Title "rustup toolchain install failed for $Target" `
+    -LogName "rustup-install-$Target.log" `
+    -FilePath "rustup" `
+    -Arguments @("toolchain", "install", "stable", "--profile", "minimal", "--target", $Target)
+Invoke-NativeLogged `
+    -Title "rustup default stable failed" `
+    -LogName "rustup-default.log" `
+    -FilePath "rustup" `
+    -Arguments @("default", "stable")
 
-$libarchivePatch = 'patch.crates-io.libarchive2-sys.path="vendor/rust/libarchive2-sys"'
-cargo test --config $libarchivePatch --workspace --target $Target
+Invoke-CargoTest -TargetTriple $Target
