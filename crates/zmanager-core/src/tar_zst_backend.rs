@@ -401,20 +401,18 @@ fn extract_tar_zst_inner(
                 replace_existing,
                 link_target_path,
                 ..
-            } => {
-                let written_bytes = materialize_tar_entry(
-                    &mut entry,
-                    &safety_entry,
-                    &destination_path,
+            } => materialize_tar_write_decision(
+                &mut entry,
+                TarWriteDecision {
+                    safety_entry: &safety_entry,
+                    destination_path: &destination_path,
                     replace_existing,
-                    link_target_path.as_deref(),
-                    context.as_deref_mut(),
-                    &mut deferred_directories,
-                )?;
-                report.written_entries += 1;
-                report.written_bytes += written_bytes;
-                written_bytes
-            }
+                    link_target_path: link_target_path.as_deref(),
+                },
+                context.as_deref_mut(),
+                &mut deferred_directories,
+                &mut report,
+            )?,
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
                 let warning = format!("skipped {}: {reason}", safety_entry.archive_path);
@@ -439,6 +437,52 @@ fn extract_tar_zst_inner(
 struct TarEntryMetadata {
     mode: Option<u32>,
     mtime: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct TarWriteDecision<'a> {
+    safety_entry: &'a ExtractionEntry,
+    destination_path: &'a Path,
+    replace_existing: bool,
+    link_target_path: Option<&'a Path>,
+}
+
+fn materialize_tar_write_decision<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    decision: TarWriteDecision<'_>,
+    mut context: Option<&mut JobContext<'_>>,
+    deferred_directories: &mut Vec<(PathBuf, TarEntryMetadata)>,
+    report: &mut TarZstdExtractReport,
+) -> Result<u64, TarZstdError> {
+    let TarWriteDecision {
+        safety_entry,
+        destination_path,
+        replace_existing,
+        link_target_path,
+    } = decision;
+
+    if crate::safety::should_skip_symlink_materialization(&safety_entry.kind) {
+        report.skipped_entries += 1;
+        let warning = crate::safety::unsupported_symlink_warning(&safety_entry.archive_path);
+        report.warnings.push(warning.clone());
+        if let Some(context) = context.as_deref_mut() {
+            context.warning(warning);
+        }
+        return Ok(0);
+    }
+
+    let written_bytes = materialize_tar_entry(
+        entry,
+        safety_entry,
+        destination_path,
+        replace_existing,
+        link_target_path,
+        context,
+        deferred_directories,
+    )?;
+    report.written_entries += 1;
+    report.written_bytes += written_bytes;
+    Ok(written_bytes)
 }
 
 fn materialize_tar_entry<R: Read>(

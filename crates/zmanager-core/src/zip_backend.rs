@@ -870,8 +870,17 @@ fn write_zip_entry<R: Read>(
             Ok(copied)
         }
         ExtractionEntryKind::Symlink { ref target } => {
-            write_symlink(target, destination_path)?;
-            report.written_entries += 1;
+            if crate::safety::should_skip_symlink_materialization(&entry.kind) {
+                report.skipped_entries += 1;
+                let warning = crate::safety::unsupported_symlink_warning(&entry.archive_path);
+                report.warnings.push(warning.clone());
+                if let Some(context) = context {
+                    context.warning(warning);
+                }
+            } else {
+                write_symlink(target, destination_path)?;
+                report.written_entries += 1;
+            }
             Ok(0)
         }
         ExtractionEntryKind::Hardlink { .. } => {

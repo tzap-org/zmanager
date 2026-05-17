@@ -503,8 +503,15 @@ fn write_entry(
         }
         ExtractionEntryKind::Symlink { target } => {
             archive.skip_data()?;
-            write_symlink(target, destination_path)?;
-            report.written_entries += 1;
+            if crate::safety::should_skip_symlink_materialization(&entry.extraction_kind) {
+                report.skipped_entries += 1;
+                report
+                    .warnings
+                    .push(crate::safety::unsupported_symlink_warning(&entry.path));
+            } else {
+                write_symlink(target, destination_path)?;
+                report.written_entries += 1;
+            }
         }
         ExtractionEntryKind::Hardlink { target } => {
             archive.skip_data()?;

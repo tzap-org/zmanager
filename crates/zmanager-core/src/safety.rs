@@ -96,6 +96,26 @@ pub enum ExtractionEntryKind {
     Special,
 }
 
+/// Returns true when this platform/backend build can materialize archive
+/// symlinks as filesystem symlinks.
+#[must_use]
+pub(crate) fn symlink_extraction_supported() -> bool {
+    cfg!(unix)
+}
+
+/// Returns true when a symlink entry is safe but cannot be materialized here.
+#[must_use]
+pub(crate) fn should_skip_symlink_materialization(kind: &ExtractionEntryKind) -> bool {
+    matches!(kind, ExtractionEntryKind::Symlink { .. }) && !symlink_extraction_supported()
+}
+
+/// Standard warning for safe symlinks skipped on platforms without symlink
+/// materialization support.
+#[must_use]
+pub(crate) fn unsupported_symlink_warning(archive_path: &str) -> String {
+    format!("skipped symlink {archive_path}: symlink extraction is not supported on this platform")
+}
+
 /// Archive entry metadata needed before extraction writes to disk.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ExtractionEntry {

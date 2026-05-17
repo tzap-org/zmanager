@@ -148,12 +148,12 @@ fn link_bundled_archive_dependencies(target: &str) {
         println!("cargo:rustc-link-lib=acl");
     } else if target.contains("windows") && target.contains("msvc") {
         let vcpkg_lib_dir = link_vcpkg_libraries();
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["zlib", "z"]);
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["bz2"]);
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["lzma"]);
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["zstd"]);
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["lz4"]);
-        link_windows_vcpkg_library(&vcpkg_lib_dir, &["libcrypto"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["zlib", "z"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["bz2"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["lzma"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["zstd"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["lz4"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["libcrypto"]);
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=advapi32");
         println!("cargo:rustc-link-lib=xmllite");
@@ -181,9 +181,7 @@ fn link_common_unix_libraries() {
 }
 
 fn link_vcpkg_libraries() -> Option<PathBuf> {
-    let Some(vcpkg_root) = vcpkg_root() else {
-        return None;
-    };
+    let vcpkg_root = vcpkg_root()?;
     let triplet = env::var("VCPKG_TARGET_TRIPLET")
         .or_else(|_| env::var("VCPKG_DEFAULT_TRIPLET"))
         .unwrap_or_else(|_| default_vcpkg_triplet());
@@ -192,7 +190,7 @@ fn link_vcpkg_libraries() -> Option<PathBuf> {
     Some(lib_dir)
 }
 
-fn link_windows_vcpkg_library(vcpkg_lib_dir: &Option<PathBuf>, candidates: &[&str]) {
+fn link_windows_vcpkg_library(vcpkg_lib_dir: Option<&Path>, candidates: &[&str]) {
     let Some(lib_dir) = vcpkg_lib_dir else {
         println!("cargo:rustc-link-lib={}", candidates[0]);
         return;
