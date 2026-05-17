@@ -13,6 +13,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 function Import-VisualStudioEnvironment {
     param(
@@ -35,8 +38,18 @@ function Import-VisualStudioEnvironment {
         -property installationPath
 
     if (-not $installationPath) {
-        throw "Visual Studio installation with component $RequiredComponent was not found"
+        Write-Host "Visual Studio component $RequiredComponent was not found through vswhere; trying latest installation"
+        $installationPath = & $vswhere `
+            -latest `
+            -products * `
+            -property installationPath
     }
+
+    if (-not $installationPath) {
+        throw "Visual Studio installation was not found"
+    }
+
+    $installationPath = ($installationPath | Select-Object -First 1).Trim()
 
     $vcvarsall = Join-Path $installationPath "VC\Auxiliary\Build\vcvarsall.bat"
     if (-not (Test-Path $vcvarsall)) {
@@ -54,11 +67,34 @@ function Import-VisualStudioEnvironment {
     }
 }
 
-function Ensure-Llvm {
-    $llvmBin = "C:\Program Files\LLVM\bin"
-    $libclang = Join-Path $llvmBin "libclang.dll"
+function Find-LibclangBin {
+    $candidates = @()
 
-    if (-not (Test-Path $libclang)) {
+    if ($env:LIBCLANG_PATH) {
+        $candidates += $env:LIBCLANG_PATH
+    }
+
+    $candidates += "C:\Program Files\LLVM\bin"
+
+    if ($env:VCToolsInstallDir) {
+        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\$VcArch\bin"
+        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\$($VcArch.ToUpperInvariant())\bin"
+        $candidates += Join-Path $env:VCToolsInstallDir "Llvm\x64\bin"
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path (Join-Path $candidate "libclang.dll"))) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Ensure-Llvm {
+    $llvmBin = Find-LibclangBin
+
+    if (-not $llvmBin) {
         Write-Host "Installing LLVM"
         winget install `
             --id LLVM.LLVM `
@@ -68,12 +104,14 @@ function Ensure-Llvm {
             --silent
     }
 
-    if (-not (Test-Path $libclang)) {
-        throw "libclang.dll was not found at $libclang"
+    $llvmBin = Find-LibclangBin
+    if (-not $llvmBin) {
+        throw "libclang.dll was not found"
     }
 
     $env:LIBCLANG_PATH = $llvmBin
     $env:Path = "$llvmBin;$env:Path"
+    Write-Host "Using LLVM at $llvmBin"
 }
 
 function Ensure-Vcpkg {
@@ -118,4 +156,5 @@ Write-Host "INCLUDE=$env:INCLUDE"
 rustup toolchain install stable --profile minimal --target $Target
 rustup default stable
 
-cargo test --workspace --target $Target
+$libarchivePatch = 'patch.crates-io.libarchive2-sys.path="vendor/rust/libarchive2-sys"'
+cargo test --config $libarchivePatch --workspace --target $Target

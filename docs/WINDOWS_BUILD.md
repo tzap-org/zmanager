@@ -91,9 +91,10 @@ set LIB=C:\vcpkg\installed\arm64-windows\lib;%LIB%
 set INCLUDE=C:\vcpkg\installed\arm64-windows\include;%INCLUDE%
 ```
 
-Do not set `VCPKG_INSTALLATION_ROOT` for this build yet. The current upstream
-`libarchive2-sys` build script checks that variable but then adds an
-`x64-windows` library search path. That is unsafe for native ARM64 builds.
+Use the vendored `libarchive2-sys` patch command below when
+`VCPKG_INSTALLATION_ROOT` is set. The upstream `libarchive2-sys` `0.2.0` build
+script checks that variable but then adds an `x64-windows` library search path,
+which is unsafe for native ARM64 builds.
 
 ## x64 Environment
 
@@ -118,7 +119,7 @@ build output first:
 ```bat
 cd C:\Users\frankzhu\Projects\zmanager
 cargo clean -p libarchive2-sys
-cargo test --workspace
+cargo test --config "patch.crates-io.libarchive2-sys.path='vendor/rust/libarchive2-sys'" --workspace
 ```
 
 The important first failure to eliminate is:
@@ -138,7 +139,7 @@ libraries:
 
 ```bat
 cargo clean -p zmanager-unrar
-cargo test --workspace
+cargo test --config "patch.crates-io.libarchive2-sys.path='vendor/rust/libarchive2-sys'" --workspace
 ```
 
 If `libarchive2-sys` builds `archive.lib` successfully and then bindgen fails
@@ -149,11 +150,14 @@ libarchive/libarchive\archive.h:39:10: fatal error: 'sys/stat.h' file not found
 ```
 
 the MSVC environment is present for CMake, but libclang is not seeing the same
-MSVC/UCRT include directories while generating Rust bindings. Z-Manager patches
-`libarchive2-sys` locally for this because upstream `0.2.0` treats every
-Windows build as `x86_64-pc-windows-gnu` during bindgen. The local patch uses
-the actual MSVC target, reads the Visual Studio include paths from `INCLUDE`,
-and keeps the vcpkg library path target-aware.
+MSVC/UCRT include directories while generating Rust bindings. Windows builds use
+Z-Manager's vendored `libarchive2-sys` patch through Cargo's `--config` option
+because upstream `0.2.0` treats every Windows build as
+`x86_64-pc-windows-gnu` during bindgen. The local patch uses the actual MSVC
+target, reads the Visual Studio include paths from `INCLUDE`, and keeps the
+vcpkg library path target-aware. The patch is not enabled from `Cargo.toml` so
+macOS and Linux continue to use the registry dependency graph that Homebrew and
+Linux package manager testing already validate.
 
 ## Expected libarchive Build Behavior
 
@@ -209,7 +213,9 @@ Windows CI is wired through `scripts/ci-windows.ps1`. The script:
 - installs vcpkg compression dependencies for the requested triplet;
 - sets `LIBCLANG_PATH`, `CMAKE_TOOLCHAIN_FILE`, `VCPKG_*`, `LIB`, and
   `INCLUDE`;
-- runs `cargo test --workspace --target <target>`.
+- runs `cargo test --config patch.crates-io.libarchive2-sys.path=... --workspace --target <target>`
+  so the Windows-only `libarchive2-sys` bindgen fix does not affect macOS or
+  Linux jobs.
 
 The CI matrix is:
 

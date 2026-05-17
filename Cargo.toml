@@ -19,6 +19,3 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
-
-[patch.crates-io]
-libarchive2-sys = { path = "vendor/rust/libarchive2-sys" }
