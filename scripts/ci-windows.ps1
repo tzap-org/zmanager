@@ -131,11 +131,27 @@ function Invoke-NativeLogged {
     )
 
     $logPath = Join-Path (Get-Location) $LogName
-    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-    $PSNativeCommandUseErrorActionPreference = $false
-    & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $logPath
-    $status = $LASTEXITCODE
-    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+    $previousErrorActionPreference = $ErrorActionPreference
+    $nativePreference = Get-Variable `
+        -Name PSNativeCommandUseErrorActionPreference `
+        -ErrorAction SilentlyContinue
+    $previousNativeErrorPreference = $null
+
+    if ($nativePreference) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $ErrorActionPreference = "Continue"
+        & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $logPath
+        $status = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($nativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
 
     if ($status -ne 0) {
         Write-GitHubFailure -Title $Title -LogPath $logPath
