@@ -238,9 +238,13 @@ fn link_vcpkg_libraries() -> Option<VcpkgLinkSearch> {
     let mut lib_dirs = Vec::new();
 
     if env::var("PROFILE").as_deref() == Ok(VCPKG_PROFILE_DEBUG) {
-        lib_dirs.push(installed_dir.join("debug").join("lib"));
+        let debug_lib_dir = installed_dir.join("debug").join("lib");
+        lib_dirs.push(debug_lib_dir.clone());
+        lib_dirs.push(debug_lib_dir.join("manual-link"));
     }
-    lib_dirs.push(installed_dir.join("lib"));
+    let release_lib_dir = installed_dir.join("lib");
+    lib_dirs.push(release_lib_dir.clone());
+    lib_dirs.push(release_lib_dir.join("manual-link"));
 
     for lib_dir in &lib_dirs {
         print_link_search(lib_dir);
