@@ -113,7 +113,7 @@ function Write-GitHubFailure {
     $message = $message.Replace("%", "%25")
     $message = $message.Replace("`r", "%0D")
     $message = $message.Replace("`n", "%0A")
-    Write-Host "::error title=$Title::$message"
+    Write-Host ("::error title={0}::{1}" -f $Title, $message)
 }
 
 function Invoke-NativeLogged {
