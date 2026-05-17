@@ -747,6 +747,7 @@ mod tests {
         assert!(status.success());
     }
 
+    #[cfg(unix)]
     fn write_tar_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
         let file = File::create(path).unwrap();
         let mut builder = tar::Builder::new(file);
