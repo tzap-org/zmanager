@@ -9,6 +9,18 @@ const ENV_VCPKG_ROOT: &str = "VCPKG_ROOT";
 const ENV_VCPKG_TARGET_TRIPLET: &str = "VCPKG_TARGET_TRIPLET";
 const VCPKG_TRIPLET_ARM64_WINDOWS_STATIC_MD: &str = "arm64-windows-static-md";
 const VCPKG_TRIPLET_X64_WINDOWS_STATIC_MD: &str = "x64-windows-static-md";
+const CMAKE_LZMA_API_STATIC: &str = "LZMA_API_STATIC";
+const CMAKE_USE_BZIP2_DLL: &str = "USE_BZIP2_DLL";
+const CMAKE_USE_BZIP2_STATIC: &str = "USE_BZIP2_STATIC";
+const CMAKE_WITHOUT_LZMA_API_STATIC: &str = "WITHOUT_LZMA_API_STATIC";
+const CMAKE_WITHOUT_ZLIB_DLL: &str = "WITHOUT_ZLIB_DLL";
+const CMAKE_ZLIB_DLL: &str = "ZLIB_DLL";
+const MSVC_DISABLE_BZIP2_DLL_IMPORT: &str = "/UUSE_BZIP2_DLL";
+const MSVC_DISABLE_LZ4_DLL_IMPORT: &str = "/DLZ4_DLL_IMPORT=0";
+const MSVC_DISABLE_ZSTD_DLL_IMPORT: &str = "/DZSTD_DLL_IMPORT=0";
+const MSVC_DISABLE_ZLIB_DLL_IMPORT: &str = "/UZLIB_DLL";
+const MSVC_ENABLE_BZIP2_STATIC: &str = "/DUSE_BZIP2_STATIC";
+const MSVC_ENABLE_LIBLZMA_STATIC: &str = "/DLZMA_API_STATIC";
 const VCPKG_BZIP2_LIB_NAMES: &[&str] = &["bz2", "bz2d"];
 const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto", "libcryptod"];
 const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma", "lzmad"];
@@ -122,6 +134,7 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
             .define("ENABLE_EXPAT", "OFF")
             .define("ENABLE_WIN32_XMLLITE", "ON")
             .define("ENABLE_CNG", "ON");
+        configure_windows_static_vcpkg_dependencies(config);
     } else {
         config
             .define("ENABLE_ACL", "ON")
@@ -131,6 +144,26 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
             .define("ENABLE_EXPAT", "ON")
             .define("ENABLE_WIN32_XMLLITE", "OFF");
     }
+}
+
+fn configure_windows_static_vcpkg_dependencies(config: &mut cmake::Config) {
+    if !vcpkg_triplet_uses_static_libraries() {
+        return;
+    }
+
+    config
+        .define(CMAKE_ZLIB_DLL, "OFF")
+        .define(CMAKE_WITHOUT_ZLIB_DLL, "ON")
+        .define(CMAKE_USE_BZIP2_DLL, "OFF")
+        .define(CMAKE_USE_BZIP2_STATIC, "ON")
+        .define(CMAKE_WITHOUT_LZMA_API_STATIC, "OFF")
+        .define(CMAKE_LZMA_API_STATIC, "ON")
+        .cflag(MSVC_DISABLE_ZLIB_DLL_IMPORT)
+        .cflag(MSVC_DISABLE_BZIP2_DLL_IMPORT)
+        .cflag(MSVC_ENABLE_BZIP2_STATIC)
+        .cflag(MSVC_ENABLE_LIBLZMA_STATIC)
+        .cflag(MSVC_DISABLE_LZ4_DLL_IMPORT)
+        .cflag(MSVC_DISABLE_ZSTD_DLL_IMPORT);
 }
 
 fn configure_vcpkg(config: &mut cmake::Config, target: &str) {
@@ -308,6 +341,10 @@ fn configured_vcpkg_triplet() -> String {
 fn windows_msvc_uses_static_crt() -> bool {
     let triplet = configured_vcpkg_triplet();
     triplet.ends_with("-static") && !triplet.ends_with("-static-md")
+}
+
+fn vcpkg_triplet_uses_static_libraries() -> bool {
+    configured_vcpkg_triplet().contains("-static")
 }
 
 fn print_link_search(path: impl AsRef<Path>) {
