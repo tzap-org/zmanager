@@ -111,13 +111,13 @@ jobs:
           - name: Windows x64 MSVC
             runner: windows-2025
             target: x86_64-pc-windows-msvc
-            triplet: x64-windows
+            triplet: x64-windows-static-md
             vcarch: x64
             component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
           - name: Windows ARM64 MSVC
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-            triplet: arm64-windows
+            triplet: arm64-windows-static-md
             vcarch: arm64
             component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
 

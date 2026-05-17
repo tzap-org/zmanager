@@ -56,9 +56,10 @@ The release workflow publishes these archives when a `v*` tag is created:
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 
 Each archive contains the `zm` executable, `README.md`, `LICENSE`, and
-`THIRD_PARTY_NOTICES.md`. Windows archives also include the runtime DLLs needed
-by the packaged executable. Every release also includes a `SHA256SUMS` file for
-download verification.
+`THIRD_PARTY_NOTICES.md`. Windows archives are built with vcpkg static-library
+triplets so third-party compression and crypto libraries are linked into
+`zm.exe`. Every release also includes a `SHA256SUMS` file for download
+verification.
 
 ### Homebrew
 

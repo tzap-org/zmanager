@@ -13,7 +13,9 @@ param(
 
     [switch]$Package,
 
-    [string]$OutDir = "dist"
+    [string]$OutDir = "dist",
+
+    [string]$VcpkgRoot = "C:\vcpkg"
 )
 
 $ErrorActionPreference = "Stop"
@@ -138,19 +140,18 @@ function Invoke-NativeLogged {
 }
 
 function Ensure-Vcpkg {
-    $vcpkgRoot = "C:\vcpkg"
-    $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
+    $vcpkg = Join-Path $VcpkgRoot "vcpkg.exe"
 
     if (-not (Test-Path $vcpkg)) {
         Invoke-NativeLogged `
             -Title "vcpkg clone failed" `
             -LogName "vcpkg-clone.log" `
             -FilePath "git" `
-            -Arguments @("clone", "https://github.com/microsoft/vcpkg", $vcpkgRoot)
+            -Arguments @("clone", "https://github.com/microsoft/vcpkg", $VcpkgRoot)
         Invoke-NativeLogged `
             -Title "vcpkg bootstrap failed" `
             -LogName "vcpkg-bootstrap.log" `
-            -FilePath (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat")
+            -FilePath (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat")
     }
 
     Invoke-NativeLogged `
@@ -169,18 +170,18 @@ function Ensure-Vcpkg {
 
     [Environment]::SetEnvironmentVariable(
         "CMAKE_TOOLCHAIN_FILE",
-        (Join-Path $vcpkgRoot "scripts\buildsystems\vcpkg.cmake"),
+        (Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"),
         "Process"
     )
-    [Environment]::SetEnvironmentVariable("VCPKG_INSTALLATION_ROOT", $vcpkgRoot, "Process")
+    [Environment]::SetEnvironmentVariable("VCPKG_INSTALLATION_ROOT", $VcpkgRoot, "Process")
     [Environment]::SetEnvironmentVariable("VCPKG_DEFAULT_TRIPLET", $Triplet, "Process")
     [Environment]::SetEnvironmentVariable("VCPKG_TARGET_TRIPLET", $Triplet, "Process")
 
-    $libraryPath = Join-Path $vcpkgRoot "installed\$Triplet\lib"
-    $debugLibraryPath = Join-Path $vcpkgRoot "installed\$Triplet\debug\lib"
-    $runtimePath = Join-Path $vcpkgRoot "installed\$Triplet\bin"
-    $debugRuntimePath = Join-Path $vcpkgRoot "installed\$Triplet\debug\bin"
-    $includePath = Join-Path $vcpkgRoot "installed\$Triplet\include"
+    $libraryPath = Join-Path $VcpkgRoot "installed\$Triplet\lib"
+    $debugLibraryPath = Join-Path $VcpkgRoot "installed\$Triplet\debug\lib"
+    $runtimePath = Join-Path $VcpkgRoot "installed\$Triplet\bin"
+    $debugRuntimePath = Join-Path $VcpkgRoot "installed\$Triplet\debug\bin"
+    $includePath = Join-Path $VcpkgRoot "installed\$Triplet\include"
     $currentLibraryPath = [Environment]::GetEnvironmentVariable("LIB", "Process")
     $currentIncludePath = [Environment]::GetEnvironmentVariable("INCLUDE", "Process")
     [Environment]::SetEnvironmentVariable("LIB", ($debugLibraryPath + ";" + $libraryPath + ";" + $currentLibraryPath), "Process")
@@ -237,7 +238,11 @@ function Copy-VcpkgRuntimeDlls {
         [string]$Stage
     )
 
-    $runtimePath = Join-Path "C:\vcpkg" "installed\$Triplet\bin"
+    if ($Triplet -like "*-static*") {
+        return
+    }
+
+    $runtimePath = Join-Path $VcpkgRoot "installed\$Triplet\bin"
     if (-not (Test-Path $runtimePath)) {
         return
     }

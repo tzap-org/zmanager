@@ -7,6 +7,8 @@ const ENV_VCPKG_DEFAULT_TRIPLET: &str = "VCPKG_DEFAULT_TRIPLET";
 const ENV_VCPKG_INSTALLATION_ROOT: &str = "VCPKG_INSTALLATION_ROOT";
 const ENV_VCPKG_ROOT: &str = "VCPKG_ROOT";
 const ENV_VCPKG_TARGET_TRIPLET: &str = "VCPKG_TARGET_TRIPLET";
+const VCPKG_TRIPLET_ARM64_WINDOWS_STATIC_MD: &str = "arm64-windows-static-md";
+const VCPKG_TRIPLET_X64_WINDOWS_STATIC_MD: &str = "x64-windows-static-md";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZMANAGER_LIBARCHIVE_SYSTEM");
@@ -84,14 +86,17 @@ fn configure_common_libarchive_options(config: &mut cmake::Config) {
 
 fn configure_target_options(config: &mut cmake::Config, target: &str) {
     if target.contains("windows") {
+        let static_crt = windows_msvc_uses_static_crt();
+        let runtime_library = if static_crt {
+            "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        } else {
+            "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        };
         config
             .define("ENABLE_ACL", "ON")
             .define("ENABLE_XATTR", "ON")
-            .define("MSVC_USE_STATIC_CRT", "ON")
-            .define(
-                "CMAKE_MSVC_RUNTIME_LIBRARY",
-                "MultiThreaded$<$<CONFIG:Debug>:Debug>",
-            )
+            .define("MSVC_USE_STATIC_CRT", if static_crt { "ON" } else { "OFF" })
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", runtime_library)
             .define("ENABLE_ICONV", "OFF")
             .define("ENABLE_LIBXML2", "OFF")
             .define("ENABLE_EXPAT", "OFF")
@@ -185,7 +190,11 @@ fn link_bundled_archive_dependencies(target: &str) {
         link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["lz4"]);
         link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["libcrypto"]);
         println!("cargo:rustc-link-lib=bcrypt");
+        println!("cargo:rustc-link-lib=crypt32");
         println!("cargo:rustc-link-lib=advapi32");
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=user32");
+        println!("cargo:rustc-link-lib=gdi32");
         println!("cargo:rustc-link-lib=xmllite");
         println!("cargo:rustc-link-lib=ole32");
     } else if target.contains("windows") {
@@ -212,9 +221,7 @@ fn link_common_unix_libraries() {
 
 fn link_vcpkg_libraries() -> Option<PathBuf> {
     let vcpkg_root = vcpkg_root()?;
-    let triplet = env::var(ENV_VCPKG_TARGET_TRIPLET)
-        .or_else(|_| env::var(ENV_VCPKG_DEFAULT_TRIPLET))
-        .unwrap_or_else(|_| default_vcpkg_triplet());
+    let triplet = configured_vcpkg_triplet();
     let lib_dir = vcpkg_root.join("installed").join(triplet).join("lib");
     print_link_search(&lib_dir);
     Some(lib_dir)
@@ -239,10 +246,21 @@ fn link_windows_vcpkg_library(vcpkg_lib_dir: Option<&Path>, candidates: &[&str])
 fn default_vcpkg_triplet() -> String {
     let target = env::var("TARGET").unwrap_or_default();
     if target.starts_with("aarch64") {
-        "arm64-windows".to_owned()
+        VCPKG_TRIPLET_ARM64_WINDOWS_STATIC_MD.to_owned()
     } else {
-        "x64-windows".to_owned()
+        VCPKG_TRIPLET_X64_WINDOWS_STATIC_MD.to_owned()
     }
+}
+
+fn configured_vcpkg_triplet() -> String {
+    env::var(ENV_VCPKG_TARGET_TRIPLET)
+        .or_else(|_| env::var(ENV_VCPKG_DEFAULT_TRIPLET))
+        .unwrap_or_else(|_| default_vcpkg_triplet())
+}
+
+fn windows_msvc_uses_static_crt() -> bool {
+    let triplet = configured_vcpkg_triplet();
+    triplet.ends_with("-static") && !triplet.ends_with("-static-md")
 }
 
 fn print_link_search(path: impl AsRef<Path>) {
