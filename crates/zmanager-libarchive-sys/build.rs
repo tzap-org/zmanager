@@ -142,13 +142,13 @@ fn link_bundled_archive_dependencies(target: &str) {
         println!("cargo:rustc-link-lib=crypto");
         println!("cargo:rustc-link-lib=acl");
     } else if target.contains("windows") && target.contains("msvc") {
-        link_vcpkg_libraries();
-        println!("cargo:rustc-link-lib=zlib");
-        println!("cargo:rustc-link-lib=bz2");
-        println!("cargo:rustc-link-lib=lzma");
-        println!("cargo:rustc-link-lib=zstd");
-        println!("cargo:rustc-link-lib=lz4");
-        println!("cargo:rustc-link-lib=libcrypto");
+        let vcpkg_lib_dir = link_vcpkg_libraries();
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["zlib", "z"]);
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["bz2"]);
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["lzma"]);
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["zstd"]);
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["lz4"]);
+        link_windows_vcpkg_library(&vcpkg_lib_dir, &["libcrypto"]);
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=advapi32");
         println!("cargo:rustc-link-lib=xmllite");
@@ -175,14 +175,32 @@ fn link_common_unix_libraries() {
     println!("cargo:rustc-link-lib=lz4");
 }
 
-fn link_vcpkg_libraries() {
+fn link_vcpkg_libraries() -> Option<PathBuf> {
     let Some(vcpkg_root) = vcpkg_root() else {
-        return;
+        return None;
     };
     let triplet = env::var("VCPKG_TARGET_TRIPLET")
         .or_else(|_| env::var("VCPKG_DEFAULT_TRIPLET"))
         .unwrap_or_else(|_| default_vcpkg_triplet());
-    print_link_search(vcpkg_root.join("installed").join(triplet).join("lib"));
+    let lib_dir = vcpkg_root.join("installed").join(triplet).join("lib");
+    print_link_search(&lib_dir);
+    Some(lib_dir)
+}
+
+fn link_windows_vcpkg_library(vcpkg_lib_dir: &Option<PathBuf>, candidates: &[&str]) {
+    let Some(lib_dir) = vcpkg_lib_dir else {
+        println!("cargo:rustc-link-lib={}", candidates[0]);
+        return;
+    };
+
+    for candidate in candidates {
+        if lib_dir.join(format!("{candidate}.lib")).exists() {
+            println!("cargo:rustc-link-lib={candidate}");
+            return;
+        }
+    }
+
+    println!("cargo:rustc-link-lib={}", candidates[0]);
 }
 
 fn default_vcpkg_triplet() -> String {
