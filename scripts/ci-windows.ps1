@@ -170,7 +170,7 @@ function Ensure-Llvm {
     }
 
     $env:LIBCLANG_PATH = $llvmBin
-    $env:Path = "$llvmBin;$env:Path"
+    $env:Path = "{0};{1}" -f $llvmBin, $env:Path
     Write-Host "Using LLVM at $llvmBin"
 }
 
@@ -208,8 +208,8 @@ function Ensure-Vcpkg {
     $env:VCPKG_INSTALLATION_ROOT = $vcpkgRoot
     $env:VCPKG_DEFAULT_TRIPLET = $Triplet
     $env:VCPKG_TARGET_TRIPLET = $Triplet
-    $env:LIB = "$vcpkgRoot\installed\$Triplet\lib;$env:LIB"
-    $env:INCLUDE = "$vcpkgRoot\installed\$Triplet\include;$env:INCLUDE"
+    $env:LIB = "{0}\installed\{1}\lib;{2}" -f $vcpkgRoot, $Triplet, $env:LIB
+    $env:INCLUDE = "{0}\installed\{1}\include;{2}" -f $vcpkgRoot, $Triplet, $env:INCLUDE
 }
 
 function Invoke-CargoTest {
@@ -238,7 +238,7 @@ Write-Host "cmake:"
 cmake --version
 Write-Host "clang:"
 clang --version
-Write-Host "INCLUDE=$env:INCLUDE"
+Write-Host ("INCLUDE={0}" -f $env:INCLUDE)
 
 Invoke-NativeLogged `
     -Title "rustup toolchain install failed for $Target" `
