@@ -9,6 +9,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const TEMP_OUTPUT_PREFIX: &str = ".zmanager";
+const TEMP_OUTPUT_SUFFIX: &str = ".tmp";
+const RAW_STREAM_TEMP_EXTENSION: &str = "tmp.Z";
+
+pub const RAW_STREAM_SUFFIXES: &[&str] = &[
+    ".zst", ".gz", ".bz2", ".xz", ".lzma", ".lz", ".br", ".lz4", ".lzo", ".Z", ".lrz",
+];
+
 /// A raw single-file compression stream.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RawStreamFormat {
@@ -55,7 +63,8 @@ impl RawStreamFormat {
         }
     }
 
-    const fn suffixes(self) -> &'static [&'static str] {
+    #[must_use]
+    pub const fn suffixes(self) -> &'static [&'static str] {
         match self {
             Self::Zstd => &[".zst"],
             Self::Gzip => &[".gz"],
@@ -71,6 +80,20 @@ impl RawStreamFormat {
         }
     }
 }
+
+pub const RAW_STREAM_FORMATS: &[RawStreamFormat] = &[
+    RawStreamFormat::Zstd,
+    RawStreamFormat::Gzip,
+    RawStreamFormat::Bzip2,
+    RawStreamFormat::Xz,
+    RawStreamFormat::Lzma,
+    RawStreamFormat::Lzip,
+    RawStreamFormat::Brotli,
+    RawStreamFormat::Lz4,
+    RawStreamFormat::Lzo,
+    RawStreamFormat::UnixCompress,
+    RawStreamFormat::Lrzip,
+];
 
 /// Extraction report for a raw single-file stream.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -171,21 +194,7 @@ pub fn detect_raw_stream_format(path: impl AsRef<Path>) -> Option<RawStreamForma
         return None;
     }
 
-    [
-        RawStreamFormat::Zstd,
-        RawStreamFormat::Gzip,
-        RawStreamFormat::Bzip2,
-        RawStreamFormat::Xz,
-        RawStreamFormat::Lzma,
-        RawStreamFormat::Lzip,
-        RawStreamFormat::Brotli,
-        RawStreamFormat::Lz4,
-        RawStreamFormat::Lzo,
-        RawStreamFormat::UnixCompress,
-        RawStreamFormat::Lrzip,
-    ]
-    .into_iter()
-    .find(|format| {
+    RAW_STREAM_FORMATS.iter().copied().find(|format| {
         format
             .suffixes()
             .iter()
@@ -228,12 +237,16 @@ pub fn extract_raw_stream(
         }
     })?;
 
-    fs::create_dir_all(destination).map_err(|source| RawStreamError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| {
+            RawStreamError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
 
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let max_expanded_bytes = policy.limits.max_expanded_bytes;
+    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut report = RawStreamExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -244,6 +257,8 @@ pub fn extract_raw_stream(
     let entry = ExtractionEntry {
         archive_path: output_name,
         kind: ExtractionEntryKind::File,
+        uncompressed_size: None,
+        compressed_size: archive_path.metadata().ok().map(|metadata| metadata.len()),
     };
 
     match planner.validate_entry(&entry)? {
@@ -257,6 +272,7 @@ pub fn extract_raw_stream(
                 format,
                 &destination_path,
                 replace_existing,
+                max_expanded_bytes,
             )?;
             report.written_entries = 1;
             report.written_bytes = written_bytes;
@@ -318,6 +334,7 @@ fn write_raw_stream_to_file(
     format: RawStreamFormat,
     destination_path: &Path,
     replace_existing: bool,
+    max_expanded_bytes: Option<u64>,
 ) -> Result<u64, RawStreamError> {
     if let Some(parent) = destination_path.parent() {
         fs::create_dir_all(parent).map_err(|source| RawStreamError::Io {
@@ -331,6 +348,7 @@ fn write_raw_stream_to_file(
         path: temp_path.clone(),
         source,
     })?;
+    let mut output = SizeLimitWriter::new(&mut output, max_expanded_bytes);
     let written = match copy_raw_stream_to_writer(archive_path, format, &mut output) {
         Ok(written) => written,
         Err(error) => {
@@ -390,7 +408,10 @@ fn open_decoder(
                 source,
             }),
         RawStreamFormat::Lzip => Ok(Box::new(lzma_rust2::LzipReader::new(reader))),
-        RawStreamFormat::Brotli => Ok(Box::new(brotli::Decompressor::new(reader, 128 * 1024))),
+        RawStreamFormat::Brotli => Ok(Box::new(brotli::Decompressor::new(
+            reader,
+            crate::DEFAULT_IO_BUFFER_BYTES,
+        ))),
         RawStreamFormat::Lz4 => Ok(Box::new(lz4_flex::frame::FrameDecoder::new(reader))),
         RawStreamFormat::Lzo | RawStreamFormat::UnixCompress | RawStreamFormat::Lrzip => {
             Err(RawStreamError::ExternalToolFailed {
@@ -411,6 +432,52 @@ fn external_stream_tool(format: RawStreamFormat) -> Option<ExternalStreamTool> {
         }),
         _ => None,
     }
+}
+
+struct SizeLimitWriter<'a, W> {
+    inner: &'a mut W,
+    max_bytes: Option<u64>,
+    written_bytes: u64,
+}
+
+impl<'a, W> SizeLimitWriter<'a, W> {
+    fn new(inner: &'a mut W, max_bytes: Option<u64>) -> Self {
+        Self {
+            inner,
+            max_bytes,
+            written_bytes: 0,
+        }
+    }
+}
+
+impl<W: Write> Write for SizeLimitWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(max_bytes) = self.max_bytes else {
+            return self.inner.write(buffer);
+        };
+        if self.written_bytes >= max_bytes {
+            return Err(expanded_size_limit_error(max_bytes, self.written_bytes));
+        }
+
+        let remaining = max_bytes - self.written_bytes;
+        let allowed = usize::try_from(remaining)
+            .ok()
+            .map_or(buffer.len(), |remaining| remaining.min(buffer.len()));
+        let written = self.inner.write(&buffer[..allowed])?;
+        self.written_bytes += written as u64;
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn expanded_size_limit_error(max_bytes: u64, written_bytes: u64) -> io::Error {
+    io::Error::other(format!(
+        "expanded stream reached {written_bytes} bytes, exceeding the {max_bytes} byte limit"
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -524,7 +591,8 @@ fn copy_unix_compress_to_writer<W: Write>(
     archive_path: &Path,
     output: &mut W,
 ) -> Result<u64, RawStreamError> {
-    let temp_input = temp_external_output_path("compress").with_extension("tmp.Z");
+    let temp_input =
+        temp_external_output_path("compress").with_extension(RAW_STREAM_TEMP_EXTENSION);
     let temp_output = temp_input.with_extension("");
     fs::copy(archive_path, &temp_input).map_err(|source| RawStreamError::Io {
         path: temp_input.clone(),
@@ -635,7 +703,10 @@ fn temp_destination_path(destination_path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("output");
 
-    destination_path.with_file_name(format!(".{file_name}.zm-tmp-{}-{now}", std::process::id()))
+    destination_path.with_file_name(format!(
+        "{TEMP_OUTPUT_PREFIX}-{file_name}-{}-{now}{TEMP_OUTPUT_SUFFIX}",
+        std::process::id()
+    ))
 }
 
 fn temp_external_output_path(label: &str) -> PathBuf {
@@ -643,7 +714,7 @@ fn temp_external_output_path(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     std::env::temp_dir().join(format!(
-        ".zmanager-{label}-{}-{now}.tmp",
+        "{TEMP_OUTPUT_PREFIX}-{label}-{}-{now}{TEMP_OUTPUT_SUFFIX}",
         std::process::id()
     ))
 }
@@ -666,7 +737,14 @@ fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RawStreamFormat, detect_raw_stream_format, output_name_for_raw_stream};
+    use super::{
+        RawStreamFormat, detect_raw_stream_format, extract_raw_stream, output_name_for_raw_stream,
+    };
+    use crate::safety::{ExtractionLimits, ExtractionPolicy};
+    use std::fs::{self, File};
+    use std::io::Write as _;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn detects_raw_streams_but_not_compressed_archives() {
@@ -701,5 +779,56 @@ mod tests {
             output_name_for_raw_stream(".zst", RawStreamFormat::Zstd),
             None
         );
+    }
+
+    #[test]
+    fn extraction_enforces_expanded_size_limit() {
+        let temp = TestDir::new("raw_stream_expanded_size_limit");
+        let archive = temp.path("payload.txt.zst");
+        let file = File::create(&archive).unwrap();
+        let mut encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+        encoder.write_all(b"0123456789abcdef").unwrap();
+        encoder.finish().unwrap();
+        let policy = ExtractionPolicy {
+            limits: ExtractionLimits {
+                max_expanded_bytes: Some(8),
+                max_entry_expansion_ratio: None,
+            },
+            ..ExtractionPolicy::default()
+        };
+
+        let error = extract_raw_stream(&archive, RawStreamFormat::Zstd, temp.path("out"), policy)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("expanded stream reached"));
+        assert!(!temp.path("out/payload.txt").exists());
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+
+            Self { root }
+        }
+
+        fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
+            self.root.join(relative)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }

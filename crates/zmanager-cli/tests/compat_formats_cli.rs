@@ -586,6 +586,7 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
     };
     let temp = TestDir::new("compat_compressed_tar");
     create_project_payload(&temp);
+    let mut archives = Vec::new();
 
     let tar_archive = temp.path("payload.tar");
     let create_tar = Command::new(&bsdtar)
@@ -598,99 +599,116 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
         .unwrap();
     assert_success("bsdtar creates source tar", &create_tar);
 
-    create_stdout_archive(
+    if create_stdout_archive_with_optional_tool(
+        "gzip",
         "gzip compresses tar",
-        Command::new(require_tool("gzip"))
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.gz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.gz".to_owned(), temp.path("payload.tar.gz")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "bzip2",
         "bzip2 compresses tar",
-        Command::new(require_tool("bzip2"))
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.bz2"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.bz2".to_owned(), temp.path("payload.tar.bz2")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "xz",
         "xz compresses tar",
-        Command::new(require_tool("xz")).arg("-c").arg(&tar_archive),
+        |command| {
+            command.arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.xz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.xz".to_owned(), temp.path("payload.tar.xz")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "xz",
         "xz lzma compresses tar",
-        Command::new(require_tool("xz"))
-            .arg("--format=lzma")
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("--format=lzma").arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.lzma"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.lzma".to_owned(), temp.path("payload.tar.lzma")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "zstd",
         "zstd compresses tar",
-        Command::new(require_tool("zstd"))
-            .arg("-q")
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("-q").arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.zst"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.zst".to_owned(), temp.path("payload.tar.zst")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "lzip",
         "lzip compresses tar",
-        Command::new(require_tool("lzip"))
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.lz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push(("payload.tar.lz".to_owned(), temp.path("payload.tar.lz")));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "lzop",
         "lzop compresses tar",
-        Command::new(require_tool("lzop"))
-            .arg("-c")
-            .arg(&tar_archive),
+        |command| {
+            command.arg("-c").arg(&tar_archive);
+        },
         &temp.path("payload.tar.lzo"),
-    );
+    ) {
+        archives.push(("payload.tar.lzo".to_owned(), temp.path("payload.tar.lzo")));
+    }
     let compress_input = temp.path("payload-compress.tar");
     fs::copy(&tar_archive, &compress_input).unwrap();
-    let compress = Command::new(require_tool("compress"))
-        .arg("-f")
-        .arg(&compress_input)
-        .output()
-        .unwrap();
-    assert_success("compress creates tar.Z", &compress);
-    let compress_archive = temp.path("payload-compress.tar.Z");
+    if run_optional_tool("compress", "compress creates tar.Z", |command| {
+        command.arg("-f").arg(&compress_input);
+    }) {
+        archives.push((
+            "payload-compress.tar.Z".to_owned(),
+            temp.path("payload-compress.tar.Z"),
+        ));
+    }
 
     let lz4_archive = temp.path("payload.tar.lz4");
-    let lz4 = Command::new(require_tool("lz4"))
-        .arg("-q")
-        .arg("-f")
-        .arg(&tar_archive)
-        .arg(&lz4_archive)
-        .output()
-        .unwrap();
-    assert_success("lz4 compresses tar", &lz4);
+    if run_optional_tool("lz4", "lz4 compresses tar", |command| {
+        command
+            .arg("-q")
+            .arg("-f")
+            .arg(&tar_archive)
+            .arg(&lz4_archive);
+    }) {
+        archives.push(("payload.tar.lz4".to_owned(), lz4_archive));
+    }
 
     let lrzip_archive = temp.path("payload.tar.lrz");
-    let lrzip = Command::new(require_tool("lrzip"))
-        .arg("-q")
-        .arg("-o")
-        .arg(&lrzip_archive)
-        .arg(&tar_archive)
-        .output()
-        .unwrap();
-    assert_success("lrzip compresses tar", &lrzip);
-
-    for archive in [
-        "payload.tar.gz",
-        "payload.tar.bz2",
-        "payload.tar.xz",
-        "payload.tar.lzma",
-        "payload.tar.zst",
-        "payload.tar.lz",
-        "payload.tar.lzo",
-        "payload.tar.lz4",
-        "payload.tar.lrz",
-    ] {
-        assert_zm_extracts_payload(archive, &temp.path(archive), PAYLOAD);
+    if run_optional_tool("lrzip", "lrzip compresses tar", |command| {
+        command
+            .arg("-q")
+            .arg("-o")
+            .arg(&lrzip_archive)
+            .arg(&tar_archive);
+    }) {
+        archives.push(("payload.tar.lrz".to_owned(), lrzip_archive));
     }
-    assert_zm_extracts_payload("payload-compress.tar.Z", &compress_archive, PAYLOAD);
+
+    assert!(
+        !archives.is_empty(),
+        "no compressed tar creator tools were available"
+    );
+    for (label, archive) in archives {
+        assert_zm_extracts_payload(&label, &archive, PAYLOAD);
+    }
 }
 
 #[test]
@@ -698,144 +716,213 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
 fn competitor_raw_single_file_streams_extract_with_zm() {
     let temp = TestDir::new("compat_raw_streams");
     fs::write(temp.path("payload.txt"), PAYLOAD).unwrap();
+    let mut archives = Vec::new();
 
-    create_stdout_archive(
+    let zstd_archive = temp.path("payload.txt.zst");
+    if create_stdout_archive_with_optional_tool(
+        "zstd",
         "zstd compresses raw file",
-        Command::new(require_tool("zstd"))
-            .arg("-q")
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
-        &temp.path("payload.txt.zst"),
-    );
-    create_stdout_archive(
+        |command| {
+            command.arg("-q").arg("-c").arg(temp.path("payload.txt"));
+        },
+        &zstd_archive,
+    ) {
+        archives.push((
+            "payload.txt.zst".to_owned(),
+            zstd_archive.clone(),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "gzip",
         "gzip compresses raw file",
-        Command::new(require_tool("gzip"))
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.gz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.gz".to_owned(),
+            temp.path("payload.txt.gz"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "bzip2",
         "bzip2 compresses raw file",
-        Command::new(require_tool("bzip2"))
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.bz2"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.bz2".to_owned(),
+            temp.path("payload.txt.bz2"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "xz",
         "xz compresses raw file",
-        Command::new(require_tool("xz"))
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.xz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.xz".to_owned(),
+            temp.path("payload.txt.xz"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "xz",
         "xz lzma compresses raw file",
-        Command::new(require_tool("xz"))
-            .arg("--format=lzma")
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command
+                .arg("--format=lzma")
+                .arg("-c")
+                .arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.lzma"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.lzma".to_owned(),
+            temp.path("payload.txt.lzma"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "lzip",
         "lzip compresses raw file",
-        Command::new(require_tool("lzip"))
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.lz"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.lz".to_owned(),
+            temp.path("payload.txt.lz"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "brotli",
         "brotli compresses raw file",
-        Command::new(require_tool("brotli"))
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.br"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.br".to_owned(),
+            temp.path("payload.txt.br"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "lz4",
         "lz4 compresses raw file",
-        Command::new(require_tool("lz4"))
-            .arg("-q")
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-q").arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.lz4"),
-    );
-    create_stdout_archive(
+    ) {
+        archives.push((
+            "payload.txt.lz4".to_owned(),
+            temp.path("payload.txt.lz4"),
+            "payload.txt",
+        ));
+    }
+    if create_stdout_archive_with_optional_tool(
+        "lzop",
         "lzop compresses raw file",
-        Command::new(require_tool("lzop"))
-            .arg("-q")
-            .arg("-c")
-            .arg(temp.path("payload.txt")),
+        |command| {
+            command.arg("-q").arg("-c").arg(temp.path("payload.txt"));
+        },
         &temp.path("payload.txt.lzo"),
-    );
+    ) {
+        archives.push((
+            "payload.txt.lzo".to_owned(),
+            temp.path("payload.txt.lzo"),
+            "payload.txt",
+        ));
+    }
     let compress_dir = temp.path("compress-raw");
     fs::create_dir_all(&compress_dir).unwrap();
     fs::write(compress_dir.join("payload.txt"), PAYLOAD).unwrap();
-    let compress = Command::new(require_tool("compress"))
-        .arg("-f")
-        .arg(compress_dir.join("payload.txt"))
-        .output()
-        .unwrap();
-    assert_success("compress creates raw .Z", &compress);
     let compress_archive = compress_dir.join("payload.txt.Z");
-    let lrzip = Command::new(require_tool("lrzip"))
-        .arg("-q")
-        .arg("-o")
-        .arg(temp.path("payload.txt.lrz"))
-        .arg(temp.path("payload.txt"))
-        .output()
-        .unwrap();
-    assert_success("lrzip compresses raw file", &lrzip);
-
-    for archive in [
-        "payload.txt.zst",
-        "payload.txt.gz",
-        "payload.txt.bz2",
-        "payload.txt.xz",
-        "payload.txt.lzma",
-        "payload.txt.lz",
-        "payload.txt.br",
-        "payload.txt.lz4",
-        "payload.txt.lzo",
-        "payload.txt.lrz",
-    ] {
-        assert_zm_extracts_raw_file(archive, &temp.path(archive), "payload.txt", PAYLOAD);
+    if run_optional_tool("compress", "compress creates raw .Z", |command| {
+        command.arg("-f").arg(compress_dir.join("payload.txt"));
+    }) {
+        archives.push((
+            "payload.txt.Z".to_owned(),
+            compress_archive.clone(),
+            "payload.txt",
+        ));
     }
-    assert_zm_extracts_raw_file("payload.txt.Z", &compress_archive, "payload.txt", PAYLOAD);
+    let lrzip_archive = temp.path("payload.txt.lrz");
+    if run_optional_tool("lrzip", "lrzip compresses raw file", |command| {
+        command
+            .arg("-q")
+            .arg("-o")
+            .arg(&lrzip_archive)
+            .arg(temp.path("payload.txt"));
+    }) {
+        archives.push((
+            "payload.txt.lrz".to_owned(),
+            lrzip_archive.clone(),
+            "payload.txt",
+        ));
+    }
 
-    let stdout = Command::new(zm_path())
-        .arg("extract")
-        .arg(temp.path("payload.txt.zst"))
-        .arg("--to-stdout")
-        .output()
-        .unwrap();
-    assert_success("zm extract raw zst to stdout", &stdout);
-    assert_eq!(stdout.stdout, PAYLOAD);
-    let lrzip_stdout = Command::new(zm_path())
-        .arg("extract")
-        .arg(temp.path("payload.txt.lrz"))
-        .arg("--to-stdout")
-        .output()
-        .unwrap();
-    assert_success("zm extract raw lrz to stdout", &lrzip_stdout);
-    assert_eq!(lrzip_stdout.stdout, PAYLOAD);
-
-    let list = Command::new(zm_path())
-        .arg("list")
-        .arg(temp.path("payload.txt.zst"))
-        .output()
-        .unwrap();
-    assert_success("zm list raw zst", &list);
     assert!(
-        String::from_utf8_lossy(&list.stdout).contains("payload.txt"),
-        "raw stream listing did not include payload.txt\nstdout:\n{}",
-        String::from_utf8_lossy(&list.stdout)
+        !archives.is_empty(),
+        "no raw stream creator tools were available"
     );
+    for (label, archive, output_name) in archives {
+        assert_zm_extracts_raw_file(&label, &archive, output_name, PAYLOAD);
+    }
 
-    let test = Command::new(zm_path())
-        .arg("test")
-        .arg(temp.path("payload.txt.zst"))
-        .output()
-        .unwrap();
-    assert_success("zm test raw zst", &test);
+    if zstd_archive.exists() {
+        let stdout = Command::new(zm_path())
+            .arg("extract")
+            .arg(&zstd_archive)
+            .arg("--to-stdout")
+            .output()
+            .unwrap();
+        assert_success("zm extract raw zst to stdout", &stdout);
+        assert_eq!(stdout.stdout, PAYLOAD);
+
+        let list = Command::new(zm_path())
+            .arg("list")
+            .arg(&zstd_archive)
+            .output()
+            .unwrap();
+        assert_success("zm list raw zst", &list);
+        assert!(
+            String::from_utf8_lossy(&list.stdout).contains("payload.txt"),
+            "raw stream listing did not include payload.txt\nstdout:\n{}",
+            String::from_utf8_lossy(&list.stdout)
+        );
+
+        let test = Command::new(zm_path())
+            .arg("test")
+            .arg(&zstd_archive)
+            .output()
+            .unwrap();
+        assert_success("zm test raw zst", &test);
+    }
+    if lrzip_archive.exists() {
+        let lrzip_stdout = Command::new(zm_path())
+            .arg("extract")
+            .arg(&lrzip_archive)
+            .arg("--to-stdout")
+            .output()
+            .unwrap();
+        assert_success("zm extract raw lrz to stdout", &lrzip_stdout);
+        assert_eq!(lrzip_stdout.stdout, PAYLOAD);
+    }
 }
 
 #[test]
@@ -844,14 +931,7 @@ fn raw_stream_extract_without_directory_writes_next_to_archive() {
     let source = temp.path("standalone.txt");
     let archive = temp.path("standalone.txt.zst");
     fs::write(&source, PAYLOAD).unwrap();
-    create_stdout_archive(
-        "zstd compresses standalone file",
-        Command::new(require_tool("zstd"))
-            .arg("-q")
-            .arg("-c")
-            .arg(&source),
-        &archive,
-    );
+    write_zstd_file(&archive, PAYLOAD);
     fs::remove_file(&source).unwrap();
 
     let output = Command::new(zm_path())
@@ -999,6 +1079,45 @@ fn create_stdout_archive(label: &str, command: &mut Command, archive: &Path) {
     let output_file = File::create(archive).unwrap();
     let output = command.stdout(Stdio::from(output_file)).output().unwrap();
     assert_success(label, &output);
+}
+
+fn create_stdout_archive_with_optional_tool(
+    binary: &str,
+    label: &str,
+    configure: impl FnOnce(&mut Command),
+    archive: &Path,
+) -> bool {
+    let Some(mut command) = optional_tool_command(binary, label) else {
+        return false;
+    };
+    configure(&mut command);
+    create_stdout_archive(label, &mut command, archive);
+    true
+}
+
+fn run_optional_tool(binary: &str, label: &str, configure: impl FnOnce(&mut Command)) -> bool {
+    let Some(mut command) = optional_tool_command(binary, label) else {
+        return false;
+    };
+    configure(&mut command);
+    let output = command.output().unwrap();
+    assert_success(label, &output);
+    true
+}
+
+fn optional_tool_command(binary: &str, label: &str) -> Option<Command> {
+    let Some(path) = find_on_path(binary) else {
+        eprintln!("skipping {label}: {binary} is not installed");
+        return None;
+    };
+    Some(Command::new(path))
+}
+
+fn write_zstd_file(path: &Path, contents: &[u8]) {
+    let file = File::create(path).unwrap();
+    let mut encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+    encoder.write_all(contents).unwrap();
+    encoder.finish().unwrap();
 }
 
 fn require_tool(binary: &str) -> PathBuf {

@@ -15,6 +15,7 @@ use std::fmt;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use zeroize::Zeroizing;
 
 const ERAR_SUCCESS: c_int = 0;
 const ERAR_NO_MEMORY: c_int = 11;
@@ -33,8 +34,12 @@ const ERAR_LARGE_DICT: c_int = 25;
 const ZMU_UNRAR_ABORTED: c_int = -1000;
 const ZMU_UNRAR_DESTINATION_TOO_LONG: c_int = -1001;
 
+const KIBIBYTE_BYTES: u64 = 1024;
+const MEBIBYTE_BYTES: u64 = 1024 * KIBIBYTE_BYTES;
+const MAX_LARGE_DICTIONARY_MIB: u64 = 512;
+
 /// Maximum RAR dictionary size accepted by the bundled `UnRAR` bridge.
-pub const MAX_LARGE_DICTIONARY_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_LARGE_DICTIONARY_BYTES: u64 = MAX_LARGE_DICTIONARY_MIB * MEBIBYTE_BYTES;
 
 const RHDF_ENCRYPTED: u32 = 0x04;
 const RHDF_SOLID: u32 = 0x10;
@@ -153,7 +158,7 @@ impl std::error::Error for UnrarError {}
 /// Returns whether a large RAR dictionary request is within Z-Manager's limit.
 #[must_use]
 pub fn large_dictionary_allowed_bytes(bytes: u64) -> bool {
-    let kilobytes = bytes.div_ceil(1024);
+    let kilobytes = bytes.div_ceil(KIBIBYTE_BYTES);
     unsafe { zmu_unrar_large_dictionary_allowed(kilobytes) == 1 }
 }
 
@@ -167,7 +172,7 @@ pub fn list_archive(
     password: Option<&str>,
 ) -> Result<Vec<RarEntry>, UnrarError> {
     let archive = path_to_cstring(archive.as_ref())?;
-    let password = optional_password_to_cstring(password)?;
+    let password = optional_password_to_c_buffer(password)?;
     let mut context = ListContext {
         entries: Vec::new(),
         error: None,
@@ -176,7 +181,7 @@ pub fn list_archive(
     let code = unsafe {
         zmu_unrar_list(
             archive.as_ptr(),
-            optional_c_string_ptr(password.as_ref()),
+            optional_c_buffer_ptr(password.as_ref()),
             ptr::from_mut(&mut context).cast::<c_void>(),
             list_callback,
         )
@@ -204,7 +209,7 @@ pub fn extract_selected(
     selections: &BTreeMap<String, PathBuf>,
 ) -> Result<(), UnrarError> {
     let archive = path_to_cstring(archive.as_ref())?;
-    let password = optional_password_to_cstring(password)?;
+    let password = optional_password_to_c_buffer(password)?;
     let mut context = ExtractContext {
         selections,
         error: None,
@@ -213,7 +218,7 @@ pub fn extract_selected(
     let code = unsafe {
         zmu_unrar_extract(
             archive.as_ptr(),
-            optional_c_string_ptr(password.as_ref()),
+            optional_c_buffer_ptr(password.as_ref()),
             ptr::from_mut(&mut context).cast::<c_void>(),
             extract_callback,
         )
@@ -374,20 +379,28 @@ fn destination_to_cstring(path: &Path) -> Result<CString, UnrarError> {
     })
 }
 
-fn optional_password_to_cstring(password: Option<&str>) -> Result<Option<CString>, UnrarError> {
+fn optional_password_to_c_buffer(
+    password: Option<&str>,
+) -> Result<Option<Zeroizing<Vec<u8>>>, UnrarError> {
     password
         .filter(|password| !password.is_empty())
         .map(|password| {
-            CString::new(password).map_err(|source| UnrarError::InvalidPath {
-                path: PathBuf::from("<password>"),
-                reason: source.to_string(),
-            })
+            if password.as_bytes().contains(&0) {
+                return Err(UnrarError::InvalidPath {
+                    path: PathBuf::from("<password>"),
+                    reason: "password contains a NUL byte".to_owned(),
+                });
+            }
+            let mut bytes = Vec::with_capacity(password.len() + 1);
+            bytes.extend_from_slice(password.as_bytes());
+            bytes.push(0);
+            Ok(Zeroizing::new(bytes))
         })
         .transpose()
 }
 
-fn optional_c_string_ptr(value: Option<&CString>) -> *const c_char {
-    value.map_or(ptr::null(), |value| value.as_ptr())
+fn optional_c_buffer_ptr(value: Option<&Zeroizing<Vec<u8>>>) -> *const c_char {
+    value.map_or(ptr::null(), |value| value.as_ptr().cast())
 }
 
 fn check_status(code: c_int) -> Result<(), UnrarError> {
@@ -421,7 +434,7 @@ const fn status_message(code: c_int) -> &'static str {
         ERAR_EWRITE => "write error",
         ERAR_MISSING_PASSWORD => "missing password",
         ERAR_BAD_PASSWORD => "bad password",
-        ERAR_LARGE_DICT => "large dictionary exceeds 512 MiB limit",
+        ERAR_LARGE_DICT => "large dictionary exceeds configured limit",
         ZMU_UNRAR_ABORTED => "operation aborted",
         ZMU_UNRAR_DESTINATION_TOO_LONG => "destination path too long",
         _ => "unknown error",

@@ -10,6 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use zmanager_unrar::{MAX_LARGE_DICTIONARY_BYTES, RarEntryKind, UnrarError};
 
+const LARGE_DICTIONARY_LIMIT_MIB: u64 = MAX_LARGE_DICTIONARY_BYTES / crate::MEBIBYTE_BYTES;
+
 /// One RAR listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RarListEntry {
@@ -106,8 +108,8 @@ impl fmt::Display for RarBackendError {
             ),
             Self::DictionaryTooLarge { path, size } => write!(
                 f,
-                "RAR dictionary exceeds 512 MiB limit for {path}: {} MiB",
-                size.div_ceil(1024 * 1024)
+                "RAR dictionary exceeds {LARGE_DICTIONARY_LIMIT_MIB} MiB limit for {path}: {} MiB",
+                size.div_ceil(crate::MEBIBYTE_BYTES)
             ),
         }
     }
@@ -177,17 +179,20 @@ pub fn extract_rar_with_password(
 ) -> Result<RarExtractReport, RarBackendError> {
     let archive = archive.as_ref();
     let destination = destination.as_ref();
-    fs::create_dir_all(destination).map_err(|source| RarBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| {
+            RarBackendError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
 
     let entries = zmanager_unrar::list_archive(archive, password)?;
     let PlannedRarExtraction {
         selections,
         deferred_links,
         mut report,
-    } = plan_rar_entries(entries, destination, policy)?;
+    } = plan_rar_entries(entries, &destination_root, policy)?;
 
     zmanager_unrar::extract_selected(archive, password, &selections)?;
     report.written_entries += selections.len();
@@ -232,6 +237,8 @@ fn plan_rar_entries(
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
             kind: extraction_kind,
+            uncompressed_size: Some(entry.unpacked_size),
+            compressed_size: None,
         };
 
         match planner.validate_entry(&safety_entry)? {

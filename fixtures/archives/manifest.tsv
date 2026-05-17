@@ -1,10 +1,10 @@
-# filename	format	extract	password	notes
-basic.zip	ZIP	true		ZIP Deflate fixture created by Z-Manager
-basic.7z	7Z	true		7Z LZMA2 solid fixture created by Z-Manager
-basic.tar.gz	TAR.GZ	true		Tar fixture compressed with gzip
-basic.tar.xz	TAR.XZ	true		Tar fixture compressed with xz
-basic.tar.zst	TAR.ZST	true		Tar fixture compressed with zstd
-basic.cpio	CPIO	true		CPIO fixture created by bsdtar
-basic.xar	XAR	true		XAR fixture created by macOS xar
-basic.iso	ISO	true		ISO fixture created by hdiutil makehybrid
-basic.deb	DEB	true		Debian ar package fixture
+# filename	format	extract	password	sha256	notes
+basic.zip	ZIP	true		ed6095ba1ba4445e9f0918568f9901e8b391096550837d49d3ffb27e1cf20791	ZIP Deflate fixture created by Z-Manager
+basic.7z	7Z	true		565a65c19546048a1fac98412d5b6147d659d419e9d226b9c58c31a488d7ce74	7Z LZMA2 solid fixture created by Z-Manager
+basic.tar.gz	TAR.GZ	true		04129c7d9c3fc9c6ad45bba579178505347336eb07dc674f7bbf33d528e0ccfb	Tar fixture compressed with gzip
+basic.tar.xz	TAR.XZ	true		2018e05ee1519be5367dafb9f665a53f388357fea8beb730c75e4a754c2ea419	Tar fixture compressed with xz
+basic.tar.zst	TAR.ZST	true		4be1a5f9325336b705e6be5b0b45a00d50db85d2cd293aaa280a6c83b49fd8fe	Tar fixture compressed with zstd
+basic.cpio	CPIO	true		1a4a3b3196ae65aa248ab2d350d1a4b5fec5eb02bc093b10754387313117c0d9	CPIO fixture created by bsdtar
+basic.xar	XAR	true		fb5f69845d3d6c705991540c56a956867955e01c5c8019e2e95bdd8438aa8f01	XAR fixture created by macOS xar
+basic.iso	ISO	true		3c13bb9ed3f7b6b3ee89d2a57c90c0413b787531f56eceff95eb491013eea80c	ISO fixture created by hdiutil makehybrid
+basic.deb	DEB	true		91549415e4faf5a68aaa76db21e2024264642acdf0071cfcf20bba4ec6b56af9	Debian ar package fixture

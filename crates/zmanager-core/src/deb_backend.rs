@@ -1,14 +1,23 @@
 use crate::libarchive_backend::{self, LibarchiveError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, remove_destination_for_replace,
+    ExtractionSafetyError, ExtractionSafetyPlanner,
 };
 use crate::tar_zst_backend::{self, TarZstdError};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const DEB_TEMP_PREFIX: &str = "zmanager-deb";
+const DEBIAN_BINARY_MEMBER: &str = "debian-binary";
+const CONTROL_PAYLOAD_PREFIX: &str = "control.tar.";
+const CONTROL_PAYLOAD_GLOB: &str = "control.tar.*";
+const DATA_PAYLOAD_PREFIX: &str = "data.tar.";
+const DATA_PAYLOAD_GLOB: &str = "data.tar.*";
+const CONTROL_OUTPUT_DIR: &str = "control";
+const DATA_OUTPUT_DIR: &str = "data";
 
 /// Nested `.deb` extraction report.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -96,22 +105,24 @@ pub fn extract_deb_nested(
     policy: ExtractionPolicy,
 ) -> Result<DebExtractReport, DebError> {
     let destination = destination.as_ref();
-    fs::create_dir_all(destination).map_err(|source| DebError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| DebError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
 
-    let temp = TempDir::new("zmanager-deb")?;
+    let temp = TempDir::new(DEB_TEMP_PREFIX)?;
     libarchive_backend::extract_archive(archive_path, temp.path(), ExtractionPolicy::default())?;
 
-    let debian_binary = temp.path().join("debian-binary");
-    let control_member =
-        find_top_level_member(temp.path(), "control.tar.").ok_or(DebError::MissingMember {
-            member: "control.tar.*",
-        })?;
+    let debian_binary = temp.path().join(DEBIAN_BINARY_MEMBER);
+    let control_member = find_top_level_member(temp.path(), CONTROL_PAYLOAD_PREFIX).ok_or(
+        DebError::MissingMember {
+            member: CONTROL_PAYLOAD_GLOB,
+        },
+    )?;
     let data_member =
-        find_top_level_member(temp.path(), "data.tar.").ok_or(DebError::MissingMember {
-            member: "data.tar.*",
+        find_top_level_member(temp.path(), DATA_PAYLOAD_PREFIX).ok_or(DebError::MissingMember {
+            member: DATA_PAYLOAD_GLOB,
         })?;
 
     let mut report = DebExtractReport {
@@ -124,25 +135,29 @@ pub fn extract_deb_nested(
     if debian_binary.is_file() {
         copy_synthetic_file(
             &debian_binary,
-            "debian-binary",
-            destination,
+            DEBIAN_BINARY_MEMBER,
+            &destination_root,
             policy.clone(),
             &mut report,
         )?;
     } else {
-        report
-            .warnings
-            .push("deb package did not include debian-binary".to_owned());
+        report.warnings.push(format!(
+            "deb package did not include {DEBIAN_BINARY_MEMBER}"
+        ));
     }
 
     let control_report = extract_payload_archive(
         &control_member,
-        &destination.join("control"),
+        &destination_root.join(CONTROL_OUTPUT_DIR),
         policy.clone(),
     )?;
-    absorb_archive_report("control", control_report, &mut report);
-    let data_report = extract_payload_archive(&data_member, &destination.join("data"), policy)?;
-    absorb_archive_report("data", data_report, &mut report);
+    absorb_archive_report(CONTROL_OUTPUT_DIR, control_report, &mut report);
+    let data_report = extract_payload_archive(
+        &data_member,
+        &destination_root.join(DATA_OUTPUT_DIR),
+        policy,
+    )?;
+    absorb_archive_report(DATA_OUTPUT_DIR, data_report, &mut report);
 
     Ok(report)
 }
@@ -154,9 +169,18 @@ fn copy_synthetic_file(
     policy: ExtractionPolicy,
     report: &mut DebExtractReport,
 ) -> Result<(), DebError> {
+    let source_size = source_path
+        .metadata()
+        .map(|metadata| metadata.len())
+        .map_err(|source| DebError::Io {
+            path: source_path.to_path_buf(),
+            source,
+        })?;
     let entry = ExtractionEntry {
         archive_path: archive_path.to_owned(),
         kind: ExtractionEntryKind::File,
+        uncompressed_size: Some(source_size),
+        compressed_size: Some(source_size),
     };
     let mut planner = ExtractionSafetyPlanner::new(destination, policy);
     match planner.validate_entry(&entry)? {
@@ -165,37 +189,32 @@ fn copy_synthetic_file(
             replace_existing,
             ..
         } => {
-            if replace_existing {
-                remove_destination_for_replace(&destination_path).map_err(|source| {
-                    DebError::Io {
-                        path: destination_path.clone(),
-                        source,
-                    }
-                })?;
-            }
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent).map_err(|source| DebError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
             let mut input = File::open(source_path).map_err(|source| DebError::Io {
                 path: source_path.to_path_buf(),
                 source,
             })?;
-            let mut output = File::create(&destination_path).map_err(|source| DebError::Io {
-                path: destination_path.clone(),
-                source,
-            })?;
-            let written_bytes =
-                io::copy(&mut input, &mut output).map_err(|source| DebError::Io {
+            let mut output = crate::atomic_file::AtomicOutputFile::create(&destination_path)
+                .map_err(|source| DebError::Io {
                     path: destination_path.clone(),
                     source,
                 })?;
-            output.flush().map_err(|source| DebError::Io {
-                path: destination_path,
+            let written_bytes = io::copy(
+                &mut input,
+                output.file_mut().map_err(|source| DebError::Io {
+                    path: destination_path.clone(),
+                    source,
+                })?,
+            )
+            .map_err(|source| DebError::Io {
+                path: destination_path.clone(),
                 source,
             })?;
+            output
+                .commit_with_replace(replace_existing)
+                .map_err(|source| DebError::Io {
+                    path: destination_path.clone(),
+                    source,
+                })?;
             report.written_entries += 1;
             report.written_bytes += written_bytes;
         }

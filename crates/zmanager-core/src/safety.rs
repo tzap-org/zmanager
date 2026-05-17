@@ -2,6 +2,32 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
+const DEFAULT_MAX_EXTRACTED_MIB: u64 = 64 * 1024;
+/// Default maximum total uncompressed bytes planned for one extraction.
+pub const DEFAULT_MAX_EXTRACTED_BYTES: u64 = DEFAULT_MAX_EXTRACTED_MIB * crate::MEBIBYTE_BYTES;
+/// Default maximum entry-level uncompressed-to-compressed size ratio.
+pub const DEFAULT_MAX_ENTRY_EXPANSION_RATIO: u64 = 1_000;
+
+/// Expanded-size guardrails applied while planning extraction writes.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExtractionLimits {
+    /// Maximum total uncompressed file bytes for one extraction. `None`
+    /// disables the total-size guard.
+    pub max_expanded_bytes: Option<u64>,
+    /// Maximum per-entry uncompressed-to-compressed ratio. `None` disables the
+    /// ratio guard when compressed size metadata is available.
+    pub max_entry_expansion_ratio: Option<u64>,
+}
+
+impl Default for ExtractionLimits {
+    fn default() -> Self {
+        Self {
+            max_expanded_bytes: Some(DEFAULT_MAX_EXTRACTED_BYTES),
+            max_entry_expansion_ratio: Some(DEFAULT_MAX_ENTRY_EXPANSION_RATIO),
+        }
+    }
+}
+
 /// Reusable extraction safety policy shared by all archive backends.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ExtractionPolicy {
@@ -16,6 +42,8 @@ pub struct ExtractionPolicy {
     pub exclude_patterns: Vec<String>,
     /// Drop this many leading path components before writing.
     pub strip_components: usize,
+    /// Expanded-size guardrails.
+    pub limits: ExtractionLimits,
 }
 
 impl Default for ExtractionPolicy {
@@ -26,6 +54,7 @@ impl Default for ExtractionPolicy {
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             strip_components: 0,
+            limits: ExtractionLimits::default(),
         }
     }
 }
@@ -74,6 +103,10 @@ pub struct ExtractionEntry {
     pub archive_path: String,
     /// Requested file type.
     pub kind: ExtractionEntryKind,
+    /// Uncompressed regular-file size when the backend knows it before writing.
+    pub uncompressed_size: Option<u64>,
+    /// Compressed regular-file size when the backend exposes it per entry.
+    pub compressed_size: Option<u64>,
 }
 
 /// Safe extraction decision for one archive entry.
@@ -85,6 +118,9 @@ pub enum ExtractionDecision {
         normalized_archive_path: String,
         /// Final destination path.
         destination_path: PathBuf,
+        /// Resolved hardlink source path for archive formats that model
+        /// hardlinks as references to other archive members.
+        link_target_path: Option<PathBuf>,
         /// Whether the writer should remove an existing destination path before
         /// materializing this entry.
         replace_existing: bool,
@@ -104,6 +140,25 @@ pub struct ExtractionSafetyPlanner {
     destination_root: PathBuf,
     policy: ExtractionPolicy,
     seen_paths: HashMap<String, String>,
+    planned_expanded_bytes: u64,
+}
+
+struct PlannedWrite {
+    normalized_archive_path: String,
+    destination_path: PathBuf,
+    link_target_path: Option<PathBuf>,
+    replace_existing: bool,
+}
+
+impl PlannedWrite {
+    fn into_decision(self) -> ExtractionDecision {
+        ExtractionDecision::Write {
+            normalized_archive_path: self.normalized_archive_path,
+            destination_path: self.destination_path,
+            link_target_path: self.link_target_path,
+            replace_existing: self.replace_existing,
+        }
+    }
 }
 
 impl ExtractionSafetyPlanner {
@@ -116,6 +171,7 @@ impl ExtractionSafetyPlanner {
             destination_root,
             policy,
             seen_paths: HashMap::new(),
+            planned_expanded_bytes: 0,
         }
     }
 
@@ -153,17 +209,19 @@ impl ExtractionSafetyPlanner {
             normalized_archive_path = stripped;
         }
         let destination_path = self.destination_root.join(&normalized_archive_path);
-        let mut destination_path = lexically_normalize(&destination_path);
+        let destination_path = lexically_normalize(&destination_path);
         ensure_inside_destination(
             &self.destination_root,
             &destination_path,
             &entry.archive_path,
         )?;
 
-        match &entry.kind {
-            ExtractionEntryKind::Symlink { target } | ExtractionEntryKind::Hardlink { target } => {
-                self.validate_link_target(&destination_path, target)?;
+        let link_target_path = match &entry.kind {
+            ExtractionEntryKind::Symlink { target } => {
+                self.validate_symlink_target(&destination_path, target)?;
+                None
             }
+            ExtractionEntryKind::Hardlink { target } => Some(self.resolve_hardlink_target(target)?),
             ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
                 if self.policy.unsafe_file == UnsafeFilePolicy::Skip {
                     return Ok(ExtractionDecision::Skip {
@@ -176,11 +234,30 @@ impl ExtractionSafetyPlanner {
                     archive_path: entry.archive_path.clone(),
                 });
             }
-            ExtractionEntryKind::File | ExtractionEntryKind::Directory => {}
-        }
+            ExtractionEntryKind::File | ExtractionEntryKind::Directory => None,
+        };
 
         self.reject_collision(&normalized_archive_path)?;
 
+        let plan = self.plan_destination_write(
+            entry,
+            normalized_archive_path,
+            destination_path,
+            link_target_path,
+        )?;
+
+        self.reserve_expanded_size(entry)?;
+
+        Ok(plan.into_decision())
+    }
+
+    fn plan_destination_write(
+        &self,
+        entry: &ExtractionEntry,
+        normalized_archive_path: String,
+        mut destination_path: PathBuf,
+        link_target_path: Option<PathBuf>,
+    ) -> Result<PlannedWrite, ExtractionSafetyError> {
         let mut replace_existing = false;
         let destination_metadata = std::fs::symlink_metadata(&destination_path);
         if let Ok(metadata) = destination_metadata {
@@ -189,9 +266,10 @@ impl ExtractionSafetyPlanner {
                     if matches!(entry.kind, ExtractionEntryKind::Directory)
                         && metadata.file_type().is_dir()
                     {
-                        return Ok(ExtractionDecision::Write {
+                        return Ok(PlannedWrite {
                             normalized_archive_path,
                             destination_path,
+                            link_target_path,
                             replace_existing: false,
                         });
                     }
@@ -208,9 +286,10 @@ impl ExtractionSafetyPlanner {
                     if matches!(entry.kind, ExtractionEntryKind::Directory)
                         && metadata.file_type().is_dir()
                     {
-                        return Ok(ExtractionDecision::Write {
+                        return Ok(PlannedWrite {
                             normalized_archive_path,
                             destination_path,
+                            link_target_path,
                             replace_existing: false,
                         });
                     }
@@ -227,9 +306,10 @@ impl ExtractionSafetyPlanner {
             });
         }
 
-        Ok(ExtractionDecision::Write {
+        Ok(PlannedWrite {
             normalized_archive_path,
             destination_path,
+            link_target_path,
             replace_existing,
         })
     }
@@ -238,7 +318,7 @@ impl ExtractionSafetyPlanner {
         &mut self,
         normalized_archive_path: &str,
     ) -> Result<(), ExtractionSafetyError> {
-        let collision_key = normalized_archive_path.to_ascii_lowercase();
+        let collision_key = case_collision_key(normalized_archive_path);
 
         if let Some(previous_archive_path) = self
             .seen_paths
@@ -253,7 +333,7 @@ impl ExtractionSafetyPlanner {
         Ok(())
     }
 
-    fn validate_link_target(
+    fn validate_symlink_target(
         &self,
         destination_path: &Path,
         target: &Path,
@@ -281,6 +361,99 @@ impl ExtractionSafetyPlanner {
 
         Ok(())
     }
+
+    fn resolve_hardlink_target(&self, target: &Path) -> Result<PathBuf, ExtractionSafetyError> {
+        let target_text = target.to_string_lossy();
+        let mut normalized_target = normalize_archive_path(&target_text).map_err(|_| {
+            ExtractionSafetyError::LinkTargetEscapes {
+                target: target.to_path_buf(),
+            }
+        })?;
+        if self.policy.strip_components > 0 {
+            normalized_target =
+                strip_archive_components(&normalized_target, self.policy.strip_components)
+                    .ok_or_else(|| ExtractionSafetyError::LinkTargetEscapes {
+                        target: target.to_path_buf(),
+                    })?;
+        }
+
+        let target_path = lexically_normalize(&self.destination_root.join(normalized_target));
+        if target_path.starts_with(&self.destination_root) {
+            return Ok(target_path);
+        }
+
+        Err(ExtractionSafetyError::LinkTargetEscapes {
+            target: target.to_path_buf(),
+        })
+    }
+
+    fn reserve_expanded_size(
+        &mut self,
+        entry: &ExtractionEntry,
+    ) -> Result<(), ExtractionSafetyError> {
+        if !matches!(entry.kind, ExtractionEntryKind::File) {
+            return Ok(());
+        }
+        let Some(uncompressed_size) = entry.uncompressed_size else {
+            return Ok(());
+        };
+
+        if let Some(ratio_limit) = self.policy.limits.max_entry_expansion_ratio {
+            reject_expansion_ratio(
+                &entry.archive_path,
+                uncompressed_size,
+                entry.compressed_size,
+                ratio_limit,
+            )?;
+        }
+
+        if let Some(total_limit) = self.policy.limits.max_expanded_bytes {
+            let attempted = self
+                .planned_expanded_bytes
+                .saturating_add(uncompressed_size);
+            if attempted > total_limit {
+                return Err(ExtractionSafetyError::ExpandedSizeLimitExceeded {
+                    archive_path: entry.archive_path.clone(),
+                    attempted_bytes: attempted,
+                    limit_bytes: total_limit,
+                });
+            }
+            self.planned_expanded_bytes = attempted;
+        }
+
+        Ok(())
+    }
+}
+
+fn case_collision_key(path: &str) -> String {
+    path.chars().flat_map(char::to_lowercase).collect()
+}
+
+fn reject_expansion_ratio(
+    archive_path: &str,
+    uncompressed_size: u64,
+    compressed_size: Option<u64>,
+    ratio_limit: u64,
+) -> Result<(), ExtractionSafetyError> {
+    let Some(compressed_size) = compressed_size else {
+        return Ok(());
+    };
+    let exceeds_limit = if compressed_size == 0 {
+        uncompressed_size > 0
+    } else {
+        u128::from(uncompressed_size) > u128::from(compressed_size) * u128::from(ratio_limit)
+    };
+
+    if exceeds_limit {
+        return Err(ExtractionSafetyError::ExpansionRatioLimitExceeded {
+            archive_path: archive_path.to_owned(),
+            uncompressed_size,
+            compressed_size,
+            ratio_limit,
+        });
+    }
+
+    Ok(())
 }
 
 /// Extraction safety failure.
@@ -322,6 +495,26 @@ pub enum ExtractionSafetyError {
     UnsafeFileType { archive_path: String },
     /// Link target resolves outside the extraction root.
     LinkTargetEscapes { target: PathBuf },
+    /// Planned expanded bytes exceed the configured extraction policy.
+    ExpandedSizeLimitExceeded {
+        /// Archive path that crossed the limit.
+        archive_path: String,
+        /// Total bytes that would be planned.
+        attempted_bytes: u64,
+        /// Configured limit.
+        limit_bytes: u64,
+    },
+    /// Entry-level compression ratio exceeds the configured extraction policy.
+    ExpansionRatioLimitExceeded {
+        /// Archive path that crossed the limit.
+        archive_path: String,
+        /// Entry uncompressed size.
+        uncompressed_size: u64,
+        /// Entry compressed size.
+        compressed_size: u64,
+        /// Configured ratio limit.
+        ratio_limit: u64,
+    },
 }
 
 impl fmt::Display for ExtractionSafetyError {
@@ -380,6 +573,23 @@ impl fmt::Display for ExtractionSafetyError {
                     target.display()
                 )
             }
+            Self::ExpandedSizeLimitExceeded {
+                archive_path,
+                attempted_bytes,
+                limit_bytes,
+            } => write!(
+                f,
+                "archive path {archive_path} would expand extraction to {attempted_bytes} bytes, exceeding the {limit_bytes} byte limit"
+            ),
+            Self::ExpansionRatioLimitExceeded {
+                archive_path,
+                uncompressed_size,
+                compressed_size,
+                ratio_limit,
+            } => write!(
+                f,
+                "archive path {archive_path} expands from {compressed_size} to {uncompressed_size} bytes, exceeding the {ratio_limit}:1 ratio limit"
+            ),
         }
     }
 }
@@ -556,6 +766,20 @@ pub fn remove_destination_for_replace(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Creates and canonicalizes an extraction root before safety planning.
+///
+/// Extraction planners compare candidate output paths against this root. Using
+/// the canonical root keeps that comparison stable when callers pass paths with
+/// `..` components or a symlinked destination directory.
+///
+/// # Errors
+///
+/// Returns any filesystem error from creating or canonicalizing the root.
+pub fn prepare_destination_root(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(path)?;
+    path.canonicalize()
+}
+
 fn lexically_normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 
@@ -576,9 +800,9 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-        ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy, UnsafeFilePolicy,
-        normalize_archive_path,
+        ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits,
+        ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy,
+        UnsafeFilePolicy, normalize_archive_path, prepare_destination_root,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -659,6 +883,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unicode_case_insensitive_collisions() {
+        let temp = TestDir::new("rejects_unicode_case_insensitive_collisions");
+        let mut planner =
+            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+
+        planner.validate_entry(&file_entry("Über.txt")).unwrap();
+        let error = planner.validate_entry(&file_entry("über.txt")).unwrap_err();
+
+        assert!(matches!(error, ExtractionSafetyError::NameCollision { .. }));
+    }
+
+    #[test]
     fn refuses_overwrite_when_destination_exists() {
         let temp = TestDir::new("refuses_overwrite_when_destination_exists");
         temp.write_file("out/file.txt", b"existing");
@@ -698,6 +934,8 @@ mod tests {
             kind: ExtractionEntryKind::Symlink {
                 target: PathBuf::from("../../outside"),
             },
+            uncompressed_size: None,
+            compressed_size: None,
         };
 
         let error = planner.validate_entry(&entry).unwrap_err();
@@ -718,11 +956,71 @@ mod tests {
             kind: ExtractionEntryKind::Symlink {
                 target: PathBuf::from("../target.txt"),
             },
+            uncompressed_size: None,
+            compressed_size: None,
         };
 
         let decision = planner.validate_entry(&entry).unwrap();
 
         assert!(matches!(decision, ExtractionDecision::Write { .. }));
+    }
+
+    #[test]
+    fn resolves_hardlink_target_as_archive_member_path_after_strip() {
+        let temp = TestDir::new("resolves_hardlink_target_as_archive_member_path_after_strip");
+        let policy = ExtractionPolicy {
+            strip_components: 1,
+            ..ExtractionPolicy::default()
+        };
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
+        let entry = ExtractionEntry {
+            archive_path: "project/dir/link.txt".to_owned(),
+            kind: ExtractionEntryKind::Hardlink {
+                target: PathBuf::from("project/dir/target.txt"),
+            },
+            uncompressed_size: None,
+            compressed_size: None,
+        };
+
+        let decision = planner.validate_entry(&entry).unwrap();
+
+        let ExtractionDecision::Write {
+            destination_path,
+            link_target_path: Some(link_target_path),
+            ..
+        } = decision
+        else {
+            panic!("expected resolved hardlink write decision");
+        };
+        assert_eq!(destination_path, temp.path("out/dir/link.txt"));
+        assert_eq!(link_target_path, temp.path("out/dir/target.txt"));
+    }
+
+    #[test]
+    fn prepare_destination_root_canonicalizes_dotdot_paths() {
+        let temp = TestDir::new("prepare_destination_root_canonicalizes_dotdot_paths");
+        let root = temp.path("out");
+        fs::create_dir_all(&root).unwrap();
+
+        let prepared = prepare_destination_root(&temp.path("nested/../out")).unwrap();
+
+        assert_eq!(prepared, root.canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_destination_root_resolves_symlinked_roots() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("prepare_destination_root_resolves_symlinked_roots");
+        let target = temp.path("target");
+        let link = temp.path("link");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let prepared = prepare_destination_root(&link).unwrap();
+
+        assert_eq!(prepared, target.canonicalize().unwrap());
     }
 
     #[test]
@@ -735,6 +1033,8 @@ mod tests {
             kind: ExtractionEntryKind::Hardlink {
                 target: PathBuf::from("../../outside"),
             },
+            uncompressed_size: None,
+            compressed_size: None,
         };
 
         let error = planner.validate_entry(&entry).unwrap_err();
@@ -746,6 +1046,53 @@ mod tests {
     }
 
     #[test]
+    fn rejects_extraction_when_total_expanded_size_exceeds_limit() {
+        let temp = TestDir::new("rejects_extraction_when_total_expanded_size_exceeds_limit");
+        let policy = ExtractionPolicy {
+            limits: ExtractionLimits {
+                max_expanded_bytes: Some(5),
+                max_entry_expansion_ratio: None,
+            },
+            ..ExtractionPolicy::default()
+        };
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
+
+        planner
+            .validate_entry(&sized_file_entry("one.bin", 3, Some(3)))
+            .unwrap();
+        let error = planner
+            .validate_entry(&sized_file_entry("two.bin", 3, Some(3)))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ExtractionSafetyError::ExpandedSizeLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_entry_when_expansion_ratio_exceeds_limit() {
+        let temp = TestDir::new("rejects_entry_when_expansion_ratio_exceeds_limit");
+        let policy = ExtractionPolicy {
+            limits: ExtractionLimits {
+                max_expanded_bytes: None,
+                max_entry_expansion_ratio: Some(10),
+            },
+            ..ExtractionPolicy::default()
+        };
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
+
+        let error = planner
+            .validate_entry(&sized_file_entry("bomb.bin", 100, Some(1)))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ExtractionSafetyError::ExpansionRatioLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
     fn rejects_unsafe_file_types_by_default() {
         let temp = TestDir::new("rejects_unsafe_file_types_by_default");
         let mut planner =
@@ -753,6 +1100,8 @@ mod tests {
         let entry = ExtractionEntry {
             archive_path: "dev/null".to_owned(),
             kind: ExtractionEntryKind::Device,
+            uncompressed_size: None,
+            compressed_size: None,
         };
 
         let error = planner.validate_entry(&entry).unwrap_err();
@@ -774,6 +1123,8 @@ mod tests {
         let entry = ExtractionEntry {
             archive_path: "dev/null".to_owned(),
             kind: ExtractionEntryKind::Device,
+            uncompressed_size: None,
+            compressed_size: None,
         };
 
         let decision = planner.validate_entry(&entry).unwrap();
@@ -782,9 +1133,19 @@ mod tests {
     }
 
     fn file_entry(archive_path: &str) -> ExtractionEntry {
+        sized_file_entry(archive_path, 1, Some(1))
+    }
+
+    fn sized_file_entry(
+        archive_path: &str,
+        uncompressed_size: u64,
+        compressed_size: Option<u64>,
+    ) -> ExtractionEntry {
         ExtractionEntry {
             archive_path: archive_path.to_owned(),
             kind: ExtractionEntryKind::File,
+            uncompressed_size: Some(uncompressed_size),
+            compressed_size,
         }
     }
 

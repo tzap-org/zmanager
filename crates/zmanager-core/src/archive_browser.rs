@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tar::EntryType;
 use zip::{ZipArchive, ZipReadOptions};
 
+const PREVIEW_TEMP_PREFIX: &str = "zmanager-preview";
+
 /// Portable archive entry type for the browser UI.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum BrowserEntryKind {
@@ -174,20 +176,23 @@ pub fn extract_entry(
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
-    fs::create_dir_all(destination).map_err(|source| ArchiveBrowserError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| {
+            ArchiveBrowserError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
 
     if is_zip_family_archive(archive_path) {
-        extract_zip_entry(archive_path, entry_path, destination)
+        extract_zip_entry(archive_path, entry_path, &destination_root)
     } else if is_tar_zst_archive(archive_path) {
-        extract_tar_zst_entry(archive_path, entry_path, destination)
+        extract_tar_zst_entry(archive_path, entry_path, &destination_root)
     } else {
         let report = libarchive_backend::extract_archive_entry(
             archive_path,
             entry_path,
-            destination,
+            &destination_root,
             ExtractionPolicy::default(),
         )?;
         Ok(EntryExtractReport {
@@ -211,7 +216,7 @@ pub fn preview_entry(
     entry_path: &str,
 ) -> Result<PreviewExtractReport, ArchiveBrowserError> {
     let cleanup_root = std::env::temp_dir().join(format!(
-        "zmanager-preview-{}-{}",
+        "{PREVIEW_TEMP_PREFIX}-{}-{}",
         std::process::id(),
         unique_preview_id()
     ));
@@ -337,6 +342,8 @@ fn extract_zip_entry(
         let entry = ExtractionEntry {
             archive_path: file.name().to_owned(),
             kind: zip_extraction_kind(&mut file)?,
+            uncompressed_size: Some(file.size()),
+            compressed_size: Some(file.compressed_size()),
         };
         let decision = ExtractionSafetyPlanner::new(destination, ExtractionPolicy::default())
             .validate_entry(&entry)?;
@@ -394,6 +401,8 @@ fn extract_tar_zst_entry(
         let safety_entry = ExtractionEntry {
             archive_path: path,
             kind: tar_extraction_kind(&entry)?,
+            uncompressed_size: entry.header().size().ok(),
+            compressed_size: None,
         };
         let decision = ExtractionSafetyPlanner::new(destination, ExtractionPolicy::default())
             .validate_entry(&safety_entry)?;
@@ -424,21 +433,29 @@ fn write_selected_entry<R: Read>(
             Ok(0)
         }
         ExtractionEntryKind::File => {
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent).map_err(|source| ArchiveBrowserError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-            let mut output =
-                File::create(destination_path).map_err(|source| ArchiveBrowserError::Io {
+            let mut output = crate::atomic_file::AtomicOutputFile::create(destination_path)
+                .map_err(|source| ArchiveBrowserError::Io {
                     path: destination_path.to_path_buf(),
                     source,
                 })?;
-            io::copy(reader, &mut output).map_err(|source| ArchiveBrowserError::Io {
+            let written_bytes = io::copy(
+                reader,
+                output
+                    .file_mut()
+                    .map_err(|source| ArchiveBrowserError::Io {
+                        path: destination_path.to_path_buf(),
+                        source,
+                    })?,
+            )
+            .map_err(|source| ArchiveBrowserError::Io {
                 path: destination_path.to_path_buf(),
                 source,
-            })
+            })?;
+            output.commit().map_err(|source| ArchiveBrowserError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?;
+            Ok(written_bytes)
         }
         ExtractionEntryKind::Symlink { .. }
         | ExtractionEntryKind::Hardlink { .. }

@@ -7,10 +7,10 @@ use sevenz_rust2::{ArchiveEntry, ArchiveWriter};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 use zmanager_core::libarchive_backend::extract_archive;
-use zmanager_core::safety::ExtractionPolicy;
+use zmanager_core::safety::{ExtractionLimits, ExtractionPolicy, ExtractionSafetyError};
 use zmanager_core::sevenz_backend::extract_7z;
 use zmanager_core::tar_zst_backend::extract_tar_zst;
-use zmanager_core::zip_backend::{extract_zip, list_zip};
+use zmanager_core::zip_backend::{ZipBackendError, extract_zip, list_zip};
 
 #[test]
 fn zip_hostile_fixtures_are_rejected() {
@@ -240,6 +240,38 @@ fn zip_bomb_and_nested_archive_fixtures_are_listed_without_extraction() {
             .iter()
             .any(|entry| entry.name == "nested/inner.zip")
     );
+}
+
+#[test]
+fn zip_extraction_rejects_entries_above_expansion_ratio_limit() {
+    let temp = TestDir::new("zip_extraction_rejects_entries_above_expansion_ratio_limit");
+    let archive = temp.path("hostile.zip");
+    let repeated = vec![0_u8; 2 * 1024 * 1024];
+    let file = File::create(&archive).unwrap();
+    let mut writer = ZipWriter::new(file);
+    writer
+        .start_file(
+            "bomb.bin",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(&repeated).unwrap();
+    writer.finish().unwrap();
+    let policy = ExtractionPolicy {
+        limits: ExtractionLimits {
+            max_expanded_bytes: None,
+            max_entry_expansion_ratio: Some(10),
+        },
+        ..ExtractionPolicy::default()
+    };
+
+    let error = extract_zip(&archive, temp.path("out"), policy).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZipBackendError::Safety(ExtractionSafetyError::ExpansionRatioLimitExceeded { .. })
+    ));
+    assert!(!temp.path("out/bomb.bin").exists());
 }
 
 fn zip_file_case(archive: PathBuf, entry_path: &str, contents: &[u8]) -> PathBuf {

@@ -5,7 +5,6 @@
 //! polling-friendly JSON event batches.
 
 use std::ffi::{CStr, CString, c_char};
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::ptr;
 use std::slice;
@@ -14,8 +13,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
 use zmanager_core::manifest::{PlanOptions, plan_archive};
+use zmanager_core::secrets::SecretString;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
 
@@ -33,7 +34,7 @@ pub enum ZManagerFfiStatus {
 
 /// Opaque FFI job handle.
 pub struct ZManagerFfiJob {
-    receiver: Mutex<Receiver<String>>,
+    receiver: Mutex<Receiver<Value>>,
     token: CancellationToken,
     finished: Arc<AtomicBool>,
     join_handle: Mutex<Option<JoinHandle<()>>>,
@@ -160,7 +161,7 @@ unsafe fn start_zip_create_job(
         let Some(password) = c_string_arg(password) else {
             return ZManagerFfiStatus::InvalidUtf8;
         };
-        Some(password)
+        Some(SecretString::from(password))
     };
 
     let source = PathBuf::from(source);
@@ -207,7 +208,7 @@ unsafe fn start_zip_create_many_job(
         let Some(password) = c_string_arg(password) else {
             return ZManagerFfiStatus::InvalidUtf8;
         };
-        Some(password)
+        Some(SecretString::from(password))
     };
 
     let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
@@ -388,17 +389,15 @@ pub unsafe extern "C" fn zmanager_ffi_plan_clean_source(source: *const c_char) -
     };
 
     let json = match plan_archive(PathBuf::from(source), &PlanOptions::clean_source()) {
-        Ok(manifest) => format!(
-            "{{\"ok\":true,\"included_entries\":{},\"included_bytes\":{},\"excluded_entries\":{},\"excluded_bytes\":{}}}",
-            manifest.included_count(),
-            manifest.total_bytes,
-            manifest.excluded_count(),
-            manifest.excluded_bytes
-        ),
-        Err(error) => format!(
-            "{{\"ok\":false,\"message\":\"{}\"}}",
-            json_escape(&error.to_string())
-        ),
+        Ok(manifest) => json!({
+            "ok": true,
+            "included_entries": manifest.included_count(),
+            "included_bytes": manifest.total_bytes,
+            "excluded_entries": manifest.excluded_count(),
+            "excluded_bytes": manifest.excluded_bytes,
+        })
+        .to_string(),
+        Err(error) => ffi_error_json(&error.to_string()),
     };
 
     owned_c_string(&json)
@@ -463,11 +462,12 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry(
         &entry_path,
         PathBuf::from(destination),
     ) {
-        Ok(report) => format!(
-            "{{\"ok\":true,\"destination_path\":\"{}\",\"written_bytes\":{}}}",
-            json_escape(&report.destination_path.to_string_lossy()),
-            report.written_bytes
-        ),
+        Ok(report) => json!({
+            "ok": true,
+            "destination_path": report.destination_path.to_string_lossy(),
+            "written_bytes": report.written_bytes,
+        })
+        .to_string(),
         Err(error) => ffi_error_json(&error.to_string()),
     };
 
@@ -503,12 +503,13 @@ pub unsafe extern "C" fn zmanager_ffi_preview_archive_entry(
         PathBuf::from(archive_path),
         &entry_path,
     ) {
-        Ok(report) => format!(
-            "{{\"ok\":true,\"cleanup_root\":\"{}\",\"preview_path\":\"{}\",\"written_bytes\":{}}}",
-            json_escape(&report.cleanup_root.to_string_lossy()),
-            json_escape(&report.preview_path.to_string_lossy()),
-            report.written_bytes
-        ),
+        Ok(report) => json!({
+            "ok": true,
+            "cleanup_root": report.cleanup_root.to_string_lossy(),
+            "preview_path": report.preview_path.to_string_lossy(),
+            "written_bytes": report.written_bytes,
+        })
+        .to_string(),
         Err(error) => ffi_error_json(&error.to_string()),
     };
 
@@ -532,7 +533,7 @@ pub extern "C" fn zmanager_ffi_poll_events(job: *mut ZManagerFfiJob) -> *mut c_c
         events.push(event);
     }
 
-    let json = format!("[{}]", events.join(","));
+    let json = serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_owned());
     owned_c_string(&json)
 }
 
@@ -575,7 +576,15 @@ pub unsafe extern "C" fn zmanager_ffi_job_free(job: *mut ZManagerFfiJob) {
     if let Ok(mut join_handle) = job.join_handle.lock()
         && let Some(join_handle) = join_handle.take()
     {
-        let _ = join_handle.join();
+        if job.finished.load(Ordering::SeqCst) {
+            let _ = join_handle.join();
+        } else {
+            let _ = thread::Builder::new()
+                .name("zmanager-ffi-job-reaper".to_owned())
+                .spawn(move || {
+                    let _ = join_handle.join();
+                });
+        }
     }
 }
 
@@ -636,7 +645,7 @@ fn spawn_archive_job<F>(out_job: *mut *mut ZManagerFfiJob, runner: F) -> ZManage
 where
     F: FnOnce(CancellationToken, &mut dyn JobEventSink) + Send + 'static,
 {
-    let (sender, receiver) = mpsc::channel::<String>();
+    let (sender, receiver) = mpsc::channel::<Value>();
     let token = CancellationToken::new();
     let thread_token = token.clone();
     let finished = Arc::new(AtomicBool::new(false));
@@ -644,7 +653,7 @@ where
 
     let join_handle = thread::spawn(move || {
         let mut sink = |event: JobEvent| {
-            let _ = sender.send(event_to_json(&event));
+            let _ = sender.send(event_to_json_value(&event));
         };
         runner(thread_token, &mut sink);
         thread_finished.store(true, Ordering::SeqCst);
@@ -691,48 +700,50 @@ fn owned_c_string(value: &str) -> *mut c_char {
     CString::new(value).map_or(ptr::null_mut(), CString::into_raw)
 }
 
-fn event_to_json(event: &JobEvent) -> String {
+fn event_to_json_value(event: &JobEvent) -> Value {
     match event {
-        JobEvent::Started { kind, total_bytes } => format!(
-            "{{\"type\":\"started\",\"kind\":\"{}\",\"total_bytes\":{}}}",
-            job_kind_name(*kind),
-            optional_u64(*total_bytes)
-        ),
-        JobEvent::EntryStarted { path, bytes } => format!(
-            "{{\"type\":\"entry_started\",\"path\":\"{}\",\"bytes\":{}}}",
-            json_escape(path),
-            optional_u64(*bytes)
-        ),
+        JobEvent::Started { kind, total_bytes } => json!({
+            "type": "started",
+            "kind": job_kind_name(*kind),
+            "total_bytes": total_bytes,
+        }),
+        JobEvent::EntryStarted { path, bytes } => json!({
+            "type": "entry_started",
+            "path": path,
+            "bytes": bytes,
+        }),
         JobEvent::BytesProcessed {
             path,
             bytes,
             total_bytes_processed,
-        } => format!(
-            "{{\"type\":\"bytes_processed\",\"path\":{},\"bytes\":{},\"total_bytes_processed\":{}}}",
-            optional_string(path.as_deref()),
-            bytes,
-            total_bytes_processed
-        ),
-        JobEvent::EntryFinished { path, bytes } => format!(
-            "{{\"type\":\"entry_finished\",\"path\":\"{}\",\"bytes\":{}}}",
-            json_escape(path),
-            bytes
-        ),
-        JobEvent::Warning { message } => format!(
-            "{{\"type\":\"warning\",\"message\":\"{}\"}}",
-            json_escape(message)
-        ),
-        JobEvent::Completed { entries, bytes } => {
-            format!("{{\"type\":\"completed\",\"entries\":{entries},\"bytes\":{bytes}}}")
-        }
-        JobEvent::Failed { message } => format!(
-            "{{\"type\":\"failed\",\"message\":\"{}\"}}",
-            json_escape(message)
-        ),
-        JobEvent::Cancelled { message } => format!(
-            "{{\"type\":\"cancelled\",\"message\":\"{}\"}}",
-            json_escape(message)
-        ),
+        } => json!({
+            "type": "bytes_processed",
+            "path": path,
+            "bytes": bytes,
+            "total_bytes_processed": total_bytes_processed,
+        }),
+        JobEvent::EntryFinished { path, bytes } => json!({
+            "type": "entry_finished",
+            "path": path,
+            "bytes": bytes,
+        }),
+        JobEvent::Warning { message } => json!({
+            "type": "warning",
+            "message": message,
+        }),
+        JobEvent::Completed { entries, bytes } => json!({
+            "type": "completed",
+            "entries": entries,
+            "bytes": bytes,
+        }),
+        JobEvent::Failed { message } => json!({
+            "type": "failed",
+            "message": message,
+        }),
+        JobEvent::Cancelled { message } => json!({
+            "type": "cancelled",
+            "message": message,
+        }),
     }
 }
 
@@ -741,19 +752,21 @@ fn archive_listing_to_json(listing: &zmanager_core::archive_browser::BrowserList
         .entries
         .iter()
         .map(|entry| {
-            format!(
-                "{{\"path\":\"{}\",\"kind\":\"{}\",\"size\":{},\"compressed_size\":{},\"modified\":{}}}",
-                json_escape(&entry.path),
-                browser_entry_kind_name(entry.kind),
-                optional_u64(entry.size),
-                optional_u64(entry.compressed_size),
-                optional_string(entry.modified.as_deref())
-            )
+            json!({
+                "path": entry.path,
+                "kind": browser_entry_kind_name(entry.kind),
+                "size": entry.size,
+                "compressed_size": entry.compressed_size,
+                "modified": entry.modified,
+            })
         })
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect::<Vec<_>>();
 
-    format!("{{\"ok\":true,\"entries\":[{entries}]}}")
+    json!({
+        "ok": true,
+        "entries": entries,
+    })
+    .to_string()
 }
 
 fn browser_entry_kind_name(kind: zmanager_core::archive_browser::BrowserEntryKind) -> &'static str {
@@ -767,7 +780,11 @@ fn browser_entry_kind_name(kind: zmanager_core::archive_browser::BrowserEntryKin
 }
 
 fn ffi_error_json(message: &str) -> String {
-    format!("{{\"ok\":false,\"message\":\"{}\"}}", json_escape(message))
+    json!({
+        "ok": false,
+        "message": message,
+    })
+    .to_string()
 }
 
 fn job_kind_name(kind: JobKind) -> &'static str {
@@ -808,35 +825,6 @@ fn is_tar_zst_archive(path: &std::path::Path) -> bool {
             .and_then(|stem| std::path::Path::new(stem).extension())
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
-}
-
-fn optional_u64(value: Option<u64>) -> String {
-    value.map_or_else(|| "null".to_owned(), |value| value.to_string())
-}
-
-fn optional_string(value: Option<&str>) -> String {
-    value.map_or_else(
-        || "null".to_owned(),
-        |value| format!("\"{}\"", json_escape(value)),
-    )
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                let _ = write!(escaped, "\\u{:04x}", character as u32);
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]

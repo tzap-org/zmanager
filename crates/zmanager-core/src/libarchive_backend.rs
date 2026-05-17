@@ -5,7 +5,7 @@ use crate::safety::{
 use libarchive2::{FileType, ReadArchive};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -213,13 +213,16 @@ fn extract_archive_inner(
     selected_entry: Option<&str>,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
     let destination = destination.as_ref();
-    fs::create_dir_all(destination).map_err(|source| LibarchiveError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| {
+            LibarchiveError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
 
     let mut archive = open_archive(archive_path.as_ref(), password)?;
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut report = LibarchiveExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -248,12 +251,15 @@ fn extract_archive_inner(
         let safety_entry = ExtractionEntry {
             archive_path: owned_entry.path.clone(),
             kind: owned_entry.extraction_kind.clone(),
+            uncompressed_size: nonnegative_size(owned_entry.size),
+            compressed_size: None,
         };
 
         match planner.validate_entry(&safety_entry)? {
             ExtractionDecision::Write {
                 destination_path,
                 replace_existing,
+                link_target_path,
                 ..
             } => {
                 write_entry(
@@ -261,6 +267,7 @@ fn extract_archive_inner(
                     &owned_entry,
                     &destination_path,
                     replace_existing,
+                    link_target_path.as_deref(),
                     &mut report,
                 )?;
             }
@@ -415,6 +422,10 @@ fn is_root_entry_path(path: &str) -> bool {
     trimmed.is_empty() || trimmed == "."
 }
 
+fn nonnegative_size(size: i64) -> Option<u64> {
+    u64::try_from(size).ok()
+}
+
 fn entry_kind(entry: &libarchive2::Entry<'_>) -> LibarchiveEntryKind {
     if entry.hardlink().is_some() {
         return LibarchiveEntryKind::Hardlink;
@@ -467,9 +478,10 @@ fn write_entry(
     entry: &OwnedEntry,
     destination_path: &Path,
     replace_existing: bool,
+    link_target_path: Option<&Path>,
     report: &mut LibarchiveExtractReport,
 ) -> Result<(), LibarchiveError> {
-    if replace_existing {
+    if replace_existing && !matches!(entry.extraction_kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
             LibarchiveError::Io {
                 path: destination_path.to_path_buf(),
@@ -488,7 +500,7 @@ fn write_entry(
             report.written_entries += 1;
         }
         ExtractionEntryKind::File => {
-            let written_bytes = write_file_entry(archive, destination_path)?;
+            let written_bytes = write_file_entry(archive, destination_path, replace_existing)?;
             report.written_entries += 1;
             report.written_bytes += written_bytes;
         }
@@ -499,12 +511,19 @@ fn write_entry(
         }
         ExtractionEntryKind::Hardlink { target } => {
             archive.skip_data()?;
-            report.skipped_entries += 1;
-            report.warnings.push(format!(
-                "skipped hardlink {} -> {}: hardlink materialization is not implemented",
-                entry.path,
-                target.display()
-            ));
+            let source_path = link_target_path.ok_or_else(|| LibarchiveError::Io {
+                path: destination_path.to_path_buf(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "hardlink target for {} -> {} was not resolved by extraction safety planning",
+                        entry.path,
+                        target.display()
+                    ),
+                ),
+            })?;
+            write_hardlink(source_path, destination_path)?;
+            report.written_entries += 1;
         }
         ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
             archive.skip_data()?;
@@ -521,19 +540,16 @@ fn write_entry(
 fn write_file_entry(
     archive: &mut ReadArchive<'_>,
     destination_path: &Path,
+    replace_existing: bool,
 ) -> Result<u64, LibarchiveError> {
-    if let Some(parent) = destination_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| LibarchiveError::Io {
-            path: parent.to_path_buf(),
-            source,
+    let mut output =
+        crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
+            LibarchiveError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            }
         })?;
-    }
-
-    let mut output = File::create(destination_path).map_err(|source| LibarchiveError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })?;
-    let mut buffer = vec![0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut written_bytes = 0_u64;
 
     loop {
@@ -542,6 +558,11 @@ fn write_file_entry(
             break;
         }
         output
+            .file_mut()
+            .map_err(|source| LibarchiveError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?
             .write_all(&buffer[..read])
             .map_err(|source| LibarchiveError::Io {
                 path: destination_path.to_path_buf(),
@@ -550,7 +571,27 @@ fn write_file_entry(
         written_bytes += read as u64;
     }
 
+    output
+        .commit_with_replace(replace_existing)
+        .map_err(|source| LibarchiveError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
+
     Ok(written_bytes)
+}
+
+fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), LibarchiveError> {
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| LibarchiveError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    fs::hard_link(source_path, destination_path).map_err(|source| LibarchiveError::Io {
+        path: destination_path.to_path_buf(),
+        source,
+    })
 }
 
 #[cfg(unix)]
@@ -584,7 +625,7 @@ fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), Libarchi
 mod tests {
     use super::{LibarchiveEntryKind, extract_archive, list_archive};
     use crate::safety::ExtractionPolicy;
-    use std::fs;
+    use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -619,6 +660,33 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
             "hello"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_hardlinks_from_tar_archive() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("extracts_hardlinks_from_tar_archive");
+        let archive = temp.path("archive.tar");
+        write_tar_with_hardlink(
+            &archive,
+            "payload/target.txt",
+            "payload/link.txt",
+            b"target",
+        );
+
+        let report =
+            extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let target = temp.path("out/payload/target.txt");
+        let link = temp.path("out/payload/link.txt");
+        assert_eq!(report.written_entries, 2);
+        assert_eq!(fs::read(&link).unwrap(), b"target");
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&link).unwrap().ino()
         );
     }
 
@@ -673,6 +741,33 @@ mod tests {
             .unwrap();
 
         assert!(status.success());
+    }
+
+    fn write_tar_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
+        let file = File::create(path).unwrap();
+        let mut builder = tar::Builder::new(file);
+
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_entry_type(tar::EntryType::Regular);
+        file_header.set_size(contents.len().try_into().unwrap());
+        file_header.set_mode(0o644);
+        file_header.set_mtime(0);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, target_path, contents)
+            .unwrap();
+
+        let mut link_header = tar::Header::new_gnu();
+        link_header.set_entry_type(tar::EntryType::Link);
+        link_header.set_size(0);
+        link_header.set_mode(0o644);
+        link_header.set_mtime(0);
+        link_header.set_cksum();
+        builder
+            .append_link(&mut link_header, link_path, Path::new(target_path))
+            .unwrap();
+
+        builder.finish().unwrap();
     }
 
     struct TestDir {

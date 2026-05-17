@@ -1,8 +1,13 @@
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest as _, Sha256};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 #[test]
 fn cli_lists_all_fixture_archives() {
@@ -532,6 +537,97 @@ fn zm_create_zip_level_is_accepted_and_unzip_validates_archive() {
 }
 
 #[test]
+fn zm_create_and_extract_zip_preserves_unicode_paths() {
+    let temp = TestDir::new("zm_unicode_zip_roundtrip");
+    fs::create_dir_all(temp.path("project/数据")).unwrap();
+    fs::write(temp.path("project/数据/emoji-😀.txt"), "unicode\n").unwrap();
+    let archive = temp.path("unicode.zip");
+
+    let create = Command::new(zm_path())
+        .arg("-cf")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create unicode zip", &create);
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list unicode zip", &list);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains("project/数据/emoji-😀.txt"), "{stdout}");
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract unicode zip", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/数据/emoji-😀.txt")).unwrap(),
+        "unicode\n"
+    );
+}
+
+#[test]
+fn zm_extract_zip_rejects_unicode_case_collision() {
+    let temp = TestDir::new("zm_zip_unicode_case_collision");
+    let archive = temp.path("unicode-collision.zip");
+    write_zip_entries(
+        &archive,
+        CompressionMethod::Stored,
+        &[("Über.txt", b"upper\n"), ("über.txt", b"lower\n")],
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+
+    assert_failure("zm extract unicode collision zip", &extract);
+    let stderr = String::from_utf8_lossy(&extract.stderr);
+    assert!(stderr.contains("collides with previous entry"), "{stderr}");
+}
+
+#[test]
+fn zm_extract_zip_rejects_high_expansion_ratio_before_writing() {
+    let temp = TestDir::new("zm_zip_expansion_ratio");
+    let archive = temp.path("bomb.zip");
+    let repeated = vec![0_u8; 8 * 1024 * 1024];
+    write_zip_entries(
+        &archive,
+        CompressionMethod::Deflated,
+        &[("bomb.bin", repeated.as_slice())],
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+
+    assert_failure("zm extract high-ratio zip", &extract);
+    let stderr = String::from_utf8_lossy(&extract.stderr);
+    assert!(
+        stderr.contains("ratio limit"),
+        "expected expansion-ratio failure\nstderr:\n{stderr}"
+    );
+    assert!(!temp.path("out/bomb.bin").exists());
+    assert_no_zmanager_temp_files(&temp.path("out"));
+}
+
+#[test]
 fn zm_create_tar_zst_level_round_trips_and_bsdtar_extracts_when_available() {
     let temp = TestDir::new("zm_tar_zst_level");
     fs::create_dir_all(temp.path("project")).unwrap();
@@ -893,6 +989,70 @@ fn zm_create_tar_zst_preserves_symlink_with_y() {
             .file_type()
             .is_symlink(),
         "expected tar.zst symlink to extract as symlink"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn zm_extract_tar_zst_materializes_safe_hardlink_entries() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let temp = TestDir::new("zm_tar_zst_hardlink_extract");
+    let archive = temp.path("hardlink.tar.zst");
+    write_tar_zst_with_hardlink(
+        &archive,
+        "project/target.txt",
+        "project/hard.txt",
+        b"hardlink payload\n",
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract tar.zst hardlink", &extract);
+
+    let target = temp.path("out/project/target.txt");
+    let hardlink = temp.path("out/project/hard.txt");
+    assert_eq!(fs::read(&hardlink).unwrap(), b"hardlink payload\n");
+    assert_eq!(
+        fs::metadata(&target).unwrap().ino(),
+        fs::metadata(&hardlink).unwrap().ino()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn zm_extract_libarchive_tar_materializes_safe_hardlink_entries() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let temp = TestDir::new("zm_tar_hardlink_extract");
+    let archive = temp.path("hardlink.tar");
+    write_tar_with_hardlink(
+        &archive,
+        "project/target.txt",
+        "project/hard.txt",
+        b"hardlink payload\n",
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract tar hardlink", &extract);
+
+    let target = temp.path("out/project/target.txt");
+    let hardlink = temp.path("out/project/hard.txt");
+    assert_eq!(fs::read(&hardlink).unwrap(), b"hardlink payload\n");
+    assert_eq!(
+        fs::metadata(&target).unwrap().ino(),
+        fs::metadata(&hardlink).unwrap().ino()
     );
 }
 
@@ -1465,6 +1625,29 @@ fn zm_no_password_prompt_fails_instead_of_prompting() {
     let create = child.wait_with_output().unwrap();
     assert_success("zm create encrypted zip", &create);
 
+    let mut extract_child = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--password-stdin")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write as _;
+        let stdin = extract_child.stdin.as_mut().unwrap();
+        writeln!(stdin, "correct horse").unwrap();
+    }
+    let extract = extract_child.wait_with_output().unwrap();
+    assert_success("zm extract encrypted zip with password stdin", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/secret.txt")).unwrap(),
+        "secret\n"
+    );
+
     let test = Command::new(zm_path())
         .arg("--no-password-prompt")
         .arg("test")
@@ -1485,6 +1668,7 @@ struct Fixture {
     format: String,
     extract: bool,
     password: Option<String>,
+    sha256: String,
 }
 
 impl Fixture {
@@ -1504,12 +1688,13 @@ fn fixture_manifest() -> Vec<Fixture> {
         })
         .map(|line| {
             let fields = line.split('\t').collect::<Vec<_>>();
-            assert!(fields.len() >= 4, "invalid fixture manifest line: {line:?}");
+            assert!(fields.len() >= 6, "invalid fixture manifest line: {line:?}");
             Fixture {
                 filename: fields[0].to_owned(),
                 format: fields[1].to_owned(),
                 extract: fields[2] == "true",
                 password: (!fields[3].is_empty()).then(|| fields[3].to_owned()),
+                sha256: fields[4].to_owned(),
             }
         })
         .collect::<Vec<_>>();
@@ -1525,6 +1710,12 @@ fn fixture_manifest() -> Vec<Fixture> {
             "missing fixture archive: {}",
             fixture.path().display()
         );
+        assert_eq!(
+            sha256_hex(&fixture.path()),
+            fixture.sha256,
+            "fixture checksum drifted: {}",
+            fixture.filename
+        );
         assert!(
             fixture.password.is_none(),
             "password-protected fixtures are not wired into generic CLI tests yet: {}",
@@ -1533,6 +1724,20 @@ fn fixture_manifest() -> Vec<Fixture> {
     }
 
     fixtures
+}
+
+fn sha256_hex(path: &Path) -> String {
+    let mut file = fs::File::open(path).unwrap();
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = file.read(&mut buffer).unwrap();
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn cli_path() -> PathBuf {
@@ -1559,6 +1764,85 @@ fn assert_failure(label: &str, output: &std::process::Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn write_zip_entries(path: &Path, method: CompressionMethod, entries: &[(&str, &[u8])]) {
+    let file = File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(method);
+
+    for (entry_path, contents) in entries {
+        writer.start_file(*entry_path, options).unwrap();
+        writer.write_all(contents).unwrap();
+    }
+
+    writer.finish().unwrap();
+}
+
+#[cfg(unix)]
+fn write_tar_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
+    let file = File::create(path).unwrap();
+    write_tar_hardlink_entries(file, target_path, link_path, contents);
+}
+
+#[cfg(unix)]
+fn write_tar_zst_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
+    let file = File::create(path).unwrap();
+    let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+    let encoder = write_tar_hardlink_entries(encoder, target_path, link_path, contents);
+    encoder.finish().unwrap();
+}
+
+#[cfg(unix)]
+fn write_tar_hardlink_entries<W: std::io::Write>(
+    writer: W,
+    target_path: &str,
+    link_path: &str,
+    contents: &[u8],
+) -> W {
+    let mut builder = tar::Builder::new(writer);
+
+    let mut file_header = tar::Header::new_gnu();
+    file_header.set_entry_type(tar::EntryType::Regular);
+    file_header.set_size(contents.len().try_into().unwrap());
+    file_header.set_mode(0o644);
+    file_header.set_mtime(0);
+    file_header.set_cksum();
+    builder
+        .append_data(&mut file_header, target_path, contents)
+        .unwrap();
+
+    let mut link_header = tar::Header::new_gnu();
+    link_header.set_entry_type(tar::EntryType::Link);
+    link_header.set_size(0);
+    link_header.set_mode(0o644);
+    link_header.set_mtime(0);
+    link_header.set_cksum();
+    builder
+        .append_link(&mut link_header, link_path, Path::new(target_path))
+        .unwrap();
+
+    builder.into_inner().unwrap()
+}
+
+fn assert_no_zmanager_temp_files(root: &Path) {
+    if !root.exists() {
+        return;
+    }
+
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let name = entry.file_name();
+        assert!(
+            !name.to_string_lossy().starts_with(".zmanager-"),
+            "temporary output file was left behind: {}",
+            path.display()
+        );
+        if path.is_dir() {
+            assert_no_zmanager_temp_files(&path);
+        }
+    }
 }
 
 fn archives_dir() -> PathBuf {

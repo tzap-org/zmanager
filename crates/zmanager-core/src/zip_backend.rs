@@ -6,6 +6,7 @@ use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner,
 };
+use crate::secrets::SecretString;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
@@ -33,7 +34,7 @@ pub struct ZipCreateOptions {
     /// Preserve portable metadata such as Unix mode bits.
     pub preserve_metadata: bool,
     /// Optional password. When present, ZIP entries are written with AES-256.
-    pub password: Option<String>,
+    pub password: Option<SecretString>,
 }
 
 impl Default for ZipCreateOptions {
@@ -224,13 +225,24 @@ pub fn create_zip_from_manifest(
     options: &ZipCreateOptions,
 ) -> Result<ZipCreateReport, ZipBackendError> {
     let destination = destination.as_ref();
-    let file = File::create(destination).map_err(|source| ZipBackendError::Io {
+    let mut output =
+        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
+            ZipBackendError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
+    let file = output.file_mut().map_err(|source| ZipBackendError::Io {
         path: destination.to_path_buf(),
         source,
     })?;
     let mut writer = ZipWriter::new(file);
     let report = write_manifest_to_zip(&mut writer, manifest, options, None)?;
     writer.finish()?;
+    output.commit().map_err(|source| ZipBackendError::Io {
+        path: destination.to_path_buf(),
+        source,
+    })?;
 
     Ok(report)
 }
@@ -248,13 +260,24 @@ pub fn create_zip_from_manifest_with_context(
     context: &mut JobContext<'_>,
 ) -> Result<ZipCreateReport, ZipBackendError> {
     let destination = destination.as_ref();
-    let file = File::create(destination).map_err(|source| ZipBackendError::Io {
+    let mut output =
+        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
+            ZipBackendError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
+    let file = output.file_mut().map_err(|source| ZipBackendError::Io {
         path: destination.to_path_buf(),
         source,
     })?;
     let mut writer = ZipWriter::new(file);
     let report = write_manifest_to_zip(&mut writer, manifest, options, Some(context))?;
     writer.finish()?;
+    output.commit().map_err(|source| ZipBackendError::Io {
+        path: destination.to_path_buf(),
+        source,
+    })?;
 
     Ok(report)
 }
@@ -531,10 +554,13 @@ fn extract_zip_inner(
 ) -> Result<ZipExtractReport, ZipBackendError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
-    fs::create_dir_all(destination).map_err(|source| ZipBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| {
+            ZipBackendError::Io {
+                path: destination.to_path_buf(),
+                source,
+            }
+        })?;
 
     let file = File::open(archive_path).map_err(|source| ZipBackendError::Io {
         path: archive_path.to_path_buf(),
@@ -542,7 +568,7 @@ fn extract_zip_inner(
     })?;
     let mut archive = ZipArchive::new(file)?;
     let password = password_bytes(password);
-    let mut planner = ExtractionSafetyPlanner::new(destination, policy);
+    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut report = ZipExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -562,6 +588,8 @@ fn extract_zip_inner(
         let entry = ExtractionEntry {
             archive_path: file.name().to_owned(),
             kind,
+            uncompressed_size: Some(entry_size),
+            compressed_size: Some(file.compressed_size()),
         };
         if let Some(context) = context.as_deref_mut() {
             context.entry_started(&entry.archive_path, Some(entry_size));
@@ -572,12 +600,14 @@ fn extract_zip_inner(
             ExtractionDecision::Write {
                 destination_path,
                 replace_existing,
+                link_target_path,
                 ..
             } => write_zip_entry(
                 &mut file,
                 &entry,
                 &destination_path,
                 replace_existing,
+                link_target_path.as_deref(),
                 &mut report,
                 context.as_deref_mut(),
             )?,
@@ -717,7 +747,8 @@ fn zip_options<'a>(
 fn zip_password(options: &ZipCreateOptions) -> Option<&str> {
     options
         .password
-        .as_deref()
+        .as_ref()
+        .map(SecretString::expose_secret)
         .filter(|password| !password.is_empty())
 }
 
@@ -786,10 +817,11 @@ fn write_zip_entry<R: Read>(
     entry: &ExtractionEntry,
     destination_path: &Path,
     replace_existing: bool,
+    link_target_path: Option<&Path>,
     report: &mut ZipExtractReport,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<u64, ZipBackendError> {
-    if replace_existing {
+    if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
             ZipBackendError::Io {
                 path: destination_path.to_path_buf(),
@@ -808,31 +840,31 @@ fn write_zip_entry<R: Read>(
             Ok(0)
         }
         ExtractionEntryKind::File => {
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io {
-                    path: parent.to_path_buf(),
+            let mut destination = crate::atomic_file::AtomicOutputFile::create(destination_path)
+                .map_err(|source| ZipBackendError::Io {
+                    path: destination_path.to_path_buf(),
                     source,
                 })?;
-            }
-            let mut destination =
-                File::create(destination_path).map_err(|source| ZipBackendError::Io {
+            let output = destination
+                .file_mut()
+                .map_err(|source| ZipBackendError::Io {
                     path: destination_path.to_path_buf(),
                     source,
                 })?;
             let copied = if let Some(context) = context {
-                copy_with_progress(
-                    file,
-                    &mut destination,
-                    &entry.archive_path,
-                    destination_path,
-                    context,
-                )?
+                copy_with_progress(file, output, &entry.archive_path, destination_path, context)?
             } else {
-                io::copy(file, &mut destination).map_err(|source| ZipBackendError::Io {
+                io::copy(file, output).map_err(|source| ZipBackendError::Io {
                     path: destination_path.to_path_buf(),
                     source,
                 })?
             };
+            destination
+                .commit_with_replace(replace_existing)
+                .map_err(|source| ZipBackendError::Io {
+                    path: destination_path.to_path_buf(),
+                    source,
+                })?;
             report.written_entries += 1;
             report.written_bytes += copied;
             Ok(copied)
@@ -842,9 +874,19 @@ fn write_zip_entry<R: Read>(
             report.written_entries += 1;
             Ok(0)
         }
-        ExtractionEntryKind::Hardlink { .. }
-        | ExtractionEntryKind::Device
-        | ExtractionEntryKind::Special => {
+        ExtractionEntryKind::Hardlink { .. } => {
+            let source_path = link_target_path.ok_or_else(|| ZipBackendError::Io {
+                path: destination_path.to_path_buf(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "hardlink target was not resolved by extraction safety planning",
+                ),
+            })?;
+            write_hardlink(source_path, destination_path)?;
+            report.written_entries += 1;
+            Ok(0)
+        }
+        ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
             report.skipped_entries += 1;
             report.warnings.push(format!(
                 "skipped unsupported ZIP entry kind for {}",
@@ -862,7 +904,7 @@ fn copy_with_progress<R: Read, W: Write>(
     io_path: &Path,
     context: &mut JobContext<'_>,
 ) -> Result<u64, ZipBackendError> {
-    let mut buffer = vec![0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut copied = 0_u64;
 
     loop {
@@ -888,6 +930,19 @@ fn copy_with_progress<R: Read, W: Write>(
     }
 
     Ok(copied)
+}
+
+fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), ZipBackendError> {
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    fs::hard_link(source_path, destination_path).map_err(|source| ZipBackendError::Io {
+        path: destination_path.to_path_buf(),
+        source,
+    })
 }
 
 #[cfg(unix)]
@@ -925,6 +980,7 @@ mod tests {
         test_zip_with_password,
     };
     use crate::safety::{ExtractionPolicy, ExtractionSafetyError};
+    use crate::secrets::SecretString;
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
@@ -1075,7 +1131,7 @@ mod tests {
                 compression: ZipCompression::Deflate,
                 level: None,
                 preserve_metadata: true,
-                password: Some("correct horse".to_owned()),
+                password: Some(SecretString::from("correct horse")),
             },
         )
         .unwrap();

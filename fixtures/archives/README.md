@@ -15,6 +15,10 @@ Regenerate them with:
 bash scripts/generate_fixtures.sh
 ```
 
+`manifest.tsv` records the expected SHA-256 for each fixture. The CLI fixture
+tests verify those hashes before listing or extraction so accidental fixture
+drift is caught early.
+
 ## Included Fixtures
 
 | File | Format | Created by | Notes |
@@ -27,7 +31,7 @@ bash scripts/generate_fixtures.sh
 | `basic.cpio` | CPIO | `bsdtar --format=cpio` | Broad libarchive fixture. |
 | `basic.xar` | XAR | macOS `xar` | Apple package-adjacent archive fixture. |
 | `basic.iso` | ISO 9660/Joliet | macOS `hdiutil makehybrid` | Disk/container listing and extraction fixture; generated without symlink because ISO/Joliet is not the symlink-preserving path. |
-| `basic.deb` | Debian package | `ar` plus tar members | Package/container fixture; extraction exposes package members. |
+| `basic.deb` | Debian package | `bsdtar --format=ar` plus tar members | Package/container fixture; extraction exposes package members. |
 
 ## Not Included By Default
 

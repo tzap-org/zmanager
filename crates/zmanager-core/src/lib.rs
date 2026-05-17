@@ -1,5 +1,7 @@
 //! Core engine primitives for Z-Manager.
 
+mod atomic_file;
+
 pub mod archive_browser;
 pub mod deb_backend;
 pub mod jobs;
@@ -8,12 +10,16 @@ pub mod manifest;
 pub mod rar_backend;
 pub mod raw_stream_backend;
 pub mod safety;
+pub mod secrets;
 pub mod sevenz_backend;
 pub mod tar_zst_backend;
 pub mod zip_backend;
 
 /// The stable engine name used in diagnostics and health checks.
 pub const ENGINE_NAME: &str = "zmanager-core";
+
+pub(crate) const DEFAULT_IO_BUFFER_BYTES: usize = 128 * 1024;
+pub(crate) const MEBIBYTE_BYTES: u64 = 1024 * 1024;
 
 /// A minimal report proving that the Rust engine can be called.
 #[derive(Debug, Clone, Eq, PartialEq)]

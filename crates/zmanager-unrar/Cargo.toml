@@ -9,6 +9,9 @@ build = "build.rs"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+zeroize = "1.8.2"
+
 [build-dependencies]
 cc = "1.2.62"
 

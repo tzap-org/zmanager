@@ -14,7 +14,14 @@ name = "zm"
 path = "src/bin/zm.rs"
 
 [dependencies]
+rpassword = "7.5.2"
 zmanager-core = { path = "../zmanager-core" }
+
+[dev-dependencies]
+sha2 = "0.10.9"
+tar = "0.4.45"
+zip = "8.6.0"
+zstd = "0.13.3"
 
 [lints]
 workspace = true
