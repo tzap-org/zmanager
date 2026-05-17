@@ -98,3 +98,35 @@ jobs:
             echo "::error title=cargo test failed::$message"
             exit "$status"
           fi
+
+  windows-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            triplet: x64-windows
+            vc_arch: x64
+            vs_component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - name: Windows ARM64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            triplet: arm64-windows
+            vc_arch: arm64
+            vs_component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test
+        shell: pwsh
+        run: >
+          scripts/ci-windows.ps1
+          -Target "${{ matrix.target }}"
+          -Triplet "${{ matrix.triplet }}"
+          -VcArch "${{ matrix.vc_arch }}"
+          -VsComponent "${{ matrix.vs_component }}"

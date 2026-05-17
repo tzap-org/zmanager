@@ -141,13 +141,30 @@ cargo clean -p zmanager-unrar
 cargo test --workspace
 ```
 
+If `libarchive2-sys` builds `archive.lib` successfully and then bindgen fails
+with:
+
+```text
+libarchive/libarchive\archive.h:39:10: fatal error: 'sys/stat.h' file not found
+```
+
+the MSVC environment is present for CMake, but libclang is not seeing the same
+MSVC/UCRT include directories while generating Rust bindings. Z-Manager patches
+`libarchive2-sys` locally for this because upstream `0.2.0` treats every
+Windows build as `x86_64-pc-windows-gnu` during bindgen. The local patch uses
+the actual MSVC target, reads the Visual Studio include paths from `INCLUDE`,
+and keeps the vcpkg library path target-aware.
+
 ## Expected libarchive Build Behavior
 
 The `libarchive2-sys` build currently:
 
 - builds bundled libarchive through CMake;
 - runs `bindgen`, which requires `libclang.dll`;
-- links compression libraries by name: `zlib`, `bz2`, `lzma`, `zstd`, `lz4`,
+- uses the actual Windows MSVC target for bindgen instead of a hard-coded GNU
+  target;
+- imports MSVC and Windows SDK include directories from `INCLUDE`;
+- links compression libraries by name: `z`, `bz2`, `lzma`, `zstd`, `lz4`,
   and `libcrypto`;
 - links Windows system libraries: `bcrypt`, `advapi32`, `xmllite`, and `ole32`.
 
@@ -176,7 +193,7 @@ Windows code path:
 - `shlwapi`, `powrprof`, and `psapi` to match the libraries requested by
   upstream Windows headers.
 
-## Future GitHub Actions Plan
+## GitHub Actions Plan
 
 Use the official hosted Windows runner labels when adding CI:
 
@@ -185,48 +202,33 @@ Use the official hosted Windows runner labels when adding CI:
   image.
 - `windows-11-arm` for Windows ARM64.
 
-Start with a non-release CI job:
+Windows CI is wired through `scripts/ci-windows.ps1`. The script:
+
+- initializes the Visual Studio developer environment with `vcvarsall.bat`;
+- installs or locates LLVM for `libclang.dll`;
+- installs vcpkg compression dependencies for the requested triplet;
+- sets `LIBCLANG_PATH`, `CMAKE_TOOLCHAIN_FILE`, `VCPKG_*`, `LIB`, and
+  `INCLUDE`;
+- runs `cargo test --workspace --target <target>`.
+
+The CI matrix is:
 
 ```yaml
-windows:
-  name: Windows ${{ matrix.target }}
+windows-test:
+  name: ${{ matrix.name }}
   runs-on: ${{ matrix.runner }}
   strategy:
     fail-fast: false
     matrix:
       include:
-        - runner: windows-2025
+        - name: Windows x64
+          runner: windows-2025
           target: x86_64-pc-windows-msvc
           triplet: x64-windows
-        - runner: windows-11-arm
+        - name: Windows ARM64
+          runner: windows-11-arm
           target: aarch64-pc-windows-msvc
           triplet: arm64-windows
-  steps:
-    - uses: actions/checkout@v6
-    - name: Install Rust toolchain
-      shell: pwsh
-      run: |
-        rustup toolchain install stable --profile minimal --component clippy,rustfmt --target ${{ matrix.target }}
-        rustup default stable
-    - name: Install native dependencies
-      shell: pwsh
-      run: |
-        choco install llvm -y
-        git clone https://github.com/microsoft/vcpkg C:\vcpkg
-        C:\vcpkg\bootstrap-vcpkg.bat
-        C:\vcpkg\vcpkg.exe install zlib:${{ matrix.triplet }} bzip2:${{ matrix.triplet }} liblzma:${{ matrix.triplet }} zstd:${{ matrix.triplet }} lz4:${{ matrix.triplet }} openssl:${{ matrix.triplet }}
-    - name: Test
-      shell: pwsh
-      env:
-        LIBCLANG_PATH: C:\Program Files\LLVM\bin
-        CMAKE_TOOLCHAIN_FILE: C:\vcpkg\scripts\buildsystems\vcpkg.cmake
-        VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
-        VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
-      run: |
-        $env:Path = "C:\Program Files\LLVM\bin;$env:Path"
-        $env:LIB = "C:\vcpkg\installed\${{ matrix.triplet }}\lib;$env:LIB"
-        $env:INCLUDE = "C:\vcpkg\installed\${{ matrix.triplet }}\include;$env:INCLUDE"
-        cargo test --workspace --target ${{ matrix.target }}
 ```
 
 Keep this out of release packaging until both Windows jobs are green and we
