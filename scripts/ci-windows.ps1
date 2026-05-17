@@ -104,9 +104,9 @@ function Write-GitHubFailure {
     if ($env:GITHUB_STEP_SUMMARY) {
         Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### $Title"
         Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```text"
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```text'
         Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $tail
-        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "```"
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
     }
 
     $message = $tail -join "`n"
