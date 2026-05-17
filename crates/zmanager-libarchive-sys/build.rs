@@ -80,6 +80,11 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
         config
             .define("ENABLE_ACL", "ON")
             .define("ENABLE_XATTR", "ON")
+            .define("MSVC_USE_STATIC_CRT", "ON")
+            .define(
+                "CMAKE_MSVC_RUNTIME_LIBRARY",
+                "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+            )
             .define("ENABLE_ICONV", "OFF")
             .define("ENABLE_LIBXML2", "OFF")
             .define("ENABLE_EXPAT", "OFF")
