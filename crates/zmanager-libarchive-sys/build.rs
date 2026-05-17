@@ -9,6 +9,12 @@ const ENV_VCPKG_ROOT: &str = "VCPKG_ROOT";
 const ENV_VCPKG_TARGET_TRIPLET: &str = "VCPKG_TARGET_TRIPLET";
 const VCPKG_TRIPLET_ARM64_WINDOWS_STATIC_MD: &str = "arm64-windows-static-md";
 const VCPKG_TRIPLET_X64_WINDOWS_STATIC_MD: &str = "x64-windows-static-md";
+const VCPKG_BZIP2_LIB_NAMES: &[&str] = &["bz2"];
+const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto"];
+const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma"];
+const VCPKG_LZ4_LIB_NAMES: &[&str] = &["lz4"];
+const VCPKG_ZLIB_LIB_NAMES: &[&str] = &["zlib", "zlibstatic", "z"];
+const VCPKG_ZSTD_LIB_NAMES: &[&str] = &["zstd"];
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZMANAGER_LIBARCHIVE_SYSTEM");
@@ -183,12 +189,12 @@ fn link_bundled_archive_dependencies(target: &str) {
         println!("cargo:rustc-link-lib=acl");
     } else if target.contains("windows") && target.contains("msvc") {
         let vcpkg_lib_dir = link_vcpkg_libraries();
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["zlib", "z"]);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["bz2"]);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["lzma"]);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["zstd"]);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["lz4"]);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), &["libcrypto"]);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_ZLIB_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_BZIP2_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LIBLZMA_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_ZSTD_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LZ4_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LIBCRYPTO_LIB_NAMES);
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=crypt32");
         println!("cargo:rustc-link-lib=advapi32");
@@ -240,7 +246,12 @@ fn link_windows_vcpkg_library(vcpkg_lib_dir: Option<&Path>, candidates: &[&str])
         }
     }
 
-    println!("cargo:rustc-link-lib={}", candidates[0]);
+    let triplet = configured_vcpkg_triplet();
+    panic!(
+        "vcpkg library not found for triplet {triplet}. Looked in {} for one of: {}",
+        lib_dir.display(),
+        candidates.join(", ")
+    );
 }
 
 fn default_vcpkg_triplet() -> String {
