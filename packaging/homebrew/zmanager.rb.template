@@ -2,7 +2,6 @@ class Zmanager < Formula
   desc "Fast, safe archive utility for ZIP, 7z, TAR.ZST, and broad extraction"
   homepage "https://github.com/frankmanzhu/zmanager"
   license all_of: ["Apache-2.0", :cannot_represent]
-  version "__PACKAGE_VERSION__"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -22,6 +21,12 @@ class Zmanager < Formula
       url "__RELEASE_BASE_URL__/zm-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "__SHA_X86_64_UNKNOWN_LINUX_GNU__"
     end
+
+    depends_on "acl"
+    depends_on "bzip2"
+    depends_on "libxml2"
+    depends_on "openssl@3"
+    depends_on "zlib"
   end
 
   depends_on "libb2"
@@ -33,14 +38,6 @@ class Zmanager < Formula
   uses_from_macos "libxml2"
   uses_from_macos "zlib"
 
-  on_linux do
-    depends_on "acl"
-    depends_on "bzip2"
-    depends_on "libxml2"
-    depends_on "openssl@3"
-    depends_on "zlib"
-  end
-
   def install
     bin.install "zm"
     man1.install "man/man1/zm.1"
@@ -51,7 +48,7 @@ class Zmanager < Formula
   end
 
   test do
-    assert_match "zm __PACKAGE_VERSION__", shell_output("#{bin}/zm --version")
+    assert_match "zm #{version}", shell_output("#{bin}/zm --version")
 
     (testpath/"payload.txt").write("hello from Homebrew\n")
     system bin/"zm", "create", "payload.zip", "payload.txt"
