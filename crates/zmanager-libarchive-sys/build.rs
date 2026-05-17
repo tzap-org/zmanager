@@ -9,12 +9,18 @@ const ENV_VCPKG_ROOT: &str = "VCPKG_ROOT";
 const ENV_VCPKG_TARGET_TRIPLET: &str = "VCPKG_TARGET_TRIPLET";
 const VCPKG_TRIPLET_ARM64_WINDOWS_STATIC_MD: &str = "arm64-windows-static-md";
 const VCPKG_TRIPLET_X64_WINDOWS_STATIC_MD: &str = "x64-windows-static-md";
-const VCPKG_BZIP2_LIB_NAMES: &[&str] = &["bz2"];
-const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto"];
-const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma"];
-const VCPKG_LZ4_LIB_NAMES: &[&str] = &["lz4"];
-const VCPKG_ZLIB_LIB_NAMES: &[&str] = &["zlib", "zlibstatic", "z"];
-const VCPKG_ZSTD_LIB_NAMES: &[&str] = &["zstd"];
+const VCPKG_BZIP2_LIB_NAMES: &[&str] = &["bz2", "bz2d"];
+const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto", "libcryptod"];
+const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma", "lzmad"];
+const VCPKG_LZ4_LIB_NAMES: &[&str] = &["lz4", "lz4d"];
+const VCPKG_PROFILE_DEBUG: &str = "debug";
+const VCPKG_ZLIB_LIB_NAMES: &[&str] = &["zlib", "zlibd", "zlibstatic", "zlibstaticd", "z"];
+const VCPKG_ZSTD_LIB_NAMES: &[&str] = &["zstd", "zstdd"];
+
+struct VcpkgLinkSearch {
+    triplet: String,
+    lib_dirs: Vec<PathBuf>,
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZMANAGER_LIBARCHIVE_SYSTEM");
@@ -189,12 +195,12 @@ fn link_bundled_archive_dependencies(target: &str) {
         println!("cargo:rustc-link-lib=acl");
     } else if target.contains("windows") && target.contains("msvc") {
         let vcpkg_lib_dir = link_vcpkg_libraries();
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_ZLIB_LIB_NAMES);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_BZIP2_LIB_NAMES);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LIBLZMA_LIB_NAMES);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_ZSTD_LIB_NAMES);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LZ4_LIB_NAMES);
-        link_windows_vcpkg_library(vcpkg_lib_dir.as_deref(), VCPKG_LIBCRYPTO_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_ZLIB_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_BZIP2_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_LIBLZMA_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_ZSTD_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_LZ4_LIB_NAMES);
+        link_windows_vcpkg_library(vcpkg_lib_dir.as_ref(), VCPKG_LIBCRYPTO_LIB_NAMES);
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=crypt32");
         println!("cargo:rustc-link-lib=advapi32");
@@ -225,31 +231,49 @@ fn link_common_unix_libraries() {
     println!("cargo:rustc-link-lib=lz4");
 }
 
-fn link_vcpkg_libraries() -> Option<PathBuf> {
+fn link_vcpkg_libraries() -> Option<VcpkgLinkSearch> {
     let vcpkg_root = vcpkg_root()?;
     let triplet = configured_vcpkg_triplet();
-    let lib_dir = vcpkg_root.join("installed").join(triplet).join("lib");
-    print_link_search(&lib_dir);
-    Some(lib_dir)
+    let installed_dir = vcpkg_root.join("installed").join(&triplet);
+    let mut lib_dirs = Vec::new();
+
+    if env::var("PROFILE").as_deref() == Ok(VCPKG_PROFILE_DEBUG) {
+        lib_dirs.push(installed_dir.join("debug").join("lib"));
+    }
+    lib_dirs.push(installed_dir.join("lib"));
+
+    for lib_dir in &lib_dirs {
+        print_link_search(lib_dir);
+    }
+
+    Some(VcpkgLinkSearch { triplet, lib_dirs })
 }
 
-fn link_windows_vcpkg_library(vcpkg_lib_dir: Option<&Path>, candidates: &[&str]) {
-    let Some(lib_dir) = vcpkg_lib_dir else {
+fn link_windows_vcpkg_library(search: Option<&VcpkgLinkSearch>, candidates: &[&str]) {
+    let Some(search) = search else {
         println!("cargo:rustc-link-lib={}", candidates[0]);
         return;
     };
 
-    for candidate in candidates {
-        if lib_dir.join(format!("{candidate}.lib")).exists() {
-            println!("cargo:rustc-link-lib={candidate}");
-            return;
+    for lib_dir in &search.lib_dirs {
+        for candidate in candidates {
+            if lib_dir.join(format!("{candidate}.lib")).exists() {
+                println!("cargo:rustc-link-lib={candidate}");
+                return;
+            }
         }
     }
 
-    let triplet = configured_vcpkg_triplet();
+    let searched = search
+        .lib_dirs
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     panic!(
-        "vcpkg library not found for triplet {triplet}. Looked in {} for one of: {}",
-        lib_dir.display(),
+        "vcpkg library not found for triplet {}. Looked in {} for one of: {}",
+        search.triplet,
+        searched,
         candidates.join(", ")
     );
 }
