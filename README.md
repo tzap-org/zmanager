@@ -51,6 +51,7 @@ The release workflow publishes these archives when a `v*` tag is created:
 | macOS Apple Silicon | `zm-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
 
 Each archive contains the `zm` executable, `README.md`, `LICENSE`, and
 `THIRD_PARTY_NOTICES.md`. Every release also includes a `SHA256SUMS` file for
