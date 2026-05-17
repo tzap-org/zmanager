@@ -6,9 +6,9 @@
 [![Downloads](https://img.shields.io/github/downloads/frankmanzhu/zmanager/total)](https://github.com/frankmanzhu/zmanager/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`zm` is a fast, safe archive utility for macOS and Linux. Its goal is simple:
-extract almost anything safely, and create new archives only with modern,
-practical formats.
+`zm` is a fast, safe archive utility for macOS, Linux, and Windows. Its goal is
+simple: extract almost anything safely, and create new archives only with
+modern, practical formats.
 
 The CLI is the open-source part of Z-Manager. It shares the Rust archive engine
 with the macOS app, but it is useful on its own: create clean project archives,
@@ -52,6 +52,7 @@ The release workflow publishes these archives when a `v*` tag is created:
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows x64 | `zm-x86_64-pc-windows-gnu.zip` |
 
 Each archive contains the `zm` executable, `README.md`, `LICENSE`, and
 `THIRD_PARTY_NOTICES.md`. Every release also includes a `SHA256SUMS` file for

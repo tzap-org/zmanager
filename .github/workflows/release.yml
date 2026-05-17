@@ -29,11 +29,33 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-gnu
 
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-x86_64-bzip2
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-lz4
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-xz
+            mingw-w64-x86_64-zip
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-zstd
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -59,15 +81,33 @@ jobs:
           rustup default stable
           rustup target add "${{ matrix.target }}"
 
-      - name: Package
+      - name: Package Unix
+        if: runner.os != 'Windows'
         run: scripts/package-release.sh "${{ matrix.target }}" dist
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+          CMAKE_GENERATOR: Ninja
+          CMAKE_PREFIX_PATH: C:/msys64/mingw64
+          LIBCLANG_PATH: C:/msys64/mingw64/bin
+          PKG_CONFIG_ALL_STATIC: "1"
+          PKG_CONFIG_PATH: C:/msys64/mingw64/lib/pkgconfig
+          RUSTFLAGS: -C target-feature=+crt-static -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++
+        run: |
+          scripts/package-release.sh "${{ matrix.target }}" dist
+          objdump -p target/x86_64-pc-windows-gnu/release/zm.exe | tee windows-dlls.txt
+          if grep -Ei 'DLL Name: (libgcc|libstdc\+\+|libwinpthread|zlib|bz2|libbz2|liblzma|zstd|libzstd|lz4|liblz4|libcrypto|libssl)' windows-dlls.txt; then
+            echo "Windows GNU release still depends on third-party DLLs" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v6
         with:
           name: zm-${{ matrix.target }}
-          path: |
-            dist/zm-${{ matrix.target }}.tar.gz
-            dist/zm-${{ matrix.target }}.tar.gz.sha256
+          path: dist/zm-${{ matrix.target }}.*
 
   publish:
     name: Publish GitHub release
@@ -87,7 +127,7 @@ jobs:
       - name: Prepare checksums
         run: |
           cd release-artifacts
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.zip > SHA256SUMS
 
       - name: Publish
         env:
@@ -96,6 +136,7 @@ jobs:
         run: |
           gh release create "$TAG_NAME" \
             release-artifacts/*.tar.gz \
+            release-artifacts/*.zip \
             release-artifacts/SHA256SUMS \
             --verify-tag \
             --title "$TAG_NAME" \
