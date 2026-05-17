@@ -15,7 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($PSVersionTable.PSVersion.Major -ge 7) {
-    $PSNativeCommandUseErrorActionPreference = $true
+    $PSNativeCommandUseErrorActionPreference = $false
 }
 
 function Import-VisualStudioEnvironment {
@@ -117,40 +117,6 @@ function Write-GitHubFailure {
     Write-Host ("::error title={0}::{1}" -f $Title, $message)
 }
 
-function Write-LogDelta {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [ref]$Offset
-    )
-
-    if (-not (Test-Path $Path)) {
-        return
-    }
-
-    $stream = [System.IO.File]::Open(
-        $Path,
-        [System.IO.FileMode]::Open,
-        [System.IO.FileAccess]::Read,
-        [System.IO.FileShare]::ReadWrite
-    )
-
-    try {
-        [void]$stream.Seek([int64]$Offset.Value, [System.IO.SeekOrigin]::Begin)
-        $reader = New-Object System.IO.StreamReader($stream)
-        $text = $reader.ReadToEnd()
-        $Offset.Value = $stream.Position
-    } finally {
-        $stream.Dispose()
-    }
-
-    if ($text) {
-        Write-Host -NoNewline $text
-    }
-}
-
 function Invoke-NativeLogged {
     param(
         [Parameter(Mandatory = $true)]
@@ -166,44 +132,12 @@ function Invoke-NativeLogged {
     )
 
     $logPath = Join-Path (Get-Location) $LogName
-    $stdoutPath = "$logPath.stdout"
-    $stderrPath = "$logPath.stderr"
-    Remove-Item -Path $logPath, $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-
     Write-Host ("Running: " + $FilePath + " " + ($Arguments -join " "))
-
-    $process = Start-Process `
-        -FilePath $FilePath `
-        -ArgumentList $Arguments `
-        -NoNewWindow `
-        -PassThru `
-        -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath
-
-    $stdoutOffset = 0L
-    $stderrOffset = 0L
-    while (-not $process.HasExited) {
-        Start-Sleep -Seconds 5
-        Write-LogDelta -Path $stdoutPath -Offset ([ref]$stdoutOffset)
-        Write-LogDelta -Path $stderrPath -Offset ([ref]$stderrOffset)
-        $process.Refresh()
-    }
-    $process.WaitForExit()
-
-    Write-LogDelta -Path $stdoutPath -Offset ([ref]$stdoutOffset)
-    Write-LogDelta -Path $stderrPath -Offset ([ref]$stderrOffset)
-
-    $logContent = @()
-    if (Test-Path $stdoutPath) {
-        $logContent += Get-Content -Path $stdoutPath
-    }
-    if (Test-Path $stderrPath) {
-        $logContent += Get-Content -Path $stderrPath
-    }
-    Set-Content -Path $logPath -Value $logContent
-    $status = $process.ExitCode
+    & $FilePath @Arguments
+    $status = $LASTEXITCODE
 
     if ($status -ne 0) {
+        Set-Content -Path $logPath -Value ("Exited with code " + $status)
         Write-GitHubFailure -Title $Title -LogPath $logPath
         exit $status
     }
