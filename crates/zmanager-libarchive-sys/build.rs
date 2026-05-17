@@ -2,13 +2,20 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const BUNDLED_SOURCE_PATH: &str = "../../vendor/libarchive/libarchive-3.8.7";
+const ENV_CMAKE_TOOLCHAIN_FILE: &str = "CMAKE_TOOLCHAIN_FILE";
+const ENV_VCPKG_DEFAULT_TRIPLET: &str = "VCPKG_DEFAULT_TRIPLET";
+const ENV_VCPKG_INSTALLATION_ROOT: &str = "VCPKG_INSTALLATION_ROOT";
+const ENV_VCPKG_ROOT: &str = "VCPKG_ROOT";
+const ENV_VCPKG_TARGET_TRIPLET: &str = "VCPKG_TARGET_TRIPLET";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ZMANAGER_LIBARCHIVE_SYSTEM");
     println!("cargo:rerun-if-env-changed=LIBARCHIVE_DIR");
-    println!("cargo:rerun-if-env-changed=VCPKG_INSTALLATION_ROOT");
-    println!("cargo:rerun-if-env-changed=VCPKG_ROOT");
-    println!("cargo:rerun-if-env-changed=VCPKG_TARGET_TRIPLET");
+    println!("cargo:rerun-if-env-changed={ENV_CMAKE_TOOLCHAIN_FILE}");
+    println!("cargo:rerun-if-env-changed={ENV_VCPKG_INSTALLATION_ROOT}");
+    println!("cargo:rerun-if-env-changed={ENV_VCPKG_ROOT}");
+    println!("cargo:rerun-if-env-changed={ENV_VCPKG_DEFAULT_TRIPLET}");
+    println!("cargo:rerun-if-env-changed={ENV_VCPKG_TARGET_TRIPLET}");
     println!("cargo:rerun-if-changed={BUNDLED_SOURCE_PATH}");
 
     if env::var_os("ZMANAGER_LIBARCHIVE_SYSTEM").is_some() {
@@ -44,7 +51,7 @@ fn build_bundled_libarchive() {
     let mut config = cmake::Config::new(&source);
     configure_common_libarchive_options(&mut config);
     configure_target_options(&mut config, &target);
-    configure_vcpkg(&mut config);
+    configure_vcpkg(&mut config, &target);
 
     config.build_target("archive_static");
     let _install_root = config.build();
@@ -101,27 +108,46 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
     }
 }
 
-fn configure_vcpkg(config: &mut cmake::Config) {
+fn configure_vcpkg(config: &mut cmake::Config, target: &str) {
     let Some(vcpkg_root) = vcpkg_root() else {
+        assert!(
+            !(target.contains("windows") && target.contains("msvc")),
+            "Windows MSVC builds require a configured vcpkg root. Set \
+             {ENV_VCPKG_INSTALLATION_ROOT} or {ENV_VCPKG_ROOT}, or set \
+             {ENV_CMAKE_TOOLCHAIN_FILE} to vcpkg.cmake. The CI entry point \
+             scripts/ci-windows.ps1 configures this automatically."
+        );
         return;
     };
     let toolchain = vcpkg_root.join("scripts/buildsystems/vcpkg.cmake");
     if toolchain.exists() {
         config.define("CMAKE_TOOLCHAIN_FILE", toolchain);
     }
-    if let Ok(triplet) = env::var("VCPKG_TARGET_TRIPLET") {
+    if let Ok(triplet) = env::var(ENV_VCPKG_TARGET_TRIPLET) {
         config.define("VCPKG_TARGET_TRIPLET", triplet);
     }
 }
 
 fn vcpkg_root() -> Option<PathBuf> {
-    env::var_os("VCPKG_INSTALLATION_ROOT")
-        .or_else(|| env::var_os("VCPKG_ROOT"))
+    env::var_os(ENV_VCPKG_INSTALLATION_ROOT)
+        .or_else(|| env::var_os(ENV_VCPKG_ROOT))
         .map(PathBuf::from)
-        .or_else(|| {
-            let default_root = PathBuf::from(r"C:\vcpkg");
-            default_root.exists().then_some(default_root)
-        })
+        .or_else(vcpkg_root_from_toolchain_file)
+}
+
+fn vcpkg_root_from_toolchain_file() -> Option<PathBuf> {
+    let toolchain = PathBuf::from(env::var_os(ENV_CMAKE_TOOLCHAIN_FILE)?);
+    if toolchain.file_name()?.to_string_lossy() != "vcpkg.cmake" {
+        return None;
+    }
+
+    let buildsystems_dir = toolchain.parent()?;
+    let scripts_dir = buildsystems_dir.parent()?;
+    if scripts_dir.file_name()?.to_string_lossy() != "scripts" {
+        return None;
+    }
+
+    Some(scripts_dir.parent()?.to_path_buf())
 }
 
 fn link_bundled_archive_library(target: &str) {
@@ -186,8 +212,8 @@ fn link_common_unix_libraries() {
 
 fn link_vcpkg_libraries() -> Option<PathBuf> {
     let vcpkg_root = vcpkg_root()?;
-    let triplet = env::var("VCPKG_TARGET_TRIPLET")
-        .or_else(|_| env::var("VCPKG_DEFAULT_TRIPLET"))
+    let triplet = env::var(ENV_VCPKG_TARGET_TRIPLET)
+        .or_else(|_| env::var(ENV_VCPKG_DEFAULT_TRIPLET))
         .unwrap_or_else(|_| default_vcpkg_triplet());
     let lib_dir = vcpkg_root.join("installed").join(triplet).join("lib");
     print_link_search(&lib_dir);
