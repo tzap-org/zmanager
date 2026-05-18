@@ -430,6 +430,10 @@ fn static_completion_files_capture_navigation_contract() {
 
 #[test]
 fn bash_completion_matches_help_navigation_contract() {
+    if cfg!(windows) {
+        return;
+    }
+
     if !command_available("bash") {
         return;
     }
@@ -781,6 +785,13 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
     );
     assert_not_contains(&release_workflow, "ubuntu-latest");
     assert_not_contains(&ci_workflow, "ubuntu-latest");
+}
+
+#[test]
+fn macos_ci_and_release_builds_set_deployment_target() {
+    for workflow in [CI_WORKFLOW, PACKAGE_PREVIEW_WORKFLOW, RELEASE_WORKFLOW] {
+        assert_contains(workflow, "MACOSX_DEPLOYMENT_TARGET: \"11.0\"");
+    }
 }
 
 #[test]

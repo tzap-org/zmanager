@@ -14,6 +14,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
 concurrency:
   group: package-preview-${{ github.ref }}
   cancel-in-progress: true
