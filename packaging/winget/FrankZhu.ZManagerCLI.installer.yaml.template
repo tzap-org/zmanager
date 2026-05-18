@@ -1,4 +1,4 @@
-PackageIdentifier: FrankManZhu.ZManagerCLI
+PackageIdentifier: FrankZhu.ZManagerCLI
 PackageVersion: __PACKAGE_VERSION__
 InstallerType: zip
 NestedInstallerType: portable

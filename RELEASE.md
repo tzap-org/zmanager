@@ -40,7 +40,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    release-artifacts/SHA256SUMS
    release-artifacts/zm-<target>.deps.txt
    release-artifacts/package-metadata/homebrew/Formula/zmanager.rb
-   release-artifacts/package-metadata/winget/FrankManZhu.ZManagerCLI/<version>/
+   release-artifacts/package-metadata/winget/FrankZhu.ZManagerCLI/<version>/
    ```
 
    To regenerate locally from downloaded artifacts:
@@ -67,7 +67,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 6. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\FrankManZhu.ZManagerCLI\1.0.0
+   winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.0
    ```
 
 The Homebrew formula and WinGet manifests are generated from `SHA256SUMS`;

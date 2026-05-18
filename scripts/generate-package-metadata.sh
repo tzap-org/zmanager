@@ -82,18 +82,18 @@ SHA_AARCH64_PC_WINDOWS_MSVC=$(checksum_for "$ASSET_AARCH64_PC_WINDOWS_MSVC")
 SHA_X86_64_PC_WINDOWS_MSVC=$(checksum_for "$ASSET_X86_64_PC_WINDOWS_MSVC")
 
 HOMEBREW_OUT="$OUT_DIR/homebrew/Formula/zmanager.rb"
-WINGET_OUT="$OUT_DIR/winget/FrankManZhu.ZManagerCLI/$VERSION"
+WINGET_OUT="$OUT_DIR/winget/FrankZhu.ZManagerCLI/$VERSION"
 
 render_template "$TEMPLATE_DIR/homebrew/zmanager.rb.template" "$HOMEBREW_OUT"
 render_template \
-  "$TEMPLATE_DIR/winget/FrankManZhu.ZManagerCLI.yaml.template" \
-  "$WINGET_OUT/FrankManZhu.ZManagerCLI.yaml"
+  "$TEMPLATE_DIR/winget/FrankZhu.ZManagerCLI.yaml.template" \
+  "$WINGET_OUT/FrankZhu.ZManagerCLI.yaml"
 render_template \
-  "$TEMPLATE_DIR/winget/FrankManZhu.ZManagerCLI.locale.en-US.yaml.template" \
-  "$WINGET_OUT/FrankManZhu.ZManagerCLI.locale.en-US.yaml"
+  "$TEMPLATE_DIR/winget/FrankZhu.ZManagerCLI.locale.en-US.yaml.template" \
+  "$WINGET_OUT/FrankZhu.ZManagerCLI.locale.en-US.yaml"
 render_template \
-  "$TEMPLATE_DIR/winget/FrankManZhu.ZManagerCLI.installer.yaml.template" \
-  "$WINGET_OUT/FrankManZhu.ZManagerCLI.installer.yaml"
+  "$TEMPLATE_DIR/winget/FrankZhu.ZManagerCLI.installer.yaml.template" \
+  "$WINGET_OUT/FrankZhu.ZManagerCLI.installer.yaml"
 
 echo "$HOMEBREW_OUT"
 echo "$WINGET_OUT"

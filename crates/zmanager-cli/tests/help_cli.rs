@@ -17,9 +17,9 @@ const RUNTIME_DEPS_SH: &str = include_str!("../../../scripts/inspect-runtime-dep
 const CI_WINDOWS_PS1: &str = include_str!("../../../scripts/ci-windows.ps1");
 const HOMEBREW_TEMPLATE: &str = include_str!("../../../packaging/homebrew/zmanager.rb.template");
 const WINGET_INSTALLER_TEMPLATE: &str =
-    include_str!("../../../packaging/winget/FrankManZhu.ZManagerCLI.installer.yaml.template");
+    include_str!("../../../packaging/winget/FrankZhu.ZManagerCLI.installer.yaml.template");
 const WINGET_LOCALE_TEMPLATE: &str =
-    include_str!("../../../packaging/winget/FrankManZhu.ZManagerCLI.locale.en-US.yaml.template");
+    include_str!("../../../packaging/winget/FrankZhu.ZManagerCLI.locale.en-US.yaml.template");
 const PUBLIC_COMMANDS: &[&str] = &[
     "create", "extract", "list", "test", "plan", "formats", "doctor", "help",
 ];
@@ -221,6 +221,22 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
 }
 
 #[test]
+fn no_args_prints_help_successfully() {
+    let output = Command::new(zm_path()).output().unwrap();
+    assert_success("zm", &output);
+    assert!(
+        output.stderr.is_empty(),
+        "no-arg help should not emit stderr"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains(&stdout, "Usage:");
+    assert_contains(&stdout, "zm [options] <command>");
+    assert_contains(&stdout, "Commands:");
+    assert_contains(&stdout, "Run 'zm help <command>'");
+}
+
+#[test]
 fn every_public_command_has_targeted_help() {
     for (command, required) in COMMAND_HELP_CASES {
         let direct = Command::new(zm_path())
@@ -376,7 +392,7 @@ fn package_channel_metadata_uses_release_checksums() {
     for required in [
         "SHA256SUMS",
         "package-metadata/homebrew/Formula/zmanager.rb",
-        "package-metadata\\winget\\FrankManZhu.ZManagerCLI",
+        "package-metadata\\winget\\FrankZhu.ZManagerCLI",
         "brew install frankmanzhu/zmanager/zmanager",
         "winget validate",
     ] {

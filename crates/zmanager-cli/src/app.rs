@@ -393,8 +393,8 @@ pub fn run_from_env() -> ExitCode {
     }
 
     let Some(command) = raw_args.first().cloned() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
     };
 
     match command.as_str() {

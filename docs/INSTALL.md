@@ -97,13 +97,13 @@ After release metadata is generated, validate the manifests before submitting
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\FrankManZhu.ZManagerCLI\1.0.0
+winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.0
 ```
 
 After the manifest is accepted, users install with:
 
 ```powershell
-winget install FrankManZhu.ZManagerCLI
+winget install FrankZhu.ZManagerCLI
 ```
 
 WinGet metadata is generated from the same `SHA256SUMS` file as the Homebrew

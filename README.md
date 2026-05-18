@@ -92,7 +92,7 @@ The release workflow also renders WinGet manifests from
 with:
 
 ```powershell
-winget install FrankManZhu.ZManagerCLI
+winget install FrankZhu.ZManagerCLI
 ```
 
 ### Install Script
