@@ -25,8 +25,8 @@ Z-Manager treats extraction and creation differently:
   package, mobile, and developer archives without knowing which backend or
   tool normally handles them.
 - **Create deliberately.** New archives should use formats that make sense
-  today: ZIP for universal sharing, TAR.ZST for fast modern compression, and 7z
-  for high-compression encrypted archives.
+  today: ZIP for universal sharing, TZST (`.tar.zst`) for fast modern
+  compression, and 7z for high-compression encrypted archives.
 - **Avoid legacy creation paths.** Old compression methods still matter for
   reading existing files, but new archives should not depend on outdated
   choices when better performance and safer password encryption are available.
