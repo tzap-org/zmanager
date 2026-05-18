@@ -1903,7 +1903,7 @@ fn zm_progress_never_suppresses_progress() {
 }
 
 #[test]
-fn zm_color_always_colors_progress_stderr_without_coloring_stdout() {
+fn zm_color_always_styles_human_summary_and_progress() {
     let temp = TestDir::new("zm_color_progress");
     fs::create_dir_all(temp.path("project")).unwrap();
     fs::write(temp.path("project/file.txt"), "payload\n").unwrap();
@@ -1922,7 +1922,11 @@ fn zm_color_always_colors_progress_stderr_without_coloring_stdout() {
     assert_success("zm create --color always --progress always", &colored);
     let colored_stdout = String::from_utf8_lossy(&colored.stdout);
     let colored_stderr = String::from_utf8_lossy(&colored.stderr);
-    assert!(!colored_stdout.contains("\x1b["), "{colored_stdout}");
+    assert!(colored_stdout.contains("\x1b["), "{colored_stdout}");
+    assert!(
+        strip_ansi(&colored_stdout).contains("created zip:"),
+        "{colored_stdout}"
+    );
     assert!(
         colored_stderr.contains(ANSI_PROGRESS_PREFIX),
         "{colored_stderr}"
@@ -1945,7 +1949,55 @@ fn zm_color_always_colors_progress_stderr_without_coloring_stdout() {
         plain_stderr.contains("progress: zip create started"),
         "{plain_stderr}"
     );
+    assert!(!String::from_utf8_lossy(&plain.stdout).contains("\x1b["));
     assert!(!plain_stderr.contains("\x1b["), "{plain_stderr}");
+}
+
+#[test]
+fn zm_color_always_does_not_color_json_or_archive_stdout() {
+    let temp = TestDir::new("zm_color_machine_output");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/keep.txt"), "keep\n").unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create color fixture", &create);
+
+    let json = Command::new(zm_path())
+        .arg("--color")
+        .arg("always")
+        .arg("list")
+        .arg(&archive)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm --color always list --json", &json);
+    let json_stdout = String::from_utf8_lossy(&json.stdout);
+    assert_json_object(&json_stdout);
+    assert!(!json_stdout.contains("\x1b["), "{json_stdout}");
+
+    let extract = Command::new(zm_path())
+        .arg("--color")
+        .arg("always")
+        .arg("extract")
+        .arg(&archive)
+        .arg("--to-stdout")
+        .arg("--include")
+        .arg("project/keep.txt")
+        .output()
+        .unwrap();
+    assert_success("zm --color always extract --to-stdout", &extract);
+    assert_eq!(String::from_utf8_lossy(&extract.stdout), "keep\n");
+    assert!(
+        extract.stderr.is_empty(),
+        "stderr should stay quiet unless verbose/error:\n{}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
 }
 
 #[test]
@@ -2208,6 +2260,24 @@ fn assert_json_object(stdout: &str) {
         stdout.starts_with('{') && stdout.trim_end().ends_with('}'),
         "stdout is not a single JSON object:\n{stdout}"
     );
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut stripped = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            let _ = chars.next();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(ch);
+        }
+    }
+    stripped
 }
 
 fn write_zip_entries(path: &Path, method: CompressionMethod, entries: &[(&str, &[u8])]) {

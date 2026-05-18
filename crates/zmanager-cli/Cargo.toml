@@ -14,6 +14,8 @@ name = "zm"
 path = "src/bin/zm.rs"
 
 [dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
 rpassword = "7.5.2"
 zmanager-core = { path = "../zmanager-core" }
 

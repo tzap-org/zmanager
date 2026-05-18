@@ -68,7 +68,16 @@ Increase diagnostics.
 .It Fl -json
 Emit JSON where supported.
 .It Fl -color Cm auto Ns | Ns Cm always Ns | Ns Cm never
-Control color output.
+Control color output for human-readable help, summaries, diagnostics, and
+progress.
+The default
+.Cm auto
+colors terminal streams and honors
+.Ev NO_COLOR .
+.Cm always
+forces color and
+.Cm never
+disables it.
 .It Fl -no-color
 Alias for
 .Fl -color Cm never .
@@ -326,6 +335,7 @@ Human diagnostics, progress, and errors are written to stderr.
 Data modes such as
 .Fl -to-stdout
 and JSON modes write their payloads to stdout.
+JSON and raw data payloads are never colorized.
 .Sh EXIT STATUS
 .Bl -tag -width "2"
 .It 0

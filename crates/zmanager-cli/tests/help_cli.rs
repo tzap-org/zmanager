@@ -244,6 +244,56 @@ fn no_args_prints_help_successfully() {
 }
 
 #[test]
+fn color_always_styles_help_without_changing_text() {
+    let output = Command::new(zm_path())
+        .arg("--color")
+        .arg("always")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_success("zm --color always --help", &output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains(&stdout, "\x1b[");
+
+    let plain = strip_ansi(&stdout);
+    assert_contains(&plain, "Usage:");
+    assert_contains(&plain, "Commands:");
+    assert_contains(&plain, "--color <auto|always|never>");
+}
+
+#[test]
+fn color_modes_and_no_color_env_control_help_styling() {
+    let never = Command::new(zm_path())
+        .arg("--color")
+        .arg("never")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_success("zm --color never --help", &never);
+    assert_not_contains(&String::from_utf8_lossy(&never.stdout), "\x1b[");
+
+    let no_color_auto = Command::new(zm_path())
+        .env("NO_COLOR", "1")
+        .arg("--color")
+        .arg("auto")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_success("NO_COLOR=1 zm --color auto --help", &no_color_auto);
+    assert_not_contains(&String::from_utf8_lossy(&no_color_auto.stdout), "\x1b[");
+
+    let no_color_always = Command::new(zm_path())
+        .env("NO_COLOR", "1")
+        .arg("--color")
+        .arg("always")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_success("NO_COLOR=1 zm --color always --help", &no_color_always);
+    assert_contains(&String::from_utf8_lossy(&no_color_always.stdout), "\x1b[");
+}
+
+#[test]
 fn every_public_command_has_targeted_help() {
     for (command, required) in COMMAND_HELP_CASES {
         let direct = Command::new(zm_path())
@@ -663,6 +713,24 @@ fn assert_not_contains(haystack: &str, needle: &str) {
         !haystack.contains(needle),
         "expected output not to contain {needle:?}\n{haystack}"
     );
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut stripped = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            let _ = chars.next();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(ch);
+        }
+    }
+    stripped
 }
 
 fn normalize_newlines(input: &str) -> String {

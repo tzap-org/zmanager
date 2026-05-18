@@ -1,3 +1,4 @@
+use crate::output::{self, OutputMode, StyleRole};
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fmt::Write as _;
@@ -13,8 +14,6 @@ use zmanager_core::safety::{
 use zmanager_core::secrets::SecretString;
 
 const PROGRESS_PREFIX: &str = "progress";
-const PROGRESS_COLOR: &str = "\x1b[36m";
-const COLOR_RESET: &str = "\x1b[0m";
 const PROGRESS_PERCENT_STEP: u64 = 5;
 const PROGRESS_BYTE_STEP: u64 = 1024 * 1024;
 const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
@@ -54,7 +53,7 @@ Global options:
   -v, --verbose                  Increase diagnostics
       --json                     Emit JSON where supported
       --color <auto|always|never>
-                                  Control color output
+                                  Control color output; auto honors NO_COLOR
       --no-color                 Alias for --color never
       --progress <auto|always|never>
                                   Control progress output
@@ -391,24 +390,24 @@ pub fn run_from_env() -> ExitCode {
     let mut raw_args = env::args().skip(1).collect::<Vec<_>>();
     let mut global = GlobalOptions::default();
     if let Err(error) = peel_leading_global_options(&mut raw_args, &mut global) {
-        return usage_error(&error);
+        return usage_error(&error, &global);
     }
 
     let Some(command) = raw_args.first().cloned() else {
-        print!("{USAGE}");
+        print_help_stdout(USAGE, &global);
         return ExitCode::SUCCESS;
     };
 
     match command.as_str() {
         "--version" | "-V" => {
             if raw_args.len() > 1 {
-                eprint!("{USAGE}");
+                print_help_stderr(USAGE, &global);
                 return ExitCode::from(2);
             }
             println!("zm {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        "help" => help_command(&raw_args[1..]),
+        "help" => help_command(&raw_args[1..], &global),
         "doctor" | "healthcheck" => doctor_command(&raw_args[1..], global),
         "formats" => new_formats_command(&raw_args[1..], global),
         "create" | "c" => new_create_command(&raw_args[1..], global),
@@ -432,16 +431,16 @@ pub fn run_from_env() -> ExitCode {
         "libarchive-extract" => libarchive_extract_command(raw_args.into_iter().skip(1)),
         "--help" | "-h" => {
             if raw_args.len() > 1 {
-                return help_command(&raw_args[1..]);
+                return help_command(&raw_args[1..], &global);
             }
-            print!("{USAGE}");
+            print_help_stdout(USAGE, &global);
             ExitCode::SUCCESS
         }
         _ => {
             if has_classic_action(&raw_args) {
                 run_classic_command(&raw_args, global)
             } else {
-                eprint!("{USAGE}");
+                print_help_stderr(USAGE, &global);
                 ExitCode::from(2)
             }
         }
@@ -458,18 +457,10 @@ struct GlobalOptions {
     no_password_prompt: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-enum OutputMode {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
 #[derive(Debug)]
 struct ProgressReporter {
     enabled: bool,
-    color_enabled: bool,
+    color: OutputMode,
     total_bytes: Option<u64>,
     last_percent: Option<u64>,
     last_reported_bytes: u64,
@@ -484,14 +475,11 @@ impl ProgressReporter {
                     && !global.quiet
                     && stderr_is_terminal
         });
-        let color_enabled = global.is_some_and(|global| {
-            matches!(global.color, OutputMode::Always)
-                || matches!(global.color, OutputMode::Auto) && !global.quiet && stderr_is_terminal
-        });
+        let color = global.map_or(OutputMode::Never, |global| global.color);
 
         Self {
             enabled,
-            color_enabled,
+            color,
             total_bytes: None,
             last_percent: None,
             last_reported_bytes: 0,
@@ -544,11 +532,13 @@ impl ProgressReporter {
     }
 
     fn emit_line(&self, message: std::fmt::Arguments<'_>) {
-        if self.color_enabled {
-            eprintln!("{PROGRESS_COLOR}{PROGRESS_PREFIX}{COLOR_RESET}: {message}");
-        } else {
-            eprintln!("{PROGRESS_PREFIX}: {message}");
-        }
+        output::stderr_line(
+            self.color,
+            format_args!(
+                "{}: {message}",
+                output::styled(StyleRole::Progress, format_args!("{PROGRESS_PREFIX}"))
+            ),
+        );
     }
 
     fn emit_percent(&mut self, total_bytes_processed: u64, total_bytes: u64) {
@@ -902,7 +892,7 @@ fn run_classic_command(args: &[String], global: GlobalOptions) -> ExitCode {
         Some(Action::List) => new_list_command_from_expanded(&expanded, global),
         Some(Action::Test) => new_test_command_from_expanded(&expanded, global),
         None => {
-            eprint!("{USAGE}");
+            print_help_stderr(USAGE, &global);
             ExitCode::from(2)
         }
     }
@@ -949,23 +939,26 @@ fn wants_help(args: &[String]) -> bool {
         .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
 }
 
-fn help_command(args: &[String]) -> ExitCode {
+fn help_command(args: &[String], global: &GlobalOptions) -> ExitCode {
     if args.is_empty() {
-        print!("{USAGE}");
+        print_help_stdout(USAGE, global);
         return ExitCode::SUCCESS;
     }
     if args.len() > 1 {
-        eprintln!("error: too many help topics");
-        eprintln!("Try 'zm help <command>'.");
+        print_error_line(global, format_args!("error: too many help topics"));
+        output::stderr_line(global.color, format_args!("Try 'zm help <command>'."));
         return ExitCode::from(2);
     }
     let topic = &args[0];
     let Some(help) = command_help(topic) else {
-        eprintln!("error: unknown help topic: {topic}");
-        eprintln!("Try 'zm --help' for available commands.");
+        print_error_line(global, format_args!("error: unknown help topic: {topic}"));
+        output::stderr_line(
+            global.color,
+            format_args!("Try 'zm --help' for available commands."),
+        );
         return ExitCode::from(2);
     };
-    print!("{help}");
+    print_help_stdout(help, global);
     ExitCode::SUCCESS
 }
 
@@ -983,18 +976,60 @@ fn command_help(command: &str) -> Option<&'static str> {
     }
 }
 
+fn print_help_stdout(help: &str, global: &GlobalOptions) {
+    output::stdout_write(global.color, format_args!("{}", output::render_help(help)));
+}
+
+fn print_help_stderr(help: &str, global: &GlobalOptions) {
+    output::stderr_write(global.color, format_args!("{}", output::render_help(help)));
+}
+
+fn print_error_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
+    output::stderr_line(
+        global.color,
+        format_args!("{}", output::styled(StyleRole::Error, message)),
+    );
+}
+
+fn print_optional_error_line(global: Option<&GlobalOptions>, message: std::fmt::Arguments<'_>) {
+    if let Some(global) = global {
+        print_error_line(global, message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+fn usage_failure(global: &GlobalOptions, message: std::fmt::Arguments<'_>) -> ExitCode {
+    print_error_line(global, message);
+    ExitCode::from(2)
+}
+
+fn print_success_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
+    output::stdout_line(
+        global.color,
+        format_args!("{}", output::styled(StyleRole::Success, message)),
+    );
+}
+
+fn print_warning_stdout(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
+    output::stdout_line(
+        global.color,
+        format_args!("{}", output::styled(StyleRole::Warning, message)),
+    );
+}
+
 fn new_formats_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{FORMATS_HELP}");
+        print_help_stdout(FORMATS_HELP, &global);
         return ExitCode::SUCCESS;
     }
     if let Err(error) = parse_global_only(args, &mut global) {
-        return command_usage_error("formats", &error);
+        return command_usage_error("formats", &error, &global);
     }
     if global.json {
         print_formats_json();
     } else {
-        print_formats_table();
+        print_formats_table(&global);
     }
     ExitCode::SUCCESS
 }
@@ -1034,21 +1069,55 @@ fn print_string_array_json(values: &[&str]) {
     print!("]");
 }
 
-fn print_formats_table() {
-    println!("Create:");
+fn print_formats_table(global: &GlobalOptions) {
+    output::stdout_line(
+        global.color,
+        format_args!(
+            "{}",
+            output::styled(StyleRole::Heading, format_args!("Create:"))
+        ),
+    );
     for format in CREATE_FORMATS {
-        println!("  {:<9} {}", format.name, format.extensions.join(", "));
+        let padding = " ".repeat(9usize.saturating_sub(format.name.len()));
+        output::stdout_line(
+            global.color,
+            format_args!(
+                "  {}{} {}",
+                output::styled(StyleRole::Command, format_args!("{}", format.name)),
+                padding,
+                format.extensions.join(", ")
+            ),
+        );
     }
-    println!();
-    println!("Extract:");
+    output::stdout_line(global.color, format_args!(""));
+    output::stdout_line(
+        global.color,
+        format_args!(
+            "{}",
+            output::styled(StyleRole::Heading, format_args!("Extract:"))
+        ),
+    );
     for format in EXTRACT_FORMATS {
+        let padding = " ".repeat(9usize.saturating_sub(format.name.len()));
         if format.name == FORMAT_LIBARCHIVE {
-            println!(
-                "  {:<9} fallback for supported archive formats",
-                format.name
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "  {}{} fallback for supported archive formats",
+                    output::styled(StyleRole::Command, format_args!("{}", format.name)),
+                    padding
+                ),
             );
         } else {
-            println!("  {:<9} {}", format.name, format.extensions.join(", "));
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "  {}{} {}",
+                    output::styled(StyleRole::Command, format_args!("{}", format.name)),
+                    padding,
+                    format.extensions.join(", ")
+                ),
+            );
         }
     }
 }
@@ -1067,11 +1136,11 @@ fn parse_global_only(args: &[String], global: &mut GlobalOptions) -> Result<(), 
 
 fn doctor_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{DOCTOR_HELP}");
+        print_help_stdout(DOCTOR_HELP, &global);
         return ExitCode::SUCCESS;
     }
     if let Err(error) = parse_global_only(args, &mut global) {
-        return command_usage_error("doctor", &error);
+        return command_usage_error("doctor", &error, &global);
     }
     let report = zmanager_core::healthcheck();
     if global.json {
@@ -1082,14 +1151,25 @@ fn doctor_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             report.ready
         );
     } else {
-        println!("{}", report.summary());
+        let role = if report.ready {
+            StyleRole::Success
+        } else {
+            StyleRole::Warning
+        };
+        output::stdout_line(
+            global.color,
+            format_args!(
+                "{}",
+                output::styled(role, format_args!("{}", report.summary()))
+            ),
+        );
     }
     ExitCode::SUCCESS
 }
 
 fn new_create_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{CREATE_HELP}");
+        print_help_stdout(CREATE_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let expanded = expand_short_options(args);
@@ -1098,13 +1178,13 @@ fn new_create_command(args: &[String], global: GlobalOptions) -> ExitCode {
 
 fn new_create_command_from_expanded(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{CREATE_HELP}");
+        print_help_stdout(CREATE_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let mut request = CreateRequest::default();
     match parse_create_request(args, &mut global, &mut request) {
         Ok(()) => run_create_request(&request, &global),
-        Err(error) => command_usage_error("create", &error),
+        Err(error) => command_usage_error("create", &error, &global),
     }
 }
 
@@ -1286,12 +1366,15 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         .format
         .or_else(|| infer_create_format(&request.archive))
     else {
-        eprintln!("could not infer archive format; pass --format <zip|tar.zst|7z>");
+        print_error_line(
+            global,
+            format_args!("could not infer archive format; pass --format <zip|tar.zst|7z>"),
+        );
         return ExitCode::from(2);
     };
 
     if let Err(error) = validate_create_options(format, request) {
-        eprintln!("{error}");
+        print_error_line(global, format_args!("{error}"));
         return ExitCode::from(2);
     }
 
@@ -1301,7 +1384,10 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     };
     let follow_symlinks = follow_symlinks_for_create(format, request);
     if request.follow_symlinks && request.preserve_symlinks {
-        eprintln!("create failed: --follow-symlinks conflicts with --preserve-symlinks");
+        print_error_line(
+            global,
+            format_args!("create failed: --follow-symlinks conflicts with --preserve-symlinks"),
+        );
         return ExitCode::from(2);
     }
 
@@ -1318,28 +1404,31 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 &request.exclude,
                 &request.exclude_from,
             ) {
-                eprintln!("create failed: {error}");
+                print_error_line(global, format_args!("create failed: {error}"));
                 return ExitCode::FAILURE;
             }
             if request.junk_paths
                 && let Err(error) = apply_junk_paths(&mut manifest)
             {
-                eprintln!("create failed: {error}");
+                print_error_line(global, format_args!("create failed: {error}"));
                 return ExitCode::FAILURE;
             }
             if format == ArchiveFormat::SevenZ
                 && request.preserve_symlinks
                 && manifest_has_symlinks(&manifest)
             {
-                eprintln!(
-                    "create failed: 7z symlink preservation is not supported by the current backend; use --follow-symlinks"
+                print_error_line(
+                    global,
+                    format_args!(
+                        "create failed: 7z symlink preservation is not supported by the current backend; use --follow-symlinks"
+                    ),
                 );
                 return ExitCode::from(2);
             }
             manifest
         }
         Err(error) => {
-            eprintln!("create failed: {error}");
+            print_error_line(global, format_args!("create failed: {error}"));
             return ExitCode::FAILURE;
         }
     };
@@ -1350,14 +1439,17 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     }
 
     if request.archive == "-" {
-        return create_stream(format, &manifest, request, password);
+        return create_stream(format, &manifest, request, password, global);
     }
 
     let destination = PathBuf::from(&request.archive);
     if destination.exists() && !request.force {
-        eprintln!(
-            "create failed: destination exists: {}; pass --force to replace it",
-            destination.display()
+        print_error_line(
+            global,
+            format_args!(
+                "create failed: destination exists: {}; pass --force to replace it",
+                destination.display()
+            ),
         );
         return ExitCode::FAILURE;
     }
@@ -1367,9 +1459,12 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         && !parent.as_os_str().is_empty()
         && let Err(error) = fs::create_dir_all(parent)
     {
-        eprintln!(
-            "create failed: failed to create {}: {error}",
-            parent.display()
+        print_error_line(
+            global,
+            format_args!(
+                "create failed: failed to create {}: {error}",
+                parent.display()
+            ),
         );
         return ExitCode::FAILURE;
     }
@@ -1386,7 +1481,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             let (compression, level) = match zip_compression_options(request) {
                 Ok(options) => options,
                 Err(error) => {
-                    eprintln!("{error}");
+                    print_error_line(global, format_args!("{error}"));
                     return ExitCode::from(2);
                 }
             };
@@ -1499,10 +1594,13 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 progress.emit(JobEvent::Failed {
                     message: error.to_string(),
                 });
-                eprintln!(
-                    "create failed: failed to move {} to {}: {error}",
-                    temp.display(),
-                    destination.display()
+                print_error_line(
+                    global,
+                    format_args!(
+                        "create failed: failed to move {} to {}: {error}",
+                        temp.display(),
+                        destination.display()
+                    ),
                 );
                 return ExitCode::FAILURE;
             }
@@ -1528,7 +1626,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             progress.emit(JobEvent::Failed {
                 message: error.clone(),
             });
-            eprintln!("create failed: {error}");
+            print_error_line(global, format_args!("create failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -1539,16 +1637,20 @@ fn create_stream(
     manifest: &zmanager_core::manifest::ArchiveManifest,
     request: &CreateRequest,
     password: Option<SecretString>,
+    global: &GlobalOptions,
 ) -> ExitCode {
     if format != ArchiveFormat::Zip {
-        eprintln!("create failed: stdout output is currently supported only for ZIP");
+        print_error_line(
+            global,
+            format_args!("create failed: stdout output is currently supported only for ZIP"),
+        );
         return ExitCode::from(2);
     }
 
     let (compression, level) = match zip_compression_options(request) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("{error}");
+            print_error_line(global, format_args!("{error}"));
             return ExitCode::from(2);
         }
     };
@@ -1565,16 +1667,20 @@ fn create_stream(
         &options,
     ) {
         Ok((_output, report)) => {
-            eprintln!(
-                "created streaming zip: {} entries, {} bytes, {} warnings",
-                report.written_entries,
-                report.written_bytes,
-                report.warnings.len()
+            output::stderr_line(
+                global.color,
+                format_args!(
+                    "{} streaming zip: {} entries, {} bytes, {} warnings",
+                    output::styled(StyleRole::Success, format_args!("created")),
+                    report.written_entries,
+                    report.written_bytes,
+                    report.warnings.len()
+                ),
             );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("create failed: {error}");
+            print_error_line(global, format_args!("create failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -1670,18 +1776,27 @@ fn create_password(
         return Ok(None);
     }
     if format == ArchiveFormat::TarZst {
-        eprintln!("encryption is not supported for tar.zst");
+        print_error_line(
+            global,
+            format_args!("encryption is not supported for tar.zst"),
+        );
         return Err(ExitCode::from(2));
     }
     if request.password_stdin {
-        return prompt_password_from_stdin().map(Some);
+        return prompt_password_from_stdin(Some(global)).map(Some);
     }
     if global.no_password_prompt {
-        eprintln!("password prompt disabled; use --password-stdin");
+        print_error_line(
+            global,
+            format_args!("password prompt disabled; use --password-stdin"),
+        );
         return Err(ExitCode::from(2));
     }
     if global.quiet || !io::stdin().is_terminal() {
-        eprintln!("password prompt requires an interactive terminal; use --password-stdin");
+        print_error_line(
+            global,
+            format_args!("password prompt requires an interactive terminal; use --password-stdin"),
+        );
         return Err(ExitCode::from(2));
     }
     let prompt = if format == ArchiveFormat::SevenZ {
@@ -1692,19 +1807,19 @@ fn create_password(
     prompt_password(prompt).map(Some)
 }
 
-fn prompt_password_from_stdin() -> Result<SecretString, ExitCode> {
+fn prompt_password_from_stdin(global: Option<&GlobalOptions>) -> Result<SecretString, ExitCode> {
     let mut password = String::new();
     match io::stdin().read_line(&mut password) {
         Ok(bytes_read) => {
             if let Some(password) = normalize_prompted_password(password, bytes_read) {
                 Ok(SecretString::from(password))
             } else {
-                eprintln!("password prompt cancelled");
+                print_optional_error_line(global, format_args!("password prompt cancelled"));
                 Err(ExitCode::FAILURE)
             }
         }
         Err(error) => {
-            eprintln!("failed to read password: {error}");
+            print_optional_error_line(global, format_args!("failed to read password: {error}"));
             Err(ExitCode::FAILURE)
         }
     }
@@ -1712,7 +1827,7 @@ fn prompt_password_from_stdin() -> Result<SecretString, ExitCode> {
 
 fn new_extract_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{EXTRACT_HELP}");
+        print_help_stdout(EXTRACT_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let expanded = expand_short_options(args);
@@ -1721,13 +1836,13 @@ fn new_extract_command(args: &[String], global: GlobalOptions) -> ExitCode {
 
 fn new_extract_command_from_expanded(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{EXTRACT_HELP}");
+        print_help_stdout(EXTRACT_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let mut request = ExtractRequest::default();
     match parse_extract_request(args, &mut global, &mut request) {
         Ok(()) => run_extract_request(request, &global),
-        Err(error) => command_usage_error("extract", &error),
+        Err(error) => command_usage_error("extract", &error, &global),
     }
 }
 
@@ -1818,18 +1933,22 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
     }
     let policy = match extraction_policy(&request) {
         Ok(policy) => policy,
-        Err(error) => return command_usage_error("extract", &error),
+        Err(error) => return command_usage_error("extract", &error, global),
     };
     if request.extract_nested {
         if request.password_stdin {
-            eprintln!("extract failed: nested package extraction does not use passwords");
-            return ExitCode::from(2);
+            return usage_failure(
+                global,
+                format_args!("extract failed: nested package extraction does not use passwords"),
+            );
         }
         if !is_deb_archive(&request.archive) {
-            eprintln!(
-                "extract failed: --extract-nested is currently supported only for .deb packages"
+            return usage_failure(
+                global,
+                format_args!(
+                    "extract failed: --extract-nested is currently supported only for .deb packages"
+                ),
             );
-            return ExitCode::from(2);
         }
         let destination = request
             .destination
@@ -1840,8 +1959,12 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
         zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
     {
         if request.password_stdin {
-            eprintln!("extract failed: raw streams are not encrypted; remove --password-stdin");
-            return ExitCode::from(2);
+            return usage_failure(
+                global,
+                format_args!(
+                    "extract failed: raw streams are not encrypted; remove --password-stdin"
+                ),
+            );
         }
         let destination = request
             .destination
@@ -1852,7 +1975,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
         .destination
         .unwrap_or_else(|| default_extract_destination(&request.archive));
     if is_zip_family_archive(&request.archive) {
-        let password = match read_optional_password_stdin(request.password_stdin, "ZIP") {
+        let password = match read_optional_password_stdin(request.password_stdin, "ZIP", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -1865,7 +1988,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Some(global),
         )
     } else if is_7z_archive(&request.archive) {
-        let password = match read_optional_password_stdin(request.password_stdin, "7z") {
+        let password = match read_optional_password_stdin(request.password_stdin, "7z", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -1878,7 +2001,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Some(global),
         )
     } else if is_rar_archive(&request.archive) && request.password_stdin {
-        let password = match read_optional_password_stdin(request.password_stdin, "RAR") {
+        let password = match read_optional_password_stdin(request.password_stdin, "RAR", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -1892,7 +2015,8 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
     } else {
-        let password = match read_optional_password_stdin(request.password_stdin, "archive") {
+        let password = match read_optional_password_stdin(request.password_stdin, "archive", global)
+        {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -1940,7 +2064,7 @@ fn run_deb_nested_extract(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("extract failed: {error}");
+            print_error_line(global, format_args!("extract failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -1973,7 +2097,7 @@ fn run_raw_stream_extract(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("extract failed: {error}");
+            print_error_line(global, format_args!("extract failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -1982,21 +2106,32 @@ fn run_raw_stream_extract(
 #[allow(clippy::too_many_lines)]
 fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> ExitCode {
     if request.extract_nested {
-        eprintln!("extract failed: --extract-nested cannot be combined with --to-stdout");
+        print_error_line(
+            global,
+            format_args!("extract failed: --extract-nested cannot be combined with --to-stdout"),
+        );
         return ExitCode::from(2);
     }
     if request.destination.is_some() {
-        eprintln!("extract failed: --to-stdout cannot be combined with an extraction directory");
+        print_error_line(
+            global,
+            format_args!(
+                "extract failed: --to-stdout cannot be combined with an extraction directory"
+            ),
+        );
         return ExitCode::from(2);
     }
     if request.strip_components > 0 {
-        eprintln!("extract failed: --strip-components is not meaningful with --to-stdout");
+        print_error_line(
+            global,
+            format_args!("extract failed: --strip-components is not meaningful with --to-stdout"),
+        );
         return ExitCode::from(2);
     }
 
     let mut stdout = io::stdout().lock();
     if is_zip_family_archive(&request.archive) {
-        let password = match read_optional_password_stdin(request.password_stdin, "ZIP") {
+        let password = match read_optional_password_stdin(request.password_stdin, "ZIP", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -2008,9 +2143,15 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         ) {
             Ok(report) => {
                 if global.verbose > 0 && !global.quiet {
-                    eprintln!(
-                        "extract to stdout ok: {} entries, {} skipped, {} bytes",
-                        report.written_entries, report.skipped_entries, report.written_bytes
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
                     );
                 }
                 ExitCode::SUCCESS
@@ -2019,8 +2160,11 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 if password.is_none() =>
             {
                 if global.no_password_prompt {
-                    eprintln!(
-                        "extract to stdout failed: password required and prompts are disabled"
+                    print_error_line(
+                        global,
+                        format_args!(
+                            "extract to stdout failed: password required and prompts are disabled"
+                        ),
                     );
                     return ExitCode::from(2);
                 }
@@ -2040,13 +2184,13 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 ) {
                     Ok(_) => ExitCode::SUCCESS,
                     Err(error) => {
-                        eprintln!("extract to stdout failed: {error}");
+                        print_error_line(global, format_args!("extract to stdout failed: {error}"));
                         ExitCode::FAILURE
                     }
                 }
             }
             Err(error) => {
-                eprintln!("extract to stdout failed: {error}");
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
                 ExitCode::FAILURE
             }
         }
@@ -2058,20 +2202,26 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         ) {
             Ok(report) => {
                 if global.verbose > 0 && !global.quiet {
-                    eprintln!(
-                        "extract to stdout ok: {} entries, {} skipped, {} bytes",
-                        report.written_entries, report.skipped_entries, report.written_bytes
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
                     );
                 }
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("extract to stdout failed: {error}");
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
                 ExitCode::FAILURE
             }
         }
     } else if is_7z_archive(&request.archive) {
-        let password = match read_optional_password_stdin(request.password_stdin, "7z") {
+        let password = match read_optional_password_stdin(request.password_stdin, "7z", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -2083,9 +2233,15 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         ) {
             Ok(report) => {
                 if global.verbose > 0 && !global.quiet {
-                    eprintln!(
-                        "extract to stdout ok: {} entries, {} skipped, {} bytes",
-                        report.written_entries, report.skipped_entries, report.written_bytes
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
                     );
                 }
                 ExitCode::SUCCESS
@@ -2094,8 +2250,11 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 if password.is_none() =>
             {
                 if global.no_password_prompt {
-                    eprintln!(
-                        "extract to stdout failed: password required and prompts are disabled"
+                    print_error_line(
+                        global,
+                        format_args!(
+                            "extract to stdout failed: password required and prompts are disabled"
+                        ),
                     );
                     return ExitCode::from(2);
                 }
@@ -2115,13 +2274,13 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 ) {
                     Ok(_) => ExitCode::SUCCESS,
                     Err(error) => {
-                        eprintln!("extract to stdout failed: {error}");
+                        print_error_line(global, format_args!("extract to stdout failed: {error}"));
                         ExitCode::FAILURE
                     }
                 }
             }
             Err(error) => {
-                eprintln!("extract to stdout failed: {error}");
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
                 ExitCode::FAILURE
             }
         }
@@ -2129,20 +2288,32 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
     {
         if request.password_stdin {
-            eprintln!(
-                "extract to stdout failed: raw streams are not encrypted; remove --password-stdin"
+            print_error_line(
+                global,
+                format_args!(
+                    "extract to stdout failed: raw streams are not encrypted; remove --password-stdin"
+                ),
             );
             return ExitCode::from(2);
         }
         let Some(output_name) =
             zmanager_core::raw_stream_backend::output_name_for_raw_stream(&request.archive, format)
         else {
-            eprintln!("extract to stdout failed: could not derive raw stream output name");
+            print_error_line(
+                global,
+                format_args!("extract to stdout failed: could not derive raw stream output name"),
+            );
             return ExitCode::FAILURE;
         };
         if !entry_selected(&output_name, &request.include, &request.exclude) {
             if global.verbose > 0 && !global.quiet {
-                eprintln!("extract to stdout ok: 0 entries, 1 skipped, 0 bytes");
+                output::stderr_line(
+                    global.color,
+                    format_args!(
+                        "{} to stdout ok: 0 entries, 1 skipped, 0 bytes",
+                        output::styled(StyleRole::Success, format_args!("extract"))
+                    ),
+                );
             }
             return ExitCode::SUCCESS;
         }
@@ -2153,17 +2324,24 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         ) {
             Ok(written_bytes) => {
                 if global.verbose > 0 && !global.quiet {
-                    eprintln!("extract to stdout ok: 1 entry, 0 skipped, {written_bytes} bytes");
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: 1 entry, 0 skipped, {written_bytes} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract"))
+                        ),
+                    );
                 }
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("extract to stdout failed: {error}");
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
                 ExitCode::FAILURE
             }
         }
     } else {
-        let password = match read_optional_password_stdin(request.password_stdin, "archive") {
+        let password = match read_optional_password_stdin(request.password_stdin, "archive", global)
+        {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -2175,15 +2353,21 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
         ) {
             Ok(report) => {
                 if global.verbose > 0 && !global.quiet {
-                    eprintln!(
-                        "extract to stdout ok: {} entries, {} skipped, {} bytes",
-                        report.written_entries, report.skipped_entries, report.written_bytes
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
                     );
                 }
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("extract to stdout failed: {error}");
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
                 ExitCode::FAILURE
             }
         }
@@ -2213,7 +2397,7 @@ fn extraction_policy(
 
 fn new_list_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{LIST_HELP}");
+        print_help_stdout(LIST_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let expanded = expand_short_options(args);
@@ -2222,13 +2406,13 @@ fn new_list_command(args: &[String], global: GlobalOptions) -> ExitCode {
 
 fn new_list_command_from_expanded(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{LIST_HELP}");
+        print_help_stdout(LIST_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let mut request = ListRequest::default();
     match parse_list_request(args, &mut global, &mut request) {
         Ok(()) => run_list_request(&request, &global),
-        Err(error) => command_usage_error("list", &error),
+        Err(error) => command_usage_error("list", &error, &global),
     }
 }
 
@@ -2295,11 +2479,14 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
     if request.password_stdin
         && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
-        eprintln!("list failed: raw streams are not encrypted; remove --password-stdin");
+        print_error_line(
+            global,
+            format_args!("list failed: raw streams are not encrypted; remove --password-stdin"),
+        );
         return ExitCode::from(2);
     }
     let password = match if request.password_stdin {
-        Some(prompt_password_from_stdin())
+        Some(prompt_password_from_stdin(Some(global)))
     } else {
         None
     } {
@@ -2313,33 +2500,53 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
             if global.json {
                 print_entries_json(&entries);
             } else if request.tree {
-                print_entries_tree(&entries);
+                print_entries_tree(&entries, global);
             } else if request.name_only {
                 for entry in entries {
                     println!("{}", entry.name);
                 }
             } else if request.long {
-                println!("TYPE\tSIZE\tCOMPRESSED\tPATH");
+                output::stdout_line(
+                    global.color,
+                    format_args!(
+                        "{}",
+                        output::styled(
+                            StyleRole::Heading,
+                            format_args!("TYPE\tSIZE\tCOMPRESSED\tPATH")
+                        )
+                    ),
+                );
                 for entry in entries {
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        entry.kind,
-                        entry.size,
-                        entry
-                            .compressed_size
-                            .map_or_else(|| "-".to_owned(), |size| size.to_string()),
-                        entry.name
+                    output::stdout_line(
+                        global.color,
+                        format_args!(
+                            "{}\t{}\t{}\t{}",
+                            output::styled(StyleRole::Label, format_args!("{}", entry.kind)),
+                            entry.size,
+                            entry
+                                .compressed_size
+                                .map_or_else(|| "-".to_owned(), |size| size.to_string()),
+                            output::styled(StyleRole::Path, format_args!("{}", entry.name))
+                        ),
                     );
                 }
             } else {
                 for entry in entries {
-                    println!("{}\t{}\t{} bytes", entry.kind, entry.name, entry.size);
+                    output::stdout_line(
+                        global.color,
+                        format_args!(
+                            "{}\t{}\t{} bytes",
+                            output::styled(StyleRole::Label, format_args!("{}", entry.kind)),
+                            output::styled(StyleRole::Path, format_args!("{}", entry.name)),
+                            entry.size
+                        ),
+                    );
                 }
             }
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("list failed: {error}");
+            print_error_line(global, format_args!("list failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2347,7 +2554,7 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
 
 fn new_test_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{TEST_HELP}");
+        print_help_stdout(TEST_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let expanded = expand_short_options(args);
@@ -2356,13 +2563,13 @@ fn new_test_command(args: &[String], global: GlobalOptions) -> ExitCode {
 
 fn new_test_command_from_expanded(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{TEST_HELP}");
+        print_help_stdout(TEST_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let mut request = TestRequest::default();
     match parse_test_request(args, &mut global, &mut request) {
         Ok(()) => run_test_request(&request, &global),
-        Err(error) => command_usage_error("test", &error),
+        Err(error) => command_usage_error("test", &error, &global),
     }
 }
 
@@ -2413,11 +2620,14 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     if request.password_stdin
         && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
-        eprintln!("test failed: raw streams are not encrypted; remove --password-stdin");
+        print_error_line(
+            global,
+            format_args!("test failed: raw streams are not encrypted; remove --password-stdin"),
+        );
         return ExitCode::from(2);
     }
     let password = match if request.password_stdin {
-        Some(prompt_password_from_stdin())
+        Some(prompt_password_from_stdin(Some(global)))
     } else {
         None
     } {
@@ -2439,7 +2649,10 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
     {
         if password.is_some() {
-            eprintln!("test failed: raw streams are not encrypted; remove --password-stdin");
+            print_error_line(
+                global,
+                format_args!("test failed: raw streams are not encrypted; remove --password-stdin"),
+            );
             return ExitCode::from(2);
         }
         return run_raw_stream_test(
@@ -2477,18 +2690,24 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
                     json_escape(&request.archive)
                 );
             } else if skipped_entries == 0 {
-                println!("archive readable: {} entries", entries.len());
+                print_success_line(
+                    global,
+                    format_args!("archive readable: {} entries", entries.len()),
+                );
             } else {
-                println!(
-                    "archive readable: {} entries, {} skipped",
-                    entries.len(),
-                    skipped_entries
+                print_success_line(
+                    global,
+                    format_args!(
+                        "archive readable: {} entries, {} skipped",
+                        entries.len(),
+                        skipped_entries
+                    ),
                 );
             }
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("test failed: {error}");
+            print_error_line(global, format_args!("test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2517,7 +2736,7 @@ fn run_tar_zst_test_new(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("tar.zst test failed: {error}");
+            print_error_line(global, format_args!("tar.zst test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2548,7 +2767,7 @@ fn run_7z_test_new(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("7z test failed: {error}");
+            print_error_line(global, format_args!("7z test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2570,10 +2789,16 @@ fn print_data_test_success(
             skipped_entries
         );
     } else if skipped_entries == 0 {
-        println!("{format} test ok: {tested_entries} entries, {bytes} bytes");
+        print_success_line(
+            global,
+            format_args!("{format} test ok: {tested_entries} entries, {bytes} bytes"),
+        );
     } else {
-        println!(
-            "{format} test ok: {tested_entries} entries, {skipped_entries} skipped, {bytes} bytes"
+        print_success_line(
+            global,
+            format_args!(
+                "{format} test ok: {tested_entries} entries, {skipped_entries} skipped, {bytes} bytes"
+            ),
         );
     }
 }
@@ -2595,7 +2820,10 @@ fn run_raw_stream_test(
                 json_escape(archive)
             );
         } else {
-            println!("archive readable: 0 entries, 1 skipped");
+            print_success_line(
+                global,
+                format_args!("archive readable: 0 entries, 1 skipped"),
+            );
         }
         return ExitCode::SUCCESS;
     }
@@ -2607,12 +2835,15 @@ fn run_raw_stream_test(
                     json_escape(archive)
                 );
             } else {
-                println!("archive readable: 1 entry, {bytes} bytes");
+                print_success_line(
+                    global,
+                    format_args!("archive readable: 1 entry, {bytes} bytes"),
+                );
             }
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("test failed: {error}");
+            print_error_line(global, format_args!("test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2638,14 +2869,20 @@ fn run_zip_test_new(
                     report.tested_bytes
                 );
             } else if report.skipped_entries == 0 {
-                println!(
-                    "zip test ok: {} entries, {} bytes",
-                    report.tested_entries, report.tested_bytes
+                print_success_line(
+                    global,
+                    format_args!(
+                        "zip test ok: {} entries, {} bytes",
+                        report.tested_entries, report.tested_bytes
+                    ),
                 );
             } else {
-                println!(
-                    "zip test ok: {} entries, {} skipped, {} bytes",
-                    report.tested_entries, report.skipped_entries, report.tested_bytes
+                print_success_line(
+                    global,
+                    format_args!(
+                        "zip test ok: {} entries, {} skipped, {} bytes",
+                        report.tested_entries, report.skipped_entries, report.tested_bytes
+                    ),
                 );
             }
             ExitCode::SUCCESS
@@ -2654,7 +2891,10 @@ fn run_zip_test_new(
             if password.is_none() =>
         {
             if global.no_password_prompt {
-                eprintln!("zip test failed: password required and prompts are disabled");
+                print_error_line(
+                    global,
+                    format_args!("zip test failed: password required and prompts are disabled"),
+                );
                 return ExitCode::from(2);
             }
             let password = match prompt_password("ZIP password: ") {
@@ -2670,7 +2910,7 @@ fn run_zip_test_new(
             )
         }
         Err(error) => {
-            eprintln!("zip test failed: {error}");
+            print_error_line(global, format_args!("zip test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -2678,7 +2918,7 @@ fn run_zip_test_new(
 
 fn new_plan_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
-        print!("{PLAN_HELP}");
+        print_help_stdout(PLAN_HELP, &global);
         return ExitCode::SUCCESS;
     }
     let expanded = expand_short_options(args);
@@ -2686,7 +2926,7 @@ fn new_plan_command(args: &[String], global: GlobalOptions) -> ExitCode {
     let mut request = PlanRequest::default();
     match parse_plan_request(&expanded, &mut global, &mut request) {
         Ok(()) => run_plan_request(&request, &global),
-        Err(error) => command_usage_error("plan", &error),
+        Err(error) => command_usage_error("plan", &error, &global),
     }
 }
 
@@ -2771,14 +3011,14 @@ fn run_plan_request(request: &PlanRequest, global: &GlobalOptions) -> ExitCode {
                 &request.exclude,
                 &request.exclude_from,
             ) {
-                eprintln!("plan failed: {error}");
+                print_error_line(global, format_args!("plan failed: {error}"));
                 return ExitCode::FAILURE;
             }
             print_manifest(&manifest, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("plan failed: {error}");
+            print_error_line(global, format_args!("plan failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -3097,9 +3337,10 @@ fn default_raw_stream_destination(archive: &str) -> PathBuf {
 fn read_optional_password_stdin(
     enabled: bool,
     label: &str,
+    global: &GlobalOptions,
 ) -> Result<Option<SecretString>, ExitCode> {
     if enabled {
-        prompt_password_from_stdin().map(Some)
+        prompt_password_from_stdin(Some(global)).map(Some)
     } else {
         let _ = label;
         Ok(None)
@@ -3204,7 +3445,7 @@ fn entry_selected(path: &str, includes: &[String], excludes: &[String]) -> bool 
     matches_include && !matches_exclude
 }
 
-fn print_entries_tree(entries: &[GenericEntry]) {
+fn print_entries_tree(entries: &[GenericEntry], global: &GlobalOptions) {
     let mut printed = BTreeSet::new();
     let mut names = entries.iter().collect::<Vec<_>>();
     names.sort_by(|left, right| left.name.cmp(&right.name));
@@ -3225,11 +3466,14 @@ fn print_entries_tree(entries: &[GenericEntry]) {
             }
             let is_leaf = depth + 1 == parts.len();
             let is_directory = !is_leaf || entry.kind == "directory";
-            println!(
-                "{}{}{}",
-                "  ".repeat(depth),
-                parts[depth],
-                if is_directory { "/" } else { "" }
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "{}{}{}",
+                    "  ".repeat(depth),
+                    output::styled(StyleRole::Path, format_args!("{}", parts[depth])),
+                    if is_directory { "/" } else { "" }
+                ),
             );
         }
     }
@@ -3264,7 +3508,7 @@ fn print_create_summary(archive: &Path, outcome: &CreateOutcome, global: &Global
     if global.json {
         print_create_summary_json(archive, outcome);
     } else if !global.quiet {
-        println!("{}", outcome.summary);
+        print_success_line(global, format_args!("{}", outcome.summary));
     }
 }
 
@@ -3296,17 +3540,32 @@ fn print_extract_summary(
     match global {
         Some(global) if global.json => print_extract_summary_json(archive, destination, outcome),
         Some(global) if global.quiet => {}
-        _ => print_extract_summary_text(outcome),
+        Some(global) => print_extract_summary_text(outcome, global),
+        None => {
+            println!(
+                "{} extract ok: {} written, {} skipped, {} bytes",
+                outcome.label,
+                outcome.written_entries,
+                outcome.skipped_entries,
+                outcome.written_bytes
+            );
+            for warning in &outcome.warnings {
+                println!("warning\t{warning}");
+            }
+        }
     }
 }
 
-fn print_extract_summary_text(outcome: &ExtractOutcome) {
-    println!(
-        "{} extract ok: {} written, {} skipped, {} bytes",
-        outcome.label, outcome.written_entries, outcome.skipped_entries, outcome.written_bytes
+fn print_extract_summary_text(outcome: &ExtractOutcome, global: &GlobalOptions) {
+    print_success_line(
+        global,
+        format_args!(
+            "{} extract ok: {} written, {} skipped, {} bytes",
+            outcome.label, outcome.written_entries, outcome.skipped_entries, outcome.written_bytes
+        ),
     );
     for warning in &outcome.warnings {
-        println!("warning\t{warning}");
+        print_warning_stdout(global, format_args!("warning\t{warning}"));
     }
 }
 
@@ -3348,21 +3607,29 @@ fn print_raw_stream_extract_summary(
         println!("}}");
     } else if !global.quiet {
         if let Some(output_path) = &report.output_path {
-            println!(
-                "extracted {} stream: {} bytes -> {}",
-                format.name(),
-                report.written_bytes,
-                output_path.display()
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "{} {} stream: {} bytes -> {}",
+                    output::styled(StyleRole::Success, format_args!("extracted")),
+                    format.name(),
+                    report.written_bytes,
+                    output::styled(StyleRole::Path, format_args!("{}", output_path.display()))
+                ),
             );
         } else {
-            println!(
-                "extracted {} stream: {} entries skipped",
-                format.name(),
-                report.skipped_entries
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "{} {} stream: {} entries skipped",
+                    output::styled(StyleRole::Success, format_args!("extracted")),
+                    format.name(),
+                    report.skipped_entries
+                ),
             );
         }
         for warning in &report.warnings {
-            println!("warning\t{warning}");
+            print_warning_stdout(global, format_args!("warning\t{warning}"));
         }
     }
 }
@@ -3389,21 +3656,38 @@ fn print_manifest(manifest: &zmanager_core::manifest::ArchiveManifest, global: &
         }
         println!("]}}");
     } else {
-        println!("{}", manifest.summary());
+        print_success_line(global, format_args!("{}", manifest.summary()));
         for entry in &manifest.entries {
-            println!("include\t{}\t{} bytes", entry.archive_path, entry.size);
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "{}\t{}\t{} bytes",
+                    output::styled(StyleRole::Label, format_args!("include")),
+                    output::styled(StyleRole::Path, format_args!("{}", entry.archive_path)),
+                    entry.size
+                ),
+            );
         }
         for excluded in &manifest.excluded_entries {
-            println!(
-                "exclude\t{}\t{}\t{} bytes",
-                excluded.archive_path, excluded.reason, excluded.size
+            output::stdout_line(
+                global.color,
+                format_args!(
+                    "{}\t{}\t{}\t{} bytes",
+                    output::styled(StyleRole::Warning, format_args!("exclude")),
+                    output::styled(StyleRole::Path, format_args!("{}", excluded.archive_path)),
+                    excluded.reason,
+                    excluded.size
+                ),
             );
         }
         for warning in &manifest.warnings {
-            println!(
-                "warning\t{}\t{}",
-                warning.source_path.display(),
-                warning.message
+            print_warning_stdout(
+                global,
+                format_args!(
+                    "warning\t{}\t{}",
+                    warning.source_path.display(),
+                    warning.message
+                ),
             );
         }
     }
@@ -3427,22 +3711,43 @@ fn json_escape(value: &str) -> String {
     escaped
 }
 
-fn command_usage_error(command: &str, message: &str) -> ExitCode {
+fn command_usage_error(command: &str, message: &str, global: &GlobalOptions) -> ExitCode {
     let (formatted, unknown_option) = format_command_error(command, message);
-    eprintln!("error: {formatted}");
+    print_error_line(global, format_args!("error: {formatted}"));
     if let Some(option) = unknown_option
         && let Some(suggestion) = option_suggestion(command, option)
     {
-        eprintln!();
-        eprintln!("Did you mean '{suggestion}'?");
+        output::stderr_line(global.color, format_args!(""));
+        output::stderr_line(
+            global.color,
+            format_args!(
+                "Did you mean '{}'?",
+                output::styled(StyleRole::Option, format_args!("{suggestion}"))
+            ),
+        );
     }
-    eprintln!();
-    eprint!("{}", command_usage_snippet(command));
-    eprintln!();
+    output::stderr_line(global.color, format_args!(""));
+    output::stderr_write(
+        global.color,
+        format_args!("{}", output::render_help(command_usage_snippet(command))),
+    );
+    output::stderr_line(global.color, format_args!(""));
     if unknown_option.is_some() {
-        eprintln!("Try 'zm {command} --help' for usage.");
+        output::stderr_line(
+            global.color,
+            format_args!(
+                "Try '{}' for usage.",
+                output::styled(StyleRole::Command, format_args!("zm {command} --help"))
+            ),
+        );
     } else {
-        eprintln!("Try 'zm {command} --help' for examples.");
+        output::stderr_line(
+            global.color,
+            format_args!(
+                "Try '{}' for examples.",
+                output::styled(StyleRole::Command, format_args!("zm {command} --help"))
+            ),
+        );
     }
     ExitCode::from(2)
 }
@@ -3673,9 +3978,9 @@ fn levenshtein_distance(left: &str, right: &str) -> usize {
     previous[right_chars.len()]
 }
 
-fn usage_error(message: &str) -> ExitCode {
-    eprintln!("{message}");
-    eprint!("{USAGE}");
+fn usage_error(message: &str, global: &GlobalOptions) -> ExitCode {
+    print_error_line(global, format_args!("{message}"));
+    print_help_stderr(USAGE, global);
     ExitCode::from(2)
 }
 

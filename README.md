@@ -139,6 +139,13 @@ zm test project.zip
 The classic flags are there for users who already know archive tools. The
 subcommands are there for readable scripts.
 
+## Output Behavior
+
+Human-readable output uses `--color auto` by default: color is shown only on
+terminal streams, and `NO_COLOR` disables automatic color. Use
+`--color always` to force color or `--color never` to disable it. JSON output
+and raw archive payloads from `--to-stdout` are never colorized.
+
 ## What It Does
 
 - Extracts a broad range of archive, package, disk-image, and raw compression
