@@ -10,6 +10,8 @@ const INSTALL_DOC: &str = include_str!("../../../docs/INSTALL.md");
 const RELEASE_DOC: &str = include_str!("../../../RELEASE.md");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
+const PACKAGE_PREVIEW_WORKFLOW: &str =
+    include_str!("../../../.github/workflows/package-preview.yml");
 const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
@@ -446,6 +448,35 @@ fn release_validation_artifacts_are_declared() {
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
         assert_contains(RELEASE_NOTES_1_0_1, required);
+    }
+}
+
+#[test]
+fn package_preview_uploads_artifacts_without_publishing_release() {
+    for required in [
+        "name: Package Preview",
+        "workflow_dispatch:",
+        "branches: [main]",
+        "scripts/package-release.sh",
+        "scripts/package-deb.sh",
+        "powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1",
+        "actions/upload-artifact@v6",
+        "name: zm-preview-${{ matrix.target }}",
+        "dist/zm-${{ matrix.target }}.*",
+        "dist/zmanager-cli_*.deb",
+        "if-no-files-found: error",
+        "retention-days: 14",
+        "contents: read",
+    ] {
+        assert_contains(PACKAGE_PREVIEW_WORKFLOW, required);
+    }
+
+    for forbidden in [
+        "contents: write",
+        "gh release create",
+        "actions/download-artifact",
+    ] {
+        assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
 }
 

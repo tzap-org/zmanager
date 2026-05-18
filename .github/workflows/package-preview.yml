@@ -1,0 +1,118 @@
+name: Package Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/package-preview.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "scripts/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            triplet: x64-windows-static-md
+            vcarch: x64
+            component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            triplet: arm64-windows-static-md
+            vcarch: arm64
+            component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake libb2 lz4 xz zstd
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libacl1-dev \
+            libbz2-dev \
+            liblz4-dev \
+            liblzma-dev \
+            libssl-dev \
+            libxml2-dev \
+            libzstd-dev \
+            dpkg-dev \
+            python3 \
+            zlib1g-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Package Unix
+        if: runner.os != 'Windows'
+        run: scripts/package-release.sh "${{ matrix.target }}" dist
+
+      - name: Package Debian
+        if: runner.os == 'Linux'
+        run: scripts/package-deb.sh "${{ matrix.target }}" dist
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1
+          -Target "${{ matrix.target }}"
+          -Triplet "${{ matrix.triplet }}"
+          -VcArch "${{ matrix.vcarch }}"
+          -VsComponent "${{ matrix.component }}"
+          -Package
+          -OutDir dist
+
+      - name: Summarize preview artifacts
+        shell: bash
+        run: |
+          {
+            echo "### Package preview"
+            echo
+            echo "Download this run's artifacts from the GitHub Actions run page."
+            echo
+            echo '```text'
+            ls -1 dist
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zm-preview-${{ matrix.target }}
+          path: |
+            dist/zm-${{ matrix.target }}.*
+            dist/zmanager-cli_*.deb
+          if-no-files-found: error
+          retention-days: 14
