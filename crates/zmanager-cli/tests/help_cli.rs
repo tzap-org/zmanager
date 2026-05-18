@@ -7,8 +7,9 @@ const COMPLETION_FISH: &str = include_str!("../../../completions/zm.fish");
 const COMPLETION_ZSH: &str = include_str!("../../../completions/_zm");
 const MAN_PAGE: &str = include_str!("../../../docs/man/zm.1");
 const INSTALL_DOC: &str = include_str!("../../../docs/INSTALL.md");
+const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
-const RELEASE_NOTES_1_0_0: &str = include_str!("../../../docs/release-notes/1.0.0.md");
+const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
 const THIRD_PARTY_NOTICE_GENERATOR: &str =
@@ -409,7 +410,7 @@ fn package_channel_metadata_uses_release_checksums() {
 
 #[test]
 fn release_validation_artifacts_are_declared() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.0");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.1");
 
     for required in [
         "*.deps.txt",
@@ -430,13 +431,35 @@ fn release_validation_artifacts_are_declared() {
     }
 
     for required in [
-        "Z-Manager CLI 1.0.0 Release Notes",
+        "Z-Manager CLI 1.0.1 Release Notes",
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
-        assert_contains(RELEASE_NOTES_1_0_0, required);
+        assert_contains(RELEASE_NOTES_1_0_1, required);
+    }
+}
+
+#[test]
+fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
+    for required in [
+        "- os: ubuntu-22.04\n            target: x86_64-unknown-linux-gnu",
+        "- os: ubuntu-22.04-arm\n            target: aarch64-unknown-linux-gnu",
+    ] {
+        assert_contains(RELEASE_WORKFLOW, required);
+    }
+
+    for required in [
+        "name: Linux x86_64\n            os: ubuntu-22.04",
+        "name: Linux ARM64\n            os: ubuntu-22.04-arm",
+    ] {
+        assert_contains(CI_WORKFLOW, required);
+    }
+
+    for newer_or_floating_linux_runner in ["os: ubuntu-latest", "os: ubuntu-24.04-arm"] {
+        assert_not_contains(RELEASE_WORKFLOW, newer_or_floating_linux_runner);
+        assert_not_contains(CI_WORKFLOW, newer_or_floating_linux_runner);
     }
 }
 

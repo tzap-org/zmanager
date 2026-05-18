@@ -15,7 +15,7 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Current source version: `v1.0.0`
+Current source version: `v1.0.1`
 
 ## Product Direction
 
@@ -107,7 +107,7 @@ Install a specific version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.0 sh
+  | ZMANAGER_VERSION=v1.0.1 sh
 ```
 
 Install somewhere else:
