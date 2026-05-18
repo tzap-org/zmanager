@@ -447,9 +447,12 @@ mod tests {
 
     #[test]
     fn large_dictionary_policy_allows_up_to_512_mib() {
+        assert!(large_dictionary_allowed_bytes(
+            MAX_LARGE_DICTIONARY_BYTES - 1
+        ));
         assert!(large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES));
         assert!(!large_dictionary_allowed_bytes(
-            MAX_LARGE_DICTIONARY_BYTES + 1024
+            MAX_LARGE_DICTIONARY_BYTES + 1
         ));
     }
 }

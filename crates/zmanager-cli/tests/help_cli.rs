@@ -7,12 +7,15 @@ const COMPLETION_FISH: &str = include_str!("../../../completions/zm.fish");
 const COMPLETION_ZSH: &str = include_str!("../../../completions/_zm");
 const MAN_PAGE: &str = include_str!("../../../docs/man/zm.1");
 const INSTALL_DOC: &str = include_str!("../../../docs/INSTALL.md");
+const RELEASE_DOC: &str = include_str!("../../../RELEASE.md");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
+const RELEASE_COMPATIBILITY_SH: &str =
+    include_str!("../../../scripts/release-compatibility-check.sh");
 const THIRD_PARTY_NOTICE_GENERATOR: &str =
     include_str!("../../../scripts/generate-third-party-notices.py");
 const RUNTIME_DEPS_SH: &str = include_str!("../../../scripts/inspect-runtime-deps.sh");
@@ -443,6 +446,25 @@ fn release_validation_artifacts_are_declared() {
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
         assert_contains(RELEASE_NOTES_1_0_1, required);
+    }
+}
+
+#[test]
+fn tool_dependent_release_compatibility_validation_is_declared() {
+    assert_contains(RELEASE_DOC, "scripts/release-compatibility-check.sh");
+    assert_contains(RELEASE_DOC, "fully provisioned validation");
+
+    for required in [
+        "cargo test -p zmanager-cli --test compat_formats_cli -- --nocapture",
+        "require_any_tool \"7zz or 7z\" 7zz 7z",
+        "rar",
+        "zip",
+        "zstd",
+        "bsdtar",
+        "dpkg-deb",
+        "rpmbuild",
+    ] {
+        assert_contains(RELEASE_COMPATIBILITY_SH, required);
     }
 }
 

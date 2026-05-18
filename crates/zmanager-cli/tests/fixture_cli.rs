@@ -5,9 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use sha2::{Digest as _, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
+
+const ANSI_PROGRESS_PREFIX: &str = "\x1b[36mprogress\x1b[0m:";
 
 #[test]
 fn cli_lists_all_fixture_archives() {
@@ -625,6 +629,99 @@ fn zm_extract_zip_rejects_high_expansion_ratio_before_writing() {
     );
     assert!(!temp.path("out/bomb.bin").exists());
     assert_no_zmanager_temp_files(&temp.path("out"));
+}
+
+#[test]
+fn zm_extract_nested_rejects_non_deb_and_default_zip_extraction_is_not_recursive() {
+    let temp = TestDir::new("zm_nested_zip_not_recursive");
+    let inner = temp.path("inner.zip");
+    write_zip_entries(
+        &inner,
+        CompressionMethod::Stored,
+        &[("inner.txt", b"inner\n")],
+    );
+    let inner_bytes = fs::read(&inner).unwrap();
+    let archive = temp.path("outer.zip");
+    write_zip_entries(
+        &archive,
+        CompressionMethod::Stored,
+        &[("project/inner.zip", inner_bytes.as_slice())],
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract zip containing nested zip", &extract);
+    assert!(temp.path("out/project/inner.zip").is_file());
+    assert!(
+        !temp.path("out/project/inner.txt").exists(),
+        "plain extraction should not recursively expand nested archives"
+    );
+
+    let nested = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("nested-out"))
+        .arg("--extract-nested")
+        .output()
+        .unwrap();
+    assert_failure("zm extract --extract-nested non-deb", &nested);
+    assert!(
+        String::from_utf8_lossy(&nested.stderr).contains("only for .deb packages"),
+        "{}",
+        String::from_utf8_lossy(&nested.stderr)
+    );
+}
+
+#[test]
+fn zm_extract_nested_deb_handles_gzip_and_zstd_payload_members() {
+    let temp = TestDir::new("zm_deb_payload_variants");
+    let control_tar = tar_bytes(&[("control", b"Package: zmanager-compat\n")]);
+    let data_tar = tar_bytes(&[("usr/share/zmanager-compat/file.txt", b"deb payload\n")]);
+    let control_gz = gzip_bytes(&control_tar);
+
+    let variants = [
+        ("gzip", "data.tar.gz", gzip_bytes(&data_tar)),
+        ("zstd", "data.tar.zst", zstd_bytes(&data_tar)),
+    ];
+
+    for (label, data_member_name, data_member) in variants {
+        let archive = temp.path(format!("payload-{label}.deb"));
+        write_deb_ar_archive(
+            &archive,
+            "control.tar.gz",
+            &control_gz,
+            data_member_name,
+            &data_member,
+        );
+
+        let out = temp.path(format!("out-{label}"));
+        let extract = Command::new(zm_path())
+            .arg("extract")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&out)
+            .arg("--extract-nested")
+            .output()
+            .unwrap();
+        assert_success(
+            &format!("zm extract --extract-nested deb {label}"),
+            &extract,
+        );
+        assert_eq!(
+            fs::read_to_string(out.join("control/control")).unwrap(),
+            "Package: zmanager-compat\n"
+        );
+        assert_eq!(
+            fs::read_to_string(out.join("data/usr/share/zmanager-compat/file.txt")).unwrap(),
+            "deb payload\n"
+        );
+    }
 }
 
 #[test]
@@ -1520,6 +1617,7 @@ fn zm_test_tar_zst_and_7z_honor_filters() {
             .unwrap();
         assert_success("zm test non-zip --include --json", &test);
         let stdout = String::from_utf8_lossy(&test.stdout);
+        assert!(stdout.contains("\"bytes\":5"), "{stdout}");
         assert!(stdout.contains("\"tested_entries\":1"), "{stdout}");
         assert!(stdout.contains("\"skipped_entries\":"), "{stdout}");
     }
@@ -1805,6 +1903,52 @@ fn zm_progress_never_suppresses_progress() {
 }
 
 #[test]
+fn zm_color_always_colors_progress_stderr_without_coloring_stdout() {
+    let temp = TestDir::new("zm_color_progress");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "payload\n").unwrap();
+
+    let colored_archive = temp.path("colored.zip");
+    let colored = Command::new(zm_path())
+        .arg("--color")
+        .arg("always")
+        .arg("--progress")
+        .arg("always")
+        .arg("create")
+        .arg(&colored_archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create --color always --progress always", &colored);
+    let colored_stdout = String::from_utf8_lossy(&colored.stdout);
+    let colored_stderr = String::from_utf8_lossy(&colored.stderr);
+    assert!(!colored_stdout.contains("\x1b["), "{colored_stdout}");
+    assert!(
+        colored_stderr.contains(ANSI_PROGRESS_PREFIX),
+        "{colored_stderr}"
+    );
+
+    let plain_archive = temp.path("plain.zip");
+    let plain = Command::new(zm_path())
+        .arg("--color")
+        .arg("never")
+        .arg("--progress")
+        .arg("always")
+        .arg("create")
+        .arg(&plain_archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create --color never --progress always", &plain);
+    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        plain_stderr.contains("progress: zip create started"),
+        "{plain_stderr}"
+    );
+    assert!(!plain_stderr.contains("\x1b["), "{plain_stderr}");
+}
+
+#[test]
 fn zm_create_json_summary_is_machine_readable() {
     let temp = TestDir::new("zm_create_json_summary");
     fs::create_dir_all(temp.path("project")).unwrap();
@@ -2082,7 +2226,16 @@ fn write_zip_entries(path: &Path, method: CompressionMethod, entries: &[(&str, &
 fn write_tar_entries(path: &Path, entries: &[(&str, &[u8])]) {
     let file = File::create(path).unwrap();
     let mut builder = tar::Builder::new(file);
+    append_tar_entries(&mut builder, entries);
+}
 
+fn tar_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    append_tar_entries(&mut builder, entries);
+    builder.into_inner().unwrap()
+}
+
+fn append_tar_entries<W: std::io::Write>(builder: &mut tar::Builder<W>, entries: &[(&str, &[u8])]) {
     for (entry_path, contents) in entries {
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
@@ -2096,6 +2249,54 @@ fn write_tar_entries(path: &Path, entries: &[(&str, &[u8])]) {
     }
 
     builder.finish().unwrap();
+}
+
+fn gzip_bytes(contents: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(contents).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn zstd_bytes(contents: &[u8]) -> Vec<u8> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+    encoder.write_all(contents).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn write_deb_ar_archive(
+    path: &Path,
+    control_member_name: &str,
+    control_member: &[u8],
+    data_member_name: &str,
+    data_member: &[u8],
+) {
+    let mut file = File::create(path).unwrap();
+    file.write_all(b"!<arch>\n").unwrap();
+    write_ar_member(&mut file, "debian-binary", b"2.0\n");
+    write_ar_member(&mut file, control_member_name, control_member);
+    write_ar_member(&mut file, data_member_name, data_member);
+}
+
+fn write_ar_member(file: &mut File, name: &str, contents: &[u8]) {
+    assert!(
+        name.len() <= 15,
+        "ar fixture member name is too long: {name}"
+    );
+    let identifier = format!("{name}/");
+    writeln!(
+        file,
+        "{identifier:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`",
+        0,
+        0,
+        0,
+        "100644",
+        contents.len()
+    )
+    .unwrap();
+    file.write_all(contents).unwrap();
+    if !contents.len().is_multiple_of(2) {
+        file.write_all(b"\n").unwrap();
+    }
 }
 
 #[cfg(unix)]

@@ -1142,6 +1142,63 @@ mod tests {
         assert_eq!(link.symlink_target, Some(PathBuf::from("target.txt")));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn follow_symlinks_skips_directory_loops() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("follow_symlinks_skips_directory_loops");
+        temp.write_file("project/dir/file.txt", b"payload");
+        symlink("..", temp.path("project/dir/back")).unwrap();
+        let options = PlanOptions {
+            follow_symlinks: true,
+            ..PlanOptions::default()
+        };
+
+        let manifest = plan_archive(temp.path("project"), &options).unwrap();
+        let paths = manifest_paths(&manifest);
+
+        assert!(paths.contains(&"project/dir/back"), "{paths:?}");
+        assert!(
+            !paths.iter().any(|path| path.contains("back/dir/back")),
+            "symlink directory loop should not recurse indefinitely: {paths:?}"
+        );
+        assert!(manifest.warnings.iter().any(|warning| {
+            warning.source_path == temp.path("project/dir/back")
+                && warning.message == "skipped symlink directory loop"
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_symlinks_keeps_outside_file_targets_at_link_archive_path() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TestDir::new("follow_symlinks_outside_file");
+        temp.write_file("outside.txt", b"outside");
+        temp.create_dir("project");
+        symlink("../outside.txt", temp.path("project/outside-link.txt")).unwrap();
+        let options = PlanOptions {
+            follow_symlinks: true,
+            ..PlanOptions::default()
+        };
+
+        let manifest = plan_archive(temp.path("project"), &options).unwrap();
+        let link = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.archive_path == "project/outside-link.txt")
+            .unwrap();
+
+        assert_eq!(
+            manifest_paths(&manifest),
+            vec!["project", "project/outside-link.txt"]
+        );
+        assert_eq!(link.file_type, ManifestFileType::File);
+        assert_eq!(link.size, 7);
+        assert_eq!(link.symlink_target, None);
+    }
+
     #[test]
     fn output_is_deterministic() {
         let temp = TestDir::new("output_is_deterministic");

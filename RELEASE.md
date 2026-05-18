@@ -27,14 +27,24 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    cargo fmt --check
    ```
 
-2. Tag the CLI repository:
+2. Run the tool-dependent compatibility suite on a fully provisioned validation
+   machine:
+
+   ```sh
+   scripts/release-compatibility-check.sh
+   ```
+
+   This check intentionally fails instead of skipping when creator tools such
+   as RARLab `rar`, 7-Zip, `bsdtar`, `zstd`, and package builders are missing.
+
+3. Tag the CLI repository:
 
    ```sh
    git tag v1.0.1
    git push origin main --tags
    ```
 
-3. Confirm the release workflow generated:
+4. Confirm the release workflow generated:
 
    ```text
    release-artifacts/SHA256SUMS
@@ -54,10 +64,10 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
      dist/package-metadata
    ```
 
-4. Copy the generated Homebrew formula to the tap repository at
+5. Copy the generated Homebrew formula to the tap repository at
    `Formula/zmanager.rb`.
 
-5. Validate the tap:
+6. Validate the tap:
 
    ```sh
    brew audit --strict --formula Formula/zmanager.rb
@@ -65,13 +75,13 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    brew test zmanager
    ```
 
-6. Validate the generated WinGet manifests:
+7. Validate the generated WinGet manifests:
 
    ```powershell
    winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.1
    ```
 
-7. Validate the generated Ubuntu/Debian packages on Ubuntu 22.04 and 24.04:
+8. Validate the generated Ubuntu/Debian packages on Ubuntu 22.04 and 24.04:
 
    ```sh
    sudo apt install ./dist/zmanager-cli_1.0.1-1_amd64.deb

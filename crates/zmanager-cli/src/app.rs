@@ -13,6 +13,8 @@ use zmanager_core::safety::{
 use zmanager_core::secrets::SecretString;
 
 const PROGRESS_PREFIX: &str = "progress";
+const PROGRESS_COLOR: &str = "\x1b[36m";
+const COLOR_RESET: &str = "\x1b[0m";
 const PROGRESS_PERCENT_STEP: u64 = 5;
 const PROGRESS_BYTE_STEP: u64 = 1024 * 1024;
 const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
@@ -467,6 +469,7 @@ enum OutputMode {
 #[derive(Debug)]
 struct ProgressReporter {
     enabled: bool,
+    color_enabled: bool,
     total_bytes: Option<u64>,
     last_percent: Option<u64>,
     last_reported_bytes: u64,
@@ -474,14 +477,21 @@ struct ProgressReporter {
 
 impl ProgressReporter {
     fn from_global(global: Option<&GlobalOptions>) -> Self {
-        let enabled = global.is_some_and(|global| match global.progress {
-            OutputMode::Always => true,
-            OutputMode::Auto => !global.quiet && io::stderr().is_terminal(),
-            OutputMode::Never => false,
+        let stderr_is_terminal = io::stderr().is_terminal();
+        let enabled = global.is_some_and(|global| {
+            matches!(global.progress, OutputMode::Always)
+                || matches!(global.progress, OutputMode::Auto)
+                    && !global.quiet
+                    && stderr_is_terminal
+        });
+        let color_enabled = global.is_some_and(|global| {
+            matches!(global.color, OutputMode::Always)
+                || matches!(global.color, OutputMode::Auto) && !global.quiet && stderr_is_terminal
         });
 
         Self {
             enabled,
+            color_enabled,
             total_bytes: None,
             last_percent: None,
             last_reported_bytes: 0,
@@ -499,11 +509,13 @@ impl ProgressReporter {
                 self.last_percent = None;
                 self.last_reported_bytes = 0;
                 match total_bytes {
-                    Some(total_bytes) => eprintln!(
-                        "{PROGRESS_PREFIX}: {} started ({total_bytes} bytes)",
+                    Some(total_bytes) => self.emit_line(format_args!(
+                        "{} started ({total_bytes} bytes)",
                         progress_job_label(kind)
-                    ),
-                    None => eprintln!("{PROGRESS_PREFIX}: {} started", progress_job_label(kind)),
+                    )),
+                    None => {
+                        self.emit_line(format_args!("{} started", progress_job_label(kind)));
+                    }
                 }
             }
             JobEvent::BytesProcessed {
@@ -517,17 +529,25 @@ impl ProgressReporter {
                 }
             }
             JobEvent::Completed { entries, bytes } => {
-                eprintln!("{PROGRESS_PREFIX}: complete ({entries} entries, {bytes} bytes)");
+                self.emit_line(format_args!("complete ({entries} entries, {bytes} bytes)"));
             }
             JobEvent::Failed { message } => {
-                eprintln!("{PROGRESS_PREFIX}: failed: {message}");
+                self.emit_line(format_args!("failed: {message}"));
             }
             JobEvent::Cancelled { message } => {
-                eprintln!("{PROGRESS_PREFIX}: cancelled: {message}");
+                self.emit_line(format_args!("cancelled: {message}"));
             }
             JobEvent::EntryStarted { .. }
             | JobEvent::EntryFinished { .. }
             | JobEvent::Warning { .. } => {}
+        }
+    }
+
+    fn emit_line(&self, message: std::fmt::Arguments<'_>) {
+        if self.color_enabled {
+            eprintln!("{PROGRESS_COLOR}{PROGRESS_PREFIX}{COLOR_RESET}: {message}");
+        } else {
+            eprintln!("{PROGRESS_PREFIX}: {message}");
         }
     }
 
@@ -543,9 +563,9 @@ impl ProgressReporter {
             .is_none_or(|last| percent == 100 || percent >= last + PROGRESS_PERCENT_STEP);
         if should_emit {
             self.last_percent = Some(percent);
-            eprintln!(
-                "{PROGRESS_PREFIX}: {percent}% ({total_bytes_processed}/{total_bytes} bytes)"
-            );
+            self.emit_line(format_args!(
+                "{percent}% ({total_bytes_processed}/{total_bytes} bytes)"
+            ));
         }
     }
 
@@ -554,7 +574,7 @@ impl ProgressReporter {
             || total_bytes_processed.saturating_sub(self.last_reported_bytes) >= PROGRESS_BYTE_STEP;
         if should_emit {
             self.last_reported_bytes = total_bytes_processed;
-            eprintln!("{PROGRESS_PREFIX}: {total_bytes_processed} bytes");
+            self.emit_line(format_args!("{total_bytes_processed} bytes"));
         }
     }
 }
@@ -2430,6 +2450,18 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             global,
         );
     }
+    if is_tar_zst_archive(&request.archive) {
+        return run_tar_zst_test_new(&request.archive, &request.include, &request.exclude, global);
+    }
+    if is_7z_archive(&request.archive) {
+        return run_7z_test_new(
+            &request.archive,
+            password.as_deref(),
+            &request.include,
+            &request.exclude,
+            global,
+        );
+    }
 
     match list_entries_with_password(&request.archive, password.as_deref()) {
         Ok(mut entries) => {
@@ -2459,6 +2491,90 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             eprintln!("test failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_tar_zst_test_new(
+    archive: &str,
+    includes: &[String],
+    excludes: &[String],
+    global: &GlobalOptions,
+) -> ExitCode {
+    let mut sink = io::sink();
+    match zmanager_core::tar_zst_backend::copy_tar_zst_files_to_writer(
+        archive,
+        |name| entry_selected(name, includes, excludes),
+        &mut sink,
+    ) {
+        Ok(report) => {
+            print_data_test_success(
+                FORMAT_TAR_ZST,
+                report.written_entries,
+                report.skipped_entries,
+                report.written_bytes,
+                global,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("tar.zst test failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_7z_test_new(
+    archive: &str,
+    password: Option<&str>,
+    includes: &[String],
+    excludes: &[String],
+    global: &GlobalOptions,
+) -> ExitCode {
+    let mut sink = io::sink();
+    match zmanager_core::sevenz_backend::copy_7z_files_to_writer(
+        archive,
+        password,
+        |name| entry_selected(name, includes, excludes),
+        &mut sink,
+    ) {
+        Ok(report) => {
+            print_data_test_success(
+                FORMAT_SEVEN_Z,
+                report.written_entries,
+                report.skipped_entries,
+                report.written_bytes,
+                global,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("7z test failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_data_test_success(
+    format: &str,
+    tested_entries: usize,
+    skipped_entries: usize,
+    bytes: u64,
+    global: &GlobalOptions,
+) {
+    if global.json {
+        println!(
+            "{{\"status\":\"ok\",\"format\":\"{}\",\"entries\":{},\"tested_entries\":{},\"skipped_entries\":{},\"bytes\":{bytes}}}",
+            json_escape(format),
+            tested_entries,
+            tested_entries,
+            skipped_entries
+        );
+    } else if skipped_entries == 0 {
+        println!("{format} test ok: {tested_entries} entries, {bytes} bytes");
+    } else {
+        println!(
+            "{format} test ok: {tested_entries} entries, {skipped_entries} skipped, {bytes} bytes"
+        );
     }
 }
 
