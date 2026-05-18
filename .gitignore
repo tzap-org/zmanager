@@ -21,6 +21,9 @@ __pycache__/
 # macOS metadata
 .DS_Store
 
+# Local editor settings
+/.vscode/
+
 # Local AI/agent instructions and runtime state
 /AGENTS.md
 /CLAUDE.md

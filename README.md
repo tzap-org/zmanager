@@ -38,8 +38,7 @@ Z-Manager treats extraction and creation differently:
 
 ### Current Version
 
-Release builds are published from GitHub tags. Until the first public tag is
-cut, install from source.
+Release builds are published from GitHub tags.
 
 - [Latest release](https://github.com/frankmanzhu/zmanager/releases/latest)
 - [All releases](https://github.com/frankmanzhu/zmanager/releases)
@@ -65,6 +64,22 @@ file for download verification.
 
 Full installation details, checksum verification examples, and package-channel
 maintenance notes are in [docs/INSTALL.md](docs/INSTALL.md).
+
+### Ubuntu/Debian
+
+Ubuntu and Debian users can install the `.deb` package from the GitHub release:
+
+```sh
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
+sha256sum -c SHA256SUMS --ignore-missing
+sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
+zm healthcheck
+```
+
+Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems. The package installs
+`zm`, the man page, and bash, zsh, and fish completions into standard system
+locations.
 
 ### Homebrew
 
