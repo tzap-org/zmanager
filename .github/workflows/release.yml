@@ -101,7 +101,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: package
 
     steps:

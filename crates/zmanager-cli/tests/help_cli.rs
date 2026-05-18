@@ -514,8 +514,10 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
 
     assert_contains(
         RELEASE_WORKFLOW,
-        "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-latest",
+        "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-22.04",
     );
+    assert_not_contains(RELEASE_WORKFLOW, "ubuntu-latest");
+    assert_not_contains(CI_WORKFLOW, "ubuntu-latest");
 }
 
 #[test]
