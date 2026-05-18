@@ -490,24 +490,32 @@ fn debian_package_assets_are_declared() {
 
 #[test]
 fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
+    let release_package_job = section_between(RELEASE_WORKFLOW, "  package:\n", "\n  publish:\n");
+    let ci_test_job = section_between(CI_WORKFLOW, "  test:\n", "\n  windows-test:\n");
+
     for required in [
         "- os: ubuntu-22.04\n            target: x86_64-unknown-linux-gnu",
         "- os: ubuntu-22.04-arm\n            target: aarch64-unknown-linux-gnu",
     ] {
-        assert_contains(RELEASE_WORKFLOW, required);
+        assert_contains(release_package_job, required);
     }
 
     for required in [
         "name: Linux x86_64\n            os: ubuntu-22.04",
         "name: Linux ARM64\n            os: ubuntu-22.04-arm",
     ] {
-        assert_contains(CI_WORKFLOW, required);
+        assert_contains(ci_test_job, required);
     }
 
-    for newer_or_floating_linux_runner in ["os: ubuntu-latest", "os: ubuntu-24.04-arm"] {
-        assert_not_contains(RELEASE_WORKFLOW, newer_or_floating_linux_runner);
-        assert_not_contains(CI_WORKFLOW, newer_or_floating_linux_runner);
+    for newer_or_floating_linux_runner in ["ubuntu-latest", "ubuntu-24.04-arm"] {
+        assert_not_contains(release_package_job, newer_or_floating_linux_runner);
+        assert_not_contains(ci_test_job, newer_or_floating_linux_runner);
     }
+
+    assert_contains(
+        RELEASE_WORKFLOW,
+        "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-latest",
+    );
 }
 
 #[test]
@@ -588,4 +596,15 @@ fn assert_not_contains(haystack: &str, needle: &str) {
         !haystack.contains(needle),
         "expected output not to contain {needle:?}\n{haystack}"
     );
+}
+
+fn section_between<'a>(haystack: &'a str, start: &str, end: &str) -> &'a str {
+    let start_index = haystack
+        .find(start)
+        .unwrap_or_else(|| panic!("section start not found: {start:?}"));
+    let section_start = start_index + start.len();
+    let relative_end = haystack[section_start..]
+        .find(end)
+        .unwrap_or_else(|| panic!("section end not found: {end:?}"));
+    &haystack[section_start..section_start + relative_end]
 }
