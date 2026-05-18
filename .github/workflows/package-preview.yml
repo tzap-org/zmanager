@@ -32,8 +32,10 @@ jobs:
             target: x86_64-apple-darwin
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             triplet: x64-windows-static-md
@@ -102,6 +104,7 @@ jobs:
             echo "### Package preview"
             echo
             echo "Download this run's artifacts from the GitHub Actions run page."
+            echo "Linux tarballs and Debian packages are uploaded as separate artifacts."
             echo
             echo '```text'
             ls -1 dist
@@ -111,8 +114,14 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: zm-preview-${{ matrix.target }}
-          path: |
-            dist/zm-${{ matrix.target }}.*
-            dist/zmanager-cli_*.deb
+          path: dist/zm-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v6
+        if: runner.os == 'Linux'
+        with:
+          name: zmanager-cli-preview-${{ matrix.deb_arch }}-deb
+          path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb
           if-no-files-found: error
           retention-days: 14

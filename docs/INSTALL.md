@@ -52,8 +52,9 @@ included in `THIRD_PARTY_NOTICES.md`, with copied license files under
 
 ## Shell Completions
 
-The release archives and packages include bash, zsh, and fish completions.
-Package managers install them into their standard completion directories.
+The release archives include bash, zsh, fish, and PowerShell completions.
+Unix package managers install bash, zsh, and fish completions into their
+standard completion directories.
 
 For manual bash setup without extra shell packages:
 
@@ -74,6 +75,14 @@ zm completions fish > ~/.config/fish/completions/zm.fish
 Homebrew installs the static bash completion at
 `$(brew --prefix)/etc/bash_completion.d/zm`. Bash users can source that file
 directly or use `source <(zm completions bash)`.
+
+PowerShell users can dot-source the generated completer from their profile or
+current session:
+
+```powershell
+zm completions powershell > zm.ps1
+. .\zm.ps1
+```
 
 ## Ubuntu/Debian Packages
 

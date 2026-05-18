@@ -47,7 +47,7 @@ fi
   --out-notices "$STAGE/THIRD_PARTY_NOTICES.md" \
   --license-dir "$STAGE/third-party-licenses" >/dev/null
 mkdir -p "$STAGE/completions"
-cp completions/zm.bash completions/_zm completions/zm.fish "$STAGE/completions/"
+cp completions/zm.bash completions/_zm completions/zm.fish completions/zm.ps1 "$STAGE/completions/"
 mkdir -p "$STAGE/man/man1"
 cp docs/man/zm.1 "$STAGE/man/man1/"
 

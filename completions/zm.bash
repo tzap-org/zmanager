@@ -13,6 +13,7 @@ _zm()
     fi
 
     local commands="create extract list test plan formats doctor completions help"
+    local help_topics="create extract list test plan formats doctor completions"
     local global_opts="-h --help -V --version -q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt -c --create -x --extract -t --list -T --test -f --file"
     local create_opts="-h --help -r --recursive -C --directory -@ --files-from --null --clean --no-ignore --hidden --no-hidden -i --include --exclude --exclude-from --format --method --level -0 -1 -2 -3 -4 -5 -6 -7 -8 -9 --store --solid --no-solid -j --junk-paths -y --preserve-symlinks --follow-symlinks --preserve-metadata -X --no-metadata -f --file --force --dry-run -T --test-after --encrypt --password-stdin"
     local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin"
@@ -23,7 +24,7 @@ _zm()
     local progress_values="auto always never"
     local color_values="auto always never"
     local overwrite_values="never always ask rename"
-    local shell_values="bash zsh fish"
+    local shell_values="bash zsh fish powershell"
 
     command=""
     for word in "${words[@]:1:cword-1}"; do
@@ -81,8 +82,11 @@ _zm()
     fi
 
     case "$command" in
-        ""|help)
+        "")
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            ;;
+        help)
+            COMPREPLY=($(compgen -W "$help_topics" -- "$cur"))
             ;;
         completions)
             COMPREPLY=($(compgen -W "$shell_values" -- "$cur"))

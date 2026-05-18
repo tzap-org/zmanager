@@ -322,12 +322,13 @@ const COMPLETIONS_HELP: &str = "\
 Print shell completion scripts
 
 Usage:
-  zm completions <bash|zsh|fish>
+  zm completions <bash|zsh|fish|powershell>
 
 Examples:
   source <(zm completions bash)
   zm completions zsh > ~/.zfunc/_zm
   zm completions fish > ~/.config/fish/completions/zm.fish
+  zm completions powershell > zm.ps1
 
 The release packages install completion files automatically where package
 managers support it. This command is for manual shell setup and troubleshooting.
@@ -336,6 +337,7 @@ managers support it. This command is for manual shell setup and troubleshooting.
 const COMPLETION_BASH_SCRIPT: &str = include_str!("../../../completions/zm.bash");
 const COMPLETION_ZSH_SCRIPT: &str = include_str!("../../../completions/_zm");
 const COMPLETION_FISH_SCRIPT: &str = include_str!("../../../completions/zm.fish");
+const COMPLETION_POWERSHELL_SCRIPT: &str = include_str!("../../../completions/zm.ps1");
 
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
@@ -1235,10 +1237,11 @@ fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         "bash" => COMPLETION_BASH_SCRIPT,
         "zsh" => COMPLETION_ZSH_SCRIPT,
         "fish" => COMPLETION_FISH_SCRIPT,
+        "powershell" => COMPLETION_POWERSHELL_SCRIPT,
         _ => {
             return command_usage_error(
                 "completions",
-                &format!("unsupported shell: {shell}; use bash, zsh, or fish"),
+                &format!("unsupported shell: {shell}; use bash, zsh, fish, or powershell"),
                 &global,
             );
         }
@@ -3900,7 +3903,7 @@ Usage:
         "completions" => {
             "\
 Usage:
-  zm completions <bash|zsh|fish>
+  zm completions <bash|zsh|fish|powershell>
 "
         }
         _ => USAGE,

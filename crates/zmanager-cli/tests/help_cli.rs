@@ -1,9 +1,11 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const COMPLETION_BASH: &str = include_str!("../../../completions/zm.bash");
 const COMPLETION_FISH: &str = include_str!("../../../completions/zm.fish");
+const COMPLETION_POWERSHELL: &str = include_str!("../../../completions/zm.ps1");
 const COMPLETION_ZSH: &str = include_str!("../../../completions/_zm");
 const MAN_PAGE: &str = include_str!("../../../docs/man/zm.1");
 const INSTALL_DOC: &str = include_str!("../../../docs/INSTALL.md");
@@ -204,9 +206,10 @@ const DOCTOR_HELP_NEEDLES: &[&str] = &[
 
 const COMPLETIONS_HELP_NEEDLES: &[&str] = &[
     "Print shell completion scripts",
-    "zm completions <bash|zsh|fish>",
+    "zm completions <bash|zsh|fish|powershell>",
     "source <(zm completions bash)",
     "zm completions zsh > ~/.zfunc/_zm",
+    "zm completions powershell > zm.ps1",
 ];
 
 const COMMAND_HELP_CASES: &[(&str, &[&str])] = &[
@@ -353,12 +356,14 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
     for command in PUBLIC_COMMANDS {
         assert_contains(COMPLETION_BASH, command);
         assert_contains(COMPLETION_FISH, command);
+        assert_contains(COMPLETION_POWERSHELL, command);
         assert_contains(COMPLETION_ZSH, command);
     }
 
     for legacy in LEGACY_COMMANDS {
         assert_not_contains(COMPLETION_BASH, legacy);
         assert_not_contains(COMPLETION_FISH, legacy);
+        assert_not_contains(COMPLETION_POWERSHELL, legacy);
         assert_not_contains(COMPLETION_ZSH, legacy);
     }
 
@@ -375,17 +380,114 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
     ] {
         assert_contains(COMPLETION_BASH, &format!("--{required_flag}"));
         assert_contains(COMPLETION_FISH, &format!("-l {required_flag}"));
+        assert_contains(COMPLETION_POWERSHELL, &format!("--{required_flag}"));
         assert_contains(COMPLETION_ZSH, &format!("--{required_flag}"));
     }
 
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in ["bash", "zsh", "fish", "powershell"] {
         assert_contains(COMPLETION_BASH, shell);
         assert_contains(COMPLETION_FISH, shell);
+        assert_contains(COMPLETION_POWERSHELL, shell);
         assert_contains(COMPLETION_ZSH, shell);
     }
 
     assert_not_contains(COMPLETION_BASH, "_init_completion");
     assert_not_contains(COMPLETION_BASH, "_filedir");
+    assert_contains(COMPLETION_POWERSHELL, "Register-ArgumentCompleter");
+    assert_contains(COMPLETION_POWERSHELL, "$helpTopics");
+    assert_contains(COMPLETION_POWERSHELL, "Complete-ZmFiles");
+}
+
+#[test]
+fn static_completion_files_capture_navigation_contract() {
+    for completion in [
+        COMPLETION_BASH,
+        COMPLETION_FISH,
+        COMPLETION_POWERSHELL,
+        COMPLETION_ZSH,
+    ] {
+        assert_contains(completion, "create");
+        assert_contains(completion, "completions");
+        assert_contains(completion, "help");
+        assert_contains(completion, "bash");
+        assert_contains(completion, "powershell");
+    }
+
+    assert_contains(
+        COMPLETION_BASH,
+        "local help_topics=\"create extract list test plan formats doctor completions\"",
+    );
+    assert_contains(
+        COMPLETION_FISH,
+        "set -l zm_help_topics create extract list test plan formats doctor completions",
+    );
+    assert_contains(COMPLETION_ZSH, "help_topics=(");
+    assert_contains(
+        COMPLETION_POWERSHELL,
+        "$helpTopics = @(\"create\", \"extract\", \"list\", \"test\", \"plan\", \"formats\", \"doctor\", \"completions\")",
+    );
+}
+
+#[test]
+fn bash_completion_matches_help_navigation_contract() {
+    if !command_available("bash") {
+        return;
+    }
+
+    let temp = env::temp_dir().join(format!("zm-completion-contract-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp);
+    fs::create_dir_all(&temp).unwrap();
+    fs::write(temp.join("archive.zip"), b"").unwrap();
+
+    let completion = workspace_root().join("completions/zm.bash");
+    let output = Command::new("bash")
+        .arg("-lc")
+        .arg(
+            r#"
+source "$1"
+run_case() {
+  local name="$1"
+  shift
+  COMP_WORDS=("$@")
+  COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+  COMPREPLY=()
+  _zm
+  printf '%s:' "$name"
+  printf ' %s' "${COMPREPLY[@]}"
+  printf '\n'
+}
+run_case top zm h
+run_case help_topics zm help ""
+run_case list_options zm list --
+run_case create_options zm create --
+run_case completion_shells zm completions ""
+run_case list_files zm list ""
+"#,
+        )
+        .arg("_")
+        .arg(completion)
+        .current_dir(&temp)
+        .output()
+        .unwrap();
+
+    let _ = fs::remove_dir_all(&temp);
+    assert_success("bash completion contract", &output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_contains(&stdout, "top: help\n");
+    assert_contains(
+        &stdout,
+        "help_topics: create extract list test plan formats doctor completions\n",
+    );
+    assert_contains(&stdout, "list_options: --help");
+    assert_contains(&stdout, "--tree");
+    assert_contains(&stdout, "create_options: --help");
+    assert_contains(&stdout, "--exclude-from");
+    assert_contains(&stdout, "completion_shells: bash zsh fish powershell\n");
+    assert_contains(&stdout, "list_files: archive.zip\n");
+    assert_not_contains(
+        &stdout,
+        "help_topics: create extract list test plan formats doctor completions help",
+    );
 }
 
 #[test]
@@ -394,6 +496,7 @@ fn completions_command_prints_packaged_completion_scripts() {
         ("bash", COMPLETION_BASH),
         ("zsh", COMPLETION_ZSH),
         ("fish", COMPLETION_FISH),
+        ("powershell", COMPLETION_POWERSHELL),
     ] {
         let output = Command::new(zm_path())
             .arg("completions")
@@ -411,7 +514,7 @@ fn completions_command_prints_packaged_completion_scripts() {
 
 #[test]
 fn release_packaging_includes_completion_files() {
-    for completion in ["zm.bash", "_zm", "zm.fish"] {
+    for completion in ["zm.bash", "_zm", "zm.fish", "zm.ps1"] {
         assert_contains(PACKAGE_RELEASE_SH, completion);
         assert_contains(CI_WINDOWS_PS1, completion);
     }
@@ -560,8 +663,11 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         "powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1",
         "actions/upload-artifact@v6",
         "name: zm-preview-${{ matrix.target }}",
-        "dist/zm-${{ matrix.target }}.*",
-        "dist/zmanager-cli_*.deb",
+        "path: dist/zm-${{ matrix.target }}.*",
+        "Linux tarballs and Debian packages are uploaded as separate artifacts.",
+        "name: zmanager-cli-preview-${{ matrix.deb_arch }}-deb",
+        "path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb",
+        "if: runner.os == 'Linux'",
         "if-no-files-found: error",
         "retention-days: 14",
         "contents: read",
@@ -573,6 +679,7 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         "contents: write",
         "gh release create",
         "actions/download-artifact",
+        "dist/zmanager-cli_*.deb",
     ] {
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
@@ -630,7 +737,10 @@ fn debian_package_assets_are_declared() {
 
     for required in [
         "scripts/package-deb.sh",
-        "dist/zmanager-cli_*.deb",
+        "deb_arch: amd64",
+        "deb_arch: arm64",
+        "name: zmanager-cli-${{ matrix.deb_arch }}-deb",
+        "path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb",
         "release-artifacts/*.deb",
         "dpkg-dev",
         "python3",
@@ -728,6 +838,23 @@ fn assert_help_contains(args: &[&str], needles: &[&str]) {
 
 fn zm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zm"))
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("zmanager-cli crate should be inside the CLI workspace")
+        .to_path_buf()
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn assert_success(label: &str, output: &std::process::Output) {

@@ -1,6 +1,8 @@
 # fish completion for zm
 
 set -l zm_commands create extract list test plan formats doctor completions help
+set -l zm_help_topics create extract list test plan formats doctor completions
+set -l zm_completion_shells bash zsh fish powershell
 
 complete -c zm -f
 
@@ -115,5 +117,5 @@ complete -c zm -n "__fish_seen_subcommand_from plan" -l json -d "Emit machine-re
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -l json -d "Emit JSON"
 complete -c zm -n "__fish_seen_subcommand_from completions" -s h -l help -d "Show help"
-complete -c zm -n "__fish_seen_subcommand_from completions" -a "bash zsh fish" -d "Completion shell"
-complete -c zm -n "__fish_seen_subcommand_from help" -a "$zm_commands"
+complete -c zm -n "__fish_seen_subcommand_from completions" -a "$zm_completion_shells" -d "Completion shell"
+complete -c zm -n "__fish_seen_subcommand_from help" -a "$zm_help_topics"

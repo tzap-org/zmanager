@@ -56,6 +56,9 @@ class Zmanager < Formula
 
       Or generate completions manually:
         source <(zm completions bash)
+
+      PowerShell users can generate a completer manually:
+        zm completions powershell > zm.ps1
     EOS
   end
 

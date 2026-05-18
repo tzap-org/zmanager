@@ -52,7 +52,7 @@ would archive.
 Show supported archive formats.
 .It Cm doctor
 Verify the installed CLI and archive engine.
-.It Cm completions Ar bash|zsh|fish
+.It Cm completions Ar bash|zsh|fish|powershell
 Print a shell completion script.
 .It Cm help Op Ar command
 Show top-level help or command-specific help.
@@ -339,6 +339,7 @@ For manual setup, print the completion script for a shell:
 source <(zm completions bash)
 zm completions zsh > ~/.zfunc/_zm
 zm completions fish > ~/.config/fish/completions/zm.fish
+zm completions powershell > zm.ps1
 .Ed
 .Sh STDOUT AND JSON
 Human diagnostics, progress, and errors are written to stderr.

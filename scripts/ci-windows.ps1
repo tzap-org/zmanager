@@ -236,6 +236,7 @@ function Copy-ReleaseFiles {
     Copy-Item (Join-Path $RepositoryRoot "completions\zm.bash") $completionStage
     Copy-Item (Join-Path $RepositoryRoot "completions\_zm") $completionStage
     Copy-Item (Join-Path $RepositoryRoot "completions\zm.fish") $completionStage
+    Copy-Item (Join-Path $RepositoryRoot "completions\zm.ps1") $completionStage
 
     $manStage = Join-Path $Stage "man\man1"
     New-Item -ItemType Directory -Force -Path $manStage | Out-Null

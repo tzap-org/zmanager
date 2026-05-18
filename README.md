@@ -149,13 +149,19 @@ and raw archive payloads from `--to-stdout` are never colorized.
 ## Shell Completions
 
 Packages install bash, zsh, and fish completions where the package manager
-supports it. For manual setup or troubleshooting, print the script for your
+supports it. The CLI can also print a PowerShell argument completer for manual
+Windows setup. For manual setup or troubleshooting, print the script for your
 shell:
 
 ```sh
 source <(zm completions bash)
 zm completions zsh > ~/.zfunc/_zm
 zm completions fish > ~/.config/fish/completions/zm.fish
+```
+
+```powershell
+zm completions powershell > zm.ps1
+. .\zm.ps1
 ```
 
 ## What It Does
