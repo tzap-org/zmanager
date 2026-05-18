@@ -15,55 +15,30 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Current source version: `v1.0.1`
+Latest release: `v1.0.1`
 
-## Product Direction
+## Install
 
-Z-Manager treats extraction and creation differently:
+Release builds are published on the
+[latest release page](https://github.com/frankmanzhu/zmanager/releases/latest).
+For full installation details and checksum examples, see
+[docs/INSTALL.md](docs/INSTALL.md).
 
-- **Extract broadly.** Users should be able to open old, obscure, downloaded,
-  package, mobile, and developer archives without knowing which backend or
-  tool normally handles them.
-- **Create deliberately.** New archives should use formats that make sense
-  today: ZIP for universal sharing, TZST (`.tar.zst`) for fast modern
-  compression, and 7z for high-compression encrypted archives.
-- **Avoid legacy creation paths.** Old compression methods still matter for
-  reading existing files, but new archives should not depend on outdated
-  choices when better performance and safer password encryption are available.
-- **Use strong password protection.** Encrypted ZIP and 7z creation use AES-256
-  paths, and passwords are read through prompts or stdin rather than command
-  arguments.
+### macOS
 
-## Downloads
+Install from the Homebrew tap:
 
-### Current Version
+```sh
+brew install frankmanzhu/zmanager/zmanager
+zm healthcheck
+```
 
-Release builds are published from GitHub tags.
+Equivalent explicit form after tapping:
 
-- [Latest release](https://github.com/frankmanzhu/zmanager/releases/latest)
-- [All releases](https://github.com/frankmanzhu/zmanager/releases)
-
-The release workflow publishes these assets when a `v*` tag is created:
-
-| Platform | Asset |
-| --- | --- |
-| macOS Apple Silicon | `zm-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
-| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.1-1_amd64.deb` |
-| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.1-1_arm64.deb` |
-| Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
-| Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
-
-Each archive contains the `zm` executable, `README.md`, `LICENSE`, `NOTICE`,
-`THIRD_PARTY_NOTICES.md`, and `third-party-licenses/`. Windows archives are
-built with vcpkg static-library triplets so third-party compression and crypto
-libraries are linked into `zm.exe`. Every release also includes a `SHA256SUMS`
-file for download verification.
-
-Full installation details, checksum verification examples, and package-channel
-maintenance notes are in [docs/INSTALL.md](docs/INSTALL.md).
+```sh
+brew tap frankmanzhu/zmanager
+brew install zmanager
+```
 
 ### Ubuntu/Debian
 
@@ -81,36 +56,23 @@ Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems. The package installs
 `zm`, the man page, and bash, zsh, and fish completions into standard system
 locations.
 
-### Homebrew
+### Windows
 
-Once the tap repository is published, install with:
+Download the Windows `.zip` for your CPU from the
+[latest release](https://github.com/frankmanzhu/zmanager/releases/latest),
+verify it with `SHA256SUMS`, and place `zm.exe` on `PATH`.
 
-```sh
-brew install frankmanzhu/zmanager/zmanager
-```
-
-Equivalent explicit form after tapping:
-
-```sh
-brew tap frankmanzhu/zmanager
-brew install zmanager
-```
-
-The release workflow renders the Homebrew formula from
-[packaging/homebrew/zmanager.rb.template](packaging/homebrew/zmanager.rb.template)
-using release checksums. Copy the generated
-`package-metadata/homebrew/Formula/zmanager.rb` into the separate
-`frankmanzhu/homebrew-zmanager` tap.
-
-### WinGet
-
-The release workflow also renders WinGet manifests from
-[packaging/winget](packaging/winget). After validation and submission, install
-with:
+When the WinGet package is published, install with:
 
 ```powershell
 winget install FrankZhu.ZManagerCLI
 ```
+
+### Other Linux
+
+Download the matching Linux `.tar.gz` from the
+[latest release](https://github.com/frankmanzhu/zmanager/releases/latest),
+verify it with `SHA256SUMS`, and place `zm` on `PATH`.
 
 ### Install Script
 
@@ -154,12 +116,67 @@ zm test project.zip
 The classic flags are there for users who already know archive tools. The
 subcommands are there for readable scripts.
 
-## Output Behavior
+## What It Does
 
-Human-readable output uses `--color auto` by default: color is shown only on
-terminal streams, and `NO_COLOR` disables automatic color. Use
-`--color always` to force color or `--color never` to disable it. JSON output
-and raw archive payloads from `--to-stdout` are never colorized.
+- Extracts a broad range of archive, package, disk-image, and raw compression
+  formats with safety checks enabled by default.
+- Creates modern `.zip`, `.tzst` (`.tar.zst`), and `.7z` archives with focused
+  defaults.
+- Opens common desktop, developer, package, and mobile archive formats by name:
+  ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
+  CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
+  compressed files.
+- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts; new
+  encrypted ZIP and 7z archives use AES-256 encryption paths.
+- Protects extraction by default against path traversal, unsafe links,
+  duplicate normalized paths, case collisions, and accidental overwrite traps.
+- Provides both classic archive flags and readable subcommands.
+
+## Why Z-Manager
+
+Z-Manager treats extraction and creation differently:
+
+- **Extract broadly.** Open old, obscure, downloaded, package, mobile, and
+  developer archives without knowing which backend normally handles them.
+- **Create deliberately.** New archives should use practical modern formats:
+  ZIP for universal sharing, TZST (`.tar.zst`) for fast compression, and 7z for
+  high-compression encrypted archives.
+- **Avoid legacy creation paths.** Old compression methods matter for reading
+  existing files, but new archives should use safer and faster defaults.
+- **Use strong password protection.** Encrypted ZIP and 7z creation use AES-256,
+  and passwords are read through prompts or stdin rather than command arguments.
+
+## Safety Model
+
+Archive extraction is hostile-input handling. `zm` rejects or guards against:
+
+- absolute paths and `..` traversal;
+- symlink and hardlink escapes;
+- duplicate normalized output paths;
+- Unicode/case-insensitive path collisions;
+- unsafe special files by default;
+- excessive expanded-size and compression-ratio cases;
+- accidental overwrites unless the requested overwrite mode allows them.
+
+Passwords are not accepted as command arguments. Use the prompt or
+`--password-stdin` so secrets do not appear in shell history or process listings.
+
+## Format Support
+
+| Workflow | Formats |
+| --- | --- |
+| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
+| ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
+| 7z | `.7z`, including encrypted 7z archives |
+| RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
+| TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tzst`, `.tar.zst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
+| Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
+| Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
+| Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
+
+Creation is intentionally focused on formats people should use today. Extraction
+is intentionally broad, so `zm` can be the one command you try first when
+someone sends you an archive.
 
 ## Shell Completions
 
@@ -179,62 +196,12 @@ zm completions powershell > zm.ps1
 . .\zm.ps1
 ```
 
-## What It Does
+## Output Behavior
 
-- Extracts a broad range of archive, package, disk-image, and raw compression
-  formats with safety checks enabled by default.
-- Creates modern `.zip`, `.tzst` (`.tar.zst`), and `.7z` archives with focused defaults.
-- Opens common desktop, developer, package, and mobile archive formats by name:
-  ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
-  CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
-  compressed files.
-- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts; new
-  encrypted ZIP and 7z archives use AES-256 encryption paths.
-- Protects extraction by default against path traversal, unsafe links,
-  duplicate normalized paths, case collisions, and accidental overwrite traps.
-- Provides both classic archive flags and readable subcommands.
-
-## Format Support
-
-| Workflow | Formats |
-| --- | --- |
-| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
-| ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
-| 7z | `.7z`, including encrypted 7z archives |
-| RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
-| TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tzst`, `.tar.zst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
-| Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
-| Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
-| Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
-
-Creation is intentionally focused on formats people should use today. Extraction
-is intentionally broad, so `zm` can be the one command you try first when
-someone sends you an archive.
-
-## Safety Model
-
-Archive extraction is hostile-input handling. `zm` rejects or guards against:
-
-- absolute paths and `..` traversal;
-- symlink and hardlink escapes;
-- duplicate normalized output paths;
-- Unicode/case-insensitive path collisions;
-- unsafe special files by default;
-- excessive expanded-size and compression-ratio cases;
-- accidental overwrites unless the requested overwrite mode allows them.
-
-Passwords are not accepted as command arguments. Use the prompt or
-`--password-stdin` so secrets do not appear in shell history or process listings.
-
-## Goals
-
-Z-Manager is designed around three priorities:
-
-- Extract as many real-world archive formats as possible, safely and
-  predictably.
-- Keep new archive creation focused on modern compression and AES-256 password
-  protection instead of preserving every legacy creation method.
-- Stay familiar to users who already know `zip`, `tar`, `unzip`, and `7z`.
+Human-readable output uses `--color auto` by default: color is shown only on
+terminal streams, and `NO_COLOR` disables automatic color. Use
+`--color always` to force color or `--color never` to disable it. JSON output
+and raw archive payloads from `--to-stdout` are never colorized.
 
 ## Build From Source
 
@@ -244,9 +211,6 @@ cd zmanager
 cargo build -p zmanager-cli --release
 ./target/release/zm --help
 ```
-
-Windows build support is being validated. The current local ARM64 and future CI
-settings are tracked in [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md).
 
 ## Test
 
@@ -265,6 +229,7 @@ the core suite is deterministic and should pass without network access.
 - [Issues](https://github.com/frankmanzhu/zmanager/issues)
 - [CI](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml)
 - [Release workflow](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
+- [CLI guide](docs/CLI.md)
 - [Install guide](docs/INSTALL.md)
 - [Release maintainer notes](RELEASE.md)
 
@@ -281,10 +246,6 @@ the core suite is deterministic and should pass without network access.
 - `packaging/`: Homebrew and WinGet metadata templates.
 - `scripts/`: release packaging helpers.
 - `.github/workflows/`: CI and release automation.
-
-## Release
-
-Release notes and maintainer steps are in [RELEASE.md](RELEASE.md).
 
 ## License
 
