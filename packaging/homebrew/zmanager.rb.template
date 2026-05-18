@@ -48,6 +48,17 @@ class Zmanager < Formula
     doc.install "README.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"
   end
 
+  def caveats
+    <<~EOS
+      Shell completions are installed for bash, zsh, and fish.
+      Bash users can enable completion without extra packages by adding:
+        source #{HOMEBREW_PREFIX}/etc/bash_completion.d/zm
+
+      Or generate completions manually:
+        source <(zm completions bash)
+    EOS
+  end
+
   test do
     assert_match "zm #{version}", shell_output("#{bin}/zm --version")
 

@@ -50,6 +50,31 @@ The release archive also includes `LICENSE`, `NOTICE`, shell completions under
 included in `THIRD_PARTY_NOTICES.md`, with copied license files under
 `third-party-licenses/`.
 
+## Shell Completions
+
+The release archives and packages include bash, zsh, and fish completions.
+Package managers install them into their standard completion directories.
+
+For manual bash setup without extra shell packages:
+
+```sh
+source <(zm completions bash)
+```
+
+For zsh or fish manual setup:
+
+```sh
+mkdir -p ~/.zfunc
+zm completions zsh > ~/.zfunc/_zm
+
+mkdir -p ~/.config/fish/completions
+zm completions fish > ~/.config/fish/completions/zm.fish
+```
+
+Homebrew installs the static bash completion at
+`$(brew --prefix)/etc/bash_completion.d/zm`. Bash users can source that file
+directly or use `source <(zm completions bash)`.
+
 ## Ubuntu/Debian Packages
 
 Ubuntu and Debian users can install the `.deb` package from the GitHub release.

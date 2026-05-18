@@ -37,6 +37,7 @@ Commands:
   plan <paths...>                Show planned archive entries
   formats                        Show supported formats
   doctor                         Verify the Rust engine
+  completions <shell>            Print shell completion scripts
   help [command]                 Show help for a command
 
 Action options:
@@ -317,6 +318,25 @@ Examples:
 Use --json in scripts and bug reports.
 ";
 
+const COMPLETIONS_HELP: &str = "\
+Print shell completion scripts
+
+Usage:
+  zm completions <bash|zsh|fish>
+
+Examples:
+  source <(zm completions bash)
+  zm completions zsh > ~/.zfunc/_zm
+  zm completions fish > ~/.config/fish/completions/zm.fish
+
+The release packages install completion files automatically where package
+managers support it. This command is for manual shell setup and troubleshooting.
+";
+
+const COMPLETION_BASH_SCRIPT: &str = include_str!("../../../completions/zm.bash");
+const COMPLETION_ZSH_SCRIPT: &str = include_str!("../../../completions/_zm");
+const COMPLETION_FISH_SCRIPT: &str = include_str!("../../../completions/zm.fish");
+
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
 const FORMAT_SEVEN_Z: &str = "7z";
@@ -409,6 +429,7 @@ pub fn run_from_env() -> ExitCode {
         }
         "help" => help_command(&raw_args[1..], &global),
         "doctor" | "healthcheck" => doctor_command(&raw_args[1..], global),
+        "completions" | "completion" => completions_command(&raw_args[1..], global),
         "formats" => new_formats_command(&raw_args[1..], global),
         "create" | "c" => new_create_command(&raw_args[1..], global),
         "extract" | "x" => new_extract_command(&raw_args[1..], global),
@@ -971,6 +992,7 @@ fn command_help(command: &str) -> Option<&'static str> {
         "plan" => Some(PLAN_HELP),
         "formats" => Some(FORMATS_HELP),
         "doctor" | "healthcheck" => Some(DOCTOR_HELP),
+        "completions" | "completion" => Some(COMPLETIONS_HELP),
         "legacy" => Some(LEGACY_HELP),
         _ => None,
     }
@@ -1164,6 +1186,64 @@ fn doctor_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             ),
         );
     }
+    ExitCode::SUCCESS
+}
+
+fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    if wants_help(args) {
+        print_help_stdout(COMPLETIONS_HELP, &global);
+        return ExitCode::SUCCESS;
+    }
+
+    let expanded = expand_short_options(args);
+    let mut index = 0usize;
+    let mut shell = None;
+    while index < expanded.len() {
+        if let Err(error) = parse_global_option(&expanded, &mut index, &mut global) {
+            return command_usage_error("completions", &error, &global);
+        }
+        if index >= expanded.len() {
+            break;
+        }
+        let arg = &expanded[index];
+        match arg.as_str() {
+            "--" => {
+                index += 1;
+            }
+            _ if arg.starts_with('-') => {
+                return command_usage_error(
+                    "completions",
+                    &format!("unknown completions option: {arg}"),
+                    &global,
+                );
+            }
+            _ if shell.is_none() => {
+                shell = Some(arg.as_str());
+                index += 1;
+            }
+            _ => {
+                return command_usage_error("completions", "too many arguments", &global);
+            }
+        }
+    }
+
+    let Some(shell) = shell else {
+        return command_usage_error("completions", "missing shell", &global);
+    };
+
+    let script = match shell {
+        "bash" => COMPLETION_BASH_SCRIPT,
+        "zsh" => COMPLETION_ZSH_SCRIPT,
+        "fish" => COMPLETION_FISH_SCRIPT,
+        _ => {
+            return command_usage_error(
+                "completions",
+                &format!("unsupported shell: {shell}; use bash, zsh, or fish"),
+                &global,
+            );
+        }
+    };
+    print!("{script}");
     ExitCode::SUCCESS
 }
 
@@ -3817,6 +3897,12 @@ Usage:
   zm doctor [--json]
 "
         }
+        "completions" => {
+            "\
+Usage:
+  zm completions <bash|zsh|fish>
+"
+        }
         _ => USAGE,
     }
 }
@@ -3948,6 +4034,7 @@ const PLAN_OPTIONS: &[&str] = &[
 ];
 
 const GLOBAL_COMMAND_OPTIONS: &[&str] = &["--json"];
+const COMPLETIONS_OPTIONS: &[&str] = &["--help", "-h"];
 
 fn command_options(command: &str) -> &'static [&'static str] {
     match command {
@@ -3957,6 +4044,7 @@ fn command_options(command: &str) -> &'static [&'static str] {
         "test" => TEST_OPTIONS,
         "plan" => PLAN_OPTIONS,
         "formats" | "doctor" => GLOBAL_COMMAND_OPTIONS,
+        "completions" | "completion" => COMPLETIONS_OPTIONS,
         _ => &[],
     }
 }

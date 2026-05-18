@@ -28,7 +28,15 @@ const WINGET_INSTALLER_TEMPLATE: &str =
 const WINGET_LOCALE_TEMPLATE: &str =
     include_str!("../../../packaging/winget/FrankZhu.ZManagerCLI.locale.en-US.yaml.template");
 const PUBLIC_COMMANDS: &[&str] = &[
-    "create", "extract", "list", "test", "plan", "formats", "doctor", "help",
+    "create",
+    "extract",
+    "list",
+    "test",
+    "plan",
+    "formats",
+    "doctor",
+    "completions",
+    "help",
 ];
 const LEGACY_COMMANDS: &[&str] = &[
     "zip-create",
@@ -194,6 +202,13 @@ const DOCTOR_HELP_NEEDLES: &[&str] = &[
     "Use --json",
 ];
 
+const COMPLETIONS_HELP_NEEDLES: &[&str] = &[
+    "Print shell completion scripts",
+    "zm completions <bash|zsh|fish>",
+    "source <(zm completions bash)",
+    "zm completions zsh > ~/.zfunc/_zm",
+];
+
 const COMMAND_HELP_CASES: &[(&str, &[&str])] = &[
     ("create", CREATE_HELP_NEEDLES),
     ("extract", EXTRACT_HELP_NEEDLES),
@@ -202,6 +217,7 @@ const COMMAND_HELP_CASES: &[(&str, &[&str])] = &[
     ("plan", PLAN_HELP_NEEDLES),
     ("formats", FORMATS_HELP_NEEDLES),
     ("doctor", DOCTOR_HELP_NEEDLES),
+    ("completions", COMPLETIONS_HELP_NEEDLES),
 ];
 
 #[test]
@@ -217,6 +233,7 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
     assert_contains(&stdout, "create");
     assert_contains(&stdout, "extract");
     assert_contains(&stdout, "formats");
+    assert_contains(&stdout, "completions");
     assert_contains(&stdout, "Run 'zm help <command>'");
     assert_contains(&stdout, "--color <auto|always|never>");
     assert_contains(&stdout, "--progress <auto|always|never>");
@@ -360,6 +377,36 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         assert_contains(COMPLETION_FISH, &format!("-l {required_flag}"));
         assert_contains(COMPLETION_ZSH, &format!("--{required_flag}"));
     }
+
+    for shell in ["bash", "zsh", "fish"] {
+        assert_contains(COMPLETION_BASH, shell);
+        assert_contains(COMPLETION_FISH, shell);
+        assert_contains(COMPLETION_ZSH, shell);
+    }
+
+    assert_not_contains(COMPLETION_BASH, "_init_completion");
+    assert_not_contains(COMPLETION_BASH, "_filedir");
+}
+
+#[test]
+fn completions_command_prints_packaged_completion_scripts() {
+    for (shell, expected) in [
+        ("bash", COMPLETION_BASH),
+        ("zsh", COMPLETION_ZSH),
+        ("fish", COMPLETION_FISH),
+    ] {
+        let output = Command::new(zm_path())
+            .arg("completions")
+            .arg(shell)
+            .output()
+            .unwrap();
+        assert_success(&format!("zm completions {shell}"), &output);
+        assert!(
+            output.stderr.is_empty(),
+            "completion output should not use stderr"
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
 }
 
 #[test]
@@ -415,6 +462,7 @@ fn man_page_covers_public_commands_and_release_topics() {
         ".Sh EXTRACT OPTIONS",
         ".Sh SUPPORTED FORMATS",
         ".Sh PASSWORD HANDLING",
+        ".Sh SHELL COMPLETIONS",
         ".Sh STDOUT AND JSON",
         ".Sh EXIT STATUS",
         "password-stdin",

@@ -10,6 +10,7 @@ commands=(
   'plan:Show planned archive entries'
   'formats:Show supported formats'
   'doctor:Verify the archive engine'
+  'completions:Print shell completion scripts'
   'help:Show help for a command'
 )
 
@@ -139,6 +140,7 @@ _zm_command() {
         test) _arguments $test_options '*:archive:_files' ;;
         plan) _arguments $plan_options '*:path:_files' ;;
         formats|doctor) _arguments '(-h --help)'{-h,--help}'[Show help]' '--json[Emit JSON]' ;;
+        completions) _arguments '(-h --help)'{-h,--help}'[Show help]' '1:shell:(bash zsh fish)' ;;
         help) _describe -t commands 'zm command' commands ;;
       esac
       ;;

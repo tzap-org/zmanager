@@ -1,6 +1,6 @@
 # fish completion for zm
 
-set -l zm_commands create extract list test plan formats doctor help
+set -l zm_commands create extract list test plan formats doctor completions help
 
 complete -c zm -f
 
@@ -27,6 +27,7 @@ complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a test -d "Tes
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a plan -d "Show planned archive entries"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a formats -d "Show supported formats"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a doctor -d "Verify the archive engine"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a completions -d "Print shell completion scripts"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a help -d "Show help for a command"
 
 complete -c zm -n "__fish_seen_subcommand_from create" -s h -l help -d "Show help"
@@ -113,4 +114,6 @@ complete -c zm -n "__fish_seen_subcommand_from plan" -l json -d "Emit machine-re
 
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -l json -d "Emit JSON"
+complete -c zm -n "__fish_seen_subcommand_from completions" -s h -l help -d "Show help"
+complete -c zm -n "__fish_seen_subcommand_from completions" -a "bash zsh fish" -d "Completion shell"
 complete -c zm -n "__fish_seen_subcommand_from help" -a "$zm_commands"

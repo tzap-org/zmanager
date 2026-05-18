@@ -3,9 +3,16 @@
 _zm()
 {
     local cur prev words cword command
-    _init_completion -n : || return
+    words=("${COMP_WORDS[@]}")
+    cword=$COMP_CWORD
+    cur="${words[cword]}"
+    if (( cword > 0 )); then
+        prev="${words[cword - 1]}"
+    else
+        prev=""
+    fi
 
-    local commands="create extract list test plan formats doctor help"
+    local commands="create extract list test plan formats doctor completions help"
     local global_opts="-h --help -V --version -q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt -c --create -x --extract -t --list -T --test -f --file"
     local create_opts="-h --help -r --recursive -C --directory -@ --files-from --null --clean --no-ignore --hidden --no-hidden -i --include --exclude --exclude-from --format --method --level -0 -1 -2 -3 -4 -5 -6 -7 -8 -9 --store --solid --no-solid -j --junk-paths -y --preserve-symlinks --follow-symlinks --preserve-metadata -X --no-metadata -f --file --force --dry-run -T --test-after --encrypt --password-stdin"
     local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin"
@@ -16,11 +23,12 @@ _zm()
     local progress_values="auto always never"
     local color_values="auto always never"
     local overwrite_values="never always ask rename"
+    local shell_values="bash zsh fish"
 
     command=""
     for word in "${words[@]:1:cword-1}"; do
         case "$word" in
-            create|extract|list|test|plan|formats|doctor|help)
+            create|extract|list|test|plan|formats|doctor|completions|help)
                 command="$word"
                 break
                 ;;
@@ -44,12 +52,16 @@ _zm()
             COMPREPLY=($(compgen -W "$overwrite_values" -- "$cur"))
             return
             ;;
+        completions)
+            COMPREPLY=($(compgen -W "$shell_values" -- "$cur"))
+            return
+            ;;
         -C|-d|--directory|--files-from|--exclude-from)
-            _filedir
+            COMPREPLY=($(compgen -f -- "$cur"))
             return
             ;;
         -f|--file)
-            _filedir '@(7z|ar|bz2|cab|cpio|deb|gz|iso|lz4|lzma|rar|rpm|tar|tgz|txz|tzst|xar|xz|zip|zipx|zst)'
+            COMPREPLY=($(compgen -f -- "$cur"))
             return
             ;;
     esac
@@ -62,6 +74,7 @@ _zm()
             test) COMPREPLY=($(compgen -W "$test_opts" -- "$cur")) ;;
             plan) COMPREPLY=($(compgen -W "$plan_opts" -- "$cur")) ;;
             formats|doctor) COMPREPLY=($(compgen -W "-h --help --json" -- "$cur")) ;;
+            completions) COMPREPLY=($(compgen -W "-h --help" -- "$cur")) ;;
             *) COMPREPLY=($(compgen -W "$global_opts" -- "$cur")) ;;
         esac
         return
@@ -71,8 +84,11 @@ _zm()
         ""|help)
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
             ;;
+        completions)
+            COMPREPLY=($(compgen -W "$shell_values" -- "$cur"))
+            ;;
         *)
-            _filedir
+            COMPREPLY=($(compgen -f -- "$cur"))
             ;;
     esac
 }

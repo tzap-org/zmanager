@@ -146,6 +146,18 @@ terminal streams, and `NO_COLOR` disables automatic color. Use
 `--color always` to force color or `--color never` to disable it. JSON output
 and raw archive payloads from `--to-stdout` are never colorized.
 
+## Shell Completions
+
+Packages install bash, zsh, and fish completions where the package manager
+supports it. For manual setup or troubleshooting, print the script for your
+shell:
+
+```sh
+source <(zm completions bash)
+zm completions zsh > ~/.zfunc/_zm
+zm completions fish > ~/.config/fish/completions/zm.fish
+```
+
 ## What It Does
 
 - Extracts a broad range of archive, package, disk-image, and raw compression
