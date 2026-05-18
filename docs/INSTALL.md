@@ -1,7 +1,7 @@
 # Installing Z-Manager CLI
 
 This document covers the CLI-first distribution paths for `zm`. Release
-artifacts are built by GitHub Actions for six targets and published with a
+artifacts are built by GitHub Actions and published with a
 top-level `SHA256SUMS` file.
 
 ## Direct Downloads
@@ -14,6 +14,8 @@ Download the archive for your platform from the GitHub release:
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
+| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.1-1_arm64.deb` |
+| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.1-1_amd64.deb` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
 
@@ -47,6 +49,22 @@ The release archive also includes `LICENSE`, `NOTICE`, shell completions under
 `completions/`, and the manual page under `man/man1/`. Third-party notices are
 included in `THIRD_PARTY_NOTICES.md`, with copied license files under
 `third-party-licenses/`.
+
+## Ubuntu/Debian Packages
+
+Ubuntu and Debian users can install the `.deb` package from the GitHub release.
+The package installs `zm` to `/usr/bin`, the man page to
+`/usr/share/man/man1`, and shell completions to the standard bash, zsh, and fish
+completion directories.
+
+```sh
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
+sha256sum -c SHA256SUMS --ignore-missing
+sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
+```
+
+Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems.
 
 ## Install Script
 
@@ -111,9 +129,10 @@ formula, so installer hashes should not be edited by hand.
 
 ## Linux Channels
 
-For 1.0, the supported Linux path is direct tarball installation with checksum
-verification. `.deb`, `.rpm`, and repository maintenance can be added later if
-there is enough demand to justify owning distro-specific update flows.
+For 1.0.1, the supported Linux path is direct tarball installation with checksum
+verification or direct `.deb` installation. `.rpm` and repository maintenance
+can be added later if there is enough demand to justify owning distro-specific
+update flows.
 
 The Linux binaries are built on GitHub-hosted Ubuntu 22.04 runners and may
 depend on standard Ubuntu 22.04-era runtime libraries. Use the

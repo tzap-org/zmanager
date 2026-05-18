@@ -11,6 +11,7 @@ const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
+const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
 const THIRD_PARTY_NOTICE_GENERATOR: &str =
     include_str!("../../../scripts/generate-third-party-notices.py");
@@ -373,6 +374,8 @@ fn man_page_covers_public_commands_and_release_topics() {
 fn release_packaging_includes_man_page() {
     assert_contains(PACKAGE_RELEASE_SH, "docs/man/zm.1");
     assert_contains(PACKAGE_RELEASE_SH, "man/man1");
+    assert_contains(PACKAGE_DEB_SH, "docs/man/zm.1");
+    assert_contains(PACKAGE_DEB_SH, "usr/share/man/man1/zm.1.gz");
     assert_contains(CI_WINDOWS_PS1, "docs\\man\\zm.1");
     assert_contains(CI_WINDOWS_PS1, "man\\man1");
 }
@@ -414,6 +417,7 @@ fn release_validation_artifacts_are_declared() {
 
     for required in [
         "*.deps.txt",
+        "*.deb",
         "package-metadata.tar.gz",
         "SHA256SUMS",
         "sha256sum package-metadata.tar.gz >> SHA256SUMS",
@@ -435,9 +439,52 @@ fn release_validation_artifacts_are_declared() {
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",
+        "zmanager-cli_1.0.1-1_amd64.deb",
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
         assert_contains(RELEASE_NOTES_1_0_1, required);
+    }
+}
+
+#[test]
+fn debian_package_assets_are_declared() {
+    for required in [
+        "Package: $PACKAGE_NAME",
+        "Version: $deb_version",
+        "Architecture: $deb_arch",
+        "Depends: $depends",
+        "chmod 0755 \"$STAGE\"",
+        "dpkg-shlibdeps -O",
+        "debian/$PACKAGE_NAME/usr/bin/$BINARY_NAME",
+        "$SHLIBS_WORK/debian/$PACKAGE_NAME/DEBIAN",
+        "dpkg-deb --build --root-owner-group",
+        "readonly PYTHON_BIN=\"$(python_bin)\"",
+        "usr/bin/$BINARY_NAME",
+        "usr/share/bash-completion/completions/zm",
+        "usr/share/zsh/vendor-completions/_zm",
+        "usr/share/fish/vendor_completions.d/zm.fish",
+        "${PACKAGE_NAME}_${DEB_VERSION}_${DEB_ARCH}.deb",
+        "gzip -9 -n \"$doc_dir/changelog.Debian\"",
+    ] {
+        assert_contains(PACKAGE_DEB_SH, required);
+    }
+
+    for required in [
+        "zmanager-cli_1.0.1-1_amd64.deb",
+        "zmanager-cli_1.0.1-1_arm64.deb",
+        "sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb",
+    ] {
+        assert_contains(INSTALL_DOC, required);
+    }
+
+    for required in [
+        "scripts/package-deb.sh",
+        "dist/zmanager-cli_*.deb",
+        "release-artifacts/*.deb",
+        "dpkg-dev",
+        "python3",
+    ] {
+        assert_contains(RELEASE_WORKFLOW, required);
     }
 }
 

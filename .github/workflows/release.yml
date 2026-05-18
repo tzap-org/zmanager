@@ -61,7 +61,10 @@ jobs:
             liblzma-dev \
             libssl-dev \
             libxml2-dev \
-            libzstd-dev
+            libzstd-dev \
+            dpkg-dev \
+            python3 \
+            zlib1g-dev
 
       - name: Install Rust toolchain
         run: |
@@ -72,6 +75,10 @@ jobs:
       - name: Package Unix
         if: runner.os != 'Windows'
         run: scripts/package-release.sh "${{ matrix.target }}" dist
+
+      - name: Package Debian
+        if: runner.os == 'Linux'
+        run: scripts/package-deb.sh "${{ matrix.target }}" dist
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -88,7 +95,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: zm-${{ matrix.target }}
-          path: dist/zm-${{ matrix.target }}.*
+          path: |
+            dist/zm-${{ matrix.target }}.*
+            dist/zmanager-cli_*.deb
 
   publish:
     name: Publish GitHub release
@@ -108,7 +117,7 @@ jobs:
       - name: Prepare checksums
         run: |
           cd release-artifacts
-          sha256sum *.tar.gz *.zip *.deps.txt > SHA256SUMS
+          sha256sum *.tar.gz *.zip *.deb *.deps.txt > SHA256SUMS
 
       - name: Prepare package metadata
         env:
@@ -138,6 +147,7 @@ jobs:
           gh release create "$TAG_NAME" \
             release-artifacts/*.tar.gz \
             release-artifacts/*.zip \
+            release-artifacts/*.deb \
             release-artifacts/*.deps.txt \
             release-artifacts/SHA256SUMS \
             --verify-tag \

@@ -44,7 +44,7 @@ cut, install from source.
 - [Latest release](https://github.com/frankmanzhu/zmanager/releases/latest)
 - [All releases](https://github.com/frankmanzhu/zmanager/releases)
 
-The release workflow publishes these archives when a `v*` tag is created:
+The release workflow publishes these assets when a `v*` tag is created:
 
 | Platform | Asset |
 | --- | --- |
@@ -52,6 +52,8 @@ The release workflow publishes these archives when a `v*` tag is created:
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
+| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.1-1_amd64.deb` |
+| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.1-1_arm64.deb` |
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 

@@ -52,14 +52,17 @@ jobs:
             libssl-dev \
             libxml2-dev \
             libzstd-dev \
+            dpkg-dev \
             lrzip \
             lz4 \
             lzip \
             lzop \
             ncompress \
+            python3 \
             rpm \
             unzip \
             xz-utils \
+            zlib1g-dev \
             zip \
             zstd
           sudo apt-get install -y 7zip || sudo apt-get install -y p7zip-full

@@ -39,6 +39,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    ```text
    release-artifacts/SHA256SUMS
    release-artifacts/zm-<target>.deps.txt
+   release-artifacts/zmanager-cli_<version>-1_<arch>.deb
    release-artifacts/package-metadata/homebrew/Formula/zmanager.rb
    release-artifacts/package-metadata/winget/FrankZhu.ZManagerCLI/<version>/
    ```
@@ -68,6 +69,16 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 
    ```powershell
    winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.1
+   ```
+
+7. Validate the generated Ubuntu/Debian packages on Ubuntu 22.04 and 24.04:
+
+   ```sh
+   sudo apt install ./dist/zmanager-cli_1.0.1-1_amd64.deb
+   zm --version
+   zm doctor
+   man zm
+   sudo apt remove zmanager-cli
    ```
 
 The Homebrew formula and WinGet manifests are generated from `SHA256SUMS`;
