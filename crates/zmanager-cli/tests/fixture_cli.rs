@@ -676,6 +676,35 @@ fn zm_create_tar_zst_level_round_trips_and_bsdtar_extracts_when_available() {
 }
 
 #[test]
+fn zm_create_tzst_alias_round_trips_with_inferred_format() {
+    let temp = TestDir::new("zm_tzst_alias");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "tzst alias\n").unwrap();
+    let archive = temp.path("project.tzst");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create .tzst alias", &create);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract .tzst alias", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/file.txt")).unwrap(),
+        "tzst alias\n"
+    );
+}
+
+#[test]
 fn zm_create_7z_level_round_trips_with_backend() {
     let temp = TestDir::new("zm_7z_level");
     fs::create_dir_all(temp.path("project")).unwrap();

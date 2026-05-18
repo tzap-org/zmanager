@@ -129,8 +129,8 @@ the native compression development libraries used by libarchive.
 zm -cf project.zip project/
 zm -xf project.zip -C out/
 
-zm create project.tar.zst project/
-zm extract project.tar.zst -C out/
+zm create project.tzst project/
+zm extract project.tzst -C out/
 
 zm list project.zip
 zm test project.zip
@@ -143,7 +143,7 @@ subcommands are there for readable scripts.
 
 - Extracts a broad range of archive, package, disk-image, and raw compression
   formats with safety checks enabled by default.
-- Creates modern `.zip`, `.tar.zst`, and `.7z` archives with focused defaults.
+- Creates modern `.zip`, `.tzst` (`.tar.zst`), and `.7z` archives with focused defaults.
 - Opens common desktop, developer, package, and mobile archive formats by name:
   ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
   CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
@@ -158,11 +158,11 @@ subcommands are there for readable scripts.
 
 | Workflow | Formats |
 | --- | --- |
-| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tar.zst`/`.tzst` with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
+| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
 | ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
 | 7z | `.7z`, including encrypted 7z archives |
 | RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
-| TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tar.zst`, `.tzst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
+| TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tzst`, `.tar.zst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
 | Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
 | Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
 | Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
