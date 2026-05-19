@@ -31,7 +31,16 @@ pub enum ZManagerFfiStatus {
     NullArgument = 1,
     /// A C string argument was not valid UTF-8.
     InvalidUtf8 = 2,
+    /// A non-pointer argument was outside the supported range.
+    InvalidArgument = 3,
 }
+
+const DEFAULT_COMPRESSION_LEVEL_SENTINEL: i32 = -1;
+const ZIP_STORE_COMPRESSION_LEVEL: i32 = 0;
+const ZIP_MIN_DEFLATE_COMPRESSION_LEVEL: i32 = 1;
+const ZIP_MAX_COMPRESSION_LEVEL: i32 = 9;
+const TAR_ZST_MIN_COMPRESSION_LEVEL: i32 = 1;
+const TAR_ZST_MAX_COMPRESSION_LEVEL: i32 = 9;
 
 /// Opaque FFI job handle.
 pub struct ZManagerFfiJob {
@@ -70,7 +79,16 @@ pub unsafe extern "C" fn zmanager_ffi_start_zip_create(
 ) -> ZManagerFfiStatus {
     // SAFETY: this forwards the same checked pointers and a null password to
     // the shared ZIP start implementation.
-    unsafe { start_zip_create_job(source, destination, ptr::null(), out_job) }
+    unsafe {
+        start_zip_create_job(
+            source,
+            destination,
+            ptr::null(),
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
 }
 
 /// Starts a ZIP creation job with AES-256 encryption.
@@ -92,7 +110,52 @@ pub unsafe extern "C" fn zmanager_ffi_start_zip_create_encrypted(
 ) -> ZManagerFfiStatus {
     // SAFETY: this public C entry point has the same pointer contract as the
     // shared implementation.
-    unsafe { start_zip_create_job(source, destination, password, out_job) }
+    unsafe {
+        start_zip_create_job(
+            source,
+            destination,
+            password,
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP creation job with optional password and compression level.
+///
+/// Pass null for `password` to create a plain ZIP. Pass `-1` for
+/// `compression_level` to use the default Deflate level, `0` to store files,
+/// or `1..=9` for explicit Deflate levels. Pass true for `replace_existing`
+/// only after the caller has confirmed replacement with the user.
+///
+/// # Safety
+///
+/// `source` and `destination` must point to valid NUL-terminated UTF-8 C
+/// strings. `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string. `out_job` must point to writable storage for
+/// one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_zip_create_with_options(
+    source: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_zip_create_job(
+            source,
+            destination,
+            password,
+            compression_level,
+            replace_existing,
+            out_job,
+        )
+    }
 }
 
 /// Starts a ZIP creation job from multiple source roots.
@@ -114,7 +177,17 @@ pub unsafe extern "C" fn zmanager_ffi_start_zip_create_many(
 ) -> ZManagerFfiStatus {
     // SAFETY: this forwards the same checked pointer array and a null password
     // to the shared ZIP start implementation.
-    unsafe { start_zip_create_many_job(sources, source_count, destination, ptr::null(), out_job) }
+    unsafe {
+        start_zip_create_many_job(
+            sources,
+            source_count,
+            destination,
+            ptr::null(),
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
 }
 
 /// Starts an encrypted ZIP creation job from multiple source roots.
@@ -137,13 +210,65 @@ pub unsafe extern "C" fn zmanager_ffi_start_zip_create_many_encrypted(
 ) -> ZManagerFfiStatus {
     // SAFETY: this public C entry point has the same pointer contract as the
     // shared implementation.
-    unsafe { start_zip_create_many_job(sources, source_count, destination, password, out_job) }
+    unsafe {
+        start_zip_create_many_job(
+            sources,
+            source_count,
+            destination,
+            password,
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP creation job from multiple source roots with optional password
+/// and compression level.
+///
+/// Pass null for `password` to create a plain ZIP. Pass `-1` for
+/// `compression_level` to use the default Deflate level, `0` to store files,
+/// or `1..=9` for explicit Deflate levels. Pass true for `replace_existing`
+/// only after the caller has confirmed replacement with the user.
+///
+/// # Safety
+///
+/// `sources` must point to `source_count` valid NUL-terminated UTF-8 C strings.
+/// `destination` must point to a valid NUL-terminated UTF-8 C string.
+/// `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string. `out_job` must point to writable storage for
+/// one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_zip_create_many_with_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_zip_create_many_job(
+            sources,
+            source_count,
+            destination,
+            password,
+            compression_level,
+            replace_existing,
+            out_job,
+        )
+    }
 }
 
 unsafe fn start_zip_create_job(
     source: *const c_char,
     destination: *const c_char,
     password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
     if source.is_null() || destination.is_null() || out_job.is_null() {
@@ -167,14 +292,12 @@ unsafe fn start_zip_create_job(
 
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
+    let options = match zip_create_options(password, compression_level, replace_existing) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
 
     spawn_archive_job(out_job, move |thread_token, sink| {
-        let options = ZipCreateOptions {
-            compression: ZipCompression::Deflate,
-            level: None,
-            preserve_metadata: true,
-            password,
-        };
         let _ = zmanager_core::jobs::run_zip_create_job(
             source,
             destination,
@@ -190,6 +313,8 @@ unsafe fn start_zip_create_many_job(
     source_count: usize,
     destination: *const c_char,
     password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
     if destination.is_null() || out_job.is_null() {
@@ -214,14 +339,12 @@ unsafe fn start_zip_create_many_job(
 
     let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let destination = PathBuf::from(destination);
+    let options = match zip_create_options(password, compression_level, replace_existing) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
 
     spawn_archive_job(out_job, move |thread_token, sink| {
-        let options = ZipCreateOptions {
-            compression: ZipCompression::Deflate,
-            level: None,
-            preserve_metadata: true,
-            password,
-        };
         let _ = zmanager_core::jobs::run_zip_create_job_from_sources(
             &sources,
             destination,
@@ -247,6 +370,57 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create(
     destination: *const c_char,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointers and default options to
+    // the shared clean-source start implementation.
+    unsafe {
+        start_clean_source_create_job(
+            source,
+            destination,
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
+}
+
+/// Starts a clean source `.tar.zst` creation job with a compression level.
+///
+/// Pass `-1` for `compression_level` to use the default zstd level, `1..=9`
+/// for an explicit level, and true for `replace_existing` only after the
+/// caller has confirmed replacement with the user.
+///
+/// # Safety
+///
+/// `source` and `destination` must point to valid NUL-terminated UTF-8 C
+/// strings. `out_job` must point to writable storage for one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_with_options(
+    source: *const c_char,
+    destination: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_clean_source_create_job(
+            source,
+            destination,
+            compression_level,
+            replace_existing,
+            out_job,
+        )
+    }
+}
+
+unsafe fn start_clean_source_create_job(
+    source: *const c_char,
+    destination: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
     if source.is_null() || destination.is_null() || out_job.is_null() {
         return ZManagerFfiStatus::NullArgument;
     }
@@ -260,9 +434,12 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create(
 
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
+    let options = match tar_zst_create_options(compression_level, replace_existing) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
 
     spawn_archive_job(out_job, move |thread_token, sink| {
-        let options = TarZstdCreateOptions::default();
         let _ = zmanager_core::jobs::run_clean_source_tar_zst_create_job(
             source,
             destination,
@@ -290,6 +467,63 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_many(
     destination: *const c_char,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer array and default options
+    // to the shared clean-source start implementation.
+    unsafe {
+        start_clean_source_create_many_job(
+            sources,
+            source_count,
+            destination,
+            DEFAULT_COMPRESSION_LEVEL_SENTINEL,
+            false,
+            out_job,
+        )
+    }
+}
+
+/// Starts a clean source `.tar.zst` creation job from multiple source roots
+/// with a compression level.
+///
+/// Pass `-1` for `compression_level` to use the default zstd level, `1..=9`
+/// for an explicit level, and true for `replace_existing` only after the
+/// caller has confirmed replacement with the user.
+///
+/// # Safety
+///
+/// `sources` must point to `source_count` valid NUL-terminated UTF-8 C strings.
+/// `destination` must point to a valid NUL-terminated UTF-8 C string.
+/// `out_job` must point to writable storage for one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_many_with_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_clean_source_create_many_job(
+            sources,
+            source_count,
+            destination,
+            compression_level,
+            replace_existing,
+            out_job,
+        )
+    }
+}
+
+unsafe fn start_clean_source_create_many_job(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
     if destination.is_null() || out_job.is_null() {
         return ZManagerFfiStatus::NullArgument;
     }
@@ -304,9 +538,12 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_many(
 
     let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let destination = PathBuf::from(destination);
+    let options = match tar_zst_create_options(compression_level, replace_existing) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
 
     spawn_archive_job(out_job, move |thread_token, sink| {
-        let options = TarZstdCreateOptions::default();
         let _ = zmanager_core::jobs::run_clean_source_tar_zst_create_job_from_sources(
             &sources,
             destination,
@@ -775,6 +1012,50 @@ unsafe fn c_string_array_arg(
     Ok(strings)
 }
 
+fn zip_create_options(
+    password: Option<SecretString>,
+    compression_level: i32,
+    replace_existing: bool,
+) -> Result<ZipCreateOptions, ZManagerFfiStatus> {
+    let (compression, level) = match compression_level {
+        DEFAULT_COMPRESSION_LEVEL_SENTINEL => (ZipCompression::Deflate, None),
+        ZIP_STORE_COMPRESSION_LEVEL => (ZipCompression::Store, None),
+        level
+            if (ZIP_MIN_DEFLATE_COMPRESSION_LEVEL..=ZIP_MAX_COMPRESSION_LEVEL).contains(&level) =>
+        {
+            (ZipCompression::Deflate, Some(i64::from(level)))
+        }
+        _ => return Err(ZManagerFfiStatus::InvalidArgument),
+    };
+
+    Ok(ZipCreateOptions {
+        compression,
+        level,
+        preserve_metadata: true,
+        replace_existing,
+        password,
+    })
+}
+
+fn tar_zst_create_options(
+    compression_level: i32,
+    replace_existing: bool,
+) -> Result<TarZstdCreateOptions, ZManagerFfiStatus> {
+    let mut options = TarZstdCreateOptions::default();
+    options.replace_existing = replace_existing;
+    if compression_level == DEFAULT_COMPRESSION_LEVEL_SENTINEL {
+        return Ok(options);
+    }
+
+    if !(TAR_ZST_MIN_COMPRESSION_LEVEL..=TAR_ZST_MAX_COMPRESSION_LEVEL).contains(&compression_level)
+    {
+        return Err(ZManagerFfiStatus::InvalidArgument);
+    }
+
+    options.level = compression_level;
+    Ok(options)
+}
+
 fn spawn_archive_job<F>(out_job: *mut *mut ZManagerFfiJob, runner: F) -> ZManagerFfiStatus
 where
     F: FnOnce(CancellationToken, &mut dyn JobEventSink) + Send + 'static,
@@ -995,9 +1276,11 @@ mod tests {
         zmanager_ffi_job_is_finished, zmanager_ffi_list_archive, zmanager_ffi_plan_clean_source,
         zmanager_ffi_poll_events, zmanager_ffi_preview_archive_entry,
         zmanager_ffi_start_clean_source_create, zmanager_ffi_start_clean_source_create_many,
+        zmanager_ffi_start_clean_source_create_many_with_options,
         zmanager_ffi_start_extract_archive, zmanager_ffi_start_extract_archive_with_options,
         zmanager_ffi_start_zip_create, zmanager_ffi_start_zip_create_encrypted,
-        zmanager_ffi_start_zip_create_many, zmanager_ffi_string_free,
+        zmanager_ffi_start_zip_create_many, zmanager_ffi_start_zip_create_many_with_options,
+        zmanager_ffi_string_free,
     };
     use std::ffi::{CStr, CString};
     use std::fs;
@@ -1093,6 +1376,112 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["a.txt", "folder/", "folder/b.txt"]);
         assert!(events.contains("\"type\":\"completed\""));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_zip_create_many_options_apply_store_level() {
+        let temp = test_root("zmanager-ffi-many-options");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("a.txt"), vec![b'a'; 4096]).unwrap();
+        let source = CString::new(temp.join("a.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("selection.zip").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_zip_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                ptr::null(),
+                0,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+
+        let listing = zmanager_core::zip_backend::list_zip(temp.join("selection.zip")).unwrap();
+        let entry = listing
+            .entries
+            .iter()
+            .find(|entry| entry.name == "a.txt")
+            .unwrap();
+        assert_eq!(entry.compressed_size, entry.size);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_zip_create_many_options_reject_invalid_level() {
+        let temp = test_root("zmanager-ffi-many-invalid-options");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("a.txt"), b"a").unwrap();
+        let source = CString::new(temp.join("a.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("selection.zip").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_zip_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                ptr::null(),
+                10,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::InvalidArgument);
+        assert!(job.is_null());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_zip_create_many_options_replace_existing_file() {
+        let temp = test_root("zmanager-ffi-many-replace-options");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("a.txt"), b"new").unwrap();
+        fs::write(temp.join("selection.zip"), b"old").unwrap();
+        let source = CString::new(temp.join("a.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("selection.zip").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_zip_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                ptr::null(),
+                6,
+                true,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+
+        let listing = zmanager_core::zip_backend::list_zip(temp.join("selection.zip")).unwrap();
+        assert!(listing.entries.iter().any(|entry| entry.name == "a.txt"));
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -1208,6 +1597,79 @@ mod tests {
         assert_eq!(paths, vec!["a.txt", "folder", "folder/b.txt"]);
         assert!(events.contains("\"type\":\"completed\""));
         assert!(!events.contains("node_modules"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_clean_source_create_many_options_accept_level() {
+        let temp = test_root("zmanager-ffi-clean-many-options");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("a.txt"), b"a").unwrap();
+        let source = CString::new(temp.join("a.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("selection.clean.tzst").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_clean_source_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                1,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+
+        let listing =
+            zmanager_core::archive_browser::list_entries(temp.join("selection.clean.tzst"))
+                .unwrap();
+        assert_eq!(listing.entries[0].path, "a.txt");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_clean_source_create_many_options_replace_existing_file() {
+        let temp = test_root("zmanager-ffi-clean-many-replace-options");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("a.txt"), b"new").unwrap();
+        fs::write(temp.join("selection.clean.tzst"), b"old").unwrap();
+        let source = CString::new(temp.join("a.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("selection.clean.tzst").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_clean_source_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                1,
+                true,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+
+        let listing =
+            zmanager_core::archive_browser::list_entries(temp.join("selection.clean.tzst"))
+                .unwrap();
+        assert_eq!(listing.entries[0].path, "a.txt");
         fs::remove_dir_all(temp).unwrap();
     }
 

@@ -33,6 +33,8 @@ pub struct ZipCreateOptions {
     pub level: Option<i64>,
     /// Preserve portable metadata such as Unix mode bits.
     pub preserve_metadata: bool,
+    /// Replace an existing destination archive at commit time.
+    pub replace_existing: bool,
     /// Optional password. When present, ZIP entries are written with AES-256.
     pub password: Option<SecretString>,
 }
@@ -43,6 +45,7 @@ impl Default for ZipCreateOptions {
             compression: ZipCompression::default(),
             level: None,
             preserve_metadata: true,
+            replace_existing: false,
             password: None,
         }
     }
@@ -239,10 +242,12 @@ pub fn create_zip_from_manifest(
     let mut writer = ZipWriter::new(file);
     let report = write_manifest_to_zip(&mut writer, manifest, options, None)?;
     writer.finish()?;
-    output.commit().map_err(|source| ZipBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    output
+        .commit_with_file_replace(options.replace_existing)
+        .map_err(|source| ZipBackendError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
 
     Ok(report)
 }
@@ -274,10 +279,12 @@ pub fn create_zip_from_manifest_with_context(
     let mut writer = ZipWriter::new(file);
     let report = write_manifest_to_zip(&mut writer, manifest, options, Some(context))?;
     writer.finish()?;
-    output.commit().map_err(|source| ZipBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    output
+        .commit_with_file_replace(options.replace_existing)
+        .map_err(|source| ZipBackendError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
 
     Ok(report)
 }
@@ -1087,6 +1094,7 @@ mod tests {
                 compression: ZipCompression::Store,
                 level: None,
                 preserve_metadata: true,
+                replace_existing: false,
                 password: None,
             },
         )
@@ -1179,6 +1187,7 @@ mod tests {
                 compression: ZipCompression::Deflate,
                 level: None,
                 preserve_metadata: true,
+                replace_existing: false,
                 password: Some(SecretString::from("correct horse")),
             },
         )

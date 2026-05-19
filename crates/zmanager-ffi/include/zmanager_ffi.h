@@ -12,7 +12,8 @@ extern "C" {
 typedef enum ZManagerFfiStatus {
   ZMANAGER_FFI_OK = 0,
   ZMANAGER_FFI_NULL_ARGUMENT = 1,
-  ZMANAGER_FFI_INVALID_UTF8 = 2
+  ZMANAGER_FFI_INVALID_UTF8 = 2,
+  ZMANAGER_FFI_INVALID_ARGUMENT = 3
 } ZManagerFfiStatus;
 
 typedef struct ZManagerFfiJob ZManagerFfiJob;
@@ -32,6 +33,15 @@ ZManagerFfiStatus zmanager_ffi_start_zip_create_encrypted(
   ZManagerFfiJob **out_job
 );
 
+ZManagerFfiStatus zmanager_ffi_start_zip_create_with_options(
+  const char *source,
+  const char *destination,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  ZManagerFfiJob **out_job
+);
+
 ZManagerFfiStatus zmanager_ffi_start_zip_create_many(
   const char *const *sources,
   size_t source_count,
@@ -47,9 +57,27 @@ ZManagerFfiStatus zmanager_ffi_start_zip_create_many_encrypted(
   ZManagerFfiJob **out_job
 );
 
+ZManagerFfiStatus zmanager_ffi_start_zip_create_many_with_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  ZManagerFfiJob **out_job
+);
+
 ZManagerFfiStatus zmanager_ffi_start_clean_source_create(
   const char *source,
   const char *destination,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_clean_source_create_with_options(
+  const char *source,
+  const char *destination,
+  int32_t compression_level,
+  bool replace_existing,
   ZManagerFfiJob **out_job
 );
 
@@ -57,6 +85,15 @@ ZManagerFfiStatus zmanager_ffi_start_clean_source_create_many(
   const char *const *sources,
   size_t source_count,
   const char *destination,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_clean_source_create_many_with_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t compression_level,
+  bool replace_existing,
   ZManagerFfiJob **out_job
 );
 

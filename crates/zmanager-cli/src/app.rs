@@ -1573,6 +1573,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 compression,
                 level,
                 preserve_metadata: !request.no_metadata,
+                replace_existing: false,
                 password,
             };
             let result = {
@@ -1673,7 +1674,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
 
     match result {
         Ok(outcome) => {
-            if let Err(error) = fs::rename(&temp, &destination) {
+            if let Err(error) = publish_archive(&temp, &destination, request.force) {
                 let _ = fs::remove_file(&temp);
                 progress.emit(JobEvent::Failed {
                     message: error.to_string(),
@@ -1742,6 +1743,7 @@ fn create_stream(
         compression,
         level,
         preserve_metadata: !request.no_metadata,
+        replace_existing: false,
         password,
     };
     let stdout = io::stdout();
@@ -3386,6 +3388,33 @@ fn temp_archive_path(destination: &Path) -> PathBuf {
     ))
 }
 
+fn publish_archive(temp: &Path, destination: &Path, force: bool) -> io::Result<()> {
+    if force {
+        remove_file_destination_for_publish(destination)?;
+    }
+
+    fs::hard_link(temp, destination)?;
+    let _ = fs::remove_file(temp);
+    Ok(())
+}
+
+fn remove_file_destination_for_publish(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            format!("cannot replace directory {}", path.display()),
+        ));
+    }
+
+    fs::remove_file(path)
+}
+
 fn default_extract_destination(archive: &str) -> PathBuf {
     let path = Path::new(archive);
     let name = path
@@ -4260,6 +4289,7 @@ fn job_zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         compression,
         level: None,
         preserve_metadata: true,
+        replace_existing: false,
         password,
     };
     let token = zmanager_core::jobs::CancellationToken::new();
@@ -4342,6 +4372,7 @@ fn zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         compression,
         level: None,
         preserve_metadata: true,
+        replace_existing: false,
         password,
     };
     match zmanager_core::zip_backend::create_zip_from_path(source, destination, &options) {
@@ -4384,6 +4415,7 @@ fn zip_create_stream_command(mut args: impl Iterator<Item = String>) -> ExitCode
         compression,
         level: None,
         preserve_metadata: true,
+        replace_existing: false,
         password: None,
     };
     let stdout = io::stdout();
@@ -5199,9 +5231,12 @@ fn plan_command(mut args: impl Iterator<Item = String>) -> ExitCode {
 mod tests {
     use super::{
         InteractiveOverwriteResolver, normalize_prompted_password, password_arg_or_prompt,
+        publish_archive,
     };
+    use std::fs;
     use std::io::Cursor;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
     use zmanager_core::safety::{OverwriteConflict, OverwriteDecision, OverwriteResolver};
 
     #[test]
@@ -5268,6 +5303,50 @@ mod tests {
         assert!(output.contains("please answer yes, no, all, rename, or quit"));
     }
 
+    #[test]
+    fn publish_archive_refuses_existing_destination_without_force() {
+        let temp = TestDir::new("publish_refuses_existing");
+        let archive_temp = temp.path("archive.tmp");
+        let destination = temp.path("archive.zip");
+        fs::write(&archive_temp, b"new").unwrap();
+        fs::write(&destination, b"old").unwrap();
+
+        let error = publish_archive(&archive_temp, &destination, false).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&destination).unwrap(), b"old");
+        assert_eq!(fs::read(&archive_temp).unwrap(), b"new");
+    }
+
+    #[test]
+    fn publish_archive_replaces_existing_file_with_force() {
+        let temp = TestDir::new("publish_force_replaces");
+        let archive_temp = temp.path("archive.tmp");
+        let destination = temp.path("archive.zip");
+        fs::write(&archive_temp, b"new").unwrap();
+        fs::write(&destination, b"old").unwrap();
+
+        publish_archive(&archive_temp, &destination, true).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        assert!(!archive_temp.exists());
+    }
+
+    #[test]
+    fn publish_archive_force_refuses_directory_destination() {
+        let temp = TestDir::new("publish_force_refuses_directory");
+        let archive_temp = temp.path("archive.tmp");
+        let destination = temp.path("archive.zip");
+        fs::write(&archive_temp, b"new").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let error = publish_archive(&archive_temp, &destination, true).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
+        assert!(destination.is_dir());
+        assert_eq!(fs::read(&archive_temp).unwrap(), b"new");
+    }
+
     fn overwrite_decision_for(input: &str) -> OverwriteDecision {
         let input = Cursor::new(input.as_bytes());
         let output = Vec::new();
@@ -5279,6 +5358,33 @@ mod tests {
         OverwriteConflict {
             archive_path: path.to_owned(),
             destination_path: PathBuf::from(path),
+        }
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("zmanager-cli-{name}-{}-{now}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
+            self.root.join(relative)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
         }
     }
 }

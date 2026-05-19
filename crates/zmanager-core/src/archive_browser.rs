@@ -741,6 +741,7 @@ mod tests {
                 level: 1,
                 threads: Some(1),
                 preserve_metadata: true,
+                replace_existing: false,
             },
         )
         .unwrap();

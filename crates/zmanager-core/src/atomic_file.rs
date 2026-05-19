@@ -80,15 +80,48 @@ impl AtomicOutputFile {
         self.commit_inner(replace_existing)
     }
 
+    pub(crate) fn commit_with_file_replace(mut self, replace_existing: bool) -> io::Result<()> {
+        drop(self.file.take());
+        if replace_existing {
+            remove_file_destination_for_replace(&self.final_path)?;
+            fs::rename(&self.temp_path, &self.final_path)?;
+        } else {
+            fs::hard_link(&self.temp_path, &self.final_path)?;
+            let _ = fs::remove_file(&self.temp_path);
+        }
+        self.committed = true;
+        Ok(())
+    }
+
     fn commit_inner(&mut self, replace_existing: bool) -> io::Result<()> {
         drop(self.file.take());
         if replace_existing {
             crate::safety::remove_destination_for_replace(&self.final_path)?;
+            fs::rename(&self.temp_path, &self.final_path)?;
+        } else {
+            fs::hard_link(&self.temp_path, &self.final_path)?;
+            let _ = fs::remove_file(&self.temp_path);
         }
-        fs::rename(&self.temp_path, &self.final_path)?;
         self.committed = true;
         Ok(())
     }
+}
+
+fn remove_file_destination_for_replace(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            format!("cannot replace directory {}", path.display()),
+        ));
+    }
+
+    fs::remove_file(path)
 }
 
 impl Drop for AtomicOutputFile {
@@ -132,6 +165,47 @@ mod tests {
 
         assert!(!final_path.exists());
         assert_eq!(fs::read_dir(temp.path(".")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn commit_refuses_existing_final_path() {
+        let temp = TestDir::new("atomic_existing");
+        let final_path = temp.path("archive.zip");
+        fs::write(&final_path, b"old").unwrap();
+        let mut output = AtomicOutputFile::create(&final_path).unwrap();
+        output.file_mut().unwrap().write_all(b"new").unwrap();
+
+        let error = output.commit().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&final_path).unwrap(), b"old");
+    }
+
+    #[test]
+    fn commit_with_file_replace_replaces_existing_file() {
+        let temp = TestDir::new("atomic_replace_file");
+        let final_path = temp.path("archive.zip");
+        fs::write(&final_path, b"old").unwrap();
+        let mut output = AtomicOutputFile::create(&final_path).unwrap();
+        output.file_mut().unwrap().write_all(b"new").unwrap();
+
+        output.commit_with_file_replace(true).unwrap();
+
+        assert_eq!(fs::read(&final_path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn commit_with_file_replace_refuses_existing_directory() {
+        let temp = TestDir::new("atomic_replace_directory");
+        let final_path = temp.path("archive.zip");
+        fs::create_dir(&final_path).unwrap();
+        let mut output = AtomicOutputFile::create(&final_path).unwrap();
+        output.file_mut().unwrap().write_all(b"new").unwrap();
+
+        let error = output.commit_with_file_replace(true).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
+        assert!(final_path.is_dir());
     }
 
     struct TestDir {

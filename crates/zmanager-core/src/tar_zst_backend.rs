@@ -25,6 +25,8 @@ pub struct TarZstdCreateOptions {
     pub threads: Option<u32>,
     /// Preserve portable metadata such as mode bits and modification time.
     pub preserve_metadata: bool,
+    /// Replace an existing destination archive at commit time.
+    pub replace_existing: bool,
 }
 
 impl Default for TarZstdCreateOptions {
@@ -33,6 +35,7 @@ impl Default for TarZstdCreateOptions {
             level: 3,
             threads: default_zstd_threads(),
             preserve_metadata: true,
+            replace_existing: false,
         }
     }
 }
@@ -232,10 +235,12 @@ fn create_tar_zst_from_manifest_inner(
         path: destination.to_path_buf(),
         source,
     })?;
-    output.commit().map_err(|source| TarZstdError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    output
+        .commit_with_file_replace(options.replace_existing)
+        .map_err(|source| TarZstdError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
 
     Ok(report)
 }
@@ -994,6 +999,7 @@ mod tests {
             level: 1,
             threads: Some(1),
             preserve_metadata: true,
+            replace_existing: false,
         };
 
         let report = create_tar_zst_from_path(temp.path("project"), archive, &options).unwrap();
