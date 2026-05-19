@@ -66,12 +66,27 @@ ZManagerFfiStatus zmanager_ffi_start_extract_archive(
   ZManagerFfiJob **out_job
 );
 
+ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_options(
+  const char *archive_path,
+  const char *destination,
+  const char *password,
+  bool replace_existing,
+  ZManagerFfiJob **out_job
+);
+
 char *zmanager_ffi_plan_clean_source(const char *source);
 char *zmanager_ffi_list_archive(const char *archive_path);
 char *zmanager_ffi_extract_archive_entry(
   const char *archive_path,
   const char *entry_path,
   const char *destination
+);
+char *zmanager_ffi_extract_archive_entry_with_options(
+  const char *archive_path,
+  const char *entry_path,
+  const char *destination,
+  const char *password,
+  bool replace_existing
 );
 char *zmanager_ffi_preview_archive_entry(
   const char *archive_path,

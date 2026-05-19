@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
 use zmanager_core::manifest::{PlanOptions, plan_archive};
+use zmanager_core::safety::{ExtractionPolicy, OverwritePolicy};
 use zmanager_core::secrets::SecretString;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
@@ -318,8 +319,8 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_many(
 
 /// Starts an archive extraction job routed by archive extension.
 ///
-/// ZIP and TAR.ZST use specialist progress-capable jobs. Other formats use
-/// the libarchive fallback with coarse lifecycle events.
+/// ZIP, TAR.ZST, 7z, and RAR use their native extraction backends. Other
+/// formats use the libarchive fallback with coarse lifecycle events.
 ///
 /// # Safety
 ///
@@ -329,6 +330,51 @@ pub unsafe extern "C" fn zmanager_ffi_start_clean_source_create_many(
 pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
     archive_path: *const c_char,
     destination: *const c_char,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointers and no password/options
+    // to the shared extract start implementation.
+    unsafe { start_extract_archive_job(archive_path, destination, ptr::null(), false, out_job) }
+}
+
+/// Starts an archive extraction job with optional password and overwrite
+/// behavior routed by archive extension.
+///
+/// ZIP, TAR.ZST, 7z, and RAR use their native extraction backends. Other
+/// formats use the libarchive fallback with coarse lifecycle events.
+///
+/// # Safety
+///
+/// `archive_path` and `destination` must point to valid NUL-terminated UTF-8 C
+/// strings. `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string. `out_job` must point to writable storage for
+/// one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_options(
+    archive_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_extract_archive_job(
+            archive_path,
+            destination,
+            password,
+            replace_existing,
+            out_job,
+        )
+    }
+}
+
+unsafe fn start_extract_archive_job(
+    archive_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    replace_existing: bool,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
     if archive_path.is_null() || destination.is_null() || out_job.is_null() {
@@ -341,29 +387,62 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
     let Some(destination) = c_string_arg(destination) else {
         return ZManagerFfiStatus::InvalidUtf8;
     };
+    let password = if password.is_null() {
+        None
+    } else {
+        let Some(password) = c_string_arg(password) else {
+            return ZManagerFfiStatus::InvalidUtf8;
+        };
+        (!password.is_empty()).then_some(password)
+    };
 
     let archive_path = PathBuf::from(archive_path);
     let destination = PathBuf::from(destination);
 
     spawn_archive_job(out_job, move |thread_token, sink| {
+        let policy = extraction_policy(replace_existing);
+        let password = password.as_deref();
         if is_zip_family_archive(&archive_path) {
-            let _ = zmanager_core::jobs::run_zip_extract_job(
+            let _ = zmanager_core::jobs::run_zip_extract_job_with_password_and_policy(
                 archive_path,
                 destination,
+                password,
+                policy,
+                &thread_token,
+                sink,
+            );
+        } else if is_7z_archive(&archive_path) {
+            let _ = zmanager_core::jobs::run_7z_extract_job_with_password_and_policy(
+                archive_path,
+                destination,
+                password,
+                policy,
+                &thread_token,
+                sink,
+            );
+        } else if is_rar_archive(&archive_path) {
+            let _ = zmanager_core::jobs::run_rar_extract_job_with_password_and_policy(
+                archive_path,
+                destination,
+                password,
+                policy,
                 &thread_token,
                 sink,
             );
         } else if is_tar_zst_archive(&archive_path) {
-            let _ = zmanager_core::jobs::run_tar_zst_extract_job(
+            let _ = zmanager_core::jobs::run_tar_zst_extract_job_with_policy(
                 archive_path,
                 destination,
+                policy,
                 &thread_token,
                 sink,
             );
         } else {
-            let _ = zmanager_core::jobs::run_libarchive_extract_job(
+            let _ = zmanager_core::jobs::run_libarchive_extract_job_with_password_and_policy(
                 archive_path,
                 destination,
+                password,
+                policy,
                 &thread_token,
                 sink,
             );
@@ -443,6 +522,49 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry(
     entry_path: *const c_char,
     destination: *const c_char,
 ) -> *mut c_char {
+    // SAFETY: this forwards the same checked pointers and no password/options
+    // to the shared entry extraction implementation.
+    unsafe { extract_archive_entry(archive_path, entry_path, destination, ptr::null(), false) }
+}
+
+/// Extracts one archive entry to a destination directory with optional password
+/// and overwrite behavior and returns a JSON object.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path`, `entry_path`, and `destination` must point to valid
+/// NUL-terminated UTF-8 C strings. `password` may be null; if non-null it must
+/// point to a valid NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_options(
+    archive_path: *const c_char,
+    entry_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    replace_existing: bool,
+) -> *mut c_char {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        extract_archive_entry(
+            archive_path,
+            entry_path,
+            destination,
+            password,
+            replace_existing,
+        )
+    }
+}
+
+unsafe fn extract_archive_entry(
+    archive_path: *const c_char,
+    entry_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    replace_existing: bool,
+) -> *mut c_char {
     if archive_path.is_null() || entry_path.is_null() || destination.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null argument\"}");
     }
@@ -456,11 +578,23 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry(
     let Some(destination) = c_string_arg(destination) else {
         return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 destination\"}");
     };
+    let password = if password.is_null() {
+        None
+    } else {
+        let Some(password) = c_string_arg(password) else {
+            return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 password\"}");
+        };
+        (!password.is_empty()).then_some(password)
+    };
 
-    let json = match zmanager_core::archive_browser::extract_entry(
+    let json = match zmanager_core::archive_browser::extract_entry_with_options(
         PathBuf::from(archive_path),
         &entry_path,
         PathBuf::from(destination),
+        zmanager_core::archive_browser::BrowserExtractOptions {
+            password: password.as_deref(),
+            replace_existing,
+        },
     ) {
         Ok(report) => json!({
             "ok": true,
@@ -787,12 +921,24 @@ fn ffi_error_json(message: &str) -> String {
     .to_string()
 }
 
+fn extraction_policy(replace_existing: bool) -> ExtractionPolicy {
+    ExtractionPolicy {
+        overwrite: if replace_existing {
+            OverwritePolicy::Replace
+        } else {
+            OverwritePolicy::Refuse
+        },
+        ..ExtractionPolicy::default()
+    }
+}
+
 fn job_kind_name(kind: JobKind) -> &'static str {
     match kind {
         JobKind::ZipCreate => "zip_create",
         JobKind::ZipExtract => "zip_extract",
         JobKind::SevenZCreate => "7z_create",
         JobKind::SevenZExtract => "7z_extract",
+        JobKind::RarExtract => "rar_extract",
         JobKind::TarZstdCreate => "tar_zst_create",
         JobKind::TarZstdExtract => "tar_zst_extract",
         JobKind::ArchiveExtract => "archive_extract",
@@ -829,20 +975,34 @@ fn is_tar_zst_archive(path: &std::path::Path) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
 }
 
+fn is_7z_archive(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+}
+
+fn is_rar_archive(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "rar" | "cbr"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_extract_archive_entry,
-        zmanager_ffi_job_free, zmanager_ffi_job_is_finished, zmanager_ffi_list_archive,
-        zmanager_ffi_plan_clean_source, zmanager_ffi_poll_events,
-        zmanager_ffi_preview_archive_entry, zmanager_ffi_start_clean_source_create,
-        zmanager_ffi_start_clean_source_create_many, zmanager_ffi_start_extract_archive,
+        zmanager_ffi_extract_archive_entry_with_options, zmanager_ffi_job_free,
+        zmanager_ffi_job_is_finished, zmanager_ffi_list_archive, zmanager_ffi_plan_clean_source,
+        zmanager_ffi_poll_events, zmanager_ffi_preview_archive_entry,
+        zmanager_ffi_start_clean_source_create, zmanager_ffi_start_clean_source_create_many,
+        zmanager_ffi_start_extract_archive, zmanager_ffi_start_extract_archive_with_options,
         zmanager_ffi_start_zip_create, zmanager_ffi_start_zip_create_encrypted,
         zmanager_ffi_start_zip_create_many, zmanager_ffi_string_free,
     };
     use std::ffi::{CStr, CString};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::ptr;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1209,6 +1369,233 @@ mod tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
+    #[test]
+    fn c_abi_extract_archive_options_use_password_and_replace_existing() {
+        let temp = test_root("zmanager-ffi-extract-options");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"secret").unwrap();
+        zmanager_core::zip_backend::create_zip_from_path(
+            temp.join("payload"),
+            temp.join("archive.zip"),
+            &zmanager_core::zip_backend::ZipCreateOptions {
+                password: Some(zmanager_core::secrets::SecretString::from("correct horse")),
+                ..zmanager_core::zip_backend::ZipCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let archive = CString::new(temp.join("archive.zip").to_string_lossy().as_ref()).unwrap();
+        let missing_password_destination =
+            CString::new(temp.join("missing-password").to_string_lossy().as_ref()).unwrap();
+        let mut missing_password_job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: the C strings live for the duration of the call and
+        // `missing_password_job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive(
+                archive.as_ptr(),
+                missing_password_destination.as_ptr(),
+                &raw mut missing_password_job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!missing_password_job.is_null());
+        let missing_password_events = drain_job(missing_password_job);
+        assert!(missing_password_events.contains("password required"));
+
+        let destination = temp.join("out");
+        fs::create_dir_all(destination.join("payload")).unwrap();
+        fs::write(destination.join("payload/file.txt"), b"old").unwrap();
+        let destination = CString::new(destination.to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("correct horse").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: all C strings live for the duration of the call and `job` is
+        // valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_options(
+                archive.as_ptr(),
+                destination.as_ptr(),
+                password.as_ptr(),
+                true,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            fs::read_to_string(temp.join("out/payload/file.txt")).unwrap(),
+            "secret"
+        );
+
+        let selected_destination = temp.join("selected");
+        fs::create_dir_all(selected_destination.join("payload")).unwrap();
+        fs::write(selected_destination.join("payload/file.txt"), b"old").unwrap();
+        let selected_destination =
+            CString::new(selected_destination.to_string_lossy().as_ref()).unwrap();
+        let entry = CString::new("payload/file.txt").unwrap();
+
+        // SAFETY: all C strings are valid for the duration of the call.
+        let selected = c_string(unsafe {
+            zmanager_ffi_extract_archive_entry_with_options(
+                archive.as_ptr(),
+                entry.as_ptr(),
+                selected_destination.as_ptr(),
+                password.as_ptr(),
+                true,
+            )
+        });
+        assert!(selected.contains("\"ok\":true"));
+        assert_eq!(
+            fs::read_to_string(temp.join("selected/payload/file.txt")).unwrap(),
+            "secret"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_extract_archive_options_route_7z_passwords_to_native_backend() {
+        let temp = test_root("zmanager-ffi-extract-7z-options");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"secret 7z").unwrap();
+        zmanager_core::sevenz_backend::create_7z_from_path(
+            temp.join("payload"),
+            temp.join("archive.7z"),
+            &zmanager_core::sevenz_backend::SevenZCreateOptions {
+                password: Some(zmanager_core::secrets::SecretString::from("correct horse")),
+                ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let archive = CString::new(temp.join("archive.7z").to_string_lossy().as_ref()).unwrap();
+        let missing_password_destination =
+            CString::new(temp.join("missing-password").to_string_lossy().as_ref()).unwrap();
+        let mut missing_password_job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: the C strings live for the duration of the call and
+        // `missing_password_job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive(
+                archive.as_ptr(),
+                missing_password_destination.as_ptr(),
+                &raw mut missing_password_job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!missing_password_job.is_null());
+        let missing_password_events = drain_job(missing_password_job);
+        assert!(missing_password_events.contains("\"kind\":\"7z_extract\""));
+        assert!(missing_password_events.contains("password required"));
+
+        let destination = CString::new(temp.join("out").to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("correct horse").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: all C strings live for the duration of the call and `job` is
+        // valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_options(
+                archive.as_ptr(),
+                destination.as_ptr(),
+                password.as_ptr(),
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"7z_extract\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            fs::read_to_string(temp.join("out/payload/file.txt")).unwrap(),
+            "secret 7z"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_extract_archive_options_route_rar_passwords_to_native_backend_when_available() {
+        let Some(rar) = find_on_path("rar") else {
+            return;
+        };
+        let temp = test_root("zmanager-ffi-extract-rar-options");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"secret rar").unwrap();
+        let archive_path = temp.join("archive.rar");
+        let create = Command::new(rar)
+            .current_dir(&temp)
+            .arg("a")
+            .arg("-idq")
+            .arg("-ma5")
+            .arg("-psecret")
+            .arg(&archive_path)
+            .arg("payload")
+            .output()
+            .unwrap();
+        assert!(
+            create.status.success(),
+            "rar create failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&create.stdout),
+            String::from_utf8_lossy(&create.stderr)
+        );
+
+        let archive = CString::new(archive_path.to_string_lossy().as_ref()).unwrap();
+        let missing_password_destination =
+            CString::new(temp.join("missing-password").to_string_lossy().as_ref()).unwrap();
+        let mut missing_password_job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: the C strings live for the duration of the call and
+        // `missing_password_job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive(
+                archive.as_ptr(),
+                missing_password_destination.as_ptr(),
+                &raw mut missing_password_job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!missing_password_job.is_null());
+        let missing_password_events = drain_job(missing_password_job);
+        assert!(missing_password_events.contains("\"kind\":\"rar_extract\""));
+        assert!(missing_password_events.to_lowercase().contains("password"));
+
+        let destination = CString::new(temp.join("out").to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("secret").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: all C strings live for the duration of the call and `job` is
+        // valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_options(
+                archive.as_ptr(),
+                destination.as_ptr(),
+                password.as_ptr(),
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"rar_extract\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            fs::read_to_string(temp.join("out/payload/file.txt")).unwrap(),
+            "secret rar"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     fn drain_job(job: *mut ZManagerFfiJob) -> String {
         let mut events = String::new();
         for _ in 0..200 {
@@ -1286,5 +1673,13 @@ mod tests {
         }
 
         None
+    }
+
+    fn find_on_path(command: &str) -> Option<PathBuf> {
+        std::env::var_os("PATH")?
+            .to_string_lossy()
+            .split(':')
+            .map(|directory| Path::new(directory).join(command))
+            .find(|candidate| candidate.is_file())
     }
 }

@@ -234,11 +234,29 @@ pub fn extract_archive_entry(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
+    extract_archive_entry_with_password(archive_path, entry_path, destination, policy, None)
+}
+
+/// Extracts one selected archive entry through the shared extraction safety
+/// policy with an optional passphrase.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when libarchive cannot read the archive, the
+/// passphrase is missing or incorrect, the entry is unsafe, the selected entry
+/// is not found, or filesystem writes fail.
+pub fn extract_archive_entry_with_password(
+    archive_path: impl AsRef<Path>,
+    entry_path: &str,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+) -> Result<LibarchiveExtractReport, LibarchiveError> {
     extract_archive_inner(
         archive_path,
         destination,
         policy,
-        None,
+        password,
         Some(entry_path),
         None,
     )

@@ -1,7 +1,7 @@
 use crate::libarchive_backend::{self, LibarchiveEntryKind, LibarchiveError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy,
 };
 use crate::tar_zst_backend::TarZstdError;
 use crate::zip_backend::ZipBackendError;
@@ -70,6 +70,15 @@ pub struct PreviewExtractReport {
     pub preview_path: PathBuf,
     /// Number of regular file bytes written.
     pub written_bytes: u64,
+}
+
+/// Options for browser-driven extraction.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct BrowserExtractOptions<'a> {
+    /// Optional password for encrypted archive entry data.
+    pub password: Option<&'a str>,
+    /// Whether existing destination paths may be replaced.
+    pub replace_existing: bool,
 }
 
 /// Archive browser error.
@@ -174,6 +183,28 @@ pub fn extract_entry(
     entry_path: &str,
     destination: impl AsRef<Path>,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
+    extract_entry_with_options(
+        archive_path,
+        entry_path,
+        destination,
+        BrowserExtractOptions::default(),
+    )
+}
+
+/// Extracts one selected entry into `destination` with browser extraction
+/// options.
+///
+/// # Errors
+///
+/// Returns [`ArchiveBrowserError`] when the archive cannot be read, the entry
+/// is not found, the password is missing or incorrect, the entry is unsafe, or
+/// filesystem writes fail.
+pub fn extract_entry_with_options(
+    archive_path: impl AsRef<Path>,
+    entry_path: &str,
+    destination: impl AsRef<Path>,
+    options: BrowserExtractOptions<'_>,
+) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
     let destination_root =
@@ -183,17 +214,25 @@ pub fn extract_entry(
                 source,
             }
         })?;
+    let policy = extraction_policy(options.replace_existing);
 
     if is_zip_family_archive(archive_path) {
-        extract_zip_entry(archive_path, entry_path, &destination_root)
-    } else if is_tar_zst_archive(archive_path) {
-        extract_tar_zst_entry(archive_path, entry_path, &destination_root)
-    } else {
-        let report = libarchive_backend::extract_archive_entry(
+        extract_zip_entry(
             archive_path,
             entry_path,
             &destination_root,
-            ExtractionPolicy::default(),
+            policy,
+            options.password,
+        )
+    } else if is_tar_zst_archive(archive_path) {
+        extract_tar_zst_entry(archive_path, entry_path, &destination_root, policy)
+    } else {
+        let report = libarchive_backend::extract_archive_entry_with_password(
+            archive_path,
+            entry_path,
+            &destination_root,
+            policy,
+            options.password,
         )?;
         Ok(EntryExtractReport {
             destination_path: destination.join(entry_path),
@@ -325,16 +364,19 @@ fn extract_zip_entry(
     archive_path: &Path,
     entry_path: &str,
     destination: &Path,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let file = File::open(archive_path).map_err(|source| ArchiveBrowserError::Io {
         path: archive_path.to_path_buf(),
         source,
     })?;
     let mut archive = ZipArchive::new(file).map_err(ZipBackendError::from)?;
+    let password = password_bytes(password);
 
     for index in 0..archive.len() {
         let mut file = archive
-            .by_index_with_options(index, ZipReadOptions::new())
+            .by_index_with_options(index, ZipReadOptions::new().password(password))
             .map_err(ZipBackendError::from)?;
         if file.name() != entry_path {
             continue;
@@ -345,12 +387,12 @@ fn extract_zip_entry(
             uncompressed_size: Some(file.size()),
             compressed_size: Some(file.compressed_size()),
         };
-        let decision = ExtractionSafetyPlanner::new(destination, ExtractionPolicy::default())
-            .validate_entry(&entry)?;
-        let destination_path = decision_destination(decision, &entry.archive_path)?;
-        let written_bytes = write_selected_entry(&mut file, &entry, &destination_path)?;
+        let decision =
+            ExtractionSafetyPlanner::new(destination, policy.clone()).validate_entry(&entry)?;
+        let write_plan = decision_write_plan(decision, &entry.archive_path)?;
+        let written_bytes = write_selected_entry(&mut file, &entry, &write_plan)?;
         return Ok(EntryExtractReport {
-            destination_path,
+            destination_path: write_plan.destination_path,
             written_bytes,
         });
     }
@@ -364,6 +406,7 @@ fn extract_tar_zst_entry(
     archive_path: &Path,
     entry_path: &str,
     destination: &Path,
+    policy: ExtractionPolicy,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let file = File::open(archive_path).map_err(|source| ArchiveBrowserError::Io {
         path: archive_path.to_path_buf(),
@@ -404,12 +447,12 @@ fn extract_tar_zst_entry(
             uncompressed_size: entry.header().size().ok(),
             compressed_size: None,
         };
-        let decision = ExtractionSafetyPlanner::new(destination, ExtractionPolicy::default())
+        let decision = ExtractionSafetyPlanner::new(destination, policy.clone())
             .validate_entry(&safety_entry)?;
-        let destination_path = decision_destination(decision, &safety_entry.archive_path)?;
-        let written_bytes = write_selected_entry(&mut entry, &safety_entry, &destination_path)?;
+        let write_plan = decision_write_plan(decision, &safety_entry.archive_path)?;
+        let written_bytes = write_selected_entry(&mut entry, &safety_entry, &write_plan)?;
         return Ok(EntryExtractReport {
-            destination_path,
+            destination_path: write_plan.destination_path,
             written_bytes,
         });
     }
@@ -422,8 +465,9 @@ fn extract_tar_zst_entry(
 fn write_selected_entry<R: Read>(
     reader: &mut R,
     entry: &ExtractionEntry,
-    destination_path: &Path,
+    write_plan: &SelectedEntryWritePlan,
 ) -> Result<u64, ArchiveBrowserError> {
+    let destination_path = &write_plan.destination_path;
     match &entry.kind {
         ExtractionEntryKind::Directory => {
             fs::create_dir_all(destination_path).map_err(|source| ArchiveBrowserError::Io {
@@ -451,10 +495,12 @@ fn write_selected_entry<R: Read>(
                 path: destination_path.to_path_buf(),
                 source,
             })?;
-            output.commit().map_err(|source| ArchiveBrowserError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            })?;
+            output
+                .commit_with_replace(write_plan.replace_existing)
+                .map_err(|source| ArchiveBrowserError::Io {
+                    path: destination_path.to_path_buf(),
+                    source,
+                })?;
             Ok(written_bytes)
         }
         ExtractionEntryKind::Symlink { .. }
@@ -467,19 +513,46 @@ fn write_selected_entry<R: Read>(
     }
 }
 
-fn decision_destination(
+struct SelectedEntryWritePlan {
+    destination_path: PathBuf,
+    replace_existing: bool,
+}
+
+fn decision_write_plan(
     decision: ExtractionDecision,
     archive_path: &str,
-) -> Result<PathBuf, ArchiveBrowserError> {
+) -> Result<SelectedEntryWritePlan, ArchiveBrowserError> {
     match decision {
         ExtractionDecision::Write {
-            destination_path, ..
-        } => Ok(destination_path),
+            destination_path,
+            replace_existing,
+            ..
+        } => Ok(SelectedEntryWritePlan {
+            destination_path,
+            replace_existing,
+        }),
         ExtractionDecision::Skip { reason, .. } => Err(ArchiveBrowserError::UnsupportedEntry {
             path: format!("{archive_path}: {reason}"),
             kind: BrowserEntryKind::Special,
         }),
     }
+}
+
+fn extraction_policy(replace_existing: bool) -> ExtractionPolicy {
+    ExtractionPolicy {
+        overwrite: if replace_existing {
+            OverwritePolicy::Replace
+        } else {
+            OverwritePolicy::Refuse
+        },
+        ..ExtractionPolicy::default()
+    }
+}
+
+fn password_bytes(password: Option<&str>) -> Option<&[u8]> {
+    password
+        .filter(|password| !password.is_empty())
+        .map(str::as_bytes)
 }
 
 fn zip_entry_kind<R: Read>(file: &zip::read::ZipFile<'_, R>) -> BrowserEntryKind {

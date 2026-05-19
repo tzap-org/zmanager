@@ -1,7 +1,11 @@
 use crate::manifest::{PlanOptions, plan_archive, plan_archives};
+use crate::safety::ExtractionPolicy;
 use crate::tar_zst_backend::{self, TarZstdCreateOptions, TarZstdError, TarZstdExtractReport};
 use crate::zip_backend::{self, ZipBackendError, ZipCreateOptions, ZipCreateReport};
-use crate::{libarchive_backend, libarchive_backend::LibarchiveError};
+use crate::{
+    libarchive_backend, libarchive_backend::LibarchiveError, rar_backend,
+    rar_backend::RarBackendError, sevenz_backend, sevenz_backend::SevenZError,
+};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +22,8 @@ pub enum JobKind {
     SevenZCreate,
     /// 7z extraction.
     SevenZExtract,
+    /// RAR extraction.
+    RarExtract,
     /// TAR.ZST creation.
     TarZstdCreate,
     /// TAR.ZST extraction.
@@ -308,7 +314,14 @@ pub fn run_zip_extract_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
-    run_zip_extract_job_with_password(archive_path, destination, None, token, sink)
+    run_zip_extract_job_with_password_and_policy(
+        archive_path,
+        destination,
+        None,
+        ExtractionPolicy::default(),
+        token,
+        sink,
+    )
 }
 
 /// Runs a ZIP extract job with an optional password and emits
@@ -328,6 +341,34 @@ pub fn run_zip_extract_job_with_password(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
+    run_zip_extract_job_with_password_and_policy(
+        archive_path,
+        destination,
+        password,
+        ExtractionPolicy::default(),
+        token,
+        sink,
+    )
+}
+
+/// Runs a ZIP extract job with an optional password and explicit extraction
+/// policy while emitting lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave already-extracted files in the
+/// destination directory.
+///
+/// # Errors
+///
+/// Returns [`ZipBackendError`] when ZIP reading, password validation,
+/// extraction safety, filesystem I/O, or cancellation fails.
+pub fn run_zip_extract_job_with_password_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
     sink.emit(JobEvent::Started {
         kind: JobKind::ZipExtract,
         total_bytes: None,
@@ -336,7 +377,7 @@ pub fn run_zip_extract_job_with_password(
     let result = zip_backend::extract_zip_with_context_and_password(
         archive_path,
         destination,
-        crate::safety::ExtractionPolicy::default(),
+        policy,
         password,
         &mut context,
     );
@@ -507,6 +548,32 @@ pub fn run_tar_zst_extract_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
+    run_tar_zst_extract_job_with_policy(
+        archive_path,
+        destination,
+        ExtractionPolicy::default(),
+        token,
+        sink,
+    )
+}
+
+/// Runs a TAR.ZST extract job with an explicit extraction policy while emitting
+/// lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave already-extracted files in the
+/// destination directory.
+///
+/// # Errors
+///
+/// Returns [`TarZstdError`] when TAR.ZST reading, extraction safety,
+/// filesystem I/O, or cancellation fails.
+pub fn run_tar_zst_extract_job_with_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<TarZstdExtractReport, TarZstdError> {
     sink.emit(JobEvent::Started {
         kind: JobKind::TarZstdExtract,
         total_bytes: None,
@@ -515,10 +582,83 @@ pub fn run_tar_zst_extract_job(
     let result = tar_zst_backend::extract_tar_zst_with_context(
         archive_path,
         destination,
-        crate::safety::ExtractionPolicy::default(),
+        policy,
         &mut context,
     );
     finish_tar_zst_extract_result(result, sink)
+}
+
+/// Runs a 7z extract job with an optional password and explicit extraction
+/// policy while emitting lifecycle events.
+///
+/// Partial output state: cancellation is checked before extraction starts, but
+/// 7z extraction itself is synchronous in this v1 adapter.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when 7z reading, password validation, extraction
+/// safety, or filesystem I/O fails.
+pub fn run_7z_extract_job_with_password_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<sevenz_backend::SevenZExtractReport, SevenZError> {
+    sink.emit(JobEvent::Started {
+        kind: JobKind::SevenZExtract,
+        total_bytes: None,
+    });
+    if token.is_cancelled() {
+        sink.emit(JobEvent::Cancelled {
+            message: "job cancelled".to_owned(),
+        });
+        return Err(SevenZError::Io {
+            path: archive_path.as_ref().to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
+        });
+    }
+
+    let result = sevenz_backend::extract_7z(archive_path, destination, password, policy);
+    finish_7z_extract_result(result, sink)
+}
+
+/// Runs a RAR extract job with an optional password and explicit extraction
+/// policy while emitting lifecycle events.
+///
+/// Partial output state: cancellation is checked before extraction starts, but
+/// RAR extraction itself is synchronous in this v1 adapter.
+///
+/// # Errors
+///
+/// Returns [`RarBackendError`] when bundled UnRAR reading, password validation,
+/// extraction safety, or filesystem I/O fails.
+pub fn run_rar_extract_job_with_password_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<rar_backend::RarExtractReport, RarBackendError> {
+    sink.emit(JobEvent::Started {
+        kind: JobKind::RarExtract,
+        total_bytes: None,
+    });
+    if token.is_cancelled() {
+        sink.emit(JobEvent::Cancelled {
+            message: "job cancelled".to_owned(),
+        });
+        return Err(RarBackendError::Io {
+            path: archive_path.as_ref().to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
+        });
+    }
+
+    let result =
+        rar_backend::extract_rar_with_password(archive_path, destination, policy, password);
+    finish_rar_extract_result(result, sink)
 }
 
 /// Runs a broad libarchive extract job and emits coarse lifecycle events.
@@ -536,6 +676,34 @@ pub fn run_libarchive_extract_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<libarchive_backend::LibarchiveExtractReport, LibarchiveError> {
+    run_libarchive_extract_job_with_password_and_policy(
+        archive_path,
+        destination,
+        None,
+        ExtractionPolicy::default(),
+        token,
+        sink,
+    )
+}
+
+/// Runs a broad libarchive extract job with an optional password and explicit
+/// extraction policy while emitting coarse lifecycle events.
+///
+/// Partial output state: cancellation is checked before extraction starts, but
+/// libarchive extraction itself is synchronous in this v1 adapter.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when libarchive reading, password validation,
+/// extraction safety, or filesystem I/O fails.
+pub fn run_libarchive_extract_job_with_password_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<libarchive_backend::LibarchiveExtractReport, LibarchiveError> {
     sink.emit(JobEvent::Started {
         kind: JobKind::ArchiveExtract,
         total_bytes: None,
@@ -550,10 +718,11 @@ pub fn run_libarchive_extract_job(
         });
     }
 
-    let result = libarchive_backend::extract_archive(
+    let result = libarchive_backend::extract_archive_with_password(
         archive_path,
         destination,
-        crate::safety::ExtractionPolicy::default(),
+        policy,
+        password,
     );
     finish_libarchive_extract_result(result, sink)
 }
@@ -656,6 +825,58 @@ fn finish_tar_zst_extract_result(
                 message: "job cancelled".to_owned(),
             });
             Err(TarZstdError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_7z_extract_result(
+    result: Result<sevenz_backend::SevenZExtractReport, SevenZError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<sevenz_backend::SevenZExtractReport, SevenZError> {
+    match result {
+        Ok(report) => {
+            for warning in &report.warnings {
+                sink.emit(JobEvent::Warning {
+                    message: warning.clone(),
+                });
+            }
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_rar_extract_result(
+    result: Result<rar_backend::RarExtractReport, RarBackendError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<rar_backend::RarExtractReport, RarBackendError> {
+    match result {
+        Ok(report) => {
+            for warning in &report.warnings {
+                sink.emit(JobEvent::Warning {
+                    message: warning.clone(),
+                });
+            }
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
         }
         Err(error) => {
             sink.emit(JobEvent::Failed {

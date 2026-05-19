@@ -598,6 +598,7 @@ fn progress_job_label(kind: JobKind) -> &'static str {
         JobKind::ZipExtract => "zip extract",
         JobKind::SevenZCreate => "7z create",
         JobKind::SevenZExtract => "7z extract",
+        JobKind::RarExtract => "rar extract",
         JobKind::TarZstdCreate => "tar.zst create",
         JobKind::TarZstdExtract => "tar.zst extract",
         JobKind::ArchiveExtract => "archive extract",
