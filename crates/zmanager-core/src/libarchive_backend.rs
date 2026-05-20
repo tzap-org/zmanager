@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use zmanager_libarchive::{FileType, ReadArchive};
 
+const NUMBERED_VOLUME_EXTENSION_WIDTH: usize = 3;
+const NUMBERED_VOLUME_ARCHIVE_SUFFIXES: &[&str] = &[".7z", ".zip"];
+
 /// One libarchive listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct LibarchiveListEntry {
@@ -64,6 +67,17 @@ pub struct LibarchiveExtractReport {
     pub written_bytes: u64,
     /// Non-fatal warnings.
     pub warnings: Vec<String>,
+}
+
+/// Data-read test report returned by the libarchive adapter.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct LibarchiveTestReport {
+    /// Entries selected and read or skipped through successfully.
+    pub tested_entries: usize,
+    /// Entries skipped by the supplied filter.
+    pub skipped_entries: usize,
+    /// Regular file bytes read from selected entries.
+    pub tested_bytes: u64,
 }
 
 /// Error returned by the libarchive adapter.
@@ -319,6 +333,45 @@ pub fn copy_archive_files_to_writer<W: Write>(
     }
 }
 
+/// Reads selected archive entries to validate libarchive-backed data streams.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when libarchive cannot open or read the archive.
+pub fn test_archive_with_password_filter(
+    archive_path: impl AsRef<Path>,
+    password: Option<&str>,
+    mut selected: impl FnMut(&str) -> bool,
+) -> Result<LibarchiveTestReport, LibarchiveError> {
+    let archive_path = archive_path.as_ref();
+    let mut archive = open_archive(archive_path, password)?;
+    let mut report = LibarchiveTestReport {
+        tested_entries: 0,
+        skipped_entries: 0,
+        tested_bytes: 0,
+    };
+
+    while let Some(entry) = archive.next_entry()? {
+        let owned_entry = OwnedEntry::from_entry(&entry)?;
+        if !selected(&owned_entry.path) {
+            archive.skip_data()?;
+            report.skipped_entries += 1;
+            continue;
+        }
+
+        if matches!(owned_entry.extraction_kind, ExtractionEntryKind::File) {
+            let mut sink = io::sink();
+            report.tested_bytes +=
+                copy_file_entry_to_writer(&mut archive, &mut sink, &owned_entry.path)?;
+        } else {
+            archive.skip_data()?;
+        }
+        report.tested_entries += 1;
+    }
+
+    Ok(report)
+}
+
 fn extract_archive_inner(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -427,12 +480,26 @@ fn open_archive(path: &Path, password: Option<&str>) -> Result<ReadArchive, Liba
     }
 }
 
+/// Returns true when `path` belongs to a standard split ZIP set.
+#[must_use]
+pub fn is_split_zip_path(path: &Path) -> bool {
+    discover_split_zip_paths(path).is_some_and(|paths| paths.len() > 1)
+}
+
 fn discover_multi_volume_paths(path: &Path) -> Vec<PathBuf> {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return vec![path.to_path_buf()];
     };
     let lower_name = file_name.to_ascii_lowercase();
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
+
+    if let Some(parts) = discover_split_zip_paths(path) {
+        return parts;
+    }
+
+    if let Some(parts) = discover_numbered_archive_volume_paths(directory, &lower_name) {
+        return parts;
+    }
 
     if let Some((base, _)) = parse_part_rar_name(&lower_name)
         && let Ok(entries) = fs::read_dir(directory)
@@ -478,6 +545,116 @@ fn discover_multi_volume_paths(path: &Path) -> Vec<PathBuf> {
     }
 
     vec![path.to_path_buf()]
+}
+
+fn discover_split_zip_paths(path: &Path) -> Option<Vec<PathBuf>> {
+    let file_name = path.file_name()?.to_str()?;
+    let lower_name = file_name.to_ascii_lowercase();
+    let (base, _) = parse_split_zip_volume_name(&lower_name)?;
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let entries = fs::read_dir(directory).ok()?;
+    let mut sidecars = BTreeMap::new();
+    let mut final_zip = None;
+
+    for entry in entries.flatten() {
+        let candidate_name = entry.file_name();
+        let Some(candidate_name) = candidate_name.to_str() else {
+            continue;
+        };
+        let candidate_lower = candidate_name.to_ascii_lowercase();
+        let Some((candidate_base, part)) = parse_split_zip_volume_name(&candidate_lower) else {
+            continue;
+        };
+        if candidate_base != base {
+            continue;
+        }
+        match part {
+            SplitZipPart::Sidecar(index) => {
+                sidecars.insert(index, entry.path());
+            }
+            SplitZipPart::Final => {
+                final_zip = Some(entry.path());
+            }
+        }
+    }
+
+    let final_zip = final_zip?;
+    let max_sidecar = *sidecars.keys().last()?;
+    for expected in 1..=max_sidecar {
+        sidecars.get(&expected)?;
+    }
+
+    let mut parts = sidecars.into_values().collect::<Vec<_>>();
+    parts.push(final_zip);
+    Some(parts)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SplitZipPart {
+    Sidecar(u32),
+    Final,
+}
+
+fn parse_split_zip_volume_name(name: &str) -> Option<(&str, SplitZipPart)> {
+    let (base, extension) = name.rsplit_once('.')?;
+    if extension == "zip" {
+        return Some((base, SplitZipPart::Final));
+    }
+    let number = extension.strip_prefix('z')?;
+    if number.len() < 2 || !number.chars().all(|value| value.is_ascii_digit()) {
+        return None;
+    }
+    let index = number.parse().ok()?;
+    (index > 0).then_some((base, SplitZipPart::Sidecar(index)))
+}
+
+#[cfg(test)]
+fn parse_numbered_7z_volume_name(name: &str) -> Option<(&str, u32)> {
+    let (base, part) = parse_numbered_archive_volume_name(name)?;
+    has_7z_extension(base).then_some((base, part))
+}
+
+fn discover_numbered_archive_volume_paths(
+    directory: &Path,
+    lower_name: &str,
+) -> Option<Vec<PathBuf>> {
+    let (base, _) = parse_numbered_archive_volume_name(lower_name)?;
+    let entries = fs::read_dir(directory).ok()?;
+    let mut parts = BTreeMap::new();
+    for entry in entries.flatten() {
+        let candidate_name = entry.file_name();
+        let Some(candidate_name) = candidate_name.to_str() else {
+            continue;
+        };
+        let candidate_lower = candidate_name.to_ascii_lowercase();
+        if let Some((candidate_base, part)) = parse_numbered_archive_volume_name(&candidate_lower)
+            && candidate_base == base
+        {
+            parts.insert(part, entry.path());
+        }
+    }
+    (parts.len() > 1).then(|| parts.into_values().collect())
+}
+
+fn parse_numbered_archive_volume_name(name: &str) -> Option<(&str, u32)> {
+    let (base, number) = name.rsplit_once('.')?;
+    if !NUMBERED_VOLUME_ARCHIVE_SUFFIXES
+        .iter()
+        .any(|suffix| base.ends_with(suffix))
+        || number.len() != NUMBERED_VOLUME_EXTENSION_WIDTH
+        || !number.chars().all(|value| value.is_ascii_digit())
+    {
+        return None;
+    }
+    let part = number.parse().ok()?;
+    (part > 0).then_some((base, part))
+}
+
+#[cfg(test)]
+fn has_7z_extension(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
 }
 
 fn parse_part_rar_name(name: &str) -> Option<(&str, u32)> {
@@ -795,7 +972,10 @@ fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), Libarchi
 
 #[cfg(test)]
 mod tests {
-    use super::{LibarchiveEntryKind, extract_archive, list_archive};
+    use super::{
+        LibarchiveEntryKind, discover_multi_volume_paths, extract_archive, is_split_zip_path,
+        list_archive, parse_numbered_7z_volume_name, parse_numbered_archive_volume_name,
+    };
     use crate::safety::ExtractionPolicy;
     use std::fs;
     #[cfg(unix)]
@@ -894,6 +1074,113 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lists_and_extracts_numbered_7z_volumes() {
+        let temp = TestDir::new("lists_and_extracts_numbered_7z_volumes");
+        let payload = deterministic_bytes(3 * 1024 * 1024);
+        temp.write_file("payload/blob.bin", &payload);
+        let archive = temp.path("payload.7z");
+
+        crate::sevenz_backend::create_7z_from_path(
+            temp.path("payload"),
+            &archive,
+            &crate::sevenz_backend::SevenZCreateOptions {
+                solid: false,
+                level: Some(1),
+                volume_size: Some(1_048_576),
+                ..crate::sevenz_backend::SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let listing = list_archive(temp.path("payload.7z.001")).unwrap();
+        let report = extract_archive(
+            temp.path("payload.7z.001"),
+            temp.path("out"),
+            ExtractionPolicy::default(),
+        )
+        .unwrap();
+
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == "payload/blob.bin")
+        );
+        assert_eq!(report.written_bytes, payload.len() as u64);
+        assert_eq!(
+            fs::read(temp.path("out/payload/blob.bin")).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn discovers_numbered_7z_volumes_from_any_part() {
+        let temp = TestDir::new("discovers_numbered_7z_volumes_from_any_part");
+        temp.write_file("payload.7z.001", b"a");
+        temp.write_file("payload.7z.002", b"b");
+        temp.write_file("payload.7z.003", b"c");
+
+        let from_first = discover_multi_volume_paths(&temp.path("payload.7z.001"));
+        let from_middle = discover_multi_volume_paths(&temp.path("payload.7z.002"));
+
+        assert_eq!(
+            relative_names(&temp.root, &from_first),
+            vec!["payload.7z.001", "payload.7z.002", "payload.7z.003"]
+        );
+        assert_eq!(from_middle, from_first);
+    }
+
+    #[test]
+    fn discovers_numbered_zip_stream_volumes_from_any_part() {
+        let temp = TestDir::new("discovers_numbered_zip_stream_volumes_from_any_part");
+        temp.write_file("payload.zip.001", b"a");
+        temp.write_file("payload.zip.002", b"b");
+        temp.write_file("payload.zip.003", b"c");
+
+        let from_first = discover_multi_volume_paths(&temp.path("payload.zip.001"));
+        let from_middle = discover_multi_volume_paths(&temp.path("payload.zip.002"));
+
+        assert_eq!(
+            relative_names(&temp.root, &from_first),
+            vec!["payload.zip.001", "payload.zip.002", "payload.zip.003"]
+        );
+        assert_eq!(from_middle, from_first);
+    }
+
+    #[test]
+    fn discovers_standard_split_zip_volumes_from_final_or_sidecar() {
+        let temp = TestDir::new("discovers_standard_split_zip_volumes_from_final_or_sidecar");
+        temp.write_file("payload.z01", b"a");
+        temp.write_file("payload.z02", b"b");
+        temp.write_file("payload.zip", b"c");
+
+        let from_final = discover_multi_volume_paths(&temp.path("payload.zip"));
+        let from_sidecar = discover_multi_volume_paths(&temp.path("payload.z01"));
+
+        assert_eq!(
+            relative_names(&temp.root, &from_final),
+            vec!["payload.z01", "payload.z02", "payload.zip"]
+        );
+        assert_eq!(from_sidecar, from_final);
+        assert!(is_split_zip_path(&temp.path("payload.zip")));
+    }
+
+    #[test]
+    fn parses_only_numbered_7z_volume_names() {
+        assert_eq!(
+            parse_numbered_7z_volume_name("payload.7z.001"),
+            Some(("payload.7z", 1))
+        );
+        assert_eq!(parse_numbered_7z_volume_name("payload.7z.000"), None);
+        assert_eq!(parse_numbered_7z_volume_name("payload.zip.001"), None);
+        assert_eq!(parse_numbered_7z_volume_name("payload.7z.01"), None);
+        assert_eq!(
+            parse_numbered_archive_volume_name("payload.zip.001"),
+            Some(("payload.zip", 1))
+        );
+    }
+
     fn bsdtar_available() -> bool {
         Command::new("bsdtar")
             .arg("--version")
@@ -915,6 +1202,30 @@ mod tests {
             .unwrap();
 
         assert!(status.success());
+    }
+
+    fn relative_names(root: &Path, paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    fn deterministic_bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect()
     }
 
     #[cfg(unix)]

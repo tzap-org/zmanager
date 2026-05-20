@@ -18,6 +18,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $colorValues = @("auto", "always", "never")
     $progressValues = @("auto", "always", "never")
     $overwriteValues = @("never", "always", "ask", "rename")
+    $volumeSizeValues = @("64k", "100m", "500m", "1g", "2g", "4g")
 
     $globalOptions = @(
         "-h", "--help", "-V", "--version", "-q", "--quiet", "-v", "--verbose",
@@ -31,9 +32,9 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         "--no-hidden", "-i", "--include", "--exclude", "--exclude-from",
         "--format", "--method", "--level", "-0", "-1", "-2", "-3", "-4",
         "-5", "-6", "-7", "-8", "-9", "--store", "--solid", "--no-solid",
-        "-j", "--junk-paths", "-y", "--preserve-symlinks", "--follow-symlinks",
-        "--preserve-metadata", "-X", "--no-metadata", "-f", "--file",
-        "--force", "--dry-run", "-T", "--test-after", "--encrypt",
+        "--volume-size", "-j", "--junk-paths", "-y", "--preserve-symlinks",
+        "--follow-symlinks", "--preserve-metadata", "-X", "--no-metadata",
+        "-f", "--file", "--force", "--dry-run", "-T", "--test-after", "--encrypt",
         "--password-stdin"
     )
     $extractOptions = @(
@@ -174,6 +175,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         }
         "--overwrite" {
             Complete-ZmValues -Values $overwriteValues -Prefix $wordToComplete
+            return
+        }
+        "--volume-size" {
+            Complete-ZmValues -Values $volumeSizeValues -Prefix $wordToComplete
             return
         }
         "-C" {

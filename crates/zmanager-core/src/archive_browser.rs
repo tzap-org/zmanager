@@ -3,6 +3,7 @@ use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy,
 };
+use crate::sevenz_backend::{SevenZEntryKind, SevenZError};
 use crate::tar_zst_backend::TarZstdError;
 use crate::zip_backend::ZipBackendError;
 use std::fmt;
@@ -52,6 +53,13 @@ pub struct BrowserListing {
     pub entries: Vec<BrowserEntry>,
 }
 
+/// Options for browser-driven listing.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct BrowserListOptions<'a> {
+    /// Optional password for archive formats that encrypt headers or metadata.
+    pub password: Option<&'a str>,
+}
+
 /// Report for selected-entry extraction.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EntryExtractReport {
@@ -88,6 +96,8 @@ pub enum ArchiveBrowserError {
     Zip(ZipBackendError),
     /// TAR.ZST backend failed.
     TarZst(TarZstdError),
+    /// 7z backend failed.
+    SevenZ(SevenZError),
     /// Libarchive backend failed.
     Libarchive(LibarchiveError),
     /// Filesystem I/O failed.
@@ -108,6 +118,7 @@ impl fmt::Display for ArchiveBrowserError {
         match self {
             Self::Zip(source) => write!(f, "ZIP browser operation failed: {source}"),
             Self::TarZst(source) => write!(f, "TAR.ZST browser operation failed: {source}"),
+            Self::SevenZ(source) => write!(f, "7z browser operation failed: {source}"),
             Self::Libarchive(source) => write!(f, "libarchive browser operation failed: {source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
@@ -124,6 +135,7 @@ impl std::error::Error for ArchiveBrowserError {
         match self {
             Self::Zip(source) => Some(source),
             Self::TarZst(source) => Some(source),
+            Self::SevenZ(source) => Some(source),
             Self::Libarchive(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
@@ -141,6 +153,12 @@ impl From<ZipBackendError> for ArchiveBrowserError {
 impl From<TarZstdError> for ArchiveBrowserError {
     fn from(source: TarZstdError) -> Self {
         Self::TarZst(source)
+    }
+}
+
+impl From<SevenZError> for ArchiveBrowserError {
+    fn from(source: SevenZError) -> Self {
+        Self::SevenZ(source)
     }
 }
 
@@ -162,11 +180,25 @@ impl From<ExtractionSafetyError> for ArchiveBrowserError {
 ///
 /// Returns [`ArchiveBrowserError`] when the archive cannot be read.
 pub fn list_entries(path: impl AsRef<Path>) -> Result<BrowserListing, ArchiveBrowserError> {
+    list_entries_with_options(path, BrowserListOptions::default())
+}
+
+/// Lists entries with browser listing options.
+///
+/// # Errors
+///
+/// Returns [`ArchiveBrowserError`] when the archive cannot be read.
+pub fn list_entries_with_options(
+    path: impl AsRef<Path>,
+    options: BrowserListOptions<'_>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
     let path = path.as_ref();
-    if is_zip_family_archive(path) {
+    if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path) {
         list_zip_entries(path)
     } else if is_tar_zst_archive(path) {
         list_tar_zst_entries(path)
+    } else if is_7z_archive(path) {
+        list_7z_entries(path, options.password)
     } else {
         list_libarchive_entries(path)
     }
@@ -216,16 +248,16 @@ pub fn extract_entry_with_options(
         })?;
     let policy = extraction_policy(options.replace_existing);
 
-    if is_zip_family_archive(archive_path) {
+    if is_zip_family_archive(archive_path) && !libarchive_backend::is_split_zip_path(archive_path) {
         extract_zip_entry(
             archive_path,
             entry_path,
             &destination_root,
-            policy,
+            &policy,
             options.password,
         )
     } else if is_tar_zst_archive(archive_path) {
-        extract_tar_zst_entry(archive_path, entry_path, &destination_root, policy)
+        extract_tar_zst_entry(archive_path, entry_path, &destination_root, &policy)
     } else {
         let report = libarchive_backend::extract_archive_entry_with_password(
             archive_path,
@@ -254,6 +286,24 @@ pub fn preview_entry(
     archive_path: impl AsRef<Path>,
     entry_path: &str,
 ) -> Result<PreviewExtractReport, ArchiveBrowserError> {
+    preview_entry_with_options(archive_path, entry_path, BrowserExtractOptions::default())
+}
+
+/// Extracts one selected entry into a controlled temporary preview root with
+/// browser extraction options.
+///
+/// The caller owns the returned `cleanup_root` and should remove it when the
+/// preview is replaced or the app exits.
+///
+/// # Errors
+///
+/// Returns [`ArchiveBrowserError`] when temporary directory creation,
+/// extraction, password validation, or safety validation fails.
+pub fn preview_entry_with_options(
+    archive_path: impl AsRef<Path>,
+    entry_path: &str,
+    options: BrowserExtractOptions<'_>,
+) -> Result<PreviewExtractReport, ArchiveBrowserError> {
     let cleanup_root = std::env::temp_dir().join(format!(
         "{PREVIEW_TEMP_PREFIX}-{}-{}",
         std::process::id(),
@@ -264,7 +314,8 @@ pub fn preview_entry(
         source,
     })?;
 
-    let report = match extract_entry(archive_path, entry_path, &cleanup_root) {
+    let report = match extract_entry_with_options(archive_path, entry_path, &cleanup_root, options)
+    {
         Ok(report) => report,
         Err(error) => {
             let _ = fs::remove_dir_all(&cleanup_root);
@@ -360,11 +411,30 @@ fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowser
     Ok(BrowserListing { entries })
 }
 
+fn list_7z_entries(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let listing = crate::sevenz_backend::list_7z(path, password)?;
+    let entries = listing
+        .entries
+        .into_iter()
+        .map(|entry| BrowserEntry {
+            path: entry.name,
+            kind: sevenz_entry_kind(entry.kind),
+            size: Some(entry.size),
+            compressed_size: Some(entry.compressed_size),
+            modified: None,
+        })
+        .collect();
+    Ok(BrowserListing { entries })
+}
+
 fn extract_zip_entry(
     archive_path: &Path,
     entry_path: &str,
     destination: &Path,
-    policy: ExtractionPolicy,
+    policy: &ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let file = File::open(archive_path).map_err(|source| ArchiveBrowserError::Io {
@@ -406,7 +476,7 @@ fn extract_tar_zst_entry(
     archive_path: &Path,
     entry_path: &str,
     destination: &Path,
-    policy: ExtractionPolicy,
+    policy: &ExtractionPolicy,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let file = File::open(archive_path).map_err(|source| ArchiveBrowserError::Io {
         path: archive_path.to_path_buf(),
@@ -471,7 +541,7 @@ fn write_selected_entry<R: Read>(
     match &entry.kind {
         ExtractionEntryKind::Directory => {
             fs::create_dir_all(destination_path).map_err(|source| ArchiveBrowserError::Io {
-                path: destination_path.to_path_buf(),
+                path: destination_path.clone(),
                 source,
             })?;
             Ok(0)
@@ -479,7 +549,7 @@ fn write_selected_entry<R: Read>(
         ExtractionEntryKind::File => {
             let mut output = crate::atomic_file::AtomicOutputFile::create(destination_path)
                 .map_err(|source| ArchiveBrowserError::Io {
-                    path: destination_path.to_path_buf(),
+                    path: destination_path.clone(),
                     source,
                 })?;
             let written_bytes = io::copy(
@@ -487,18 +557,18 @@ fn write_selected_entry<R: Read>(
                 output
                     .file_mut()
                     .map_err(|source| ArchiveBrowserError::Io {
-                        path: destination_path.to_path_buf(),
+                        path: destination_path.clone(),
                         source,
                     })?,
             )
             .map_err(|source| ArchiveBrowserError::Io {
-                path: destination_path.to_path_buf(),
+                path: destination_path.clone(),
                 source,
             })?;
             output
                 .commit_with_replace(write_plan.replace_existing)
                 .map_err(|source| ArchiveBrowserError::Io {
-                    path: destination_path.to_path_buf(),
+                    path: destination_path.clone(),
                     source,
                 })?;
             Ok(written_bytes)
@@ -648,6 +718,14 @@ fn libarchive_entry_kind(kind: LibarchiveEntryKind) -> BrowserEntryKind {
     }
 }
 
+fn sevenz_entry_kind(kind: SevenZEntryKind) -> BrowserEntryKind {
+    match kind {
+        SevenZEntryKind::File => BrowserEntryKind::File,
+        SevenZEntryKind::Directory => BrowserEntryKind::Directory,
+        SevenZEntryKind::AntiItem => BrowserEntryKind::Special,
+    }
+}
+
 fn system_time_string(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -684,6 +762,12 @@ fn is_tar_zst_archive(path: &Path) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
 }
 
+fn is_7z_archive(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+}
+
 fn unique_preview_id() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -692,7 +776,11 @@ fn unique_preview_id() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_entry, list_entries, preview_entry};
+    use super::{
+        BrowserListOptions, extract_entry, list_entries, list_entries_with_options, preview_entry,
+    };
+    use crate::secrets::SecretString;
+    use crate::sevenz_backend::{SevenZCreateOptions, create_7z_from_path};
     use crate::tar_zst_backend::{TarZstdCreateOptions, create_tar_zst_from_path};
     use crate::zip_backend::{ZipCreateOptions, create_zip_from_path};
     use std::fs::{self, File};
@@ -761,6 +849,40 @@ mod tests {
             "b"
         );
         assert!(!temp.path("out/project/a.txt").exists());
+    }
+
+    #[test]
+    fn lists_encrypted_7z_headers_with_password() {
+        let temp = TestDir::new("browser_7z_encrypted_headers");
+        temp.write_file("project/a.txt", b"a");
+        let archive = temp.path("archive.7z");
+        create_7z_from_path(
+            temp.path("project"),
+            &archive,
+            &SevenZCreateOptions {
+                password: Some(SecretString::from("correct horse")),
+                encrypt_file_names: true,
+                ..SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let error = list_entries(&archive).unwrap_err();
+        assert!(error.to_string().contains("password required"));
+
+        let listing = list_entries_with_options(
+            &archive,
+            BrowserListOptions {
+                password: Some("correct horse"),
+            },
+        )
+        .unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == "project/a.txt")
+        );
     }
 
     #[test]

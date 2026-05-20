@@ -72,8 +72,12 @@ impl AtomicOutputFile {
         })
     }
 
-    pub(crate) fn commit(mut self) -> io::Result<()> {
-        self.commit_inner(false)
+    pub(crate) fn temp_path(&self) -> &Path {
+        &self.temp_path
+    }
+
+    pub(crate) fn close(&mut self) {
+        drop(self.file.take());
     }
 
     pub(crate) fn commit_with_replace(mut self, replace_existing: bool) -> io::Result<()> {
@@ -142,13 +146,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn commit_moves_temp_file_to_final_path() {
+    fn commit_without_replace_moves_temp_file_to_final_path() {
         let temp = TestDir::new("atomic_commit");
         let final_path = temp.path("archive.zip");
         let mut output = AtomicOutputFile::create(&final_path).unwrap();
 
         output.file_mut().unwrap().write_all(b"archive").unwrap();
-        output.commit().unwrap();
+        output.commit_with_file_replace(false).unwrap();
 
         assert_eq!(fs::read(&final_path).unwrap(), b"archive");
     }
@@ -168,14 +172,14 @@ mod tests {
     }
 
     #[test]
-    fn commit_refuses_existing_final_path() {
+    fn commit_without_replace_refuses_existing_final_path() {
         let temp = TestDir::new("atomic_existing");
         let final_path = temp.path("archive.zip");
         fs::write(&final_path, b"old").unwrap();
         let mut output = AtomicOutputFile::create(&final_path).unwrap();
         output.file_mut().unwrap().write_all(b"new").unwrap();
 
-        let error = output.commit().unwrap_err();
+        let error = output.commit_with_file_replace(false).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&final_path).unwrap(), b"old");

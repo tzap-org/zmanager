@@ -908,6 +908,439 @@ fn optional_zm_extracts_7zip_created_archive_when_available() {
 }
 
 #[test]
+fn zm_create_split_zip_lists_extracts_and_7zip_tests_when_available() {
+    let temp = TestDir::new("zm_split_zip");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/blob.bin"), deterministic_bytes(200_000)).unwrap();
+    let archive = temp.path("project.zip");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--format")
+        .arg("zip")
+        .arg("--store")
+        .arg("--volume-size")
+        .arg("64k")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm create split zip", &create);
+    let stdout = String::from_utf8_lossy(&create.stdout);
+    assert!(stdout.contains("\"volume_size\":65536"), "{stdout}");
+    assert!(stdout.contains("\"volume_count\":"), "{stdout}");
+    assert_eq!(
+        fs::metadata(temp.path("project.z01")).unwrap().len(),
+        65_536
+    );
+    assert!(archive.is_file());
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list split zip", &list);
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("project/blob.bin"),
+        "{}",
+        String::from_utf8_lossy(&list.stdout)
+    );
+
+    let zm_test = Command::new(zm_path())
+        .arg("test")
+        .arg(&archive)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm test split zip", &zm_test);
+    assert!(
+        String::from_utf8_lossy(&zm_test.stdout).contains("\"format\":\"zip\""),
+        "{}",
+        String::from_utf8_lossy(&zm_test.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&zm_test.stdout).contains("\"bytes\":200000"),
+        "{}",
+        String::from_utf8_lossy(&zm_test.stdout)
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--overwrite")
+        .arg("always")
+        .output()
+        .unwrap();
+    assert_success("zm extract split zip", &extract);
+    assert_eq!(
+        fs::read(temp.path("out/project/blob.bin")).unwrap(),
+        fs::read(temp.path("project/blob.bin")).unwrap()
+    );
+
+    if let Some(sevenzip) = find_7zip() {
+        let test = Command::new(sevenzip)
+            .arg("t")
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert_success("7zz test zm split zip", &test);
+    }
+}
+
+#[test]
+fn zm_create_split_7z_lists_extracts_and_7zip_tests_when_available() {
+    let temp = TestDir::new("zm_split_7z");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(
+        temp.path("project/blob.bin"),
+        deterministic_bytes(3_200_000),
+    )
+    .unwrap();
+    let archive = temp.path("project.7z");
+    let first_volume = temp.path("project.7z.001");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--format")
+        .arg("7z")
+        .arg("--volume-size")
+        .arg("1m")
+        .output()
+        .unwrap();
+    assert_success("zm create split 7z", &create);
+    assert!(!archive.exists());
+    assert_eq!(fs::metadata(&first_volume).unwrap().len(), 1_048_576);
+    assert!(temp.path("project.7z.002").is_file());
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&first_volume)
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list split 7z", &list);
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("project/blob.bin"),
+        "{}",
+        String::from_utf8_lossy(&list.stdout)
+    );
+
+    let zm_test = Command::new(zm_path())
+        .arg("test")
+        .arg(&first_volume)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm test split 7z", &zm_test);
+    assert!(
+        String::from_utf8_lossy(&zm_test.stdout).contains("\"format\":\"7z\""),
+        "{}",
+        String::from_utf8_lossy(&zm_test.stdout)
+    );
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&first_volume)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--overwrite")
+        .arg("always")
+        .output()
+        .unwrap();
+    assert_success("zm extract split 7z", &extract);
+    assert_eq!(
+        fs::read(temp.path("out/project/blob.bin")).unwrap(),
+        fs::read(temp.path("project/blob.bin")).unwrap()
+    );
+
+    if let Some(sevenzip) = find_7zip() {
+        let test = Command::new(sevenzip)
+            .arg("t")
+            .arg(&first_volume)
+            .output()
+            .unwrap();
+        assert_success("7zz test zm split 7z", &test);
+    }
+}
+
+#[test]
+fn zm_create_single_volume_split_7z_lists_base_archive_path() {
+    let temp = TestDir::new("zm_single_volume_split_7z_base");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "small payload\n").unwrap();
+    let archive = temp.path("project.7z");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--format")
+        .arg("7z")
+        .arg("--volume-size")
+        .arg("1m")
+        .output()
+        .unwrap();
+    assert_success("zm create single-volume split 7z", &create);
+    assert!(!archive.exists());
+    assert!(temp.path("project.7z.001").is_file());
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list base path for single-volume split 7z", &list);
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("project/file.txt"),
+        "{}",
+        String::from_utf8_lossy(&list.stdout)
+    );
+}
+
+#[test]
+fn zm_create_passworded_split_archives_extract_with_password_stdin() {
+    let temp = TestDir::new("zm_passworded_split_archives");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(
+        temp.path("project/blob.bin"),
+        deterministic_bytes(3_200_000),
+    )
+    .unwrap();
+
+    let zip_archive = temp.path("secret.zip");
+    let mut create_zip = Command::new(zm_path());
+    create_zip
+        .arg("create")
+        .arg(&zip_archive)
+        .arg(temp.path("project"))
+        .arg("--format")
+        .arg("zip")
+        .arg("--store")
+        .arg("--volume-size")
+        .arg("64k")
+        .arg("--encrypt")
+        .arg("--password-stdin");
+    let zip_create = run_with_stdin(create_zip, "correct horse\n");
+    assert_success("zm create passworded split zip", &zip_create);
+    assert!(temp.path("secret.z01").is_file());
+
+    let mut extract_zip = Command::new(zm_path());
+    extract_zip
+        .arg("extract")
+        .arg(&zip_archive)
+        .arg("-C")
+        .arg(temp.path("out-zip"))
+        .arg("--overwrite")
+        .arg("always")
+        .arg("--password-stdin");
+    let zip_extract = run_with_stdin(extract_zip, "correct horse\n");
+    assert_success("zm extract passworded split zip", &zip_extract);
+    assert_eq!(
+        fs::read(temp.path("out-zip/project/blob.bin")).unwrap(),
+        fs::read(temp.path("project/blob.bin")).unwrap()
+    );
+
+    let mut test_zip = Command::new(zm_path());
+    test_zip
+        .arg("test")
+        .arg(&zip_archive)
+        .arg("--json")
+        .arg("--password-stdin");
+    let zip_test = run_with_stdin(test_zip, "correct horse\n");
+    assert_success("zm test passworded split zip", &zip_test);
+    assert!(
+        String::from_utf8_lossy(&zip_test.stdout).contains("\"format\":\"zip\""),
+        "{}",
+        String::from_utf8_lossy(&zip_test.stdout)
+    );
+
+    let sevenz_archive = temp.path("secret.7z");
+    let first_7z_volume = temp.path("secret.7z.001");
+    let mut create_7z = Command::new(zm_path());
+    create_7z
+        .arg("create")
+        .arg(&sevenz_archive)
+        .arg(temp.path("project"))
+        .arg("--format")
+        .arg("7z")
+        .arg("--volume-size")
+        .arg("1m")
+        .arg("--encrypt")
+        .arg("--password-stdin");
+    let sevenz_create = run_with_stdin(create_7z, "correct horse\n");
+    assert_success("zm create passworded split 7z", &sevenz_create);
+    assert!(first_7z_volume.is_file());
+
+    let mut extract_7z = Command::new(zm_path());
+    extract_7z
+        .arg("extract")
+        .arg(&first_7z_volume)
+        .arg("-C")
+        .arg(temp.path("out-7z"))
+        .arg("--overwrite")
+        .arg("always")
+        .arg("--password-stdin");
+    let sevenz_extract = run_with_stdin(extract_7z, "correct horse\n");
+    assert_success("zm extract passworded split 7z", &sevenz_extract);
+    assert_eq!(
+        fs::read(temp.path("out-7z/project/blob.bin")).unwrap(),
+        fs::read(temp.path("project/blob.bin")).unwrap()
+    );
+}
+
+#[test]
+fn zm_volume_size_rejects_tar_zst_and_stdout_output() {
+    let temp = TestDir::new("zm_volume_size_rejections");
+    fs::write(temp.path("file.txt"), "payload").unwrap();
+
+    let tar = Command::new(zm_path())
+        .arg("create")
+        .arg(temp.path("archive.tar.zst"))
+        .arg(temp.path("file.txt"))
+        .arg("--volume-size")
+        .arg("64k")
+        .output()
+        .unwrap();
+    assert_failure("zm create tar.zst --volume-size", &tar);
+    assert!(
+        String::from_utf8_lossy(&tar.stderr).contains("supported only for ZIP and 7z"),
+        "{}",
+        String::from_utf8_lossy(&tar.stderr)
+    );
+
+    let stdout_archive = Command::new(zm_path())
+        .arg("create")
+        .arg("-")
+        .arg(temp.path("file.txt"))
+        .arg("--format")
+        .arg("zip")
+        .arg("--volume-size")
+        .arg("64k")
+        .output()
+        .unwrap();
+    assert_failure("zm create stdout --volume-size", &stdout_archive);
+    assert!(
+        String::from_utf8_lossy(&stdout_archive.stderr).contains("stdout archive output"),
+        "{}",
+        String::from_utf8_lossy(&stdout_archive.stderr)
+    );
+}
+
+#[test]
+fn optional_zm_reads_infozip_and_7zip_split_zip_sets_when_available() {
+    let temp = TestDir::new("zm_reads_external_split_zip");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/blob.bin"), deterministic_bytes(200_000)).unwrap();
+
+    if let Some(zip) = find_on_path("zip") {
+        let archive = temp.path("infozip.zip");
+        let create = Command::new(zip)
+            .arg("-0")
+            .arg("-q")
+            .arg("-s")
+            .arg("64k")
+            .arg(&archive)
+            .arg("project/blob.bin")
+            .current_dir(&temp.root)
+            .output()
+            .unwrap();
+        assert_success("zip create split zip", &create);
+
+        let extract = Command::new(zm_path())
+            .arg("extract")
+            .arg(&archive)
+            .arg("-C")
+            .arg(temp.path("out-infozip"))
+            .arg("--overwrite")
+            .arg("always")
+            .output()
+            .unwrap();
+        assert_success("zm extract Info-ZIP split zip", &extract);
+        assert_eq!(
+            fs::read(temp.path("out-infozip/project/blob.bin")).unwrap(),
+            fs::read(temp.path("project/blob.bin")).unwrap()
+        );
+    }
+
+    if let Some(sevenzip) = find_7zip() {
+        let create = Command::new(sevenzip)
+            .arg("a")
+            .arg("-tzip")
+            .arg("-mx=0")
+            .arg("-v64k")
+            .arg("sevenzip.zip")
+            .arg("project/blob.bin")
+            .current_dir(&temp.root)
+            .output()
+            .unwrap();
+        assert_success("7zz create split zip stream", &create);
+
+        let extract = Command::new(zm_path())
+            .arg("extract")
+            .arg(temp.path("sevenzip.zip.001"))
+            .arg("-C")
+            .arg(temp.path("out-sevenzip"))
+            .arg("--overwrite")
+            .arg("always")
+            .output()
+            .unwrap();
+        assert_success("zm extract 7zz split zip stream", &extract);
+        assert_eq!(
+            fs::read(temp.path("out-sevenzip/project/blob.bin")).unwrap(),
+            fs::read(temp.path("project/blob.bin")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn optional_zm_reads_7zip_created_split_7z_when_available() {
+    let Some(sevenzip) = find_7zip() else {
+        return;
+    };
+    let temp = TestDir::new("zm_reads_external_split_7z");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(
+        temp.path("project/blob.bin"),
+        deterministic_bytes(3_200_000),
+    )
+    .unwrap();
+
+    let create = Command::new(sevenzip)
+        .arg("a")
+        .arg("-t7z")
+        .arg("-v1m")
+        .arg("external.7z")
+        .arg("project/blob.bin")
+        .current_dir(&temp.root)
+        .output()
+        .unwrap();
+    assert_success("7zz create split 7z", &create);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(temp.path("external.7z.001"))
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--overwrite")
+        .arg("always")
+        .output()
+        .unwrap();
+    assert_success("zm extract 7zz split 7z", &extract);
+    assert_eq!(
+        fs::read(temp.path("out/project/blob.bin")).unwrap(),
+        fs::read(temp.path("project/blob.bin")).unwrap()
+    );
+}
+
+#[test]
 fn optional_zm_extracts_7zip_created_tar_family_archives_when_available() {
     let Some(sevenzip) = find_7zip() else {
         return;
@@ -2331,6 +2764,34 @@ fn zstd_bytes(contents: &[u8]) -> Vec<u8> {
     let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
     encoder.write_all(contents).unwrap();
     encoder.finish().unwrap()
+}
+
+fn deterministic_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(len);
+    let mut counter = 0u64;
+    while bytes.len() < len {
+        let digest = Sha256::digest(counter.to_le_bytes());
+        bytes.extend_from_slice(&digest);
+        counter += 1;
+    }
+    bytes.truncate(len);
+    bytes
+}
+
+fn run_with_stdin(mut command: Command, input: &str) -> std::process::Output {
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 fn write_deb_ar_archive(

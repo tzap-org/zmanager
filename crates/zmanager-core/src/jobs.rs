@@ -1,5 +1,6 @@
 use crate::manifest::{PlanOptions, plan_archive, plan_archives};
 use crate::safety::ExtractionPolicy;
+use crate::sevenz_backend::{SevenZCreateOptions, SevenZCreateReport};
 use crate::tar_zst_backend::{self, TarZstdCreateOptions, TarZstdError, TarZstdExtractReport};
 use crate::zip_backend::{self, ZipBackendError, ZipCreateOptions, ZipCreateReport};
 use crate::{
@@ -271,7 +272,35 @@ pub fn run_zip_create_job_from_sources(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<ZipCreateReport, ZipBackendError> {
-    let manifest = match plan_archives(sources, &PlanOptions::default()) {
+    run_zip_create_job_from_sources_with_plan_options(
+        sources,
+        destination,
+        options,
+        &PlanOptions::default(),
+        token,
+        sink,
+    )
+}
+
+/// Runs a ZIP create job for multiple source roots with explicit planning
+/// options and emits lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+/// Atomic cleanup is deferred to hardening work.
+///
+/// # Errors
+///
+/// Returns [`ZipBackendError`] when planning, ZIP creation, filesystem I/O, or
+/// cancellation fails.
+pub fn run_zip_create_job_from_sources_with_plan_options(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &ZipCreateOptions,
+    plan_options: &PlanOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<ZipCreateReport, ZipBackendError> {
+    let manifest = match plan_archives(sources, plan_options) {
         Ok(manifest) => manifest,
         Err(error) => {
             let error = ZipBackendError::Plan(error);
@@ -461,6 +490,32 @@ pub fn run_clean_source_tar_zst_create_job_from_sources(
     )
 }
 
+/// Runs a TAR.ZST create job for multiple source roots and emits
+/// lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+///
+/// # Errors
+///
+/// Returns [`TarZstdError`] when planning, TAR.ZST creation, filesystem I/O, or
+/// cancellation fails.
+pub fn run_tar_zst_create_job_from_sources(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &TarZstdCreateOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<tar_zst_backend::TarZstdCreateReport, TarZstdError> {
+    run_tar_zst_create_job_from_sources_with_plan_options(
+        sources,
+        destination,
+        options,
+        &PlanOptions::default(),
+        token,
+        sink,
+    )
+}
+
 fn run_tar_zst_create_job_with_plan_options(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -497,7 +552,16 @@ fn run_tar_zst_create_job_with_plan_options(
     finish_tar_zst_create_result(result, sink)
 }
 
-fn run_tar_zst_create_job_from_sources_with_plan_options(
+/// Runs a TAR.ZST create job for multiple source roots with explicit planning
+/// options and emits lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+///
+/// # Errors
+///
+/// Returns [`TarZstdError`] when planning, TAR.ZST creation, filesystem I/O, or
+/// cancellation fails.
+pub fn run_tar_zst_create_job_from_sources_with_plan_options(
     sources: &[PathBuf],
     destination: impl AsRef<Path>,
     options: &TarZstdCreateOptions,
@@ -531,6 +595,58 @@ fn run_tar_zst_create_job_from_sources_with_plan_options(
         &mut context,
     );
     finish_tar_zst_create_result(result, sink)
+}
+
+/// Runs a 7z create job for multiple source roots with explicit planning
+/// options and emits lifecycle events.
+///
+/// Partial output state: cancellation during 7z encoding is backend-limited.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when planning, filesystem reads, or 7z writing fails.
+pub fn run_7z_create_job_from_sources_with_plan_options(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &SevenZCreateOptions,
+    plan_options: &PlanOptions,
+    _token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<SevenZCreateReport, SevenZError> {
+    let manifest = match plan_archives(sources, plan_options) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let error = SevenZError::Plan(error);
+            sink.emit(JobEvent::Started {
+                kind: JobKind::SevenZCreate,
+                total_bytes: None,
+            });
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(error);
+        }
+    };
+    sink.emit(JobEvent::Started {
+        kind: JobKind::SevenZCreate,
+        total_bytes: Some(manifest.total_bytes),
+    });
+    let result = sevenz_backend::create_7z_from_manifest(&manifest, destination, options);
+    match result {
+        Ok(report) => {
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
 }
 
 /// Runs a TAR.ZST extract job and emits lifecycle/progress events.
@@ -632,7 +748,7 @@ pub fn run_7z_extract_job_with_password_and_policy(
 ///
 /// # Errors
 ///
-/// Returns [`RarBackendError`] when bundled UnRAR reading, password validation,
+/// Returns [`RarBackendError`] when bundled `UnRAR` reading, password validation,
 /// extraction safety, or filesystem I/O fails.
 pub fn run_rar_extract_job_with_password_and_policy(
     archive_path: impl AsRef<Path>,

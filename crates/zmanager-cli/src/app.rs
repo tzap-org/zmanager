@@ -141,6 +141,8 @@ Archive format and compression:
       --store                    Store ZIP entries without compression
       --solid                    Use solid 7z mode
       --no-solid                 Disable solid 7z mode
+      --volume-size <size>       Split ZIP/7z output; accepts bytes or k/m/g/t suffixes
+                                  ZIP writes .z01/.zip sets; 7z writes .7z.001 sets
 
 Paths, links, and metadata:
   -j, --junk-paths               Store basenames only; fail if flattened names collide
@@ -350,6 +352,10 @@ const BACKEND_DEB_NESTED: &str = "deb-nested";
 
 const TEMP_ARCHIVE_PREFIX: &str = ".";
 const TEMP_ARCHIVE_MARKER: &str = ".tmp";
+const SIZE_UNIT_KIB: u64 = 1024;
+const SIZE_UNIT_MIB: u64 = SIZE_UNIT_KIB * 1024;
+const SIZE_UNIT_GIB: u64 = SIZE_UNIT_MIB * 1024;
+const SIZE_UNIT_TIB: u64 = SIZE_UNIT_GIB * 1024;
 
 const TAR_ZST_FORMAT_ALIASES: &[&str] = &[FORMAT_TAR_ZST, "tzst", "zst"];
 
@@ -700,6 +706,8 @@ struct CreateOutcome {
     warnings: usize,
     encrypted: Option<bool>,
     solid: Option<bool>,
+    volume_size: Option<u64>,
+    volume_count: usize,
 }
 
 #[derive(Debug)]
@@ -752,6 +760,7 @@ struct CreateRequest {
     test_after: bool,
     encrypt: bool,
     password_stdin: bool,
+    volume_size: Option<u64>,
     junk_paths: bool,
     preserve_symlinks: bool,
     follow_symlinks: bool,
@@ -781,6 +790,7 @@ impl Default for CreateRequest {
             test_after: false,
             encrypt: false,
             password_stdin: false,
+            volume_size: None,
             junk_paths: false,
             preserve_symlinks: false,
             follow_symlinks: false,
@@ -1401,6 +1411,10 @@ fn parse_create_request(
                 request.password_stdin = true;
                 index += 1;
             }
+            "--volume-size" => {
+                request.volume_size =
+                    Some(parse_volume_size(&take_value(args, &mut index, arg)?, arg)?);
+            }
             "--dry-run" => {
                 request.dry_run = true;
                 index += 1;
@@ -1409,7 +1423,9 @@ fn parse_create_request(
                 request.test_after = true;
                 index += 1;
             }
-            _ if arg.starts_with('-') => return Err(format!("unknown create option: {arg}")),
+            _ if arg.starts_with('-') && arg != "-" => {
+                return Err(format!("unknown create option: {arg}"));
+            }
             _ => {
                 push_create_positional(request, arg, current_dir.as_deref());
                 index += 1;
@@ -1538,6 +1554,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         return ExitCode::FAILURE;
     }
 
+    let split_output = request.volume_size.is_some();
     let temp = temp_archive_path(&destination);
     if let Some(parent) = destination.parent()
         && !parent.as_os_str().is_empty()
@@ -1559,6 +1576,12 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         total_bytes: Some(manifest.total_bytes),
     });
     let token = CancellationToken::new();
+    let create_destination = if split_output {
+        destination.as_path()
+    } else {
+        temp.as_path()
+    };
+    let backend_replace_existing = split_output && request.force;
 
     let result = match format {
         ArchiveFormat::Zip => {
@@ -1573,15 +1596,16 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 compression,
                 level,
                 preserve_metadata: !request.no_metadata,
-                replace_existing: false,
+                replace_existing: backend_replace_existing,
                 password,
+                volume_size: request.volume_size,
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
                 let mut context = JobContext::new(&token, &mut sink);
                 zmanager_core::zip_backend::create_zip_from_manifest_with_context(
                     &manifest,
-                    &temp,
+                    create_destination,
                     &options,
                     &mut context,
                 )
@@ -1602,6 +1626,8 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     warnings: report.warnings.len(),
                     encrypted: Some(report.encrypted),
                     solid: None,
+                    volume_size: report.volume_size,
+                    volume_count: report.volume_count,
                 })
                 .map_err(|error| error.to_string())
         }
@@ -1640,6 +1666,8 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     warnings: report.warnings.len(),
                     encrypted: None,
                     solid: None,
+                    volume_size: None,
+                    volume_count: 1,
                 })
                 .map_err(|error| error.to_string())
         }
@@ -1649,32 +1677,42 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 level: sevenz_level(request),
                 preserve_metadata: !request.no_metadata,
                 password,
+                encrypt_file_names: true,
+                replace_existing: backend_replace_existing,
+                volume_size: request.volume_size,
             };
-            zmanager_core::sevenz_backend::create_7z_from_manifest(&manifest, &temp, &options)
-                .map(|report| CreateOutcome {
-                    summary: format!(
-                        "created 7z: {} entries, {} bytes, solid {}, encrypted {}, {} warnings",
-                        report.written_entries,
-                        report.written_bytes,
-                        report.solid,
-                        report.encrypted,
-                        report.warnings.len()
-                    ),
-                    format: FORMAT_SEVEN_Z,
-                    backend: FORMAT_SEVEN_Z,
-                    entries: report.written_entries,
-                    bytes: report.written_bytes,
-                    warnings: report.warnings.len(),
-                    encrypted: Some(report.encrypted),
-                    solid: Some(report.solid),
-                })
-                .map_err(|error| error.to_string())
+            zmanager_core::sevenz_backend::create_7z_from_manifest(
+                &manifest,
+                create_destination,
+                &options,
+            )
+            .map(|report| CreateOutcome {
+                summary: format!(
+                    "created 7z: {} entries, {} bytes, solid {}, encrypted {}, {} warnings",
+                    report.written_entries,
+                    report.written_bytes,
+                    report.solid,
+                    report.encrypted,
+                    report.warnings.len()
+                ),
+                format: FORMAT_SEVEN_Z,
+                backend: FORMAT_SEVEN_Z,
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+                warnings: report.warnings.len(),
+                encrypted: Some(report.encrypted),
+                solid: Some(report.solid),
+                volume_size: report.volume_size,
+                volume_count: report.volume_count,
+            })
+            .map_err(|error| error.to_string())
         }
     };
 
     match result {
         Ok(outcome) => {
-            if let Err(error) = publish_archive(&temp, &destination, request.force) {
+            if !split_output && let Err(error) = publish_archive(&temp, &destination, request.force)
+            {
                 let _ = fs::remove_file(&temp);
                 progress.emit(JobEvent::Failed {
                     message: error.to_string(),
@@ -1695,7 +1733,9 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             });
             print_create_summary(&destination, &outcome, global);
             if request.test_after {
-                let archive = destination.to_string_lossy().into_owned();
+                let archive = create_test_archive_path(&destination, format, split_output)
+                    .to_string_lossy()
+                    .into_owned();
                 return run_test_request(
                     &TestRequest {
                         archive,
@@ -1707,7 +1747,9 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             ExitCode::SUCCESS
         }
         Err(error) => {
-            let _ = fs::remove_file(&temp);
+            if !split_output {
+                let _ = fs::remove_file(&temp);
+            }
             progress.emit(JobEvent::Failed {
                 message: error.clone(),
             });
@@ -1745,6 +1787,7 @@ fn create_stream(
         preserve_metadata: !request.no_metadata,
         replace_existing: false,
         password,
+        volume_size: None,
     };
     let stdout = io::stdout();
     match zmanager_core::zip_backend::create_zip_stream_from_manifest(
@@ -1773,6 +1816,23 @@ fn create_stream(
 }
 
 fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Result<(), String> {
+    if request.volume_size.is_some() {
+        if request.archive == "-" {
+            return Err("--volume-size cannot be used with stdout archive output".to_owned());
+        }
+        match format {
+            ArchiveFormat::Zip => {
+                if !path_has_known_extension(&request.archive, ZIP_CREATE_EXTENSIONS) {
+                    return Err("split ZIP output must use a .zip archive path".to_owned());
+                }
+            }
+            ArchiveFormat::SevenZ => {}
+            ArchiveFormat::TarZst => {
+                return Err("--volume-size is supported only for ZIP and 7z archives".to_owned());
+            }
+        }
+    }
+
     if let Some(method) = request.method.as_deref() {
         match (format, method) {
             (ArchiveFormat::Zip, "deflate" | "store")
@@ -2060,7 +2120,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
     let destination = request
         .destination
         .unwrap_or_else(|| default_extract_destination(&request.archive));
-    if is_zip_family_archive(&request.archive) {
+    if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "ZIP", global) {
             Ok(password) => password,
             Err(code) => return code,
@@ -2216,7 +2276,7 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
     }
 
     let mut stdout = io::stdout().lock();
-    if is_zip_family_archive(&request.archive) {
+    if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "ZIP", global) {
             Ok(password) => password,
             Err(code) => return code,
@@ -2571,14 +2631,9 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = match if request.password_stdin {
-        Some(prompt_password_from_stdin(Some(global)))
-    } else {
-        None
-    } {
-        Some(Ok(password)) => Some(password),
-        Some(Err(code)) => return code,
-        None => None,
+    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
+        Ok(password) => password,
+        Err(code) => return code,
     };
     match list_entries_with_password(&request.archive, password.as_deref()) {
         Ok(mut entries) => {
@@ -2712,22 +2767,27 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = match if request.password_stdin {
-        Some(prompt_password_from_stdin(Some(global)))
-    } else {
-        None
-    } {
-        Some(Ok(password)) => Some(password),
-        Some(Err(code)) => return code,
-        None => None,
+    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
+        Ok(password) => password,
+        Err(code) => return code,
     };
 
-    if is_zip_family_archive(&request.archive) {
+    if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
         return run_zip_test_new(
             &request.archive,
             password.as_deref(),
             &request.include,
             &request.exclude,
+            global,
+        );
+    }
+    if is_split_zip_archive_path(&request.archive) {
+        return run_libarchive_data_test_new(
+            &request.archive,
+            password.as_deref(),
+            &request.include,
+            &request.exclude,
+            FORMAT_ZIP,
             global,
         );
     }
@@ -2854,6 +2914,36 @@ fn run_7z_test_new(
         }
         Err(error) => {
             print_error_line(global, format_args!("7z test failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_libarchive_data_test_new(
+    archive: &str,
+    password: Option<&str>,
+    includes: &[String],
+    excludes: &[String],
+    format: &str,
+    global: &GlobalOptions,
+) -> ExitCode {
+    match zmanager_core::libarchive_backend::test_archive_with_password_filter(
+        archive,
+        password,
+        |name| entry_selected(name, includes, excludes),
+    ) {
+        Ok(report) => {
+            print_data_test_success(
+                format,
+                report.tested_entries,
+                report.skipped_entries,
+                report.tested_bytes,
+                global,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(global, format_args!("{format} test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -3170,6 +3260,42 @@ fn parse_usize(value: &str, option: &str) -> Result<usize, String> {
         .map_err(|_| format!("invalid integer for {option}: {value}"))
 }
 
+fn parse_volume_size(value: &str, option: &str) -> Result<u64, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("invalid size for {option}: {value}"));
+    }
+
+    let split_at = trimmed
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let (digits, unit) = trimmed.split_at(split_at);
+    if digits.is_empty() {
+        return Err(format!("invalid size for {option}: {value}"));
+    }
+    let amount = digits
+        .parse::<u64>()
+        .map_err(|_| format!("invalid size for {option}: {value}"))?;
+    if amount == 0 {
+        return Err(format!(
+            "invalid size for {option}: size must be greater than zero"
+        ));
+    }
+
+    let multiplier = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => SIZE_UNIT_KIB,
+        "m" | "mb" | "mib" => SIZE_UNIT_MIB,
+        "g" | "gb" | "gib" => SIZE_UNIT_GIB,
+        "t" | "tb" | "tib" => SIZE_UNIT_TIB,
+        _ => return Err(format!("invalid size unit for {option}: {value}")),
+    };
+
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("size for {option} is too large: {value}"))
+}
+
 fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
     match raw {
         FORMAT_ZIP => Ok(ArchiveFormat::Zip),
@@ -3187,7 +3313,7 @@ fn infer_create_format(path: &str) -> Option<ArchiveFormat> {
         Some(ArchiveFormat::Zip)
     } else if is_tar_zst_archive(path) {
         Some(ArchiveFormat::TarZst)
-    } else if is_7z_archive(path) {
+    } else if path_has_known_extension(path, SEVEN_Z_EXTENSIONS) {
         Some(ArchiveFormat::SevenZ)
     } else {
         None
@@ -3388,6 +3514,20 @@ fn temp_archive_path(destination: &Path) -> PathBuf {
     ))
 }
 
+fn create_test_archive_path(
+    destination: &Path,
+    format: ArchiveFormat,
+    split_output: bool,
+) -> PathBuf {
+    if split_output && format == ArchiveFormat::SevenZ {
+        let mut path = destination.as_os_str().to_os_string();
+        path.push(".001");
+        PathBuf::from(path)
+    } else {
+        destination.to_path_buf()
+    }
+}
+
 fn publish_archive(temp: &Path, destination: &Path, force: bool) -> io::Result<()> {
     if force {
         remove_file_destination_for_publish(destination)?;
@@ -3464,7 +3604,7 @@ fn list_entries_with_password(
     archive: &str,
     password: Option<&str>,
 ) -> Result<Vec<GenericEntry>, String> {
-    if is_zip_family_archive(archive) {
+    if is_zip_family_archive(archive) && !is_split_zip_archive_path(archive) {
         zmanager_core::zip_backend::list_zip(archive)
             .map(|listing| {
                 listing
@@ -3640,6 +3780,12 @@ fn print_create_summary_json(archive: &Path, outcome: &CreateOutcome) {
     }
     if let Some(solid) = outcome.solid {
         print!(",\"solid\":{solid}");
+    }
+    if let Some(volume_size) = outcome.volume_size {
+        print!(",\"volume_size\":{volume_size}");
+    }
+    if outcome.volume_count > 1 {
+        print!(",\"volume_count\":{}", outcome.volume_count);
     }
     println!("}}");
 }
@@ -3991,6 +4137,7 @@ const CREATE_OPTIONS: &[&str] = &[
     "--store",
     "--solid",
     "--no-solid",
+    "--volume-size",
     "--clean",
     "--no-ignore",
     "--no-hidden",
@@ -4177,8 +4324,13 @@ fn is_zip_family_archive(path: &str) -> bool {
     path_has_known_extension(path, ZIP_FAMILY_EXTENSIONS)
 }
 
+fn is_split_zip_archive_path(path: &str) -> bool {
+    zmanager_core::libarchive_backend::is_split_zip_path(Path::new(path))
+}
+
 fn is_7z_archive(path: &str) -> bool {
     path_has_known_extension(path, SEVEN_Z_EXTENSIONS)
+        || zmanager_core::sevenz_backend::is_7z_volume_path(Path::new(path))
 }
 
 fn is_rar_archive(path: &str) -> bool {
@@ -4291,6 +4443,7 @@ fn job_zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         preserve_metadata: true,
         replace_existing: false,
         password,
+        volume_size: None,
     };
     let token = zmanager_core::jobs::CancellationToken::new();
     let mut sink = |event| println!("event\t{event:?}");
@@ -4374,6 +4527,7 @@ fn zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         preserve_metadata: true,
         replace_existing: false,
         password,
+        volume_size: None,
     };
     match zmanager_core::zip_backend::create_zip_from_path(source, destination, &options) {
         Ok(report) => {
@@ -4417,6 +4571,7 @@ fn zip_create_stream_command(mut args: impl Iterator<Item = String>) -> ExitCode
         preserve_metadata: true,
         replace_existing: false,
         password: None,
+        volume_size: None,
     };
     let stdout = io::stdout();
     let output = stdout.lock();
@@ -4822,6 +4977,9 @@ fn run_7z_create(
         level: None,
         preserve_metadata: true,
         password,
+        encrypt_file_names: true,
+        replace_existing: false,
+        volume_size: None,
     };
     match zmanager_core::sevenz_backend::create_7z_from_path(source, destination, &options) {
         Ok(report) => {

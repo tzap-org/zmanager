@@ -18,6 +18,10 @@ typedef enum ZManagerFfiStatus {
 
 typedef struct ZManagerFfiJob ZManagerFfiJob;
 
+#define ZMANAGER_FFI_ARCHIVE_FORMAT_TAR_ZST 0
+#define ZMANAGER_FFI_ARCHIVE_FORMAT_ZIP 1
+#define ZMANAGER_FFI_ARCHIVE_FORMAT_7Z 2
+
 bool zmanager_ffi_healthcheck(void);
 
 ZManagerFfiStatus zmanager_ffi_start_zip_create(
@@ -97,6 +101,65 @@ ZManagerFfiStatus zmanager_ffi_start_clean_source_create_many_with_options(
   ZManagerFfiJob **out_job
 );
 
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  bool encrypt_file_names,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  bool encrypt_file_names,
+  // Zero creates a normal archive. Non-zero splits ZIP into .z01/.zip sets and
+  // 7z into .7z.001 sets.
+  uint64_t volume_size,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count,
+  ZManagerFfiJob **out_job
+);
+
 ZManagerFfiStatus zmanager_ffi_start_extract_archive(
   const char *archive_path,
   const char *destination,
@@ -112,7 +175,19 @@ ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_options(
 );
 
 char *zmanager_ffi_plan_clean_source(const char *source);
+char *zmanager_ffi_plan_archive(const char *source, bool clean_source);
+char *zmanager_ffi_plan_archive_many_with_exclusions(
+  const char *const *sources,
+  size_t source_count,
+  bool clean_source,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count
+);
 char *zmanager_ffi_list_archive(const char *archive_path);
+char *zmanager_ffi_list_archive_with_options(
+  const char *archive_path,
+  const char *password
+);
 char *zmanager_ffi_extract_archive_entry(
   const char *archive_path,
   const char *entry_path,
@@ -128,6 +203,11 @@ char *zmanager_ffi_extract_archive_entry_with_options(
 char *zmanager_ffi_preview_archive_entry(
   const char *archive_path,
   const char *entry_path
+);
+char *zmanager_ffi_preview_archive_entry_with_options(
+  const char *archive_path,
+  const char *entry_path,
+  const char *password
 );
 char *zmanager_ffi_poll_events(ZManagerFfiJob *job);
 void zmanager_ffi_job_cancel(ZManagerFfiJob *job);

@@ -15,9 +15,10 @@ use std::thread::{self, JoinHandle};
 
 use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
-use zmanager_core::manifest::{PlanOptions, plan_archive};
+use zmanager_core::manifest::{PlanOptions, plan_archive, plan_archives};
 use zmanager_core::safety::{ExtractionPolicy, OverwritePolicy};
 use zmanager_core::secrets::SecretString;
+use zmanager_core::sevenz_backend::SevenZCreateOptions;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
 
@@ -41,6 +42,19 @@ const ZIP_MIN_DEFLATE_COMPRESSION_LEVEL: i32 = 1;
 const ZIP_MAX_COMPRESSION_LEVEL: i32 = 9;
 const TAR_ZST_MIN_COMPRESSION_LEVEL: i32 = 1;
 const TAR_ZST_MAX_COMPRESSION_LEVEL: i32 = 9;
+const SEVENZ_MIN_COMPRESSION_LEVEL: i32 = 1;
+const SEVENZ_MAX_COMPRESSION_LEVEL: i32 = 9;
+const DEFAULT_SEVENZ_ENCRYPT_FILE_NAMES: bool = true;
+const ARCHIVE_FORMAT_TAR_ZST: i32 = 0;
+const ARCHIVE_FORMAT_ZIP: i32 = 1;
+const ARCHIVE_FORMAT_SEVENZ: i32 = 2;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum FfiArchiveFormat {
+    TarZst,
+    Zip,
+    SevenZ,
+}
 
 /// Opaque FFI job handle.
 pub struct ZManagerFfiJob {
@@ -292,7 +306,7 @@ unsafe fn start_zip_create_job(
 
     let source = PathBuf::from(source);
     let destination = PathBuf::from(destination);
-    let options = match zip_create_options(password, compression_level, replace_existing) {
+    let options = match zip_create_options(password, compression_level, replace_existing, None) {
         Ok(options) => options,
         Err(status) => return status,
     };
@@ -339,7 +353,7 @@ unsafe fn start_zip_create_many_job(
 
     let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let destination = PathBuf::from(destination);
-    let options = match zip_create_options(password, compression_level, replace_existing) {
+    let options = match zip_create_options(password, compression_level, replace_existing, None) {
         Ok(options) => options,
         Err(status) => return status,
     };
@@ -554,6 +568,252 @@ unsafe fn start_clean_source_create_many_job(
     })
 }
 
+/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots.
+///
+/// `archive_format` must be one of the `ZMANAGER_FFI_ARCHIVE_FORMAT_*`
+/// constants from the C header. Set `clean_source` to apply the same
+/// `.gitignore` and developer-default exclusions as the CLI `--clean` flag.
+/// Pass null or an empty string for `password` to create an unencrypted archive.
+/// TAR.ZST does not support passwords and rejects non-empty passwords.
+///
+/// Pass `-1` for `compression_level` to use the format default, or `1..=9` for
+/// an explicit level. Pass true for `replace_existing` only after the caller has
+/// confirmed replacement with the user.
+///
+/// # Safety
+///
+/// `sources` must point to `source_count` valid NUL-terminated UTF-8 C strings.
+/// `destination` must point to a valid NUL-terminated UTF-8 C string.
+/// `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string. `out_job` must point to writable storage for
+/// one job pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer arguments and no explicit
+    // archive-path exclusions to the extended create entry point.
+    unsafe {
+        zmanager_ffi_start_archive_create_many_with_exclusions(
+            sources,
+            source_count,
+            destination,
+            archive_format,
+            clean_source,
+            password,
+            compression_level,
+            replace_existing,
+            ptr::null(),
+            0,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
+/// explicit archive-path exclusions.
+///
+/// `exclude_archive_paths` may be null only when `exclude_archive_path_count`
+/// is zero. Paths must use archive paths, such as `Project/build`.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, and `out_job` follow the same rules as
+/// [`zmanager_ffi_start_archive_create_many_with_options`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer arguments and preserves
+    // the existing 7z encrypted-header default for callers that do not expose
+    // the file-name encryption option.
+    unsafe {
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_options(
+            sources,
+            source_count,
+            destination,
+            archive_format,
+            clean_source,
+            password,
+            compression_level,
+            replace_existing,
+            DEFAULT_SEVENZ_ENCRYPT_FILE_NAMES,
+            exclude_archive_paths,
+            exclude_archive_path_count,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
+/// explicit archive-path exclusions and 7z-specific encryption options.
+///
+/// `encrypt_file_names` controls 7z encrypted headers when a 7z password is
+/// provided. It is ignored for other formats and for unencrypted 7z archives.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, `exclude_archive_paths`, and `out_job`
+/// follow the same rules as
+/// [`zmanager_ffi_start_archive_create_many_with_exclusions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_and_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer arguments and no split
+    // volume size to the advanced create entry point.
+    unsafe {
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options(
+            sources,
+            source_count,
+            destination,
+            archive_format,
+            clean_source,
+            password,
+            compression_level,
+            replace_existing,
+            encrypt_file_names,
+            0,
+            exclude_archive_paths,
+            exclude_archive_path_count,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
+/// explicit archive-path exclusions, encryption options, and split volume size.
+///
+/// `volume_size` is zero for a normal archive. Non-zero sizes are supported for
+/// ZIP and 7z. ZIP creates `.z01`, `.z02`, ..., `.zip` volume sets; 7z creates
+/// numbered `.7z.001`, `.7z.002`, ... output files.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, `exclude_archive_paths`, and `out_job`
+/// follow the same rules as
+/// [`zmanager_ffi_start_archive_create_many_with_exclusions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    if destination.is_null() || out_job.is_null() {
+        return ZManagerFfiStatus::NullArgument;
+    }
+
+    let Some(archive_format) = ffi_archive_format(archive_format) else {
+        return ZManagerFfiStatus::InvalidArgument;
+    };
+    let sources = match unsafe { c_string_array_arg(sources, source_count) } {
+        Ok(sources) => sources,
+        Err(status) => return status,
+    };
+    let Some(destination) = c_string_arg(destination) else {
+        return ZManagerFfiStatus::InvalidUtf8;
+    };
+    let password = match optional_password_arg(password) {
+        Ok(password) => password,
+        Err(status) => return status,
+    };
+    let exclude_archive_paths = match unsafe {
+        optional_c_string_array_arg(exclude_archive_paths, exclude_archive_path_count)
+    } {
+        Ok(paths) => paths,
+        Err(status) => return status,
+    };
+
+    let create_options = match ffi_create_options(
+        archive_format,
+        password,
+        compression_level,
+        replace_existing,
+        encrypt_file_names,
+        volume_size,
+    ) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
+    let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let destination = PathBuf::from(destination);
+
+    spawn_archive_job(out_job, move |thread_token, sink| {
+        let plan_options = archive_plan_options(clean_source, exclude_archive_paths);
+        match create_options {
+            FfiCreateOptions::TarZst(options) => {
+                let _ = zmanager_core::jobs::run_tar_zst_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+            FfiCreateOptions::Zip(options) => {
+                let _ = zmanager_core::jobs::run_zip_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+            FfiCreateOptions::SevenZ(options) => {
+                let _ = zmanager_core::jobs::run_7z_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+        }
+    })
+}
+
 /// Starts an archive extraction job routed by archive extension.
 ///
 /// ZIP, TAR.ZST, 7z, and RAR use their native extraction backends. Other
@@ -696,6 +956,23 @@ unsafe fn start_extract_archive_job(
 /// `source` must point to a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zmanager_ffi_plan_clean_source(source: *const c_char) -> *mut c_char {
+    unsafe { zmanager_ffi_plan_archive(source, true) }
+}
+
+/// Plans an archive source and returns a JSON summary.
+///
+/// Set `clean_source` to apply the same `.gitignore` and developer-default
+/// exclusions as the CLI `--clean` flag. The returned string must be released
+/// with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `source` must point to a valid NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_plan_archive(
+    source: *const c_char,
+    clean_source: bool,
+) -> *mut c_char {
     if source.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null source\"}");
     }
@@ -704,7 +981,56 @@ pub unsafe extern "C" fn zmanager_ffi_plan_clean_source(source: *const c_char) -
         return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 source\"}");
     };
 
-    let json = match plan_archive(PathBuf::from(source), &PlanOptions::clean_source()) {
+    let plan_options = if clean_source {
+        PlanOptions::clean_source()
+    } else {
+        PlanOptions::default()
+    };
+    let json = match plan_archive(PathBuf::from(source), &plan_options) {
+        Ok(manifest) => json!({
+            "ok": true,
+            "included_entries": manifest.included_count(),
+            "included_bytes": manifest.total_bytes,
+            "excluded_entries": manifest.excluded_count(),
+            "excluded_bytes": manifest.excluded_bytes,
+        })
+        .to_string(),
+        Err(error) => ffi_error_json(&error.to_string()),
+    };
+
+    owned_c_string(&json)
+}
+
+/// Plans multiple archive sources with explicit archive-path exclusions and
+/// returns a JSON summary.
+///
+/// # Safety
+///
+/// `sources` must point to `source_count` valid NUL-terminated UTF-8 C strings.
+/// `exclude_archive_paths` may be null only when `exclude_archive_path_count`
+/// is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_plan_archive_many_with_exclusions(
+    sources: *const *const c_char,
+    source_count: usize,
+    clean_source: bool,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+) -> *mut c_char {
+    let sources = match unsafe { c_string_array_arg(sources, source_count) } {
+        Ok(sources) => sources,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+    let exclude_archive_paths = match unsafe {
+        optional_c_string_array_arg(exclude_archive_paths, exclude_archive_path_count)
+    } {
+        Ok(paths) => paths,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+
+    let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let plan_options = archive_plan_options(clean_source, exclude_archive_paths);
+    let json = match plan_archives(&sources, &plan_options) {
         Ok(manifest) => json!({
             "ok": true,
             "included_entries": manifest.included_count(),
@@ -728,6 +1054,26 @@ pub unsafe extern "C" fn zmanager_ffi_plan_clean_source(source: *const c_char) -
 /// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zmanager_ffi_list_archive(archive_path: *const c_char) -> *mut c_char {
+    // SAFETY: this forwards the same checked archive path and no password to
+    // the password-aware listing entry point.
+    unsafe { zmanager_ffi_list_archive_with_options(archive_path, ptr::null()) }
+}
+
+/// Lists archive entries with optional password support and returns a JSON
+/// object.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+/// `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_list_archive_with_options(
+    archive_path: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
     if archive_path.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
     }
@@ -735,8 +1081,17 @@ pub unsafe extern "C" fn zmanager_ffi_list_archive(archive_path: *const c_char) 
     let Some(archive_path) = c_string_arg(archive_path) else {
         return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
     };
+    let password = match unsafe { optional_password_string_arg(password) } {
+        Ok(password) => password,
+        Err(message) => return owned_c_string(&ffi_error_json(message)),
+    };
 
-    let json = match zmanager_core::archive_browser::list_entries(PathBuf::from(archive_path)) {
+    let json = match zmanager_core::archive_browser::list_entries_with_options(
+        PathBuf::from(archive_path),
+        zmanager_core::archive_browser::BrowserListOptions {
+            password: password.as_deref(),
+        },
+    ) {
         Ok(listing) => archive_listing_to_json(&listing),
         Err(error) => ffi_error_json(&error.to_string()),
     };
@@ -815,13 +1170,9 @@ unsafe fn extract_archive_entry(
     let Some(destination) = c_string_arg(destination) else {
         return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 destination\"}");
     };
-    let password = if password.is_null() {
-        None
-    } else {
-        let Some(password) = c_string_arg(password) else {
-            return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 password\"}");
-        };
-        (!password.is_empty()).then_some(password)
+    let password = match unsafe { optional_password_string_arg(password) } {
+        Ok(password) => password,
+        Err(message) => return owned_c_string(&ffi_error_json(message)),
     };
 
     let json = match zmanager_core::archive_browser::extract_entry_with_options(
@@ -859,6 +1210,29 @@ pub unsafe extern "C" fn zmanager_ffi_preview_archive_entry(
     archive_path: *const c_char,
     entry_path: *const c_char,
 ) -> *mut c_char {
+    // SAFETY: this forwards the same checked pointers and no password to the
+    // password-aware preview entry point.
+    unsafe {
+        zmanager_ffi_preview_archive_entry_with_options(archive_path, entry_path, ptr::null())
+    }
+}
+
+/// Extracts one archive entry to a controlled temporary preview directory with
+/// optional password support and returns a JSON object.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` and `entry_path` must point to valid NUL-terminated UTF-8 C
+/// strings. `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_preview_archive_entry_with_options(
+    archive_path: *const c_char,
+    entry_path: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
     if archive_path.is_null() || entry_path.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null argument\"}");
     }
@@ -869,10 +1243,18 @@ pub unsafe extern "C" fn zmanager_ffi_preview_archive_entry(
     let Some(entry_path) = c_string_arg(entry_path) else {
         return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 entry path\"}");
     };
+    let password = match unsafe { optional_password_string_arg(password) } {
+        Ok(password) => password,
+        Err(message) => return owned_c_string(&ffi_error_json(message)),
+    };
 
-    let json = match zmanager_core::archive_browser::preview_entry(
+    let json = match zmanager_core::archive_browser::preview_entry_with_options(
         PathBuf::from(archive_path),
         &entry_path,
+        zmanager_core::archive_browser::BrowserExtractOptions {
+            password: password.as_deref(),
+            replace_existing: false,
+        },
     ) {
         Ok(report) => json!({
             "ok": true,
@@ -1012,10 +1394,129 @@ unsafe fn c_string_array_arg(
     Ok(strings)
 }
 
+unsafe fn optional_c_string_array_arg(
+    values: *const *const c_char,
+    value_count: usize,
+) -> Result<Vec<String>, ZManagerFfiStatus> {
+    if value_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    unsafe { c_string_array_arg(values, value_count) }
+}
+
+fn archive_plan_options(clean_source: bool, exclude_archive_paths: Vec<String>) -> PlanOptions {
+    let mut options = if clean_source {
+        PlanOptions::clean_source()
+    } else {
+        PlanOptions::default()
+    };
+    options.exclude_archive_paths = exclude_archive_paths;
+    options
+}
+
+fn ffi_status_json(status: ZManagerFfiStatus) -> String {
+    ffi_error_json(match status {
+        ZManagerFfiStatus::Ok => "ok",
+        ZManagerFfiStatus::NullArgument => "null argument",
+        ZManagerFfiStatus::InvalidUtf8 => "invalid UTF-8 argument",
+        ZManagerFfiStatus::InvalidArgument => "invalid argument",
+    })
+}
+
+enum FfiCreateOptions {
+    TarZst(TarZstdCreateOptions),
+    Zip(ZipCreateOptions),
+    SevenZ(SevenZCreateOptions),
+}
+
+fn ffi_archive_format(value: i32) -> Option<FfiArchiveFormat> {
+    match value {
+        ARCHIVE_FORMAT_TAR_ZST => Some(FfiArchiveFormat::TarZst),
+        ARCHIVE_FORMAT_ZIP => Some(FfiArchiveFormat::Zip),
+        ARCHIVE_FORMAT_SEVENZ => Some(FfiArchiveFormat::SevenZ),
+        _ => None,
+    }
+}
+
+fn optional_password_arg(
+    password: *const c_char,
+) -> Result<Option<SecretString>, ZManagerFfiStatus> {
+    if password.is_null() {
+        return Ok(None);
+    }
+
+    let Some(password) = c_string_arg(password) else {
+        return Err(ZManagerFfiStatus::InvalidUtf8);
+    };
+    if password.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(SecretString::from(password)))
+}
+
+unsafe fn optional_password_string_arg(
+    password: *const c_char,
+) -> Result<Option<String>, &'static str> {
+    if password.is_null() {
+        return Ok(None);
+    }
+
+    let Some(password) = c_string_arg(password) else {
+        return Err("invalid UTF-8 password");
+    };
+    if password.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(password))
+}
+
+fn ffi_create_options(
+    archive_format: FfiArchiveFormat,
+    password: Option<SecretString>,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+) -> Result<FfiCreateOptions, ZManagerFfiStatus> {
+    let volume_size = match volume_size {
+        0 => None,
+        size => Some(size),
+    };
+
+    match archive_format {
+        FfiArchiveFormat::TarZst => {
+            if password.is_some() {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            }
+            if volume_size.is_some() {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            }
+            tar_zst_create_options(compression_level, replace_existing)
+                .map(FfiCreateOptions::TarZst)
+        }
+        FfiArchiveFormat::Zip => {
+            zip_create_options(password, compression_level, replace_existing, volume_size)
+                .map(FfiCreateOptions::Zip)
+        }
+        FfiArchiveFormat::SevenZ => sevenz_create_options(
+            password,
+            compression_level,
+            replace_existing,
+            encrypt_file_names,
+            volume_size,
+        )
+        .map(FfiCreateOptions::SevenZ),
+    }
+}
+
 fn zip_create_options(
     password: Option<SecretString>,
     compression_level: i32,
     replace_existing: bool,
+    volume_size: Option<u64>,
 ) -> Result<ZipCreateOptions, ZManagerFfiStatus> {
     let (compression, level) = match compression_level {
         DEFAULT_COMPRESSION_LEVEL_SENTINEL => (ZipCompression::Deflate, None),
@@ -1034,6 +1535,7 @@ fn zip_create_options(
         preserve_metadata: true,
         replace_existing,
         password,
+        volume_size,
     })
 }
 
@@ -1041,8 +1543,10 @@ fn tar_zst_create_options(
     compression_level: i32,
     replace_existing: bool,
 ) -> Result<TarZstdCreateOptions, ZManagerFfiStatus> {
-    let mut options = TarZstdCreateOptions::default();
-    options.replace_existing = replace_existing;
+    let mut options = TarZstdCreateOptions {
+        replace_existing,
+        ..TarZstdCreateOptions::default()
+    };
     if compression_level == DEFAULT_COMPRESSION_LEVEL_SENTINEL {
         return Ok(options);
     }
@@ -1054,6 +1558,32 @@ fn tar_zst_create_options(
 
     options.level = compression_level;
     Ok(options)
+}
+
+fn sevenz_create_options(
+    password: Option<SecretString>,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: Option<u64>,
+) -> Result<SevenZCreateOptions, ZManagerFfiStatus> {
+    let level = match compression_level {
+        DEFAULT_COMPRESSION_LEVEL_SENTINEL => None,
+        level if (SEVENZ_MIN_COMPRESSION_LEVEL..=SEVENZ_MAX_COMPRESSION_LEVEL).contains(&level) => {
+            Some(u32::try_from(level).map_err(|_| ZManagerFfiStatus::InvalidArgument)?)
+        }
+        _ => return Err(ZManagerFfiStatus::InvalidArgument),
+    };
+
+    Ok(SevenZCreateOptions {
+        solid: true,
+        level,
+        preserve_metadata: true,
+        password,
+        encrypt_file_names,
+        replace_existing,
+        volume_size,
+    })
 }
 
 fn spawn_archive_job<F>(out_job: *mut *mut ZManagerFfiJob, runner: F) -> ZManagerFfiStatus
@@ -1273,8 +1803,13 @@ mod tests {
     use super::{
         ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_extract_archive_entry,
         zmanager_ffi_extract_archive_entry_with_options, zmanager_ffi_job_free,
-        zmanager_ffi_job_is_finished, zmanager_ffi_list_archive, zmanager_ffi_plan_clean_source,
-        zmanager_ffi_poll_events, zmanager_ffi_preview_archive_entry,
+        zmanager_ffi_job_is_finished, zmanager_ffi_list_archive,
+        zmanager_ffi_list_archive_with_options, zmanager_ffi_plan_archive,
+        zmanager_ffi_plan_clean_source, zmanager_ffi_poll_events,
+        zmanager_ffi_preview_archive_entry, zmanager_ffi_preview_archive_entry_with_options,
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options,
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_options,
+        zmanager_ffi_start_archive_create_many_with_options,
         zmanager_ffi_start_clean_source_create, zmanager_ffi_start_clean_source_create_many,
         zmanager_ffi_start_clean_source_create_many_with_options,
         zmanager_ffi_start_extract_archive, zmanager_ffi_start_extract_archive_with_options,
@@ -1289,6 +1824,12 @@ mod tests {
     use std::ptr;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use zmanager_core::safety::ExtractionPolicy;
+
+    const TEST_ARCHIVE_FORMAT_TAR_ZST: i32 = super::ARCHIVE_FORMAT_TAR_ZST;
+    const TEST_ARCHIVE_FORMAT_ZIP: i32 = super::ARCHIVE_FORMAT_ZIP;
+    const TEST_ARCHIVE_FORMAT_SEVENZ: i32 = super::ARCHIVE_FORMAT_SEVENZ;
+    const TEST_7Z_VOLUME_SIZE: u64 = 1_048_576;
 
     #[test]
     fn c_abi_zip_create_job_can_be_started_and_polled() {
@@ -1508,6 +2049,13 @@ mod tests {
         assert!(plan.contains("\"excluded_entries\":1"));
         assert!(plan.contains("\"excluded_bytes\":4"));
 
+        // SAFETY: `source` is a valid C string for the duration of the call.
+        let raw_default_plan = unsafe { zmanager_ffi_plan_archive(source.as_ptr(), false) };
+        let default_plan = c_string(raw_default_plan);
+        assert!(default_plan.contains("\"ok\":true"));
+        assert!(default_plan.contains("\"excluded_entries\":0"));
+        assert!(default_plan.contains("\"excluded_bytes\":0"));
+
         let destination = CString::new(
             temp.join("payload.clean.tar.zst")
                 .to_string_lossy()
@@ -1674,6 +2222,300 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_generic_create_many_applies_clean_source_to_zip() {
+        let temp = test_root("zmanager-ffi-generic-clean-zip");
+        fs::create_dir_all(temp.join("project/node_modules/pkg")).unwrap();
+        fs::write(temp.join("project/src.txt"), b"keep").unwrap();
+        fs::write(temp.join("project/node_modules/pkg/index.js"), b"drop").unwrap();
+        let source = CString::new(temp.join("project").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("project.clean.zip").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_ZIP,
+                true,
+                ptr::null(),
+                1,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"zip_create\""));
+        assert!(!events.contains("node_modules"));
+
+        let listing = zmanager_core::zip_backend::list_zip(temp.join("project.clean.zip")).unwrap();
+        let paths = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["project/", "project/src.txt"]);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_generic_create_many_creates_encrypted_7z() {
+        let temp = test_root("zmanager-ffi-generic-7z");
+        fs::create_dir_all(temp.join("project")).unwrap();
+        fs::write(temp.join("project/secret.txt"), b"secret").unwrap();
+        let source = CString::new(temp.join("project").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination = CString::new(temp.join("project.7z").to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("correct horse").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source, destination, and password C strings live for the
+        // duration of the call, and `job` is valid writable storage for the
+        // out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_SEVENZ,
+                false,
+                password.as_ptr(),
+                5,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"7z_create\""));
+        assert!(events.contains("\"type\":\"completed\""));
+
+        assert!(matches!(
+            zmanager_core::sevenz_backend::extract_7z(
+                temp.join("project.7z"),
+                temp.join("missing-password-out"),
+                None,
+                ExtractionPolicy::default(),
+            ),
+            Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired
+                | zmanager_core::sevenz_backend::SevenZError::InvalidPassword)
+        ));
+        zmanager_core::sevenz_backend::extract_7z(
+            temp.join("project.7z"),
+            temp.join("out"),
+            Some("correct horse"),
+            ExtractionPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.join("out/project/secret.txt")).unwrap(),
+            "secret"
+        );
+        zmanager_core::sevenz_backend::list_7z(temp.join("project.7z"), Some("correct horse"))
+            .unwrap();
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_generic_create_many_creates_split_7z_volumes() {
+        let temp = test_root("zmanager-ffi-generic-split-7z");
+        fs::create_dir_all(temp.join("project")).unwrap();
+        fs::write(
+            temp.join("project/blob.bin"),
+            deterministic_bytes(3 * 1024 * 1024),
+        )
+        .unwrap();
+        let source = CString::new(temp.join("project").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination = CString::new(temp.join("project.7z").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, `job` is valid writable storage, and null exclusions are valid
+        // with a zero count.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_SEVENZ,
+                false,
+                ptr::null(),
+                1,
+                false,
+                true,
+                TEST_7Z_VOLUME_SIZE,
+                ptr::null(),
+                0,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"7z_create\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert!(!temp.join("project.7z").exists());
+        assert_eq!(
+            fs::metadata(temp.join("project.7z.001")).unwrap().len(),
+            TEST_7Z_VOLUME_SIZE
+        );
+        assert!(temp.join("project.7z.002").exists());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_generic_create_many_creates_split_zip_volumes() {
+        let temp = test_root("zmanager-ffi-generic-zip-volume-size");
+        fs::create_dir_all(temp.join("project")).unwrap();
+        fs::write(
+            temp.join("project/blob.bin"),
+            deterministic_bytes(3 * 1024 * 1024),
+        )
+        .unwrap();
+        let source = CString::new(temp.join("project").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination =
+            CString::new(temp.join("project.zip").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, `job` is valid writable storage, and null exclusions are valid
+        // with a zero count.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_exclusions_and_advanced_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_ZIP,
+                false,
+                ptr::null(),
+                super::ZIP_STORE_COMPRESSION_LEVEL,
+                false,
+                false,
+                TEST_7Z_VOLUME_SIZE,
+                ptr::null(),
+                0,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"zip_create\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert!(temp.join("project.z01").exists());
+        assert!(temp.join("project.zip").exists());
+        assert_eq!(
+            fs::metadata(temp.join("project.z01")).unwrap().len(),
+            TEST_7Z_VOLUME_SIZE
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_generic_create_many_can_leave_7z_file_names_visible() {
+        let temp = test_root("zmanager-ffi-generic-7z-visible-names");
+        fs::create_dir_all(temp.join("project")).unwrap();
+        fs::write(temp.join("project/secret.txt"), b"secret").unwrap();
+        let source = CString::new(temp.join("project").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination = CString::new(temp.join("project.7z").to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("correct horse").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source, destination, and password C strings live for the
+        // duration of the call, and `job` is valid writable storage for the
+        // out pointer. Null exclusions are valid with a zero count.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_exclusions_and_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_SEVENZ,
+                false,
+                password.as_ptr(),
+                5,
+                false,
+                false,
+                ptr::null(),
+                0,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"7z_create\""));
+        assert!(events.contains("\"type\":\"completed\""));
+
+        let listing =
+            zmanager_core::sevenz_backend::list_7z(temp.join("project.7z"), None).unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == "project/secret.txt")
+        );
+        assert!(matches!(
+            zmanager_core::sevenz_backend::extract_7z(
+                temp.join("project.7z"),
+                temp.join("missing-password-out"),
+                None,
+                ExtractionPolicy::default(),
+            ),
+            Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired
+                | zmanager_core::sevenz_backend::SevenZError::InvalidPassword)
+        ));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_generic_create_many_rejects_tar_zst_password() {
+        let temp = test_root("zmanager-ffi-generic-tzst-password");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("file.txt"), b"payload").unwrap();
+        let source = CString::new(temp.join("file.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination = CString::new(temp.join("file.tzst").to_string_lossy().as_ref()).unwrap();
+        let password = CString::new("not supported").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source, destination, and password C strings live for the
+        // duration of the call, and `job` is valid writable storage for the
+        // out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_TAR_ZST,
+                false,
+                password.as_ptr(),
+                1,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::InvalidArgument);
+        assert!(job.is_null());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn c_abi_encrypted_zip_create_uses_password() {
         let temp = std::env::temp_dir().join(format!(
             "zmanager-ffi-encrypted-{}-{}",
@@ -1777,6 +2619,48 @@ mod tests {
         let cleanup_root = json_string_field(&preview, "cleanup_root").unwrap();
         let preview_path = json_string_field(&preview, "preview_path").unwrap();
         assert_eq!(fs::read_to_string(&preview_path).unwrap(), "preview me");
+        fs::remove_dir_all(cleanup_root).unwrap();
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_archive_browser_previews_encrypted_zip_entry_with_password() {
+        let temp = test_root("zmanager-ffi-browser-encrypted-preview");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"secret preview").unwrap();
+        zmanager_core::zip_backend::create_zip_from_path(
+            temp.join("payload"),
+            temp.join("archive.zip"),
+            &zmanager_core::zip_backend::ZipCreateOptions {
+                password: Some(zmanager_core::secrets::SecretString::from("correct horse")),
+                ..zmanager_core::zip_backend::ZipCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let archive = CString::new(temp.join("archive.zip").to_string_lossy().as_ref()).unwrap();
+        let entry = CString::new("payload/file.txt").unwrap();
+
+        // SAFETY: all C strings are valid for the duration of the call.
+        let missing_password = c_string(unsafe {
+            zmanager_ffi_preview_archive_entry(archive.as_ptr(), entry.as_ptr())
+        });
+        assert!(missing_password.contains("\"ok\":false"));
+        assert!(missing_password.to_lowercase().contains("password"));
+
+        let password = CString::new("correct horse").unwrap();
+        // SAFETY: all C strings are valid for the duration of the call.
+        let preview = c_string(unsafe {
+            zmanager_ffi_preview_archive_entry_with_options(
+                archive.as_ptr(),
+                entry.as_ptr(),
+                password.as_ptr(),
+            )
+        });
+        assert!(preview.contains("\"ok\":true"));
+        let cleanup_root = json_string_field(&preview, "cleanup_root").unwrap();
+        let preview_path = json_string_field(&preview, "preview_path").unwrap();
+        assert_eq!(fs::read_to_string(&preview_path).unwrap(), "secret preview");
         fs::remove_dir_all(cleanup_root).unwrap();
         fs::remove_dir_all(temp).unwrap();
     }
@@ -1984,6 +2868,37 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_list_archive_options_read_encrypted_7z_headers() {
+        let temp = test_root("zmanager-ffi-list-7z-options");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"secret 7z").unwrap();
+        zmanager_core::sevenz_backend::create_7z_from_path(
+            temp.join("payload"),
+            temp.join("archive.7z"),
+            &zmanager_core::sevenz_backend::SevenZCreateOptions {
+                password: Some(zmanager_core::secrets::SecretString::from("correct horse")),
+                encrypt_file_names: true,
+                ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let archive = CString::new(temp.join("archive.7z").to_string_lossy().as_ref()).unwrap();
+        let without_password = c_string(unsafe { zmanager_ffi_list_archive(archive.as_ptr()) });
+        assert!(without_password.contains("\"ok\":false"));
+        assert!(without_password.to_lowercase().contains("password"));
+
+        let password = CString::new("correct horse").unwrap();
+        let with_password = c_string(unsafe {
+            zmanager_ffi_list_archive_with_options(archive.as_ptr(), password.as_ptr())
+        });
+        assert!(with_password.contains("\"ok\":true"));
+        assert!(with_password.contains("payload/file.txt"));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn c_abi_extract_archive_options_route_rar_passwords_to_native_backend_when_available() {
         let Some(rar) = find_on_path("rar") else {
             return;
@@ -2106,6 +3021,18 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn deterministic_bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect()
     }
 
     fn json_string_field(json: &str, field: &str) -> Option<PathBuf> {

@@ -83,6 +83,7 @@ const CREATE_FLAGS: &[&str] = &[
     "--store",
     "--solid",
     "--no-solid",
+    "--volume-size <size>",
     "--clean",
     "--no-ignore",
     "--hidden",
@@ -145,6 +146,7 @@ const CREATE_HELP_NEEDLES: &[&str] = &[
     "Create ZIP, TAR.ZST, or 7z archives",
     "zm create <archive> <paths...>",
     "--exclude <glob>",
+    "--volume-size <size>",
     "-x always means extract",
     FILTER_GLOB_NOTE,
     "printf '%s\\n'",
@@ -377,6 +379,7 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         "strip-components",
         "to-stdout",
         "password-stdin",
+        "volume-size",
     ] {
         assert_contains(COMPLETION_BASH, &format!("--{required_flag}"));
         assert_contains(COMPLETION_FISH, &format!("-l {required_flag}"));
@@ -407,6 +410,7 @@ fn static_completion_files_capture_navigation_contract() {
         COMPLETION_ZSH,
     ] {
         assert_contains(completion, "create");
+        assert_contains(completion, "volume-size");
         assert_contains(completion, "completions");
         assert_contains(completion, "help");
         assert_contains(completion, "bash");
@@ -573,6 +577,7 @@ fn man_page_covers_public_commands_and_release_topics() {
         ".Sh STDOUT AND JSON",
         ".Sh EXIT STATUS",
         "password-stdin",
+        "volume-size",
         "to-stdout",
         "strip-components",
     ] {

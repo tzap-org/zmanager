@@ -61,6 +61,7 @@ complete -c zm -n "__fish_seen_subcommand_from create" -s 9 -d "Compression pres
 complete -c zm -n "__fish_seen_subcommand_from create" -l store -d "Store ZIP entries without compression"
 complete -c zm -n "__fish_seen_subcommand_from create" -l solid -d "Use solid 7z mode"
 complete -c zm -n "__fish_seen_subcommand_from create" -l no-solid -d "Disable solid 7z mode"
+complete -c zm -n "__fish_seen_subcommand_from create" -l volume-size -xa "64k 100m 500m 1g 2g 4g" -d "Split ZIP/7z output volumes"
 complete -c zm -n "__fish_seen_subcommand_from create" -s j -l junk-paths -d "Store basenames only"
 complete -c zm -n "__fish_seen_subcommand_from create" -s y -l preserve-symlinks -d "Store symlink entries where supported"
 complete -c zm -n "__fish_seen_subcommand_from create" -l follow-symlinks -d "Archive symlink target contents"

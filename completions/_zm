@@ -73,6 +73,7 @@ create_options=(
   '--store[Store ZIP entries without compression]'
   '--solid[Use solid 7z mode]'
   '--no-solid[Disable solid 7z mode]'
+  '--volume-size[Split ZIP/7z output volumes]:size:(64k 100m 500m 1g 2g 4g)'
   '(-j --junk-paths)'{-j,--junk-paths}'[Store basenames only]'
   '(-y --preserve-symlinks)'{-y,--preserve-symlinks}'[Store symlink entries where supported]'
   '--follow-symlinks[Archive symlink target contents]'

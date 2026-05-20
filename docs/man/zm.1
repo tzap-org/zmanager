@@ -152,6 +152,20 @@ Store ZIP entries without compression.
 Use solid 7z mode.
 .It Fl -no-solid
 Disable solid 7z mode.
+.It Fl -volume-size Ar size
+Split ZIP or 7z output into volumes.
+Sizes accept bytes or
+.Cm k ,
+.Cm m ,
+.Cm g ,
+and
+.Cm t
+suffixes.
+ZIP writes
+.Pa .z01/.zip
+sets; 7z writes
+.Pa .7z.001
+sets.
 .It Fl j , Fl -junk-paths
 Store basenames only; fail if flattened names collide.
 .It Fl y , Fl -preserve-symlinks
