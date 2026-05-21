@@ -1823,7 +1823,7 @@ mod tests {
     use std::process::Command;
     use std::ptr;
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use zmanager_core::safety::ExtractionPolicy;
 
     const TEST_ARCHIVE_FORMAT_TAR_ZST: i32 = super::ARCHIVE_FORMAT_TAR_ZST;
@@ -2975,12 +2975,18 @@ mod tests {
 
     fn drain_job(job: *mut ZManagerFfiJob) -> String {
         let mut events = String::new();
-        for _ in 0..200 {
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        loop {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
+            assert!(
+                Instant::now() < deadline,
+                "job did not finish before timeout; events: {events}"
+            );
             thread::sleep(Duration::from_millis(10));
         }
         events.push_str(&poll_events(job));
