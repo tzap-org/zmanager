@@ -4,6 +4,8 @@ PackageVersion: __PACKAGE_VERSION__
 InstallerType: zip
 NestedInstallerType: portable
 ReleaseDate: __RELEASE_DATE__
+Commands:
+  - zm
 Installers:
   - Architecture: x64
     InstallerUrl: __RELEASE_BASE_URL__/zm-x86_64-pc-windows-msvc.zip
