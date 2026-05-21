@@ -15,7 +15,7 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Latest release: `v1.0.1`
+Latest release: `v1.0.2`
 
 ## Install
 
@@ -45,14 +45,14 @@ brew install zmanager
 Ubuntu and Debian users can install the `.deb` package from the GitHub release:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zmanager-cli_1.0.2-1_amd64.deb
 sha256sum -c SHA256SUMS --ignore-missing
-sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
+sudo apt install ./zmanager-cli_1.0.2-1_amd64.deb
 zm healthcheck
 ```
 
-Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems. The package installs
+Use `zmanager-cli_1.0.2-1_arm64.deb` on ARM64 systems. The package installs
 `zm`, the man page, and bash, zsh, and fish completions into standard system
 locations.
 
@@ -86,7 +86,7 @@ Install a specific version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.1 sh
+  | ZMANAGER_VERSION=v1.0.2 sh
 ```
 
 Install somewhere else:
