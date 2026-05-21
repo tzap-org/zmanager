@@ -191,6 +191,21 @@ function Ensure-Vcpkg {
     [Environment]::SetEnvironmentVariable("Path", ($debugRuntimePath + ";" + $runtimePath + ";" + $currentPath), "Process")
 }
 
+function Enable-StaticRustCrt {
+    if (($Triplet -like "*-static") -and ($Triplet -notlike "*-static-md")) {
+        $staticCrtFlag = "-C target-feature=+crt-static"
+        $currentRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
+
+        if ([string]::IsNullOrWhiteSpace($currentRustFlags)) {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $staticCrtFlag, "Process")
+        } elseif ($currentRustFlags -notlike "*+crt-static*") {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", ($currentRustFlags + " " + $staticCrtFlag), "Process")
+        }
+
+        Write-Host ("RUSTFLAGS=" + [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process"))
+    }
+}
+
 function Invoke-CargoTest {
     param(
         [Parameter(Mandatory = $true)]
@@ -379,6 +394,7 @@ function New-ReleasePackage {
 
 Import-VisualStudioEnvironment -Architecture $VcArch -RequiredComponent $VsComponent
 Ensure-Vcpkg
+Enable-StaticRustCrt
 
 Write-Host "rustc:"
 rustc -Vv

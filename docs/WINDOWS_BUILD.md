@@ -8,8 +8,8 @@ binding path.
 
 | Platform | Rust target | vcpkg triplet | Runner |
 | --- | --- | --- | --- |
-| Windows x64 | `x86_64-pc-windows-msvc` | `x64-windows-static-md` | `windows-2025` |
-| Windows ARM64 | `aarch64-pc-windows-msvc` | `arm64-windows-static-md` | `windows-11-arm` |
+| Windows x64 | `x86_64-pc-windows-msvc` | `x64-windows-static` | `windows-2025` |
+| Windows ARM64 | `aarch64-pc-windows-msvc` | `arm64-windows-static` | `windows-11-arm` |
 
 ## Required Tools
 
@@ -25,15 +25,15 @@ dependencies used by that build:
 
 ```powershell
 C:\vcpkg\vcpkg.exe install `
-  zlib:x64-windows-static-md `
-  bzip2:x64-windows-static-md `
-  liblzma:x64-windows-static-md `
-  zstd:x64-windows-static-md `
-  lz4:x64-windows-static-md `
-  openssl:x64-windows-static-md
+  zlib:x64-windows-static `
+  bzip2:x64-windows-static `
+  liblzma:x64-windows-static `
+  zstd:x64-windows-static `
+  lz4:x64-windows-static `
+  openssl:x64-windows-static
 ```
 
-Use `arm64-windows-static-md` instead of `x64-windows-static-md` for native ARM64.
+Use `arm64-windows-static` instead of `x64-windows-static` for native ARM64.
 
 ## Local Validation
 
@@ -44,7 +44,7 @@ Windows x64:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\ci-windows.ps1 `
   -Target "x86_64-pc-windows-msvc" `
-  -Triplet "x64-windows-static-md" `
+  -Triplet "x64-windows-static" `
   -VcArch "x64" `
   -VsComponent "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 ```
@@ -54,7 +54,7 @@ Windows ARM64:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\ci-windows.ps1 `
   -Target "aarch64-pc-windows-msvc" `
-  -Triplet "arm64-windows-static-md" `
+  -Triplet "arm64-windows-static" `
   -VcArch "arm64" `
   -VsComponent "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
 ```
@@ -69,14 +69,14 @@ narrow set of owned FFI declarations. The safe Rust wrapper in
 `zmanager-core` uses.
 
 Windows builds intentionally use XmlLite and Windows CNG where possible, and use
-vcpkg static-library triplets with the dynamic MSVC runtime. That keeps the
+vcpkg static-library triplets with the static MSVC runtime. That keeps the
 libarchive dependency boundary smaller than the former MinGW path, avoids
-libxml2/iconv runtime requirements on Windows, and statically links the
-third-party compression and crypto libraries.
+libxml2/iconv runtime requirements on Windows, and statically links both the
+third-party compression and crypto libraries and the MSVC runtime.
 
-The Windows release package should not require vcpkg DLLs beside `zm.exe` when
-built with the documented static triplets. It may still depend on normal Windows
-system DLLs supplied by the OS/runtime.
+The Windows release package should not require vcpkg or Visual C++ runtime DLLs
+beside `zm.exe` when built with the documented static triplets. It may still
+depend on normal Windows system DLLs supplied by the OS/runtime.
 
 ## CI
 
@@ -95,5 +95,7 @@ Windows jobs call `scripts/ci-windows.ps1`, which:
 - installs the vcpkg dependencies for the requested triplet;
 - sets `CMAKE_TOOLCHAIN_FILE`, `VCPKG_*`, `LIB`, `INCLUDE`, and any vcpkg
   runtime paths present for the selected triplet;
+- sets `RUSTFLAGS=-C target-feature=+crt-static` for `*-windows-static`
+  triplets;
 - runs `cargo test --workspace --target <target>`;
 - builds `zm.exe` in release mode for the same target.
