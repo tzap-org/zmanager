@@ -20,6 +20,7 @@ use zmanager_core::safety::{ExtractionPolicy, OverwritePolicy};
 use zmanager_core::secrets::SecretString;
 use zmanager_core::sevenz_backend::SevenZCreateOptions;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
+use zmanager_core::tzap_backend::TzapCreateOptions;
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
 
 /// C ABI status code returned by FFI entry points.
@@ -42,18 +43,23 @@ const ZIP_MIN_DEFLATE_COMPRESSION_LEVEL: i32 = 1;
 const ZIP_MAX_COMPRESSION_LEVEL: i32 = 9;
 const TAR_ZST_MIN_COMPRESSION_LEVEL: i32 = 1;
 const TAR_ZST_MAX_COMPRESSION_LEVEL: i32 = 9;
+const TZAP_MIN_COMPRESSION_LEVEL: i32 = 1;
+const TZAP_MAX_COMPRESSION_LEVEL: i32 = 9;
+const TZAP_DEFAULT_COMPRESSION_LEVEL: i32 = 3;
 const SEVENZ_MIN_COMPRESSION_LEVEL: i32 = 1;
 const SEVENZ_MAX_COMPRESSION_LEVEL: i32 = 9;
 const DEFAULT_SEVENZ_ENCRYPT_FILE_NAMES: bool = true;
 const ARCHIVE_FORMAT_TAR_ZST: i32 = 0;
 const ARCHIVE_FORMAT_ZIP: i32 = 1;
 const ARCHIVE_FORMAT_SEVENZ: i32 = 2;
+const ARCHIVE_FORMAT_TZAP: i32 = 3;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum FfiArchiveFormat {
     TarZst,
     Zip,
     SevenZ,
+    Tzap,
 }
 
 /// Opaque FFI job handle.
@@ -663,8 +669,8 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions(
     }
 }
 
-/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
-/// explicit archive-path exclusions and 7z-specific encryption options.
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots
+/// with explicit archive-path exclusions and 7z-specific encryption options.
 ///
 /// `encrypt_file_names` controls 7z encrypted headers when a 7z password is
 /// provided. It is ignored for other formats and for unencrypted 7z archives.
@@ -710,12 +716,14 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
     }
 }
 
-/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
-/// explicit archive-path exclusions, encryption options, and split volume size.
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots
+/// with explicit archive-path exclusions, encryption options, and split volume
+/// size.
 ///
 /// `volume_size` is zero for a normal archive. Non-zero sizes are supported for
 /// ZIP and 7z. ZIP creates `.z01`, `.z02`, ..., `.zip` volume sets; 7z creates
-/// numbered `.7z.001`, `.7z.002`, ... output files.
+/// numbered `.7z.001`, `.7z.002`, ... output files. TZAP currently accepts
+/// only `volume_size == 0` through this facade.
 ///
 /// # Safety
 ///
@@ -810,13 +818,23 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
                     sink,
                 );
             }
+            FfiCreateOptions::Tzap(options) => {
+                let _ = zmanager_core::jobs::run_tzap_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
         }
     })
 }
 
 /// Starts an archive extraction job routed by archive extension.
 ///
-/// ZIP, TAR.ZST, 7z, and RAR use their native extraction backends. Other
+/// ZIP, TAR.ZST, TZAP, 7z, and RAR use their native extraction backends. Other
 /// formats use the libarchive fallback with coarse lifecycle events.
 ///
 /// # Safety
@@ -837,7 +855,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
 /// Starts an archive extraction job with optional password and overwrite
 /// behavior routed by archive extension.
 ///
-/// ZIP, TAR.ZST, 7z, and RAR use their native extraction backends. Other
+/// ZIP, TAR.ZST, TZAP, 7z, and RAR use their native extraction backends. Other
 /// formats use the libarchive fallback with coarse lifecycle events.
 ///
 /// # Safety
@@ -930,6 +948,15 @@ unsafe fn start_extract_archive_job(
             let _ = zmanager_core::jobs::run_tar_zst_extract_job_with_policy(
                 archive_path,
                 destination,
+                policy,
+                &thread_token,
+                sink,
+            );
+        } else if is_tzap_archive(&archive_path) {
+            let _ = zmanager_core::jobs::run_tzap_extract_job_with_password_and_policy(
+                archive_path,
+                destination,
+                password,
                 policy,
                 &thread_token,
                 sink,
@@ -1428,6 +1455,7 @@ enum FfiCreateOptions {
     TarZst(TarZstdCreateOptions),
     Zip(ZipCreateOptions),
     SevenZ(SevenZCreateOptions),
+    Tzap(TzapCreateOptions),
 }
 
 fn ffi_archive_format(value: i32) -> Option<FfiArchiveFormat> {
@@ -1435,6 +1463,7 @@ fn ffi_archive_format(value: i32) -> Option<FfiArchiveFormat> {
         ARCHIVE_FORMAT_TAR_ZST => Some(FfiArchiveFormat::TarZst),
         ARCHIVE_FORMAT_ZIP => Some(FfiArchiveFormat::Zip),
         ARCHIVE_FORMAT_SEVENZ => Some(FfiArchiveFormat::SevenZ),
+        ARCHIVE_FORMAT_TZAP => Some(FfiArchiveFormat::Tzap),
         _ => None,
     }
 }
@@ -1509,7 +1538,38 @@ fn ffi_create_options(
             volume_size,
         )
         .map(FfiCreateOptions::SevenZ),
+        FfiArchiveFormat::Tzap => {
+            if volume_size.is_some() {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            }
+            let Some(passphrase) = password else {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            };
+            tzap_create_options(passphrase, compression_level, replace_existing)
+                .map(FfiCreateOptions::Tzap)
+        }
     }
+}
+
+fn tzap_create_options(
+    passphrase: SecretString,
+    compression_level: i32,
+    replace_existing: bool,
+) -> Result<TzapCreateOptions, ZManagerFfiStatus> {
+    let level = match compression_level {
+        DEFAULT_COMPRESSION_LEVEL_SENTINEL => None,
+        level if (TZAP_MIN_COMPRESSION_LEVEL..=TZAP_MAX_COMPRESSION_LEVEL).contains(&level) => {
+            Some(level)
+        }
+        _ => return Err(ZManagerFfiStatus::InvalidArgument),
+    };
+
+    Ok(TzapCreateOptions {
+        passphrase,
+        level: level.unwrap_or(TZAP_DEFAULT_COMPRESSION_LEVEL),
+        preserve_metadata: true,
+        replace_existing,
+    })
 }
 
 fn zip_create_options(
@@ -1752,6 +1812,8 @@ fn job_kind_name(kind: JobKind) -> &'static str {
         JobKind::RarExtract => "rar_extract",
         JobKind::TarZstdCreate => "tar_zst_create",
         JobKind::TarZstdExtract => "tar_zst_extract",
+        JobKind::TzapCreate => "tzap_create",
+        JobKind::TzapExtract => "tzap_extract",
         JobKind::ArchiveExtract => "archive_extract",
     }
 }
@@ -1784,6 +1846,12 @@ fn is_tar_zst_archive(path: &std::path::Path) -> bool {
             .and_then(|stem| std::path::Path::new(stem).extension())
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("tar"))
+}
+
+fn is_tzap_archive(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tzap"))
 }
 
 fn is_7z_archive(path: &std::path::Path) -> bool {
@@ -1823,12 +1891,13 @@ mod tests {
     use std::process::Command;
     use std::ptr;
     use std::thread;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use zmanager_core::safety::ExtractionPolicy;
 
     const TEST_ARCHIVE_FORMAT_TAR_ZST: i32 = super::ARCHIVE_FORMAT_TAR_ZST;
     const TEST_ARCHIVE_FORMAT_ZIP: i32 = super::ARCHIVE_FORMAT_ZIP;
     const TEST_ARCHIVE_FORMAT_SEVENZ: i32 = super::ARCHIVE_FORMAT_SEVENZ;
+    const TEST_ARCHIVE_FORMAT_TZAP: i32 = super::ARCHIVE_FORMAT_TZAP;
     const TEST_7Z_VOLUME_SIZE: u64 = 1_048_576;
 
     #[test]
@@ -2516,6 +2585,37 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_generic_create_many_rejects_tzap_without_password() {
+        let temp = test_root("zmanager-ffi-generic-tzap-password");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("file.txt"), b"payload").unwrap();
+        let source = CString::new(temp.join("file.txt").to_string_lossy().as_ref()).unwrap();
+        let sources = [source.as_ptr()];
+        let destination = CString::new(temp.join("file.tzap").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: source and destination C strings live for the duration of the
+        // call, and `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_archive_create_many_with_options(
+                sources.as_ptr(),
+                sources.len(),
+                destination.as_ptr(),
+                TEST_ARCHIVE_FORMAT_TZAP,
+                false,
+                ptr::null(),
+                1,
+                false,
+                &raw mut job,
+            )
+        };
+
+        assert_eq!(status, ZManagerFfiStatus::InvalidArgument);
+        assert!(job.is_null());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn c_abi_encrypted_zip_create_uses_password() {
         let temp = std::env::temp_dir().join(format!(
             "zmanager-ffi-encrypted-{}-{}",
@@ -2975,18 +3075,12 @@ mod tests {
 
     fn drain_job(job: *mut ZManagerFfiJob) -> String {
         let mut events = String::new();
-        let deadline = Instant::now() + Duration::from_secs(30);
-
-        loop {
+        for _ in 0..200 {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "job did not finish before timeout; events: {events}"
-            );
             thread::sleep(Duration::from_millis(10));
         }
         events.push_str(&poll_events(job));

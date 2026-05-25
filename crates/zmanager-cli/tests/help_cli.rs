@@ -14,7 +14,7 @@ const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 const PACKAGE_PREVIEW_WORKFLOW: &str =
     include_str!("../../../.github/workflows/package-preview.yml");
-const RELEASE_NOTES_1_0_2: &str = include_str!("../../../docs/release-notes/1.0.2.md");
+const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
@@ -68,7 +68,7 @@ const TOP_LEVEL_FLAGS: &[&str] = &[
 ];
 
 const CREATE_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|7z>",
+    "--format <zip|tar.zst|tzap|7z>",
     "--method <method>",
     "--level <level>",
     "-0 .. -9",
@@ -128,7 +128,7 @@ const TEST_FLAGS: &[&str] = &[
 ];
 
 const PLAN_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|7z>",
+    "--format <zip|tar.zst|tzap|7z>",
     "-C, --directory <dir>",
     "-@",
     "--files-from <file|->",
@@ -143,7 +143,7 @@ const PLAN_FLAGS: &[&str] = &[
 const FILTER_GLOB_NOTE: &str = "Glob patterns match archive paths";
 
 const CREATE_HELP_NEEDLES: &[&str] = &[
-    "Create ZIP, TAR.ZST, or 7z archives",
+    "Create ZIP, TAR.ZST, TZAP, or 7z archives",
     "zm create <archive> <paths...>",
     "--exclude <glob>",
     "--volume-size <size>",
@@ -195,6 +195,7 @@ const FORMATS_HELP_NEEDLES: &[&str] = &[
     "raw single-file streams",
     "zm formats --json",
     ".tar.zst, .tzst",
+    ".tzap",
 ];
 
 const DOCTOR_HELP_NEEDLES: &[&str] = &[
@@ -411,6 +412,7 @@ fn static_completion_files_capture_navigation_contract() {
     ] {
         assert_contains(completion, "create");
         assert_contains(completion, "volume-size");
+        assert_contains(completion, "tzap");
         assert_contains(completion, "completions");
         assert_contains(completion, "help");
         assert_contains(completion, "bash");
@@ -628,7 +630,7 @@ fn package_channel_metadata_uses_release_checksums() {
 
 #[test]
 fn release_validation_artifacts_are_declared() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.2");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.1");
 
     for required in [
         "*.deps.txt",
@@ -650,14 +652,14 @@ fn release_validation_artifacts_are_declared() {
     }
 
     for required in [
-        "Z-Manager CLI 1.0.2 Release Notes",
+        "Z-Manager CLI 1.0.1 Release Notes",
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",
-        "zmanager-cli_1.0.2-1_amd64.deb",
+        "zmanager-cli_1.0.1-1_amd64.deb",
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
-        assert_contains(RELEASE_NOTES_1_0_2, required);
+        assert_contains(RELEASE_NOTES_1_0_1, required);
     }
 }
 
@@ -737,9 +739,9 @@ fn debian_package_assets_are_declared() {
     }
 
     for required in [
-        "zmanager-cli_1.0.2-1_amd64.deb",
-        "zmanager-cli_1.0.2-1_arm64.deb",
-        "sudo apt install ./zmanager-cli_1.0.2-1_amd64.deb",
+        "zmanager-cli_1.0.1-1_amd64.deb",
+        "zmanager-cli_1.0.1-1_arm64.deb",
+        "sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb",
     ] {
         assert_contains(INSTALL_DOC, required);
     }

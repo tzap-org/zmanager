@@ -1,4 +1,3 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: FrankZhu.ZManagerCLI
 PackageVersion: __PACKAGE_VERSION__
 PackageLocale: en-US
@@ -17,5 +16,7 @@ Tags:
   - 7z
   - tar
   - zstd
+Commands:
+  - zm
 ManifestType: defaultLocale
-ManifestVersion: 1.12.0
+ManifestVersion: 1.6.0

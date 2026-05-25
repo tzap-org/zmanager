@@ -14,7 +14,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $commands = @("create", "extract", "list", "test", "plan", "formats", "doctor", "completions", "help")
     $helpTopics = @("create", "extract", "list", "test", "plan", "formats", "doctor", "completions")
     $shellValues = @("bash", "zsh", "fish", "powershell")
-    $formatValues = @("zip", "tar.zst", "7z")
+    $formatValues = @("zip", "tar.zst", "tzap", "7z")
     $colorValues = @("auto", "always", "never")
     $progressValues = @("auto", "always", "never")
     $overwriteValues = @("never", "always", "ask", "rename")

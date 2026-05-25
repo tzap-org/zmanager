@@ -98,7 +98,7 @@ Usage:
 ";
 
 const CREATE_HELP: &str = "\
-Create ZIP, TAR.ZST, or 7z archives
+Create ZIP, TAR.ZST, TZAP, or 7z archives
 
 Usage:
   zm create <archive> <paths...> [options]
@@ -134,8 +134,9 @@ Selection:
   shell does not expand them first. Use dir/** for a whole tree; * can match /.
 
 Archive format and compression:
-      --format <zip|tar.zst|7z>  Override format inference from extension
-      --method <method>          Select method: zip store/deflate, tar.zst zstd, 7z lzma2
+      --format <zip|tar.zst|tzap|7z>
+                                  Override format inference from extension
+      --method <method>          Select method: zip store/deflate, tar.zst/tzap zstd, 7z lzma2
       --level <level>            Compression level; use 0..9 where supported
   -0 .. -9                       Compression presets; -0 stores ZIP entries
       --store                    Store ZIP entries without compression
@@ -158,6 +159,7 @@ Output and safety:
   -T, --test-after               Test the archive after writing
       --encrypt                  Prompt for an archive password where supported
       --password-stdin           Read one password line from stdin
+  TZAP archives are encrypted; use --encrypt or --password-stdin.
 ";
 
 const EXTRACT_HELP: &str = "\
@@ -265,7 +267,8 @@ Examples:
   zm plan project/ --json
 
 Options:
-      --format <zip|tar.zst|7z>  Plan for a specific archive format
+      --format <zip|tar.zst|tzap|7z>
+                                  Plan for a specific archive format
   -C, --directory <dir>          Use dir as the base for following input paths
   -@                             Read input paths from stdin
       --files-from <file|->      Read input paths from a file, or stdin with -
@@ -293,11 +296,13 @@ Examples:
 Create:
   zip       .zip
   tar.zst   .tar.zst, .tzst
+  tzap      .tzap
   7z        .7z
 
 Extract/List/Test:
   zip       .zip, .zipx, .jar, .war, .ipa, .apk, .appx, .xpi
   tar.zst   .tar.zst, .tzst
+  tzap      .tzap
   7z        .7z
   raw       .zst, .gz, .bz2, .xz, .lzma, .lz, .br, .lz4, .lzo, .Z, .lrz
   rar       .rar, .cbr; passworded list/extract uses bundled UnRAR with --password-stdin
@@ -343,6 +348,7 @@ const COMPLETION_POWERSHELL_SCRIPT: &str = include_str!("../../../completions/zm
 
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
+const FORMAT_TZAP: &str = "tzap";
 const FORMAT_SEVEN_Z: &str = "7z";
 const FORMAT_RAR: &str = "rar";
 const FORMAT_DEB: &str = "deb";
@@ -358,12 +364,14 @@ const SIZE_UNIT_GIB: u64 = SIZE_UNIT_MIB * 1024;
 const SIZE_UNIT_TIB: u64 = SIZE_UNIT_GIB * 1024;
 
 const TAR_ZST_FORMAT_ALIASES: &[&str] = &[FORMAT_TAR_ZST, "tzst", "zst"];
+const TZAP_FORMAT_ALIASES: &[&str] = &[FORMAT_TZAP];
 
 const ZIP_CREATE_EXTENSIONS: &[&str] = &[".zip"];
 const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
     ".zip", ".zipx", ".jar", ".war", ".ipa", ".apk", ".appx", ".xpi",
 ];
 const TAR_ZST_EXTENSIONS: &[&str] = &[".tar.zst", ".tzst"];
+const TZAP_EXTENSIONS: &[&str] = &[".tzap"];
 const SEVEN_Z_EXTENSIONS: &[&str] = &[".7z"];
 const RAR_EXTENSIONS: &[&str] = &[".rar", ".cbr"];
 const DEB_EXTENSIONS: &[&str] = &[".deb"];
@@ -385,6 +393,10 @@ const CREATE_FORMATS: &[FormatDescriptor] = &[
         extensions: TAR_ZST_EXTENSIONS,
     },
     FormatDescriptor {
+        name: FORMAT_TZAP,
+        extensions: TZAP_EXTENSIONS,
+    },
+    FormatDescriptor {
         name: FORMAT_SEVEN_Z,
         extensions: SEVEN_Z_EXTENSIONS,
     },
@@ -398,6 +410,10 @@ const EXTRACT_FORMATS: &[FormatDescriptor] = &[
     FormatDescriptor {
         name: FORMAT_TAR_ZST,
         extensions: TAR_ZST_EXTENSIONS,
+    },
+    FormatDescriptor {
+        name: FORMAT_TZAP,
+        extensions: TZAP_EXTENSIONS,
     },
     FormatDescriptor {
         name: FORMAT_SEVEN_Z,
@@ -607,6 +623,8 @@ fn progress_job_label(kind: JobKind) -> &'static str {
         JobKind::RarExtract => "rar extract",
         JobKind::TarZstdCreate => "tar.zst create",
         JobKind::TarZstdExtract => "tar.zst extract",
+        JobKind::TzapCreate => "tzap create",
+        JobKind::TzapExtract => "tzap extract",
         JobKind::ArchiveExtract => "archive extract",
     }
 }
@@ -693,6 +711,7 @@ fn normalize_overwrite_answer(answer: &str) -> Option<(OverwriteDecision, bool)>
 enum ArchiveFormat {
     Zip,
     TarZst,
+    Tzap,
     SevenZ,
 }
 
@@ -725,6 +744,7 @@ fn create_progress_kind(format: ArchiveFormat) -> JobKind {
     match format {
         ArchiveFormat::Zip => JobKind::ZipCreate,
         ArchiveFormat::TarZst => JobKind::TarZstdCreate,
+        ArchiveFormat::Tzap => JobKind::TzapCreate,
         ArchiveFormat::SevenZ => JobKind::SevenZCreate,
     }
 }
@@ -1468,7 +1488,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     else {
         print_error_line(
             global,
-            format_args!("could not infer archive format; pass --format <zip|tar.zst|7z>"),
+            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|7z>"),
         );
         return ExitCode::from(2);
     };
@@ -1521,6 +1541,18 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     global,
                     format_args!(
                         "create failed: 7z symlink preservation is not supported by the current backend; use --follow-symlinks"
+                    ),
+                );
+                return ExitCode::from(2);
+            }
+            if format == ArchiveFormat::Tzap
+                && request.preserve_symlinks
+                && manifest_has_symlinks(&manifest)
+            {
+                print_error_line(
+                    global,
+                    format_args!(
+                        "create failed: tzap symlink preservation is not supported by the current backend; use --follow-symlinks"
                     ),
                 );
                 return ExitCode::from(2);
@@ -1668,6 +1700,52 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     solid: None,
                     volume_size: None,
                     volume_count: 1,
+                })
+                .map_err(|error| error.to_string())
+        }
+        ArchiveFormat::Tzap => {
+            let Some(passphrase) = password else {
+                return usage_failure(
+                    global,
+                    format_args!(
+                        "create failed: tzap archives require --encrypt or --password-stdin"
+                    ),
+                );
+            };
+            let options = zmanager_core::tzap_backend::TzapCreateOptions {
+                passphrase,
+                level: request.level.unwrap_or(3),
+                preserve_metadata: !request.no_metadata,
+                replace_existing: backend_replace_existing,
+            };
+            let result = {
+                let mut sink = |event| progress.emit(event);
+                let mut context = JobContext::new(&token, &mut sink);
+                zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
+                )
+            };
+            result
+                .map(|report| CreateOutcome {
+                    summary: format!(
+                        "created tzap: {} entries, {} bytes, encrypted true, level {}, {} warnings",
+                        report.written_entries,
+                        report.written_bytes,
+                        report.level,
+                        report.warnings.len()
+                    ),
+                    format: FORMAT_TZAP,
+                    backend: FORMAT_TZAP,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: Some(true),
+                    solid: None,
+                    volume_size: None,
+                    volume_count: report.volume_count,
                 })
                 .map_err(|error| error.to_string())
         }
@@ -1827,7 +1905,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
                 }
             }
             ArchiveFormat::SevenZ => {}
-            ArchiveFormat::TarZst => {
+            ArchiveFormat::Tzap | ArchiveFormat::TarZst => {
                 return Err("--volume-size is supported only for ZIP and 7z archives".to_owned());
             }
         }
@@ -1836,7 +1914,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
     if let Some(method) = request.method.as_deref() {
         match (format, method) {
             (ArchiveFormat::Zip, "deflate" | "store")
-            | (ArchiveFormat::TarZst, "zstd" | "zst")
+            | (ArchiveFormat::TarZst | ArchiveFormat::Tzap, "zstd" | "zst")
             | (ArchiveFormat::SevenZ, "lzma2") => {}
             _ => {
                 return Err(format!(
@@ -1848,7 +1926,9 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
 
     if let Some(level) = request.level {
         match format {
-            ArchiveFormat::Zip | ArchiveFormat::SevenZ if !(0..=9).contains(&level) => {
+            ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap
+                if !(0..=9).contains(&level) =>
+            {
                 return Err(format!(
                     "unsupported compression level for selected archive format: {level}"
                 ));
@@ -1910,7 +1990,10 @@ fn sevenz_level(request: &CreateRequest) -> Option<u32> {
 fn follow_symlinks_for_create(format: ArchiveFormat, request: &CreateRequest) -> bool {
     request.follow_symlinks
         || (!request.preserve_symlinks
-            && matches!(format, ArchiveFormat::Zip | ArchiveFormat::SevenZ))
+            && matches!(
+                format,
+                ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap
+            ))
 }
 
 fn create_password(
@@ -1918,6 +2001,13 @@ fn create_password(
     request: &CreateRequest,
     global: &GlobalOptions,
 ) -> Result<Option<SecretString>, ExitCode> {
+    if format == ArchiveFormat::Tzap && !request.encrypt && !request.password_stdin {
+        print_error_line(
+            global,
+            format_args!("tzap archives are encrypted; use --encrypt or --password-stdin"),
+        );
+        return Err(ExitCode::from(2));
+    }
     if !request.encrypt && !request.password_stdin {
         return Ok(None);
     }
@@ -1945,10 +2035,11 @@ fn create_password(
         );
         return Err(ExitCode::from(2));
     }
-    let prompt = if format == ArchiveFormat::SevenZ {
-        "7z password: "
-    } else {
-        "ZIP password: "
+    let prompt = match format {
+        ArchiveFormat::SevenZ => "7z password: ",
+        ArchiveFormat::Tzap => "tzap password: ",
+        ArchiveFormat::Zip => "ZIP password: ",
+        ArchiveFormat::TarZst => "archive password: ",
     };
     prompt_password(prompt).map(Some)
 }
@@ -2073,6 +2164,7 @@ fn parse_extract_request(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitCode {
     if request.to_stdout {
         return run_extract_to_stdout(request, global);
@@ -2160,6 +2252,18 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
         )
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
+    } else if is_tzap_archive(&request.archive) {
+        let password = match read_required_tzap_password(request.password_stdin, global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        };
+        run_tzap_extract_with_policy(
+            request.archive,
+            destination,
+            policy,
+            password.expose_secret(),
+            Some(global),
+        )
     } else {
         let password = match read_optional_password_stdin(request.password_stdin, "archive", global)
         {
@@ -2430,6 +2534,37 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 ExitCode::FAILURE
             }
         }
+    } else if is_tzap_archive(&request.archive) {
+        let password = match read_required_tzap_password(request.password_stdin, global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        };
+        match zmanager_core::tzap_backend::copy_tzap_files_to_writer(
+            &request.archive,
+            password.expose_secret(),
+            |name| entry_selected(name, &request.include, &request.exclude),
+            &mut stdout,
+        ) {
+            Ok(report) => {
+                if global.verbose > 0 && !global.quiet {
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
+                ExitCode::FAILURE
+            }
+        }
     } else if let Some(format) =
         zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
     {
@@ -2631,9 +2766,16 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
-        Ok(password) => password,
-        Err(code) => return code,
+    let password = if is_tzap_archive(&request.archive) {
+        match read_required_tzap_password(request.password_stdin, global) {
+            Ok(password) => Some(password),
+            Err(code) => return code,
+        }
+    } else {
+        match read_optional_password_stdin(request.password_stdin, "archive", global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        }
     };
     match list_entries_with_password(&request.archive, password.as_deref()) {
         Ok(mut entries) => {
@@ -2757,6 +2899,7 @@ fn parse_test_request(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     if request.password_stdin
         && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
@@ -2767,9 +2910,16 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
-        Ok(password) => password,
-        Err(code) => return code,
+    let password = if is_tzap_archive(&request.archive) {
+        match read_required_tzap_password(request.password_stdin, global) {
+            Ok(password) => Some(password),
+            Err(code) => return code,
+        }
+    } else {
+        match read_optional_password_stdin(request.password_stdin, "archive", global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        }
     };
 
     if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
@@ -2816,6 +2966,19 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         return run_7z_test_new(
             &request.archive,
             password.as_deref(),
+            &request.include,
+            &request.exclude,
+            global,
+        );
+    }
+    if is_tzap_archive(&request.archive) {
+        let Some(password) = password.as_deref() else {
+            print_error_line(global, format_args!("tzap test failed: password required"));
+            return ExitCode::from(2);
+        };
+        return run_tzap_test_new(
+            &request.archive,
+            password,
             &request.include,
             &request.exclude,
             global,
@@ -2914,6 +3077,33 @@ fn run_7z_test_new(
         }
         Err(error) => {
             print_error_line(global, format_args!("7z test failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_tzap_test_new(
+    archive: &str,
+    password: &str,
+    includes: &[String],
+    excludes: &[String],
+    global: &GlobalOptions,
+) -> ExitCode {
+    match zmanager_core::tzap_backend::test_tzap_with_password_filter(archive, password, |name| {
+        entry_selected(name, includes, excludes)
+    }) {
+        Ok(report) => {
+            print_data_test_success(
+                FORMAT_TZAP,
+                report.tested_entries,
+                report.skipped_entries,
+                report.tested_bytes,
+                global,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(global, format_args!("tzap test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -3300,6 +3490,7 @@ fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
     match raw {
         FORMAT_ZIP => Ok(ArchiveFormat::Zip),
         raw if TAR_ZST_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::TarZst),
+        raw if TZAP_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::Tzap),
         FORMAT_SEVEN_Z => Ok(ArchiveFormat::SevenZ),
         _ => Err(format!("unsupported archive format: {raw}")),
     }
@@ -3313,6 +3504,8 @@ fn infer_create_format(path: &str) -> Option<ArchiveFormat> {
         Some(ArchiveFormat::Zip)
     } else if is_tar_zst_archive(path) {
         Some(ArchiveFormat::TarZst)
+    } else if is_tzap_archive(path) {
+        Some(ArchiveFormat::Tzap)
     } else if path_has_known_extension(path, SEVEN_Z_EXTENSIONS) {
         Some(ArchiveFormat::SevenZ)
     } else {
@@ -3600,6 +3793,32 @@ fn read_optional_password_stdin(
     }
 }
 
+fn read_required_tzap_password(
+    password_stdin: bool,
+    global: &GlobalOptions,
+) -> Result<SecretString, ExitCode> {
+    if password_stdin {
+        return prompt_password_from_stdin(Some(global));
+    }
+    if global.no_password_prompt {
+        print_error_line(
+            global,
+            format_args!("tzap password required and prompts are disabled"),
+        );
+        return Err(ExitCode::from(2));
+    }
+    if global.quiet || !io::stdin().is_terminal() {
+        print_error_line(
+            global,
+            format_args!(
+                "tzap password prompt requires an interactive terminal; use --password-stdin"
+            ),
+        );
+        return Err(ExitCode::from(2));
+    }
+    prompt_password("tzap password: ")
+}
+
 fn list_entries_with_password(
     archive: &str,
     password: Option<&str>,
@@ -3649,6 +3868,28 @@ fn list_entries_with_password(
             size,
             compressed_size,
         }])
+    } else if is_tzap_archive(archive) {
+        let password = password.ok_or_else(|| "tzap password required".to_owned())?;
+        zmanager_core::tzap_backend::list_tzap_with_password(archive, password)
+            .map(|listing| {
+                listing
+                    .entries
+                    .into_iter()
+                    .map(|entry| GenericEntry {
+                        kind: match entry.kind {
+                            zmanager_core::tzap_backend::TzapEntryKind::File => "file",
+                            zmanager_core::tzap_backend::TzapEntryKind::Directory => "directory",
+                            zmanager_core::tzap_backend::TzapEntryKind::Symlink => "symlink",
+                            zmanager_core::tzap_backend::TzapEntryKind::Hardlink => "hardlink",
+                        }
+                        .to_owned(),
+                        name: entry.path,
+                        size: entry.size,
+                        compressed_size: None,
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
     } else if is_rar_archive(archive) && password.is_some() {
         zmanager_core::rar_backend::list_rar_with_password(archive, password)
             .map(|listing| {
@@ -4341,6 +4582,10 @@ fn is_tar_zst_archive(path: &str) -> bool {
     path_has_known_extension(path, TAR_ZST_EXTENSIONS)
 }
 
+fn is_tzap_archive(path: &str) -> bool {
+    path_has_known_extension(path, TZAP_EXTENSIONS)
+}
+
 fn is_deb_archive(path: &str) -> bool {
     path_has_known_extension(path, DEB_EXTENSIONS)
 }
@@ -4934,6 +5179,68 @@ fn run_tar_zst_extract_with_policy(
                 message: error.to_string(),
             });
             eprintln!("tar.zst extract failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_tzap_extract_with_policy(
+    archive: impl AsRef<std::path::Path>,
+    destination: impl AsRef<std::path::Path>,
+    policy: zmanager_core::safety::ExtractionPolicy,
+    password: &str,
+    global: Option<&GlobalOptions>,
+) -> ExitCode {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::TzapExtract,
+        total_bytes: None,
+    });
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+            &mut overwrite_resolver,
+        )
+    } else {
+        zmanager_core::tzap_backend::extract_tzap_with_password(
+            &archive_path,
+            &destination_path,
+            policy,
+            password,
+        )
+    };
+
+    match result {
+        Ok(report) => {
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_TZAP,
+                format: FORMAT_TZAP,
+                backend: FORMAT_TZAP,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            eprintln!("tzap extract failed: {error}");
             ExitCode::FAILURE
         }
     }

@@ -21,6 +21,7 @@ typedef struct ZManagerFfiJob ZManagerFfiJob;
 #define ZMANAGER_FFI_ARCHIVE_FORMAT_TAR_ZST 0
 #define ZMANAGER_FFI_ARCHIVE_FORMAT_ZIP 1
 #define ZMANAGER_FFI_ARCHIVE_FORMAT_7Z 2
+#define ZMANAGER_FFI_ARCHIVE_FORMAT_TZAP 3
 
 bool zmanager_ffi_healthcheck(void);
 
@@ -153,7 +154,7 @@ ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_adv
   bool replace_existing,
   bool encrypt_file_names,
   // Zero creates a normal archive. Non-zero splits ZIP into .z01/.zip sets and
-  // 7z into .7z.001 sets.
+  // 7z into .7z.001 sets. TZAP accepts only zero through this facade.
   uint64_t volume_size,
   const char *const *exclude_archive_paths,
   size_t exclude_archive_path_count,

@@ -5,6 +5,7 @@ use crate::safety::{
 };
 use crate::sevenz_backend::{SevenZEntryKind, SevenZError};
 use crate::tar_zst_backend::TarZstdError;
+use crate::tzap_backend::{TzapEntryKind, TzapError};
 use crate::zip_backend::ZipBackendError;
 use std::fmt;
 use std::fs::{self, File};
@@ -98,6 +99,8 @@ pub enum ArchiveBrowserError {
     TarZst(TarZstdError),
     /// 7z backend failed.
     SevenZ(SevenZError),
+    /// TZAP backend failed.
+    Tzap(TzapError),
     /// Libarchive backend failed.
     Libarchive(LibarchiveError),
     /// Filesystem I/O failed.
@@ -119,6 +122,7 @@ impl fmt::Display for ArchiveBrowserError {
             Self::Zip(source) => write!(f, "ZIP browser operation failed: {source}"),
             Self::TarZst(source) => write!(f, "TAR.ZST browser operation failed: {source}"),
             Self::SevenZ(source) => write!(f, "7z browser operation failed: {source}"),
+            Self::Tzap(source) => write!(f, "TZAP browser operation failed: {source}"),
             Self::Libarchive(source) => write!(f, "libarchive browser operation failed: {source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
@@ -136,6 +140,7 @@ impl std::error::Error for ArchiveBrowserError {
             Self::Zip(source) => Some(source),
             Self::TarZst(source) => Some(source),
             Self::SevenZ(source) => Some(source),
+            Self::Tzap(source) => Some(source),
             Self::Libarchive(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
@@ -159,6 +164,12 @@ impl From<TarZstdError> for ArchiveBrowserError {
 impl From<SevenZError> for ArchiveBrowserError {
     fn from(source: SevenZError) -> Self {
         Self::SevenZ(source)
+    }
+}
+
+impl From<TzapError> for ArchiveBrowserError {
+    fn from(source: TzapError) -> Self {
+        Self::Tzap(source)
     }
 }
 
@@ -199,6 +210,8 @@ pub fn list_entries_with_options(
         list_tar_zst_entries(path)
     } else if is_7z_archive(path) {
         list_7z_entries(path, options.password)
+    } else if is_tzap_archive(path) {
+        list_tzap_entries(path, options.password)
     } else {
         list_libarchive_entries(path)
     }
@@ -258,6 +271,14 @@ pub fn extract_entry_with_options(
         )
     } else if is_tar_zst_archive(archive_path) {
         extract_tar_zst_entry(archive_path, entry_path, &destination_root, &policy)
+    } else if is_tzap_archive(archive_path) {
+        extract_tzap_entry(
+            archive_path,
+            entry_path,
+            &destination_root,
+            &policy,
+            options.password,
+        )
     } else {
         let report = libarchive_backend::extract_archive_entry_with_password(
             archive_path,
@@ -428,6 +449,87 @@ fn list_7z_entries(
         })
         .collect();
     Ok(BrowserListing { entries })
+}
+
+fn list_tzap_entries(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let password = password.ok_or(TzapError::PasswordRequired)?;
+    let listing = crate::tzap_backend::list_tzap_with_password(path, password)?;
+    let entries = listing
+        .entries
+        .into_iter()
+        .map(|entry| BrowserEntry {
+            path: entry.path,
+            kind: tzap_entry_kind(entry.kind),
+            size: Some(entry.size),
+            compressed_size: None,
+            modified: Some(entry.mtime.to_string()),
+        })
+        .collect();
+    Ok(BrowserListing { entries })
+}
+
+fn extract_tzap_entry(
+    archive_path: &Path,
+    entry_path: &str,
+    destination: &Path,
+    policy: &ExtractionPolicy,
+    password: Option<&str>,
+) -> Result<EntryExtractReport, ArchiveBrowserError> {
+    let password = password.ok_or(TzapError::PasswordRequired)?;
+    let listing = crate::tzap_backend::list_tzap_with_password(archive_path, password)?;
+    let entry = listing
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == entry_path)
+        .ok_or_else(|| ArchiveBrowserError::EntryNotFound {
+            path: entry_path.to_owned(),
+        })?;
+    let extraction_kind = tzap_extraction_kind(entry.kind, &entry.path)?;
+    let safety_entry = ExtractionEntry {
+        archive_path: entry.path,
+        kind: extraction_kind,
+        uncompressed_size: Some(entry.size),
+        compressed_size: None,
+    };
+    let decision =
+        ExtractionSafetyPlanner::new(destination, policy.clone()).validate_entry(&safety_entry)?;
+    let write_plan = decision_write_plan(decision, &safety_entry.archive_path)?;
+
+    match &safety_entry.kind {
+        ExtractionEntryKind::Directory => {
+            let mut empty = io::empty();
+            let written_bytes = write_selected_entry(&mut empty, &safety_entry, &write_plan)?;
+            Ok(EntryExtractReport {
+                destination_path: write_plan.destination_path,
+                written_bytes,
+            })
+        }
+        ExtractionEntryKind::File => {
+            let mut contents = Vec::new();
+            crate::tzap_backend::copy_tzap_files_to_writer(
+                archive_path,
+                password,
+                |path| path == entry_path,
+                &mut contents,
+            )?;
+            let mut reader = contents.as_slice();
+            let written_bytes = write_selected_entry(&mut reader, &safety_entry, &write_plan)?;
+            Ok(EntryExtractReport {
+                destination_path: write_plan.destination_path,
+                written_bytes,
+            })
+        }
+        ExtractionEntryKind::Symlink { .. }
+        | ExtractionEntryKind::Hardlink { .. }
+        | ExtractionEntryKind::Device
+        | ExtractionEntryKind::Special => Err(ArchiveBrowserError::UnsupportedEntry {
+            path: safety_entry.archive_path,
+            kind: BrowserEntryKind::Special,
+        }),
+    }
 }
 
 fn extract_zip_entry(
@@ -726,6 +828,31 @@ fn sevenz_entry_kind(kind: SevenZEntryKind) -> BrowserEntryKind {
     }
 }
 
+fn tzap_entry_kind(kind: TzapEntryKind) -> BrowserEntryKind {
+    match kind {
+        TzapEntryKind::File => BrowserEntryKind::File,
+        TzapEntryKind::Directory => BrowserEntryKind::Directory,
+        TzapEntryKind::Symlink => BrowserEntryKind::Symlink,
+        TzapEntryKind::Hardlink => BrowserEntryKind::Hardlink,
+    }
+}
+
+fn tzap_extraction_kind(
+    kind: TzapEntryKind,
+    path: &str,
+) -> Result<ExtractionEntryKind, ArchiveBrowserError> {
+    match kind {
+        TzapEntryKind::File => Ok(ExtractionEntryKind::File),
+        TzapEntryKind::Directory => Ok(ExtractionEntryKind::Directory),
+        TzapEntryKind::Symlink | TzapEntryKind::Hardlink => {
+            Err(ArchiveBrowserError::UnsupportedEntry {
+                path: path.to_owned(),
+                kind: tzap_entry_kind(kind),
+            })
+        }
+    }
+}
+
 fn system_time_string(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -766,6 +893,12 @@ fn is_7z_archive(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
+}
+
+fn is_tzap_archive(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tzap"))
 }
 
 fn unique_preview_id() -> u128 {

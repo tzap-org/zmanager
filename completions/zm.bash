@@ -20,7 +20,7 @@ _zm()
     local list_opts="-h --help -f --file -l --long --name-only --tree -i --include --exclude --password-stdin --json"
     local test_opts="-h --help -f --file -i --include --exclude --password-stdin --json"
     local plan_opts="-h --help --format -C --directory -@ --files-from --null --clean --no-ignore -i --include --exclude --exclude-from --json"
-    local format_values="zip tar.zst 7z"
+    local format_values="zip tar.zst tzap 7z"
     local progress_values="auto always never"
     local color_values="auto always never"
     local overwrite_values="never always ask rename"

@@ -31,7 +31,7 @@ creates, extracts, lists, tests, and plans archives.
 The public command surface is designed for scriptable stdout and human-readable
 diagnostics on stderr.
 .Pp
-ZIP, TAR.ZST, and 7z have native backends.
+ZIP, TAR.ZST, TZAP, and 7z have native backends.
 RAR extraction uses the bundled extraction-only RAR backend.
 Other supported archive formats fall back to libarchive.
 .Sh COMMANDS
@@ -138,7 +138,7 @@ Exclude archive paths matching
 .It Fl -exclude-from Ar file
 Read exclude globs from
 .Ar file .
-.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm 7z
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm 7z
 Override format inference from the archive extension.
 .It Fl -method Ar method
 Select compression method.
@@ -186,6 +186,11 @@ Test the archive after writing.
 Prompt for an archive password where supported.
 .It Fl -password-stdin
 Read one password line from stdin.
+TZAP archives are encrypted; use
+.Fl -encrypt
+or
+.Fl -password-stdin
+when creating them.
 .El
 .Sh EXTRACT OPTIONS
 .Bl -tag -width "--strip-components"
@@ -250,7 +255,7 @@ Emit machine-readable JSON.
 .El
 .Sh PLAN OPTIONS
 .Bl -tag -width "--exclude-from"
-.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm 7z
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm 7z
 Plan for a specific archive format.
 .It Fl C , Fl -directory Ar dir
 Use
@@ -313,6 +318,10 @@ Create and extract
 .Pa .tar.zst
 and
 .Pa .tzst .
+.It Cm tzap
+Create, extract, list, and test passphrase-protected
+.Pa .tzap
+archives.
 .It Cm 7z
 Create and extract
 .Pa .7z .

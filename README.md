@@ -15,7 +15,7 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Latest release: `v1.0.2`
+Latest release: `v1.0.1`
 
 ## Install
 
@@ -45,14 +45,14 @@ brew install zmanager
 Ubuntu and Debian users can install the `.deb` package from the GitHub release:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zmanager-cli_1.0.2-1_amd64.deb
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
 sha256sum -c SHA256SUMS --ignore-missing
-sudo apt install ./zmanager-cli_1.0.2-1_amd64.deb
+sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
 zm healthcheck
 ```
 
-Use `zmanager-cli_1.0.2-1_arm64.deb` on ARM64 systems. The package installs
+Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems. The package installs
 `zm`, the man page, and bash, zsh, and fish completions into standard system
 locations.
 
@@ -86,7 +86,7 @@ Install a specific version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.2 sh
+  | ZMANAGER_VERSION=v1.0.1 sh
 ```
 
 Install somewhere else:
@@ -109,6 +109,9 @@ zm -xf project.zip -C out/
 zm create project.tzst project/
 zm extract project.tzst -C out/
 
+printf '%s\n' "$ZM_PASSWORD" | zm create backup.tzap project/ --password-stdin
+printf '%s\n' "$ZM_PASSWORD" | zm extract backup.tzap -C out/ --password-stdin
+
 zm list project.zip
 zm test project.zip
 ```
@@ -120,14 +123,15 @@ subcommands are there for readable scripts.
 
 - Extracts a broad range of archive, package, disk-image, and raw compression
   formats with safety checks enabled by default.
-- Creates modern `.zip`, `.tzst` (`.tar.zst`), and `.7z` archives with focused
-  defaults.
+- Creates modern `.zip`, `.tzst` (`.tar.zst`), `.tzap`, and `.7z` archives
+  with focused defaults.
 - Opens common desktop, developer, package, and mobile archive formats by name:
   ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
   CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
   compressed files.
-- Supports passworded ZIP, 7z, and RAR workflows through stdin or prompts; new
-  encrypted ZIP and 7z archives use AES-256 encryption paths.
+- Supports passworded ZIP, 7z, TZAP, and RAR workflows through stdin or
+  prompts; new encrypted ZIP, TZAP, and 7z archives use AES-256 encryption
+  paths.
 - Protects extraction by default against path traversal, unsafe links,
   duplicate normalized paths, case collisions, and accidental overwrite traps.
 - Provides both classic archive flags and readable subcommands.
@@ -139,12 +143,14 @@ Z-Manager treats extraction and creation differently:
 - **Extract broadly.** Open old, obscure, downloaded, package, mobile, and
   developer archives without knowing which backend normally handles them.
 - **Create deliberately.** New archives should use practical modern formats:
-  ZIP for universal sharing, TZST (`.tar.zst`) for fast compression, and 7z for
-  high-compression encrypted archives.
+  ZIP for universal sharing, TZST (`.tar.zst`) for fast compression, TZAP for
+  encrypted recoverable archives, and 7z for high-compression encrypted
+  archives.
 - **Avoid legacy creation paths.** Old compression methods matter for reading
   existing files, but new archives should use safer and faster defaults.
-- **Use strong password protection.** Encrypted ZIP and 7z creation use AES-256,
-  and passwords are read through prompts or stdin rather than command arguments.
+- **Use strong password protection.** Encrypted ZIP, TZAP, and 7z creation use
+  AES-256 paths, and passwords are read through prompts or stdin rather than
+  command arguments.
 
 ## Safety Model
 
@@ -165,14 +171,15 @@ Passwords are not accepted as command arguments. Use the prompt or
 
 | Workflow | Formats |
 | --- | --- |
-| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.7z` with LZMA2 and AES-256 encryption |
+| Create modern archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.tzap` with Zstandard plus encryption/recovery metadata, `.7z` with LZMA2 and AES-256 encryption |
 | ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
 | 7z | `.7z`, including encrypted 7z archives |
 | RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |
 | TAR and variants | `.tar`, `.ustar`, `.pax`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.lzma`, `.tzst`, `.tar.zst`, `.tar.lz`, `.tar.lzo`, `.tar.Z`, `.tar.lz4`, `.tar.lrz` |
+| TZAP | `.tzap`, passphrase-protected create/list/test/extract |
 | Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
 | Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
-| Passwords | ZIP, 7z, and RAR list/test/extract through prompt or `--password-stdin` |
+| Passwords | ZIP, 7z, TZAP, and RAR list/test/extract through prompt or `--password-stdin` |
 
 Creation is intentionally focused on formats people should use today. Extraction
 is intentionally broad, so `zm` can be the one command you try first when

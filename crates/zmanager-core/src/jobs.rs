@@ -2,6 +2,7 @@ use crate::manifest::{PlanOptions, plan_archive, plan_archives};
 use crate::safety::ExtractionPolicy;
 use crate::sevenz_backend::{SevenZCreateOptions, SevenZCreateReport};
 use crate::tar_zst_backend::{self, TarZstdCreateOptions, TarZstdError, TarZstdExtractReport};
+use crate::tzap_backend::{self, TzapCreateOptions, TzapCreateReport, TzapError};
 use crate::zip_backend::{self, ZipBackendError, ZipCreateOptions, ZipCreateReport};
 use crate::{
     libarchive_backend, libarchive_backend::LibarchiveError, rar_backend,
@@ -29,6 +30,10 @@ pub enum JobKind {
     TarZstdCreate,
     /// TAR.ZST extraction.
     TarZstdExtract,
+    /// TZAP creation.
+    TzapCreate,
+    /// TZAP extraction.
+    TzapExtract,
     /// Broad libarchive-backed extraction.
     ArchiveExtract,
 }
@@ -649,6 +654,51 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
     }
 }
 
+/// Runs a TZAP create job for multiple source roots with explicit planning
+/// options and emits lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when planning, TZAP creation, filesystem I/O,
+/// password key derivation, or cancellation fails.
+pub fn run_tzap_create_job_from_sources_with_plan_options(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &TzapCreateOptions,
+    plan_options: &PlanOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<TzapCreateReport, TzapError> {
+    let manifest = match plan_archives(sources, plan_options) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let error = TzapError::Plan(error);
+            sink.emit(JobEvent::Started {
+                kind: JobKind::TzapCreate,
+                total_bytes: None,
+            });
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(error);
+        }
+    };
+    sink.emit(JobEvent::Started {
+        kind: JobKind::TzapCreate,
+        total_bytes: Some(manifest.total_bytes),
+    });
+    let mut context = JobContext::new(token, sink);
+    let result = tzap_backend::create_tzap_from_manifest_with_context(
+        &manifest,
+        destination,
+        options,
+        &mut context,
+    );
+    finish_tzap_create_result(result, sink)
+}
+
 /// Runs a TAR.ZST extract job and emits lifecycle/progress events.
 ///
 /// Partial output state: cancellation can leave already-extracted files in the
@@ -843,6 +893,48 @@ pub fn run_libarchive_extract_job_with_password_and_policy(
     finish_libarchive_extract_result(result, sink)
 }
 
+/// Runs a TZAP extract job with a required password and explicit extraction
+/// policy while emitting lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave already-extracted files in the
+/// destination directory.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the password is missing, TZAP reading,
+/// extraction safety, filesystem I/O, or cancellation fails.
+pub fn run_tzap_extract_job_with_password_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<tzap_backend::TzapExtractReport, TzapError> {
+    sink.emit(JobEvent::Started {
+        kind: JobKind::TzapExtract,
+        total_bytes: None,
+    });
+    let Some(password) = password else {
+        let error = TzapError::PasswordRequired;
+        sink.emit(JobEvent::Failed {
+            message: error.to_string(),
+        });
+        return Err(error);
+    };
+
+    if token.is_cancelled() {
+        sink.emit(JobEvent::Cancelled {
+            message: "job cancelled".to_owned(),
+        });
+        return Err(TzapError::Cancelled);
+    }
+
+    let result =
+        tzap_backend::extract_tzap_with_password(archive_path, destination, policy, password);
+    finish_tzap_extract_result(result, sink)
+}
+
 fn finish_zip_create_result(
     result: Result<ZipCreateReport, ZipBackendError>,
     sink: &mut dyn JobEventSink,
@@ -860,6 +952,60 @@ fn finish_zip_create_result(
                 message: "job cancelled".to_owned(),
             });
             Err(ZipBackendError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_tzap_create_result(
+    result: Result<TzapCreateReport, TzapError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<TzapCreateReport, TzapError> {
+    match result {
+        Ok(report) => {
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(TzapError::Cancelled) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(TzapError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_tzap_extract_result(
+    result: Result<tzap_backend::TzapExtractReport, TzapError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<tzap_backend::TzapExtractReport, TzapError> {
+    match result {
+        Ok(report) => {
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(TzapError::Cancelled) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(TzapError::Cancelled)
         }
         Err(error) => {
             sink.emit(JobEvent::Failed {

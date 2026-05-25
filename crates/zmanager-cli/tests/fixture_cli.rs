@@ -802,6 +802,91 @@ fn zm_create_tzst_alias_round_trips_with_inferred_format() {
 }
 
 #[test]
+fn zm_create_tzap_round_trips_with_password_stdin() {
+    let temp = TestDir::new("zm_tzap_roundtrip");
+    fs::create_dir_all(temp.path("project/nested")).unwrap();
+    fs::write(temp.path("project/nested/file.txt"), "tzap payload\n").unwrap();
+    let archive = temp.path("project.tzap");
+
+    let mut create = Command::new(zm_path());
+    create
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--password-stdin")
+        .arg("--level")
+        .arg("1");
+    let create = run_with_stdin(create, "correct horse\n");
+    assert_success("zm create tzap --password-stdin", &create);
+
+    let mut list = Command::new(zm_path());
+    list.arg("list")
+        .arg(&archive)
+        .arg("--password-stdin")
+        .arg("--json");
+    let list = run_with_stdin(list, "correct horse\n");
+    assert_success("zm list tzap --password-stdin --json", &list);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("\"name\":\"project/nested/file.txt\""));
+
+    let mut test = Command::new(zm_path());
+    test.arg("test")
+        .arg(&archive)
+        .arg("--password-stdin")
+        .arg("--include")
+        .arg("project/nested/**")
+        .arg("--json");
+    let test = run_with_stdin(test, "correct horse\n");
+    assert_success("zm test tzap --password-stdin --json", &test);
+    let test_stdout = String::from_utf8_lossy(&test.stdout);
+    assert!(test_stdout.contains("\"format\":\"tzap\""), "{test_stdout}");
+
+    let mut extract = Command::new(zm_path());
+    extract
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--password-stdin")
+        .arg("--strip-components")
+        .arg("1");
+    let extract = run_with_stdin(extract, "correct horse\n");
+    assert_success("zm extract tzap --password-stdin", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/nested/file.txt")).unwrap(),
+        "tzap payload\n"
+    );
+
+    let mut stdout = Command::new(zm_path());
+    stdout
+        .arg("extract")
+        .arg(&archive)
+        .arg("--password-stdin")
+        .arg("--to-stdout")
+        .arg("--include")
+        .arg("project/nested/file.txt");
+    let stdout = run_with_stdin(stdout, "correct horse\n");
+    assert_success("zm extract tzap --to-stdout", &stdout);
+    assert_eq!(stdout.stdout, b"tzap payload\n");
+}
+
+#[test]
+fn zm_create_tzap_requires_password_source() {
+    let temp = TestDir::new("zm_tzap_requires_password");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "secret\n").unwrap();
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(temp.path("project.tzap"))
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_failure("zm create tzap without password", &create);
+    assert!(String::from_utf8_lossy(&create.stderr).contains("use --encrypt or --password-stdin"));
+}
+
+#[test]
 fn zm_create_7z_level_round_trips_with_backend() {
     let temp = TestDir::new("zm_7z_level");
     fs::create_dir_all(temp.path("project")).unwrap();

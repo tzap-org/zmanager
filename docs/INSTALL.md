@@ -14,8 +14,8 @@ Download the archive for your platform from the GitHub release:
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
 | Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
 | Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
-| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.2-1_arm64.deb` |
-| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.2-1_amd64.deb` |
+| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.1-1_arm64.deb` |
+| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.1-1_amd64.deb` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
 
@@ -24,8 +24,8 @@ Verify checksums before installing.
 Unix:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zm-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zm-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
@@ -92,13 +92,13 @@ The package installs `zm` to `/usr/bin`, the man page to
 completion directories.
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zmanager-cli_1.0.2-1_amd64.deb
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
 sha256sum -c SHA256SUMS --ignore-missing
-sudo apt install ./zmanager-cli_1.0.2-1_amd64.deb
+sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
 ```
 
-Use `zmanager-cli_1.0.2-1_arm64.deb` on ARM64 systems.
+Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems.
 
 ## Install Script
 
@@ -114,7 +114,7 @@ elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.2 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_VERSION=v1.0.1 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 If no matching binary exists, the installer falls back to building from source.
@@ -134,8 +134,8 @@ generate it locally from release artifacts:
 
 ```sh
 scripts/generate-package-metadata.sh \
-  v1.0.2 \
-  https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2 \
+  v1.0.1 \
+  https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1 \
   dist/SHA256SUMS \
   dist/package-metadata
 ```
@@ -149,7 +149,7 @@ After release metadata is generated, validate the manifests before submitting
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.2
+winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.1
 ```
 
 After the manifest is accepted, users install with:
@@ -163,7 +163,7 @@ formula, so installer hashes should not be edited by hand.
 
 ## Linux Channels
 
-For 1.0.2, the supported Linux path is direct tarball installation with checksum
+For 1.0.1, the supported Linux path is direct tarball installation with checksum
 verification or direct `.deb` installation. `.rpm` and repository maintenance
 can be added later if there is enough demand to justify owning distro-specific
 update flows.
