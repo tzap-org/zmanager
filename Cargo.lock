@@ -480,7 +480,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1007,7 +1007,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1235,7 +1235,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.1"
-source = "git+https://github.com/frankmanzhu/tzap?rev=b9da0f6617240d8266be93e7ed536b0106b5601f#b9da0f6617240d8266be93e7ed536b0106b5601f"
+source = "git+https://github.com/frankmanzhu/tzap?rev=21153294e6c99e9902042648790c5568cdacb0c7#21153294e6c99e9902042648790c5568cdacb0c7"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
