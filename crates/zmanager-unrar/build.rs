@@ -60,10 +60,9 @@ const WINDOWS_SYSTEM_LIBS: &[&str] = &["advapi32", "shell32", "shlwapi", "powrpr
 const SYSTEM_CPU_FEATURE_NEEDLE: &str =
     "#elif defined(__GNUC__)\n  if (__builtin_cpu_supports(\"avx2\"))";
 const SYSTEM_CPU_FEATURE_REPLACEMENT: &str = concat!(
-    "#elif defined(__APPLE__)\n",
-    "  // Apple clang can emit a reference to GCC's ___cpu_model runtime\n",
-    "  // symbol through __builtin_cpu_supports. Disable optional UnRAR SSE\n",
-    "  // dispatch in this embedded build and keep the portable code path.\n",
+    "#elif defined(ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH)\n",
+    "  // Some embedded x86_64 builds do not provide GCC's CPU feature\n",
+    "  // runtime symbol for __builtin_cpu_supports. Keep the portable path.\n",
     "  return SSE_NONE;\n",
     "#elif defined(__GNUC__)\n",
     "  if (__builtin_cpu_supports(\"avx2\"))",
@@ -72,15 +71,15 @@ const SYSTEM_CPU_FEATURE_REPLACEMENT: &str = concat!(
 const RIJNDAEL_CPU_FEATURE_NEEDLE: &str =
     "#elif defined(__GNUC__)\n  AES_NI=__builtin_cpu_supports(\"aes\");";
 const RIJNDAEL_CPU_FEATURE_REPLACEMENT: &str = concat!(
-    "#elif defined(__APPLE__)\n",
+    "#elif defined(ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH)\n",
     "  // See crates/zmanager-unrar/README.md. Avoid depending on GCC's\n",
-    "  // ___cpu_model runtime symbol when this source is compiled by Apple clang.\n",
+    "  // CPU feature runtime symbol in embedded x86_64 builds.\n",
     "  AES_NI=false;\n",
     "#elif defined(__GNUC__)\n",
     "  AES_NI=__builtin_cpu_supports(\"aes\");",
 );
 
-const MACOS_X86_64_UNRAR_PATCHES: &[SourcePatch] = &[
+const PORTABLE_CPU_DISPATCH_PATCHES: &[SourcePatch] = &[
     SourcePatch {
         file_name: "system.cpp",
         needle: SYSTEM_CPU_FEATURE_NEEDLE,
@@ -124,13 +123,19 @@ fn main() {
         .flag_if_supported("-Wno-nontrivial-memcall");
 
     let target_os = target_os();
-    let apply_macos_x86_64_patch = target_os == "macos" && target_arch() == "x86_64";
+    let target_arch = target_arch();
+    let use_portable_cpu_dispatch =
+        target_arch == "x86_64" && (target_os == "macos" || target_env() == "musl");
+    if use_portable_cpu_dispatch {
+        build.define("ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH", None);
+    }
+
     for source in UNRAR_SOURCES {
         let build_source = copy_build_source(
             &unrar_dir,
             &build_source_dir,
             source,
-            apply_macos_x86_64_patch,
+            use_portable_cpu_dispatch,
         );
         build.file(build_source);
         println!(
@@ -144,7 +149,7 @@ fn main() {
                 &unrar_dir,
                 &build_source_dir,
                 source,
-                apply_macos_x86_64_patch,
+                use_portable_cpu_dispatch,
             );
             build.file(build_source);
             println!(
@@ -179,18 +184,22 @@ fn target_arch() -> String {
     env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH is set by Cargo")
 }
 
+fn target_env() -> String {
+    env::var("CARGO_CFG_TARGET_ENV").expect("CARGO_CFG_TARGET_ENV is set by Cargo")
+}
+
 fn copy_build_source(
     unrar_dir: &Path,
     build_source_dir: &Path,
     source: &str,
-    apply_macos_x86_64_patch: bool,
+    use_portable_cpu_dispatch: bool,
 ) -> PathBuf {
     let original = unrar_dir.join(source);
     let copied = build_source_dir.join(source);
 
-    if apply_macos_x86_64_patch {
+    if use_portable_cpu_dispatch {
         let mut contents = None;
-        for patch in MACOS_X86_64_UNRAR_PATCHES
+        for patch in PORTABLE_CPU_DISPATCH_PATCHES
             .iter()
             .filter(|patch| patch.file_name == source)
         {

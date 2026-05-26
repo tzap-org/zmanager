@@ -40,21 +40,22 @@ brew tap frankmanzhu/zmanager
 brew install zmanager
 ```
 
-### Ubuntu/Debian
+### Linux
 
-Ubuntu and Debian users can install the `.deb` package from the GitHub release:
+Linux users can download a static single-binary tarball from the GitHub release:
 
 ```sh
 curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
-sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
+tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
+./zm healthcheck
+install -m 0755 zm "$HOME/.local/bin/zm"
 zm healthcheck
 ```
 
-Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems. The package installs
-`zm`, the man page, and bash, zsh, and fish completions into standard system
-locations.
+Use `zm-aarch64-unknown-linux-musl.tar.gz` on ARM64 systems. The archive also
+includes the man page and bash, zsh, fish, and PowerShell completions.
 
 ### Windows
 
@@ -67,12 +68,6 @@ When the WinGet package is published, install with:
 ```powershell
 winget install FrankZhu.ZManagerCLI
 ```
-
-### Other Linux
-
-Download the matching Linux `.tar.gz` from the
-[latest release](https://github.com/frankmanzhu/zmanager/releases/latest),
-verify it with `SHA256SUMS`, and place `zm` on `PATH`.
 
 ### Install Script
 

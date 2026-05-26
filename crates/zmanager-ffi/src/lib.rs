@@ -2099,6 +2099,8 @@ mod tests {
     const TEST_ARCHIVE_FORMAT_SEVENZ: i32 = super::ARCHIVE_FORMAT_SEVENZ;
     const TEST_ARCHIVE_FORMAT_TZAP: i32 = super::ARCHIVE_FORMAT_TZAP;
     const TEST_7Z_VOLUME_SIZE: u64 = 1_048_576;
+    const TEST_JOB_POLL_ATTEMPTS: usize = 1_000;
+    const TEST_JOB_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
     #[test]
     fn ffi_tzap_routing_recognizes_numbered_volumes() {
@@ -2163,13 +2165,13 @@ mod tests {
         assert!(!job.is_null());
 
         let mut events = String::new();
-        for _ in 0..200 {
+        for _ in 0..TEST_JOB_POLL_ATTEMPTS {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(TEST_JOB_POLL_INTERVAL);
         }
         events.push_str(&poll_events(job));
 
@@ -2383,13 +2385,13 @@ mod tests {
         assert!(!job.is_null());
 
         let mut events = String::new();
-        for _ in 0..200 {
+        for _ in 0..TEST_JOB_POLL_ATTEMPTS {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(TEST_JOB_POLL_INTERVAL);
         }
         events.push_str(&poll_events(job));
 
@@ -2884,13 +2886,13 @@ mod tests {
         assert!(!job.is_null());
 
         let mut events = String::new();
-        for _ in 0..200 {
+        for _ in 0..TEST_JOB_POLL_ATTEMPTS {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(TEST_JOB_POLL_INTERVAL);
         }
         events.push_str(&poll_events(job));
 
@@ -3027,13 +3029,13 @@ mod tests {
         assert!(!job.is_null());
 
         let mut events = String::new();
-        for _ in 0..200 {
+        for _ in 0..TEST_JOB_POLL_ATTEMPTS {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(TEST_JOB_POLL_INTERVAL);
         }
         events.push_str(&poll_events(job));
 
@@ -3374,13 +3376,13 @@ mod tests {
 
     fn drain_job(job: *mut ZManagerFfiJob) -> String {
         let mut events = String::new();
-        for _ in 0..200 {
+        for _ in 0..TEST_JOB_POLL_ATTEMPTS {
             let chunk = poll_events(job);
             events.push_str(&chunk);
             if zmanager_ffi_job_is_finished(job) && chunk == "[]" {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(TEST_JOB_POLL_INTERVAL);
         }
         events.push_str(&poll_events(job));
 

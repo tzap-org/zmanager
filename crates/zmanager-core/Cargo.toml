@@ -18,7 +18,7 @@ lzma-rust2 = { version = "0.16.2", default-features = false, features = ["lzip",
 rand = "0.8.5"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = { git = "https://github.com/frankmanzhu/tzap", rev = "21153294e6c99e9902042648790c5568cdacb0c7" }
+tzap-core = { git = "https://github.com/frankmanzhu/tzap", rev = "cd9a989494c3be7ebf146a192f992067732116b4" }
 zip = "8.6.0"
 zeroize = "1.8.2"
 zmanager-libarchive = { path = "../zmanager-libarchive" }

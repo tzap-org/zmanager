@@ -16,7 +16,6 @@ const PACKAGE_PREVIEW_WORKFLOW: &str =
     include_str!("../../../.github/workflows/package-preview.yml");
 const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
-const PACKAGE_DEB_SH: &str = include_str!("../../../scripts/package-deb.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
 const RELEASE_COMPATIBILITY_SH: &str =
     include_str!("../../../scripts/release-compatibility-check.sh");
@@ -591,8 +590,6 @@ fn man_page_covers_public_commands_and_release_topics() {
 fn release_packaging_includes_man_page() {
     assert_contains(PACKAGE_RELEASE_SH, "docs/man/zm.1");
     assert_contains(PACKAGE_RELEASE_SH, "man/man1");
-    assert_contains(PACKAGE_DEB_SH, "docs/man/zm.1");
-    assert_contains(PACKAGE_DEB_SH, "usr/share/man/man1/zm.1.gz");
     assert_contains(CI_WINDOWS_PS1, "docs\\man\\zm.1");
     assert_contains(CI_WINDOWS_PS1, "man\\man1");
 }
@@ -602,8 +599,8 @@ fn package_channel_metadata_uses_release_checksums() {
     for target_constant in [
         "TARGET_AARCH64_APPLE_DARWIN",
         "TARGET_X86_64_APPLE_DARWIN",
-        "TARGET_AARCH64_UNKNOWN_LINUX_GNU",
-        "TARGET_X86_64_UNKNOWN_LINUX_GNU",
+        "TARGET_AARCH64_UNKNOWN_LINUX_MUSL",
+        "TARGET_X86_64_UNKNOWN_LINUX_MUSL",
         "TARGET_AARCH64_PC_WINDOWS_MSVC",
         "TARGET_X86_64_PC_WINDOWS_MSVC",
     ] {
@@ -621,7 +618,7 @@ fn package_channel_metadata_uses_release_checksums() {
     }
 
     assert_contains(HOMEBREW_TEMPLATE, "__SHA_AARCH64_APPLE_DARWIN__");
-    assert_contains(HOMEBREW_TEMPLATE, "__SHA_X86_64_UNKNOWN_LINUX_GNU__");
+    assert_contains(HOMEBREW_TEMPLATE, "__SHA_X86_64_UNKNOWN_LINUX_MUSL__");
     assert_contains(HOMEBREW_TEMPLATE, "class Zmanager < Formula");
     assert_contains(WINGET_INSTALLER_TEMPLATE, "__SHA_X86_64_PC_WINDOWS_MSVC__");
     assert_contains(WINGET_INSTALLER_TEMPLATE, "__SHA_AARCH64_PC_WINDOWS_MSVC__");
@@ -634,7 +631,6 @@ fn release_validation_artifacts_are_declared() {
 
     for required in [
         "*.deps.txt",
-        "*.deb",
         "package-metadata.tar.gz",
         "SHA256SUMS",
         "sha256sum package-metadata.tar.gz >> SHA256SUMS",
@@ -643,7 +639,12 @@ fn release_validation_artifacts_are_declared() {
         assert_contains(RELEASE_WORKFLOW, required);
     }
 
-    for required in ["otool -L", "ldd", "zm-$TARGET.deps.txt"] {
+    for required in [
+        "otool -L",
+        "readelf -d",
+        "no ELF NEEDED entries",
+        "zm-$TARGET.deps.txt",
+    ] {
         assert_contains(RUNTIME_DEPS_SH, required);
     }
 
@@ -656,7 +657,7 @@ fn release_validation_artifacts_are_declared() {
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",
-        "zmanager-cli_1.0.1-1_amd64.deb",
+        "zm-x86_64-unknown-linux-musl.tar.gz",
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
         assert_contains(RELEASE_NOTES_1_0_1, required);
@@ -670,15 +671,11 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         "workflow_dispatch:",
         "branches: [main]",
         "scripts/package-release.sh",
-        "scripts/package-deb.sh",
         "powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1",
         "actions/upload-artifact@v6",
         "name: zm-preview-${{ matrix.target }}",
         "path: dist/zm-${{ matrix.target }}.*",
-        "Linux tarballs and Debian packages are uploaded as separate artifacts.",
-        "name: zmanager-cli-preview-${{ matrix.deb_arch }}-deb",
-        "path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb",
-        "if: runner.os == 'Linux'",
+        "Linux tarballs are static single-binary artifacts.",
         "if-no-files-found: error",
         "retention-days: 14",
         "contents: read",
@@ -690,7 +687,9 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         "contents: write",
         "gh release create",
         "actions/download-artifact",
+        "scripts/package-deb.sh",
         "dist/zmanager-cli_*.deb",
+        "matrix.deb_arch",
     ] {
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
@@ -716,47 +715,48 @@ fn tool_dependent_release_compatibility_validation_is_declared() {
 }
 
 #[test]
-fn debian_package_assets_are_declared() {
+fn linux_release_artifacts_are_static_tarballs() {
     for required in [
-        "Package: $PACKAGE_NAME",
-        "Version: $deb_version",
-        "Architecture: $deb_arch",
-        "Depends: $depends",
-        "chmod 0755 \"$STAGE\"",
-        "dpkg-shlibdeps -O",
-        "debian/$PACKAGE_NAME/usr/bin/$BINARY_NAME",
-        "$SHLIBS_WORK/debian/$PACKAGE_NAME/DEBIAN",
-        "dpkg-deb --build --root-owner-group",
-        "readonly PYTHON_BIN=\"$(python_bin)\"",
-        "usr/bin/$BINARY_NAME",
-        "usr/share/bash-completion/completions/zm",
-        "usr/share/zsh/vendor-completions/_zm",
-        "usr/share/fish/vendor_completions.d/zm.fish",
-        "${PACKAGE_NAME}_${DEB_VERSION}_${DEB_ARCH}.deb",
-        "gzip -9 -n \"$doc_dir/changelog.Debian\"",
+        "*-unknown-linux-musl",
+        "musl-gcc is required",
+        "CARGO_TARGET_${target_env_upper}_LINKER",
     ] {
-        assert_contains(PACKAGE_DEB_SH, required);
+        assert_contains(PACKAGE_RELEASE_SH, required);
     }
 
     for required in [
-        "zmanager-cli_1.0.1-1_amd64.deb",
-        "zmanager-cli_1.0.1-1_arm64.deb",
-        "sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb",
+        "readelf is required to verify static Linux release artifacts",
+        "static Linux runtime dependency inspection failed",
+    ] {
+        assert_contains(RUNTIME_DEPS_SH, required);
+    }
+
+    for required in [
+        "zm-x86_64-unknown-linux-musl.tar.gz",
+        "zm-aarch64-unknown-linux-musl.tar.gz",
+        "Linux release archives are statically linked musl builds",
+        "without installing extra runtime packages",
     ] {
         assert_contains(INSTALL_DOC, required);
     }
 
     for required in [
-        "scripts/package-deb.sh",
-        "deb_arch: amd64",
-        "deb_arch: arm64",
-        "name: zmanager-cli-${{ matrix.deb_arch }}-deb",
-        "path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb",
-        "release-artifacts/*.deb",
-        "dpkg-dev",
-        "python3",
+        "target: x86_64-unknown-linux-musl",
+        "target: aarch64-unknown-linux-musl",
+        "musl-tools",
+        "sha256sum *.tar.gz *.zip *.deps.txt > SHA256SUMS",
     ] {
         assert_contains(RELEASE_WORKFLOW, required);
+    }
+
+    for forbidden in [
+        "scripts/package-deb.sh",
+        "deb_arch:",
+        "release-artifacts/*.deb",
+        "zmanager-cli-${{ matrix.deb_arch }}-deb",
+    ] {
+        assert_not_contains(RELEASE_WORKFLOW, forbidden);
+        assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
 }
 
@@ -768,8 +768,8 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
     let ci_test_job = section_between(&ci_workflow, "  test:\n", "\n  windows-test:\n");
 
     for required in [
-        "- os: ubuntu-22.04\n            target: x86_64-unknown-linux-gnu",
-        "- os: ubuntu-22.04-arm\n            target: aarch64-unknown-linux-gnu",
+        "- os: ubuntu-22.04\n            target: x86_64-unknown-linux-musl",
+        "- os: ubuntu-22.04-arm\n            target: aarch64-unknown-linux-musl",
     ] {
         assert_contains(&release_package_job, required);
     }

@@ -33,6 +33,21 @@ mkdir -p "$(dirname "$REPORT")"
     echo "tool: otool -L"
     echo
     otool -L "$BINARY"
+  elif [[ "$TARGET" == *linux-musl ]]; then
+    echo "tool: file + readelf -d"
+    echo
+    if ! command -v readelf >/dev/null 2>&1; then
+      echo "readelf is required to verify static Linux release artifacts" >&2
+      exit 1
+    fi
+    file "$BINARY"
+    echo
+    if readelf -d "$BINARY" 2>/dev/null | grep -q '(NEEDED)'; then
+      readelf -d "$BINARY"
+      echo "static Linux runtime dependency inspection failed: dynamic dependencies were found" >&2
+      exit 1
+    fi
+    echo "no ELF NEEDED entries"
   elif [[ "$TARGET" == *linux* ]]; then
     echo "tool: ldd"
     echo

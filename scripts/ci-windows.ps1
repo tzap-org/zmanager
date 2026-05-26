@@ -249,22 +249,39 @@ function Invoke-ThirdPartyNoticeGeneration {
         [string]$Stage
     )
 
-    $pythonCommand = Get-Command "python" -ErrorAction SilentlyContinue
+    $python = $null
     $pythonArguments = @()
-    if ($pythonCommand) {
-        $python = $pythonCommand.Source
-    } else {
-        $python3Command = Get-Command "python3" -ErrorAction SilentlyContinue
-        if ($python3Command) {
-            $python = $python3Command.Source
-        } else {
-            $pyCommand = Get-Command "py" -ErrorAction SilentlyContinue
-            if (-not $pyCommand) {
-                throw "python, python3, or py is required to generate third-party notices"
-            }
-            $python = $pyCommand.Source
-            $pythonArguments = @("-3")
+    $candidates = @(
+        @{ Name = "python"; Arguments = @() },
+        @{ Name = "python3"; Arguments = @() },
+        @{ Name = "py"; Arguments = @("-3") }
+    )
+
+    foreach ($candidate in $candidates) {
+        $command = Get-Command $candidate.Name -ErrorAction SilentlyContinue
+        if (-not $command) {
+            continue
         }
+
+        $arguments = [string[]]$candidate.Arguments
+        $versionArguments = $arguments + @("-c", "import sys; print(sys.version_info[0])")
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & $command.Source @versionArguments 1>$null 2>$null
+            $status = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($status -eq 0) {
+            $python = $command.Source
+            $pythonArguments = $arguments
+            break
+        }
+    }
+
+    if (-not $python) {
+        throw "python, python3, or py is required to generate third-party notices"
     }
 
     Invoke-NativeLogged `

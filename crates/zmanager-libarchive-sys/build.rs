@@ -135,6 +135,21 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
             .define("ENABLE_WIN32_XMLLITE", "ON")
             .define("ENABLE_CNG", "ON");
         configure_windows_static_vcpkg_dependencies(config);
+    } else if target.contains("linux") && target.contains("musl") {
+        config
+            .define("ENABLE_ACL", "OFF")
+            .define("ENABLE_XATTR", "OFF")
+            .define("ENABLE_ICONV", "OFF")
+            .define("ENABLE_LIBXML2", "OFF")
+            .define("ENABLE_EXPAT", "OFF")
+            .define("ENABLE_OPENSSL", "OFF")
+            .define("ENABLE_MBEDTLS", "OFF")
+            .define("ENABLE_NETTLE", "OFF")
+            .define("ENABLE_ZLIB", "OFF")
+            .define("ENABLE_BZip2", "OFF")
+            .define("ENABLE_LZMA", "OFF")
+            .define("ENABLE_ZSTD", "OFF")
+            .define("ENABLE_LZ4", "OFF");
     } else {
         config
             .define("ENABLE_ACL", "ON")
@@ -228,6 +243,8 @@ fn link_bundled_archive_dependencies(target: &str) {
         link_common_unix_libraries();
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=xml2");
+    } else if target.contains("linux") && target.contains("musl") {
+        println!("cargo:rustc-link-lib=pthread");
     } else if target.contains("linux") {
         link_common_unix_libraries();
         println!("cargo:rustc-link-lib=pthread");

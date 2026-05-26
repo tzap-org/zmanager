@@ -29,11 +29,9 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            deb_arch: amd64
+            target: x86_64-unknown-linux-musl
           - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            deb_arch: arm64
+            target: aarch64-unknown-linux-musl
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             triplet: x64-windows-static-md
@@ -59,17 +57,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            binutils \
             cmake \
-            libacl1-dev \
-            libbz2-dev \
-            liblz4-dev \
-            liblzma-dev \
-            libssl-dev \
-            libxml2-dev \
-            libzstd-dev \
-            dpkg-dev \
+            file \
+            musl-tools \
+            xz-utils \
             python3 \
-            zlib1g-dev
+            build-essential
+          sudo scripts/install-zig-linux.sh /opt/zig
+          echo /opt/zig >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
         run: |
@@ -77,13 +73,14 @@ jobs:
           rustup default stable
           rustup target add "${{ matrix.target }}"
 
+      - uses: actions/setup-python@v6
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.x"
+
       - name: Package Unix
         if: runner.os != 'Windows'
         run: scripts/package-release.sh "${{ matrix.target }}" dist
-
-      - name: Package Debian
-        if: runner.os == 'Linux'
-        run: scripts/package-deb.sh "${{ matrix.target }}" dist
 
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -101,13 +98,6 @@ jobs:
         with:
           name: zm-${{ matrix.target }}
           path: dist/zm-${{ matrix.target }}.*
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v6
-        if: runner.os == 'Linux'
-        with:
-          name: zmanager-cli-${{ matrix.deb_arch }}-deb
-          path: dist/zmanager-cli_*_${{ matrix.deb_arch }}.deb
           if-no-files-found: error
 
   publish:
@@ -128,7 +118,7 @@ jobs:
       - name: Prepare checksums
         run: |
           cd release-artifacts
-          sha256sum *.tar.gz *.zip *.deb *.deps.txt > SHA256SUMS
+          sha256sum *.tar.gz *.zip *.deps.txt > SHA256SUMS
 
       - name: Prepare package metadata
         env:
@@ -158,7 +148,6 @@ jobs:
           gh release create "$TAG_NAME" \
             release-artifacts/*.tar.gz \
             release-artifacts/*.zip \
-            release-artifacts/*.deb \
             release-artifacts/*.deps.txt \
             release-artifacts/SHA256SUMS \
             --verify-tag \

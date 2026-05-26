@@ -12,10 +12,8 @@ Download the archive for your platform from the GitHub release:
 | --- | --- |
 | macOS Apple Silicon | `zm-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `zm-x86_64-apple-darwin.tar.gz` |
-| Linux ARM64 | `zm-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux x86_64 | `zm-x86_64-unknown-linux-gnu.tar.gz` |
-| Ubuntu/Debian ARM64 | `zmanager-cli_1.0.1-1_arm64.deb` |
-| Ubuntu/Debian x86_64 | `zmanager-cli_1.0.1-1_amd64.deb` |
+| Linux ARM64 | `zm-aarch64-unknown-linux-musl.tar.gz` |
+| Linux x86_64 | `zm-x86_64-unknown-linux-musl.tar.gz` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
 
@@ -84,21 +82,20 @@ zm completions powershell > zm.ps1
 . .\zm.ps1
 ```
 
-## Ubuntu/Debian Packages
+## Linux Direct Install
 
-Ubuntu and Debian users can install the `.deb` package from the GitHub release.
-The package installs `zm` to `/usr/bin`, the man page to
-`/usr/share/man/man1`, and shell completions to the standard bash, zsh, and fish
-completion directories.
+Linux release archives are statically linked musl builds. They are intended to
+run as a single executable without installing extra runtime packages.
 
 ```sh
 curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zmanager-cli_1.0.1-1_amd64.deb
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
-sudo apt install ./zmanager-cli_1.0.1-1_amd64.deb
+tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
+./zm --version
 ```
 
-Use `zmanager-cli_1.0.1-1_arm64.deb` on ARM64 systems.
+Use `zm-aarch64-unknown-linux-musl.tar.gz` on ARM64 systems.
 
 ## Install Script
 
@@ -164,11 +161,10 @@ formula, so installer hashes should not be edited by hand.
 ## Linux Channels
 
 For 1.0.1, the supported Linux path is direct tarball installation with checksum
-verification or direct `.deb` installation. `.rpm` and repository maintenance
-can be added later if there is enough demand to justify owning distro-specific
-update flows.
+verification. `.deb`, `.rpm`, and repository maintenance can be added later if
+there is enough demand to justify owning distro-specific update flows.
 
-The Linux binaries are built on GitHub-hosted Ubuntu 22.04 runners and may
-depend on standard Ubuntu 22.04-era runtime libraries. Use the
-release-validation step to record `ldd` output for the exact artifacts being
-shipped.
+The Linux binaries are built as static musl artifacts on GitHub-hosted
+`ubuntu-22.04` and `ubuntu-22.04-arm` runners. The release-validation step
+records an ELF dependency report and fails if a static Linux artifact contains
+dynamic `NEEDED` entries.

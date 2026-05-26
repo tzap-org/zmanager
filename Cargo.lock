@@ -1235,7 +1235,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.1"
-source = "git+https://github.com/frankmanzhu/tzap?rev=21153294e6c99e9902042648790c5568cdacb0c7#21153294e6c99e9902042648790c5568cdacb0c7"
+source = "git+https://github.com/frankmanzhu/tzap?rev=cd9a989494c3be7ebf146a192f992067732116b4#cd9a989494c3be7ebf146a192f992067732116b4"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",

@@ -20,9 +20,9 @@ use tzap_core::format::{
 use tzap_core::reader::{ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember};
 use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, VolumeHeader};
 use tzap_core::{
-    ExtractError, KdfParams, MasterKey, OpenedArchive, RegularFile, SafeExtractionOptions,
-    TarEntryKind, WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
-    write_archive_with_kdf,
+    ArchiveWriteError, ArchiveWriteSink, ExtractError, KdfParams, MasterKey, OpenedArchive,
+    RegularFileSource, SafeExtractionOptions, TarEntryKind, WriterOptions, open_seekable_archive,
+    open_seekable_archive_volumes, write_archive_sources_to_sink,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
@@ -240,18 +240,10 @@ pub fn create_tzap_from_manifest_with_context(
     context: &mut JobContext<'_>,
 ) -> Result<TzapCreateReport, TzapError> {
     context.check_cancelled()?;
-    let (owned_files, mut warnings) = collect_regular_files(manifest, options, Some(context))?;
+    let (file_sources, mut warnings) =
+        collect_regular_file_sources(manifest, options, Some(context))?;
     context.check_cancelled()?;
 
-    let files = owned_files
-        .iter()
-        .map(|file| RegularFile {
-            path: file.archive_path.as_str(),
-            contents: &file.contents,
-            mode: file.mode,
-            mtime: file.mtime,
-        })
-        .collect::<Vec<_>>();
     let mut writer_options = WriterOptions {
         stripe_width: 1,
         volume_loss_tolerance: options.volume_loss_tolerance,
@@ -267,11 +259,30 @@ pub fn create_tzap_from_manifest_with_context(
     let kdf_params = create_kdf_params();
     let master_key =
         MasterKey::derive_from_passphrase(&kdf_params, options.passphrase.expose_secret())?;
-    let archive = write_archive_with_kdf(&files, &master_key, writer_options, &kdf_params)?;
-
     let destination = destination.as_ref();
-    let volume_count =
-        write_tzap_archive_outputs(destination, &archive.volumes, options.replace_existing)?;
+    let mut sink = TzapArchiveFileSink::new(destination, options.replace_existing)?;
+    let summary = write_archive_sources_to_sink(
+        &file_sources,
+        &master_key,
+        writer_options,
+        None,
+        &kdf_params,
+        None,
+        None,
+        &mut sink,
+    )
+    .map_err(|source| tzap_write_error(destination, source))?;
+
+    let volume_count = sink.commit()?;
+    if summary.volume_count != volume_count {
+        return Err(TzapError::Format(FormatError::WriterInvariant(
+            "TZAP writer summary did not match committed volume count",
+        )));
+    }
+    for file in &file_sources {
+        context.bytes_processed(Some(&file.archive_path), file.size);
+        context.entry_finished(&file.archive_path, file.size);
+    }
 
     warnings.extend(
         manifest
@@ -281,71 +292,13 @@ pub fn create_tzap_from_manifest_with_context(
     );
 
     Ok(TzapCreateReport {
-        written_entries: files.len(),
-        written_bytes: owned_files
-            .iter()
-            .map(|file| file.contents.len() as u64)
-            .sum(),
+        written_entries: file_sources.len(),
+        written_bytes: file_sources.iter().map(|file| file.size).sum(),
         level: options.level,
         volume_size: options.volume_size,
         volume_count,
         warnings,
     })
-}
-
-fn write_tzap_archive_outputs(
-    destination: &Path,
-    volumes: &[Vec<u8>],
-    replace_existing: bool,
-) -> Result<usize, TzapError> {
-    if volumes.is_empty() {
-        return Err(TzapError::Format(FormatError::WriterInvariant(
-            "no TZAP volumes emitted",
-        )));
-    }
-
-    let volume_paths = tzap_output_volume_paths(destination, volumes.len());
-    let existing_volume_paths = existing_tzap_volume_paths(destination)?;
-    ensure_tzap_destinations_available(
-        destination,
-        &volume_paths,
-        &existing_volume_paths,
-        replace_existing,
-    )?;
-
-    let mut outputs = Vec::with_capacity(volume_paths.len());
-    for (volume, volume_path) in volumes.iter().zip(&volume_paths) {
-        let mut output = AtomicOutputFile::create(volume_path).map_err(|source| TzapError::Io {
-            path: volume_path.clone(),
-            source,
-        })?;
-        output
-            .file_mut()
-            .map_err(|source| TzapError::Io {
-                path: volume_path.clone(),
-                source,
-            })?
-            .write_all(volume)
-            .map_err(|source| TzapError::Io {
-                path: volume_path.clone(),
-                source,
-            })?;
-        output.close();
-        outputs.push(output);
-    }
-
-    remove_tzap_destinations_for_replace(destination, &existing_volume_paths, replace_existing)?;
-    let created_volume_count = volume_paths.len();
-    for (output, volume_path) in outputs.into_iter().zip(volume_paths) {
-        output
-            .commit_with_file_replace(replace_existing)
-            .map_err(|source| TzapError::Io {
-                path: volume_path,
-                source,
-            })?;
-    }
-
-    Ok(created_volume_count)
 }
 
 fn tzap_output_volume_paths(destination: &Path, count: usize) -> Vec<PathBuf> {
@@ -667,11 +620,11 @@ pub fn extract_tzap_file_to_destination(
     Ok(Some(index_entry.file_data_size))
 }
 
-fn collect_regular_files(
+fn collect_regular_file_sources(
     manifest: &ArchiveManifest,
     options: &TzapCreateOptions,
     mut context: Option<&mut JobContext<'_>>,
-) -> Result<(Vec<OwnedRegularFile>, Vec<String>), TzapError> {
+) -> Result<(Vec<TzapRegularFileSource>, Vec<String>), TzapError> {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
 
@@ -683,17 +636,10 @@ fn collect_regular_files(
 
         match entry.file_type {
             ManifestFileType::File => {
-                let contents = fs::read(&entry.source_path).map_err(|source| TzapError::Io {
-                    path: entry.source_path.clone(),
-                    source,
-                })?;
-                if let Some(context) = context.as_deref_mut() {
-                    context.bytes_processed(Some(&entry.archive_path), contents.len() as u64);
-                    context.entry_finished(&entry.archive_path, contents.len() as u64);
-                }
-                files.push(OwnedRegularFile {
+                files.push(TzapRegularFileSource {
                     archive_path: entry.archive_path.clone(),
-                    contents,
+                    source_path: entry.source_path.clone(),
+                    size: entry.size,
                     mode: if options.preserve_metadata {
                         entry.permissions.unix_mode.unwrap_or(0o644) & 0o7777
                     } else {
@@ -1168,11 +1114,201 @@ fn tzap_entry_from_index_entry(entry: ArchiveIndexEntry) -> TzapEntry {
 }
 
 #[derive(Debug)]
-struct OwnedRegularFile {
+struct TzapRegularFileSource {
     archive_path: String,
-    contents: Vec<u8>,
+    source_path: PathBuf,
+    size: u64,
     mode: u32,
     mtime: u64,
+}
+
+impl RegularFileSource for TzapRegularFileSource {
+    fn archive_path(&self) -> &str {
+        &self.archive_path
+    }
+
+    fn file_data_size(&self) -> u64 {
+        self.size
+    }
+
+    fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    fn mtime(&self) -> u64 {
+        self.mtime
+    }
+
+    fn open(&self) -> Result<Box<dyn io::Read + '_>, ArchiveWriteError> {
+        let file = File::open(&self.source_path).map_err(|source| {
+            ArchiveWriteError::Io(io::Error::new(
+                source.kind(),
+                format!(
+                    "failed to open TZAP source file {}: {source}",
+                    self.source_path.display()
+                ),
+            ))
+        })?;
+        Ok(Box::new(file))
+    }
+}
+
+struct TzapArchiveFileSink {
+    destination: PathBuf,
+    replace_existing: bool,
+    existing_volume_paths: Vec<PathBuf>,
+    volume_paths: Vec<PathBuf>,
+    outputs: Vec<AtomicOutputFile>,
+}
+
+impl TzapArchiveFileSink {
+    fn new(destination: &Path, replace_existing: bool) -> Result<Self, TzapError> {
+        Ok(Self {
+            destination: destination.to_path_buf(),
+            replace_existing,
+            existing_volume_paths: existing_tzap_volume_paths(destination)?,
+            volume_paths: Vec::new(),
+            outputs: Vec::new(),
+        })
+    }
+
+    fn commit(self) -> Result<usize, TzapError> {
+        let volume_count = self.volume_paths.len();
+        if volume_count == 0 {
+            return Err(TzapError::Format(FormatError::WriterInvariant(
+                "no TZAP volumes emitted",
+            )));
+        }
+        if self.outputs.len() != volume_count {
+            return Err(TzapError::Format(FormatError::WriterInvariant(
+                "TZAP output sink did not open every planned volume",
+            )));
+        }
+
+        remove_tzap_destinations_for_replace(
+            &self.destination,
+            &self.existing_volume_paths,
+            self.replace_existing,
+        )?;
+
+        for (output, volume_path) in self.outputs.into_iter().zip(self.volume_paths) {
+            output
+                .commit_with_file_replace(self.replace_existing)
+                .map_err(|source| TzapError::Io {
+                    path: volume_path,
+                    source,
+                })?;
+        }
+
+        Ok(volume_count)
+    }
+}
+
+impl ArchiveWriteSink for TzapArchiveFileSink {
+    fn begin_archive(&mut self, volume_count: usize) -> Result<(), ArchiveWriteError> {
+        if volume_count == 0 {
+            return Err(ArchiveWriteError::Format(FormatError::WriterInvariant(
+                "no TZAP volumes emitted",
+            )));
+        }
+
+        let volume_paths = tzap_output_volume_paths(&self.destination, volume_count);
+        ensure_tzap_destinations_available(
+            &self.destination,
+            &volume_paths,
+            &self.existing_volume_paths,
+            self.replace_existing,
+        )
+        .map_err(tzap_archive_write_error)?;
+
+        let mut outputs = Vec::with_capacity(volume_paths.len());
+        for volume_path in &volume_paths {
+            outputs.push(AtomicOutputFile::create(volume_path).map_err(|source| {
+                ArchiveWriteError::Io(io::Error::new(
+                    source.kind(),
+                    format!(
+                        "failed to create TZAP output volume {}: {source}",
+                        volume_path.display()
+                    ),
+                ))
+            })?);
+        }
+
+        self.volume_paths = volume_paths;
+        self.outputs = outputs;
+        Ok(())
+    }
+
+    fn write_volume(&mut self, volume_index: usize, bytes: &[u8]) -> Result<(), ArchiveWriteError> {
+        let volume_path = self
+            .volume_paths
+            .get(volume_index)
+            .ok_or(FormatError::WriterInvariant(
+                "TZAP volume path index is out of bounds",
+            ))?
+            .clone();
+        let output = self
+            .outputs
+            .get_mut(volume_index)
+            .ok_or(FormatError::WriterInvariant(
+                "TZAP volume sink index is out of bounds",
+            ))?;
+        output
+            .file_mut()
+            .map_err(|source| {
+                ArchiveWriteError::Io(io::Error::new(
+                    source.kind(),
+                    format!(
+                        "failed to access TZAP output volume {}: {source}",
+                        volume_path.display()
+                    ),
+                ))
+            })?
+            .write_all(bytes)
+            .map_err(|source| {
+                ArchiveWriteError::Io(io::Error::new(
+                    source.kind(),
+                    format!(
+                        "failed to write TZAP output volume {}: {source}",
+                        volume_path.display()
+                    ),
+                ))
+            })
+    }
+
+    fn write_bootstrap_sidecar(&mut self, _bytes: &[u8]) -> Result<(), ArchiveWriteError> {
+        Ok(())
+    }
+}
+
+fn tzap_archive_write_error(error: TzapError) -> ArchiveWriteError {
+    match error {
+        TzapError::Format(source) => ArchiveWriteError::Format(source),
+        TzapError::Io { source, .. } => ArchiveWriteError::Io(source),
+        TzapError::Cancelled => ArchiveWriteError::Io(io::Error::other(JobCancelled)),
+        TzapError::Plan(_) | TzapError::Safety(_) | TzapError::PasswordRequired => {
+            ArchiveWriteError::Io(io::Error::other(error))
+        }
+    }
+}
+
+fn tzap_write_error(path: &Path, error: ArchiveWriteError) -> TzapError {
+    match error {
+        ArchiveWriteError::Format(source) => TzapError::Format(source),
+        ArchiveWriteError::Io(source) => {
+            if source
+                .get_ref()
+                .is_some_and(|source| source.downcast_ref::<JobCancelled>().is_some())
+            {
+                TzapError::Cancelled
+            } else {
+                TzapError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            }
+        }
+    }
 }
 
 fn system_time_to_unix_seconds(time: SystemTime) -> Option<u64> {

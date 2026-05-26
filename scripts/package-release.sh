@@ -20,6 +20,98 @@ cd "$ROOT"
 mkdir -p "$OUT_DIR"
 OUT_ABS="$(cd "$OUT_DIR" && pwd)"
 
+configure_static_linux_target() {
+  case "$TARGET" in
+    *-unknown-linux-musl)
+      local musl_abi
+      case "$TARGET" in
+        x86_64-unknown-linux-musl)
+          musl_abi=x86_64-linux-musl
+          ;;
+        aarch64-unknown-linux-musl)
+          musl_abi=aarch64-linux-musl
+          ;;
+        *)
+          echo "unsupported static Linux target: $TARGET" >&2
+          exit 1
+          ;;
+      esac
+
+      if ! command -v zig >/dev/null 2>&1; then
+        echo "zig is required to build static Linux release artifacts for $TARGET" >&2
+        exit 1
+      fi
+
+      local target_env=${TARGET//-/_}
+      local target_env_upper=${target_env^^}
+      local tool_dir="$ROOT/target/zmanager-tools/$TARGET"
+      local zig_cc="$tool_dir/zig-cc"
+      local zig_cxx="$tool_dir/zig-cxx"
+      local zig_ar="$tool_dir/zig-ar"
+      mkdir -p "$tool_dir"
+
+      cat > "$zig_cc" <<EOF
+#!/usr/bin/env bash
+args=()
+skip_next=false
+for arg in "\$@"; do
+  if [[ "\$skip_next" == true ]]; then
+    skip_next=false
+    continue
+  fi
+  case "\$arg" in
+    --target=*|-target=*)
+      continue
+      ;;
+    --target|-target)
+      skip_next=true
+      continue
+      ;;
+  esac
+  args+=("\$arg")
+done
+exec zig cc -target $musl_abi -w "\${args[@]}"
+EOF
+      cat > "$zig_cxx" <<EOF
+#!/usr/bin/env bash
+args=()
+skip_next=false
+for arg in "\$@"; do
+  if [[ "\$skip_next" == true ]]; then
+    skip_next=false
+    continue
+  fi
+  case "\$arg" in
+    --target=*|-target=*)
+      continue
+      ;;
+    --target|-target)
+      skip_next=true
+      continue
+      ;;
+  esac
+  args+=("\$arg")
+done
+exec zig c++ -target $musl_abi -w "\${args[@]}"
+EOF
+      cat > "$zig_ar" <<'EOF'
+#!/usr/bin/env bash
+exec zig ar "$@"
+EOF
+      chmod +x "$zig_cc" "$zig_cxx" "$zig_ar"
+
+      export "CC_${target_env}=$zig_cc"
+      export "CXX_${target_env}=$zig_cxx"
+      export "AR_${target_env}=$zig_ar"
+      export "CXXSTDLIB_${target_env}=c++"
+      export "CARGO_TARGET_${target_env_upper}_LINKER=$zig_cc"
+      local rustflags_env="CARGO_TARGET_${target_env_upper}_RUSTFLAGS"
+      local rustflags="${!rustflags_env:-}"
+      export "$rustflags_env=${rustflags:+$rustflags }-C link-self-contained=no"
+      ;;
+  esac
+}
+
 if [[ "$TARGET" == *windows* ]]; then
   BINARY="zm.exe"
   ARCHIVE="zm-$TARGET.zip"
@@ -28,6 +120,7 @@ else
   ARCHIVE="zm-$TARGET.tar.gz"
 fi
 
+configure_static_linux_target
 cargo build --locked --release --target "$TARGET" -p zmanager-cli --bin zm
 
 cp "target/$TARGET/release/$BINARY" "$STAGE/$BINARY"
