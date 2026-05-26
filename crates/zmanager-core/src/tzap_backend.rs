@@ -20,8 +20,9 @@ use tzap_core::format::{
 use tzap_core::reader::{ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember};
 use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, VolumeHeader};
 use tzap_core::{
-    KdfParams, MasterKey, OpenedArchive, RegularFile, SafeExtractionOptions, TarEntryKind,
-    WriterOptions, open_seekable_archive, open_seekable_archive_volumes, write_archive_with_kdf,
+    ExtractError, KdfParams, MasterKey, OpenedArchive, RegularFile, SafeExtractionOptions,
+    TarEntryKind, WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
+    write_archive_with_kdf,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
@@ -606,23 +607,31 @@ pub fn copy_tzap_files_to_writer(
             report.skipped_entries += 1;
             continue;
         }
-        let Some(contents) = opened.extract_file(&entry.path)? else {
+        let mut writer_ref = &mut *writer;
+        let Some(_diagnostics) = opened
+            .extract_file_to_writer(&entry.path, &mut writer_ref)
+            .map_err(|source| tzap_extract_error(&entry.path, source))?
+        else {
             report.skipped_entries += 1;
             report
                 .warnings
                 .push(format!("skipped missing entry {}", entry.path));
             continue;
         };
-        writer
-            .write_all(&contents)
-            .map_err(|source| TzapError::Io {
-                path: PathBuf::from(&entry.path),
-                source,
-            })?;
         report.written_entries += 1;
-        report.written_bytes += contents.len() as u64;
+        report.written_bytes += entry.file_data_size;
     }
     Ok(report)
+}
+
+fn tzap_extract_error(path: &str, source: ExtractError) -> TzapError {
+    match source {
+        ExtractError::Format(source) => TzapError::Format(source),
+        ExtractError::Output(source) => TzapError::Io {
+            path: PathBuf::from(path),
+            source,
+        },
+    }
 }
 
 /// Extracts one regular `.tzap` file member to an exact destination path.
