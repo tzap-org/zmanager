@@ -902,11 +902,11 @@ fn next_available_destination_path(path: &Path) -> PathBuf {
         .unwrap_or("entry");
     let extension = path.extension().and_then(|extension| extension.to_str());
 
-    for index in 1..10_000 {
+    for index in 2..10_000 {
         let file_name = if let Some(extension) = extension {
-            format!("{stem} ({index}).{extension}")
+            format!("{stem} {index}.{extension}")
         } else {
-            format!("{stem} ({index})")
+            format!("{stem} {index}")
         };
         let candidate = parent.join(file_name);
         if !candidate.exists() {
@@ -1141,7 +1141,7 @@ mod tests {
         else {
             panic!("expected renamed write decision");
         };
-        assert_eq!(destination_path, temp.path("out/file (1).txt"));
+        assert_eq!(destination_path, temp.path("out/file 2.txt"));
     }
 
     #[test]

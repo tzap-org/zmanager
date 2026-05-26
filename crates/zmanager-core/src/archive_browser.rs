@@ -5,7 +5,7 @@ use crate::safety::{
 };
 use crate::sevenz_backend::{SevenZEntryKind, SevenZError};
 use crate::tar_zst_backend::TarZstdError;
-use crate::tzap_backend::{TzapEntryKind, TzapError};
+use crate::tzap_backend::{TzapEntryKind, TzapError, is_tzap_archive_path};
 use crate::zip_backend::ZipBackendError;
 use std::fmt;
 use std::fs::{self, File};
@@ -82,12 +82,24 @@ pub struct PreviewExtractReport {
 }
 
 /// Options for browser-driven extraction.
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BrowserExtractOptions<'a> {
     /// Optional password for encrypted archive entry data.
     pub password: Option<&'a str>,
-    /// Whether existing destination paths may be replaced.
-    pub replace_existing: bool,
+    /// Existing destination behavior.
+    pub overwrite: OverwritePolicy,
+    /// Leading archive path components to drop before writing.
+    pub strip_components: usize,
+}
+
+impl Default for BrowserExtractOptions<'_> {
+    fn default() -> Self {
+        Self {
+            password: None,
+            overwrite: OverwritePolicy::Refuse,
+            strip_components: 0,
+        }
+    }
 }
 
 /// Archive browser error.
@@ -210,7 +222,7 @@ pub fn list_entries_with_options(
         list_tar_zst_entries(path)
     } else if is_7z_archive(path) {
         list_7z_entries(path, options.password)
-    } else if is_tzap_archive(path) {
+    } else if is_tzap_archive_path(path) {
         list_tzap_entries(path, options.password)
     } else {
         list_libarchive_entries(path)
@@ -259,7 +271,7 @@ pub fn extract_entry_with_options(
                 source,
             }
         })?;
-    let policy = extraction_policy(options.replace_existing);
+    let policy = extraction_policy(options.overwrite, options.strip_components);
 
     if is_zip_family_archive(archive_path) && !libarchive_backend::is_split_zip_path(archive_path) {
         extract_zip_entry(
@@ -271,7 +283,7 @@ pub fn extract_entry_with_options(
         )
     } else if is_tar_zst_archive(archive_path) {
         extract_tar_zst_entry(archive_path, entry_path, &destination_root, &policy)
-    } else if is_tzap_archive(archive_path) {
+    } else if is_tzap_archive_path(archive_path) {
         extract_tzap_entry(
             archive_path,
             entry_path,
@@ -508,15 +520,18 @@ fn extract_tzap_entry(
             })
         }
         ExtractionEntryKind::File => {
-            let mut contents = Vec::new();
-            crate::tzap_backend::copy_tzap_files_to_writer(
+            let Some(written_bytes) = crate::tzap_backend::extract_tzap_file_to_destination(
                 archive_path,
                 password,
-                |path| path == entry_path,
-                &mut contents,
-            )?;
-            let mut reader = contents.as_slice();
-            let written_bytes = write_selected_entry(&mut reader, &safety_entry, &write_plan)?;
+                entry_path,
+                &write_plan.destination_path,
+                write_plan.replace_existing,
+            )?
+            else {
+                return Err(ArchiveBrowserError::EntryNotFound {
+                    path: entry_path.to_owned(),
+                });
+            };
             Ok(EntryExtractReport {
                 destination_path: write_plan.destination_path,
                 written_bytes,
@@ -710,13 +725,10 @@ fn decision_write_plan(
     }
 }
 
-fn extraction_policy(replace_existing: bool) -> ExtractionPolicy {
+fn extraction_policy(overwrite: OverwritePolicy, strip_components: usize) -> ExtractionPolicy {
     ExtractionPolicy {
-        overwrite: if replace_existing {
-            OverwritePolicy::Replace
-        } else {
-            OverwritePolicy::Refuse
-        },
+        overwrite,
+        strip_components,
         ..ExtractionPolicy::default()
     }
 }
@@ -895,12 +907,6 @@ fn is_7z_archive(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("7z"))
 }
 
-fn is_tzap_archive(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("tzap"))
-}
-
 fn unique_preview_id() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1016,6 +1022,18 @@ mod tests {
                 .iter()
                 .any(|entry| entry.path == "project/a.txt")
         );
+    }
+
+    #[test]
+    fn split_tzap_listing_uses_tzap_password_flow() {
+        let temp = TestDir::new("browser_split_tzap_route");
+        let archive = temp.path("archive.tzap.000");
+        fs::write(&archive, b"not a real tzap volume").unwrap();
+
+        let error = list_entries(&archive).unwrap_err().to_string();
+
+        assert!(error.contains("tzap password required"), "{error}");
+        assert!(!error.contains("libarchive"), "{error}");
     }
 
     #[test]

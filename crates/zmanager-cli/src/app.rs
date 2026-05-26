@@ -142,8 +142,8 @@ Archive format and compression:
       --store                    Store ZIP entries without compression
       --solid                    Use solid 7z mode
       --no-solid                 Disable solid 7z mode
-      --volume-size <size>       Split ZIP/7z output; accepts bytes or k/m/g/t suffixes
-                                  ZIP writes .z01/.zip sets; 7z writes .7z.001 sets
+      --volume-size <size>       Split ZIP/TZAP/7z output; accepts bytes or k/m/g/t suffixes
+                                  ZIP writes .z01/.zip sets; TZAP writes .tzap.000 sets; 7z writes .7z.001 sets
 
 Paths, links, and metadata:
   -j, --junk-paths               Store basenames only; fail if flattened names collide
@@ -1717,13 +1717,16 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 level: request.level.unwrap_or(3),
                 preserve_metadata: !request.no_metadata,
                 replace_existing: backend_replace_existing,
+                volume_size: request.volume_size,
+                recovery_percentage: 5,
+                volume_loss_tolerance: 0,
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
                 let mut context = JobContext::new(&token, &mut sink);
                 zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
                     &manifest,
-                    &temp,
+                    create_destination,
                     &options,
                     &mut context,
                 )
@@ -1744,7 +1747,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     warnings: report.warnings.len(),
                     encrypted: Some(true),
                     solid: None,
-                    volume_size: None,
+                    volume_size: report.volume_size,
                     volume_count: report.volume_count,
                 })
                 .map_err(|error| error.to_string())
@@ -1904,9 +1907,11 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
                     return Err("split ZIP output must use a .zip archive path".to_owned());
                 }
             }
-            ArchiveFormat::SevenZ => {}
-            ArchiveFormat::Tzap | ArchiveFormat::TarZst => {
-                return Err("--volume-size is supported only for ZIP and 7z archives".to_owned());
+            ArchiveFormat::SevenZ | ArchiveFormat::Tzap => {}
+            ArchiveFormat::TarZst => {
+                return Err(
+                    "--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned(),
+                );
             }
         }
     }
@@ -4583,7 +4588,19 @@ fn is_tar_zst_archive(path: &str) -> bool {
 }
 
 fn is_tzap_archive(path: &str) -> bool {
-    path_has_known_extension(path, TZAP_EXTENSIONS)
+    path_has_known_extension(path, TZAP_EXTENSIONS) || is_tzap_volume_archive(path)
+}
+
+fn is_tzap_volume_archive(path: &str) -> bool {
+    let Some((base_path, volume_index)) = path.rsplit_once('.') else {
+        return false;
+    };
+
+    volume_index.len() >= 3
+        && volume_index
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        && path_has_known_extension(base_path, TZAP_EXTENSIONS)
 }
 
 fn is_deb_archive(path: &str) -> bool {

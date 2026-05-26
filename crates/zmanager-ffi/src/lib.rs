@@ -46,6 +46,8 @@ const TAR_ZST_MAX_COMPRESSION_LEVEL: i32 = 9;
 const TZAP_MIN_COMPRESSION_LEVEL: i32 = 1;
 const TZAP_MAX_COMPRESSION_LEVEL: i32 = 9;
 const TZAP_DEFAULT_COMPRESSION_LEVEL: i32 = 3;
+const TZAP_DEFAULT_RECOVERY_PERCENTAGE: u8 = 5;
+const TZAP_MAX_RECOVERY_PERCENTAGE: u8 = 100;
 const SEVENZ_MIN_COMPRESSION_LEVEL: i32 = 1;
 const SEVENZ_MAX_COMPRESSION_LEVEL: i32 = 9;
 const DEFAULT_SEVENZ_ENCRYPT_FILE_NAMES: bool = true;
@@ -53,6 +55,9 @@ const ARCHIVE_FORMAT_TAR_ZST: i32 = 0;
 const ARCHIVE_FORMAT_ZIP: i32 = 1;
 const ARCHIVE_FORMAT_SEVENZ: i32 = 2;
 const ARCHIVE_FORMAT_TZAP: i32 = 3;
+const OVERWRITE_MODE_REFUSE: u32 = 0;
+const OVERWRITE_MODE_REPLACE: u32 = 1;
+const OVERWRITE_MODE_RENAME: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum FfiArchiveFormat {
@@ -624,7 +629,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_options(
     }
 }
 
-/// Starts a ZIP, TAR.ZST, or 7z creation job from multiple source roots with
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots with
 /// explicit archive-path exclusions.
 ///
 /// `exclude_archive_paths` may be null only when `exclude_archive_path_count`
@@ -721,9 +726,9 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
 /// size.
 ///
 /// `volume_size` is zero for a normal archive. Non-zero sizes are supported for
-/// ZIP and 7z. ZIP creates `.z01`, `.z02`, ..., `.zip` volume sets; 7z creates
-/// numbered `.7z.001`, `.7z.002`, ... output files. TZAP currently accepts
-/// only `volume_size == 0` through this facade.
+/// ZIP, TZAP, and 7z. ZIP creates `.z01`, `.z02`, ..., `.zip` volume sets; TZAP
+/// creates `.tzap.000`, `.tzap.001`, ... sets; 7z creates numbered `.7z.001`,
+/// `.7z.002`, ... output files.
 ///
 /// # Safety
 ///
@@ -742,6 +747,61 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
     replace_existing: bool,
     encrypt_file_names: bool,
     volume_size: u64,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer arguments and preserves
+    // the previous TZAP writer defaults for callers that do not expose the new
+    // TZAP recovery controls.
+    unsafe {
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_options(
+            sources,
+            source_count,
+            destination,
+            archive_format,
+            clean_source,
+            password,
+            compression_level,
+            replace_existing,
+            encrypt_file_names,
+            volume_size,
+            TZAP_DEFAULT_RECOVERY_PERCENTAGE,
+            0,
+            exclude_archive_paths,
+            exclude_archive_path_count,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots
+/// with explicit archive-path exclusions, encryption options, split volume size,
+/// and TZAP recovery options.
+///
+/// `tzap_recovery_percentage` maps to TZAP's bit-rot buffer percentage and must
+/// be at most 100. `tzap_volume_loss_tolerance` is used only for TZAP split
+/// archives and must be zero when `volume_size` is zero.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, `exclude_archive_paths`, and `out_job`
+/// follow the same rules as
+/// [`zmanager_ffi_start_archive_create_many_with_exclusions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+    tzap_recovery_percentage: u8,
+    tzap_volume_loss_tolerance: u8,
     exclude_archive_paths: *const *const c_char,
     exclude_archive_path_count: usize,
     out_job: *mut *mut ZManagerFfiJob,
@@ -771,14 +831,16 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
         Err(status) => return status,
     };
 
-    let create_options = match ffi_create_options(
+    let create_options = match ffi_create_options(FfiCreateRequest {
         archive_format,
         password,
         compression_level,
         replace_existing,
         encrypt_file_names,
         volume_size,
-    ) {
+        tzap_recovery_percentage,
+        tzap_volume_loss_tolerance,
+    }) {
         Ok(options) => options,
         Err(status) => return status,
     };
@@ -849,7 +911,16 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
 ) -> ZManagerFfiStatus {
     // SAFETY: this forwards the same checked pointers and no password/options
     // to the shared extract start implementation.
-    unsafe { start_extract_archive_job(archive_path, destination, ptr::null(), false, out_job) }
+    unsafe {
+        start_extract_archive_job(
+            archive_path,
+            destination,
+            ptr::null(),
+            OVERWRITE_MODE_REFUSE,
+            0,
+            out_job,
+        )
+    }
 }
 
 /// Starts an archive extraction job with optional password and overwrite
@@ -879,7 +950,41 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_options(
             archive_path,
             destination,
             password,
-            replace_existing,
+            overwrite_mode_from_replace_existing(replace_existing),
+            0,
+            out_job,
+        )
+    }
+}
+
+/// Starts an archive extraction job with optional password, overwrite mode, and
+/// path component stripping.
+///
+/// `overwrite_mode` is one of `ZMANAGER_FFI_OVERWRITE_*`.
+/// `strip_components` drops leading archive path components before writing.
+///
+/// # Safety
+///
+/// `archive_path`, `destination`, and `password` follow the same pointer rules
+/// as [`zmanager_ffi_start_extract_archive_with_options`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_policy(
+    archive_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    overwrite_mode: u32,
+    strip_components: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_extract_archive_job(
+            archive_path,
+            destination,
+            password,
+            overwrite_mode,
+            strip_components,
             out_job,
         )
     }
@@ -889,7 +994,8 @@ unsafe fn start_extract_archive_job(
     archive_path: *const c_char,
     destination: *const c_char,
     password: *const c_char,
-    replace_existing: bool,
+    overwrite_mode: u32,
+    strip_components: usize,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
     if archive_path.is_null() || destination.is_null() || out_job.is_null() {
@@ -913,9 +1019,11 @@ unsafe fn start_extract_archive_job(
 
     let archive_path = PathBuf::from(archive_path);
     let destination = PathBuf::from(destination);
+    let Ok(policy) = extraction_policy_with_mode(overwrite_mode, strip_components) else {
+        return ZManagerFfiStatus::InvalidArgument;
+    };
 
     spawn_archive_job(out_job, move |thread_token, sink| {
-        let policy = extraction_policy(replace_existing);
         let password = password.as_deref();
         if is_zip_family_archive(&archive_path) {
             let _ = zmanager_core::jobs::run_zip_extract_job_with_password_and_policy(
@@ -1143,7 +1251,16 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry(
 ) -> *mut c_char {
     // SAFETY: this forwards the same checked pointers and no password/options
     // to the shared entry extraction implementation.
-    unsafe { extract_archive_entry(archive_path, entry_path, destination, ptr::null(), false) }
+    unsafe {
+        extract_archive_entry(
+            archive_path,
+            entry_path,
+            destination,
+            ptr::null(),
+            OVERWRITE_MODE_REFUSE,
+            0,
+        )
+    }
 }
 
 /// Extracts one archive entry to a destination directory with optional password
@@ -1172,7 +1289,41 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_options(
             entry_path,
             destination,
             password,
-            replace_existing,
+            overwrite_mode_from_replace_existing(replace_existing),
+            0,
+        )
+    }
+}
+
+/// Extracts one archive entry with optional password, overwrite mode, and path
+/// component stripping.
+///
+/// `overwrite_mode` is one of `ZMANAGER_FFI_OVERWRITE_*`.
+/// `strip_components` drops leading archive path components before writing.
+///
+/// # Safety
+///
+/// `archive_path`, `entry_path`, `destination`, and `password` follow the same
+/// pointer rules as [`zmanager_ffi_extract_archive_entry_with_options`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_policy(
+    archive_path: *const c_char,
+    entry_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    overwrite_mode: u32,
+    strip_components: usize,
+) -> *mut c_char {
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        extract_archive_entry(
+            archive_path,
+            entry_path,
+            destination,
+            password,
+            overwrite_mode,
+            strip_components,
         )
     }
 }
@@ -1182,7 +1333,8 @@ unsafe fn extract_archive_entry(
     entry_path: *const c_char,
     destination: *const c_char,
     password: *const c_char,
-    replace_existing: bool,
+    overwrite_mode: u32,
+    strip_components: usize,
 ) -> *mut c_char {
     if archive_path.is_null() || entry_path.is_null() || destination.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null argument\"}");
@@ -1201,6 +1353,9 @@ unsafe fn extract_archive_entry(
         Ok(password) => password,
         Err(message) => return owned_c_string(&ffi_error_json(message)),
     };
+    let Some(overwrite) = overwrite_policy_from_mode(overwrite_mode) else {
+        return owned_c_string(&ffi_error_json("invalid overwrite mode"));
+    };
 
     let json = match zmanager_core::archive_browser::extract_entry_with_options(
         PathBuf::from(archive_path),
@@ -1208,7 +1363,8 @@ unsafe fn extract_archive_entry(
         PathBuf::from(destination),
         zmanager_core::archive_browser::BrowserExtractOptions {
             password: password.as_deref(),
-            replace_existing,
+            overwrite,
+            strip_components,
         },
     ) {
         Ok(report) => json!({
@@ -1280,7 +1436,7 @@ pub unsafe extern "C" fn zmanager_ffi_preview_archive_entry_with_options(
         &entry_path,
         zmanager_core::archive_browser::BrowserExtractOptions {
             password: password.as_deref(),
-            replace_existing: false,
+            ..zmanager_core::archive_browser::BrowserExtractOptions::default()
         },
     ) {
         Ok(report) => json!({
@@ -1458,6 +1614,17 @@ enum FfiCreateOptions {
     Tzap(TzapCreateOptions),
 }
 
+struct FfiCreateRequest {
+    archive_format: FfiArchiveFormat,
+    password: Option<SecretString>,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+    tzap_recovery_percentage: u8,
+    tzap_volume_loss_tolerance: u8,
+}
+
 fn ffi_archive_format(value: i32) -> Option<FfiArchiveFormat> {
     match value {
         ARCHIVE_FORMAT_TAR_ZST => Some(FfiArchiveFormat::TarZst),
@@ -1502,51 +1669,51 @@ unsafe fn optional_password_string_arg(
     Ok(Some(password))
 }
 
-fn ffi_create_options(
-    archive_format: FfiArchiveFormat,
-    password: Option<SecretString>,
-    compression_level: i32,
-    replace_existing: bool,
-    encrypt_file_names: bool,
-    volume_size: u64,
-) -> Result<FfiCreateOptions, ZManagerFfiStatus> {
-    let volume_size = match volume_size {
+fn ffi_create_options(request: FfiCreateRequest) -> Result<FfiCreateOptions, ZManagerFfiStatus> {
+    let volume_size = match request.volume_size {
         0 => None,
         size => Some(size),
     };
 
-    match archive_format {
+    match request.archive_format {
         FfiArchiveFormat::TarZst => {
-            if password.is_some() {
+            if request.password.is_some() {
                 return Err(ZManagerFfiStatus::InvalidArgument);
             }
             if volume_size.is_some() {
                 return Err(ZManagerFfiStatus::InvalidArgument);
             }
-            tar_zst_create_options(compression_level, replace_existing)
+            tar_zst_create_options(request.compression_level, request.replace_existing)
                 .map(FfiCreateOptions::TarZst)
         }
-        FfiArchiveFormat::Zip => {
-            zip_create_options(password, compression_level, replace_existing, volume_size)
-                .map(FfiCreateOptions::Zip)
-        }
+        FfiArchiveFormat::Zip => zip_create_options(
+            request.password,
+            request.compression_level,
+            request.replace_existing,
+            volume_size,
+        )
+        .map(FfiCreateOptions::Zip),
         FfiArchiveFormat::SevenZ => sevenz_create_options(
-            password,
-            compression_level,
-            replace_existing,
-            encrypt_file_names,
+            request.password,
+            request.compression_level,
+            request.replace_existing,
+            request.encrypt_file_names,
             volume_size,
         )
         .map(FfiCreateOptions::SevenZ),
         FfiArchiveFormat::Tzap => {
-            if volume_size.is_some() {
-                return Err(ZManagerFfiStatus::InvalidArgument);
-            }
-            let Some(passphrase) = password else {
+            let Some(passphrase) = request.password else {
                 return Err(ZManagerFfiStatus::InvalidArgument);
             };
-            tzap_create_options(passphrase, compression_level, replace_existing)
-                .map(FfiCreateOptions::Tzap)
+            tzap_create_options(
+                passphrase,
+                request.compression_level,
+                request.replace_existing,
+                volume_size,
+                request.tzap_recovery_percentage,
+                request.tzap_volume_loss_tolerance,
+            )
+            .map(FfiCreateOptions::Tzap)
         }
     }
 }
@@ -1555,6 +1722,9 @@ fn tzap_create_options(
     passphrase: SecretString,
     compression_level: i32,
     replace_existing: bool,
+    volume_size: Option<u64>,
+    recovery_percentage: u8,
+    volume_loss_tolerance: u8,
 ) -> Result<TzapCreateOptions, ZManagerFfiStatus> {
     let level = match compression_level {
         DEFAULT_COMPRESSION_LEVEL_SENTINEL => None,
@@ -1564,11 +1734,21 @@ fn tzap_create_options(
         _ => return Err(ZManagerFfiStatus::InvalidArgument),
     };
 
+    if recovery_percentage > TZAP_MAX_RECOVERY_PERCENTAGE {
+        return Err(ZManagerFfiStatus::InvalidArgument);
+    }
+    if volume_size.is_none() && volume_loss_tolerance != 0 {
+        return Err(ZManagerFfiStatus::InvalidArgument);
+    }
+
     Ok(TzapCreateOptions {
         passphrase,
         level: level.unwrap_or(TZAP_DEFAULT_COMPRESSION_LEVEL),
         preserve_metadata: true,
         replace_existing,
+        volume_size,
+        recovery_percentage,
+        volume_loss_tolerance,
     })
 }
 
@@ -1792,14 +1972,35 @@ fn ffi_error_json(message: &str) -> String {
     .to_string()
 }
 
-fn extraction_policy(replace_existing: bool) -> ExtractionPolicy {
-    ExtractionPolicy {
-        overwrite: if replace_existing {
-            OverwritePolicy::Replace
-        } else {
-            OverwritePolicy::Refuse
-        },
+fn extraction_policy_with_mode(
+    overwrite_mode: u32,
+    strip_components: usize,
+) -> Result<ExtractionPolicy, ()> {
+    let Some(overwrite) = overwrite_policy_from_mode(overwrite_mode) else {
+        return Err(());
+    };
+
+    Ok(ExtractionPolicy {
+        overwrite,
+        strip_components,
         ..ExtractionPolicy::default()
+    })
+}
+
+fn overwrite_policy_from_mode(overwrite_mode: u32) -> Option<OverwritePolicy> {
+    match overwrite_mode {
+        OVERWRITE_MODE_REFUSE => Some(OverwritePolicy::Refuse),
+        OVERWRITE_MODE_REPLACE => Some(OverwritePolicy::Replace),
+        OVERWRITE_MODE_RENAME => Some(OverwritePolicy::Rename),
+        _ => None,
+    }
+}
+
+fn overwrite_mode_from_replace_existing(replace_existing: bool) -> u32 {
+    if replace_existing {
+        OVERWRITE_MODE_REPLACE
+    } else {
+        OVERWRITE_MODE_REFUSE
     }
 }
 
@@ -1849,9 +2050,7 @@ fn is_tar_zst_archive(path: &std::path::Path) -> bool {
 }
 
 fn is_tzap_archive(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("tzap"))
+    zmanager_core::tzap_backend::is_tzap_archive_path(path)
 }
 
 fn is_7z_archive(path: &std::path::Path) -> bool {
@@ -1870,7 +2069,8 @@ fn is_rar_archive(path: &std::path::Path) -> bool {
 mod tests {
     use super::{
         ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_extract_archive_entry,
-        zmanager_ffi_extract_archive_entry_with_options, zmanager_ffi_job_free,
+        zmanager_ffi_extract_archive_entry_with_options,
+        zmanager_ffi_extract_archive_entry_with_policy, zmanager_ffi_job_free,
         zmanager_ffi_job_is_finished, zmanager_ffi_list_archive,
         zmanager_ffi_list_archive_with_options, zmanager_ffi_plan_archive,
         zmanager_ffi_plan_clean_source, zmanager_ffi_poll_events,
@@ -1881,9 +2081,9 @@ mod tests {
         zmanager_ffi_start_clean_source_create, zmanager_ffi_start_clean_source_create_many,
         zmanager_ffi_start_clean_source_create_many_with_options,
         zmanager_ffi_start_extract_archive, zmanager_ffi_start_extract_archive_with_options,
-        zmanager_ffi_start_zip_create, zmanager_ffi_start_zip_create_encrypted,
-        zmanager_ffi_start_zip_create_many, zmanager_ffi_start_zip_create_many_with_options,
-        zmanager_ffi_string_free,
+        zmanager_ffi_start_extract_archive_with_policy, zmanager_ffi_start_zip_create,
+        zmanager_ffi_start_zip_create_encrypted, zmanager_ffi_start_zip_create_many,
+        zmanager_ffi_start_zip_create_many_with_options, zmanager_ffi_string_free,
     };
     use std::ffi::{CStr, CString};
     use std::fs;
@@ -1899,6 +2099,42 @@ mod tests {
     const TEST_ARCHIVE_FORMAT_SEVENZ: i32 = super::ARCHIVE_FORMAT_SEVENZ;
     const TEST_ARCHIVE_FORMAT_TZAP: i32 = super::ARCHIVE_FORMAT_TZAP;
     const TEST_7Z_VOLUME_SIZE: u64 = 1_048_576;
+
+    #[test]
+    fn ffi_tzap_routing_recognizes_numbered_volumes() {
+        assert!(super::is_tzap_archive(Path::new("project.tzap")));
+        assert!(super::is_tzap_archive(Path::new("project.tzap.000")));
+        assert!(super::is_tzap_archive(Path::new("project.tzap.001")));
+
+        assert!(!super::is_tzap_archive(Path::new("project.tzap.tmp")));
+        assert!(!super::is_tzap_archive(Path::new("project.zip.000")));
+    }
+
+    #[test]
+    fn c_abi_list_split_tzap_prompts_instead_of_libarchive_fallback() {
+        let temp = test_root("zmanager-ffi-split-tzap-list-route");
+        fs::create_dir_all(&temp).unwrap();
+        let archive = temp.join("project.tzap.000");
+        fs::write(&archive, b"not a real tzap volume").unwrap();
+        let archive = CString::new(archive.to_string_lossy().as_ref()).unwrap();
+
+        // SAFETY: the archive path C string lives for the duration of the call,
+        // and a null password is valid for password-aware listing.
+        let raw = unsafe { zmanager_ffi_list_archive_with_options(archive.as_ptr(), ptr::null()) };
+        assert!(!raw.is_null());
+        // SAFETY: FFI returns a NUL-terminated string allocated by this crate.
+        let response = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: `raw` was allocated by this crate and has not been freed yet.
+        unsafe {
+            zmanager_ffi_string_free(raw);
+        }
+        fs::remove_dir_all(temp).unwrap();
+
+        assert!(response.contains("tzap password required"), "{response}");
+        assert!(!response.contains("libarchive"), "{response}");
+    }
 
     #[test]
     fn c_abi_zip_create_job_can_be_started_and_polled() {
@@ -2900,6 +3136,69 @@ mod tests {
             fs::read_to_string(temp.join("selected/payload/file.txt")).unwrap(),
             "secret"
         );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_extract_archive_policy_strips_components_and_renames_conflicts() {
+        let temp = test_root("zmanager-ffi-extract-policy");
+        fs::create_dir_all(temp.join("payload")).unwrap();
+        fs::write(temp.join("payload/file.txt"), b"policy").unwrap();
+        zmanager_core::zip_backend::create_zip_from_path(
+            temp.join("payload"),
+            temp.join("archive.zip"),
+            &zmanager_core::zip_backend::ZipCreateOptions::default(),
+        )
+        .unwrap();
+
+        let archive = CString::new(temp.join("archive.zip").to_string_lossy().as_ref()).unwrap();
+        let destination = temp.join("selected");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("file.txt"), b"old").unwrap();
+        let destination = CString::new(destination.to_string_lossy().as_ref()).unwrap();
+        let entry = CString::new("payload/file.txt").unwrap();
+
+        // SAFETY: all C strings are valid for the duration of the call.
+        let selected = c_string(unsafe {
+            zmanager_ffi_extract_archive_entry_with_policy(
+                archive.as_ptr(),
+                entry.as_ptr(),
+                destination.as_ptr(),
+                ptr::null(),
+                super::OVERWRITE_MODE_RENAME,
+                1,
+            )
+        });
+        assert!(selected.contains("\"ok\":true"));
+        assert_eq!(
+            fs::read_to_string(temp.join("selected/file 2.txt")).unwrap(),
+            "policy"
+        );
+        assert!(!temp.join("selected/payload/file.txt").exists());
+
+        let all_destination = CString::new(temp.join("all").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+        // SAFETY: the C strings live for the duration of the call and `job` is
+        // valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_policy(
+                archive.as_ptr(),
+                all_destination.as_ptr(),
+                ptr::null(),
+                super::OVERWRITE_MODE_RENAME,
+                1,
+                &raw mut job,
+            )
+        };
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            fs::read_to_string(temp.join("all/file.txt")).unwrap(),
+            "policy"
+        );
+        assert!(!temp.join("all/payload/file.txt").exists());
         fs::remove_dir_all(temp).unwrap();
     }
 

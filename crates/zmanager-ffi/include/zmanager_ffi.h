@@ -23,6 +23,10 @@ typedef struct ZManagerFfiJob ZManagerFfiJob;
 #define ZMANAGER_FFI_ARCHIVE_FORMAT_7Z 2
 #define ZMANAGER_FFI_ARCHIVE_FORMAT_TZAP 3
 
+#define ZMANAGER_FFI_OVERWRITE_REFUSE 0
+#define ZMANAGER_FFI_OVERWRITE_REPLACE 1
+#define ZMANAGER_FFI_OVERWRITE_RENAME 2
+
 bool zmanager_ffi_healthcheck(void);
 
 ZManagerFfiStatus zmanager_ffi_start_zip_create(
@@ -153,9 +157,27 @@ ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_adv
   int32_t compression_level,
   bool replace_existing,
   bool encrypt_file_names,
-  // Zero creates a normal archive. Non-zero splits ZIP into .z01/.zip sets and
-  // 7z into .7z.001 sets. TZAP accepts only zero through this facade.
+  // Zero creates a normal archive. Non-zero splits ZIP into .z01/.zip sets,
+  // TZAP into .tzap.000 sets, and 7z into .7z.001 sets.
   uint64_t volume_size,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count,
+  ZManagerFfiJob **out_job
+);
+
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  bool encrypt_file_names,
+  uint64_t volume_size,
+  uint8_t tzap_recovery_percentage,
+  uint8_t tzap_volume_loss_tolerance,
   const char *const *exclude_archive_paths,
   size_t exclude_archive_path_count,
   ZManagerFfiJob **out_job
@@ -172,6 +194,14 @@ ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_options(
   const char *destination,
   const char *password,
   bool replace_existing,
+  ZManagerFfiJob **out_job
+);
+ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_policy(
+  const char *archive_path,
+  const char *destination,
+  const char *password,
+  uint32_t overwrite_mode,
+  size_t strip_components,
   ZManagerFfiJob **out_job
 );
 
@@ -200,6 +230,14 @@ char *zmanager_ffi_extract_archive_entry_with_options(
   const char *destination,
   const char *password,
   bool replace_existing
+);
+char *zmanager_ffi_extract_archive_entry_with_policy(
+  const char *archive_path,
+  const char *entry_path,
+  const char *destination,
+  const char *password,
+  uint32_t overwrite_mode,
+  size_t strip_components
 );
 char *zmanager_ffi_preview_archive_entry(
   const char *archive_path,

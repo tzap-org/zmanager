@@ -7,26 +7,61 @@ use crate::safety::{
 };
 use crate::secrets::SecretString;
 use rand::RngCore as _;
+use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
-use std::io::{self, Write as _};
+use std::fs::{self, File};
+use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tzap_core::format::{
     CRYPTO_HEADER_FIXED_LEN, FormatError, READER_MAX_ARGON2ID_M_COST_KIB,
     READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST, VOLUME_HEADER_LEN,
 };
-use tzap_core::reader::{ArchiveEntry, ExtractedArchiveMember};
+use tzap_core::reader::{ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember};
 use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, VolumeHeader};
 use tzap_core::{
-    KdfParams, MasterKey, OpenedArchive, RegularFile, TarEntryKind, WriterOptions, open_archive,
-    write_archive_with_kdf,
+    KdfParams, MasterKey, OpenedArchive, RegularFile, SafeExtractionOptions, TarEntryKind,
+    WriterOptions, open_seekable_archive, open_seekable_archive_volumes, write_archive_with_kdf,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
 const DEFAULT_ARGON2_M_COST_KIB: u32 = 262_144;
 const DEFAULT_ARGON2_PARALLELISM: u32 = 4;
 const DEFAULT_ARGON2_SALT_LEN: usize = 16;
+const TZAP_EXTENSION: &str = "tzap";
+const TZAP_VOLUME_EXTENSION_WIDTH: usize = 3;
+const TZAP_TEMP_EXTRACT_PREFIX: &str = ".zmanager-tzap-extract";
+const TZAP_TEMP_EXTRACT_ATTEMPTS: u32 = 100;
+
+/// Returns whether a path names a TZAP archive or one of its numbered volumes.
+#[must_use]
+pub fn is_tzap_archive_path(path: &Path) -> bool {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(TZAP_EXTENSION))
+    {
+        return true;
+    }
+
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_tzap_volume_archive_file_name)
+}
+
+fn is_tzap_volume_archive_file_name(name: &str) -> bool {
+    let Some((base_name, volume_index)) = name.rsplit_once('.') else {
+        return false;
+    };
+
+    volume_index.len() >= TZAP_VOLUME_EXTENSION_WIDTH
+        && volume_index
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        && base_name
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(TZAP_EXTENSION))
+}
 
 /// Options for `.tzap` creation.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -39,6 +74,12 @@ pub struct TzapCreateOptions {
     pub preserve_metadata: bool,
     /// Replace an existing destination archive at commit time.
     pub replace_existing: bool,
+    /// Split output into TZAP volumes of this size when present.
+    pub volume_size: Option<u64>,
+    /// Percent of archive data reserved for bit-rot recovery structures.
+    pub recovery_percentage: u8,
+    /// Number of missing output volumes the archive should tolerate.
+    pub volume_loss_tolerance: u8,
 }
 
 /// `.tzap` creation report.
@@ -50,6 +91,8 @@ pub struct TzapCreateReport {
     pub written_bytes: u64,
     /// Compression level used.
     pub level: i32,
+    /// Requested split volume size, when the archive was split.
+    pub volume_size: Option<u64>,
     /// Number of output volumes written.
     pub volume_count: usize,
     /// Non-fatal warnings.
@@ -183,7 +226,7 @@ impl From<JobCancelled> for TzapError {
     }
 }
 
-/// Creates a single-volume `.tzap` archive from a manifest.
+/// Creates a `.tzap` archive from a manifest.
 ///
 /// # Errors
 ///
@@ -210,7 +253,9 @@ pub fn create_tzap_from_manifest_with_context(
         .collect::<Vec<_>>();
     let mut writer_options = WriterOptions {
         stripe_width: 1,
-        volume_loss_tolerance: 0,
+        volume_loss_tolerance: options.volume_loss_tolerance,
+        bit_rot_buffer_pct: options.recovery_percentage,
+        target_volume_size: options.volume_size,
         zstd_level: options.level,
         ..WriterOptions::default()
     };
@@ -222,34 +267,10 @@ pub fn create_tzap_from_manifest_with_context(
     let master_key =
         MasterKey::derive_from_passphrase(&kdf_params, options.passphrase.expose_secret())?;
     let archive = write_archive_with_kdf(&files, &master_key, writer_options, &kdf_params)?;
-    if archive.volumes.len() != 1 {
-        return Err(TzapError::Format(FormatError::WriterUnsupported(
-            "ZManager tzap backend currently writes one volume",
-        )));
-    }
 
     let destination = destination.as_ref();
-    let mut output = AtomicOutputFile::create(destination).map_err(|source| TzapError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
-    output
-        .file_mut()
-        .map_err(|source| TzapError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?
-        .write_all(&archive.volumes[0])
-        .map_err(|source| TzapError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
-    output
-        .commit_with_replace(options.replace_existing)
-        .map_err(|source| TzapError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
+    let volume_count =
+        write_tzap_archive_outputs(destination, &archive.volumes, options.replace_existing)?;
 
     warnings.extend(
         manifest
@@ -265,9 +286,213 @@ pub fn create_tzap_from_manifest_with_context(
             .map(|file| file.contents.len() as u64)
             .sum(),
         level: options.level,
-        volume_count: archive.volumes.len(),
+        volume_size: options.volume_size,
+        volume_count,
         warnings,
     })
+}
+
+fn write_tzap_archive_outputs(
+    destination: &Path,
+    volumes: &[Vec<u8>],
+    replace_existing: bool,
+) -> Result<usize, TzapError> {
+    if volumes.is_empty() {
+        return Err(TzapError::Format(FormatError::WriterInvariant(
+            "no TZAP volumes emitted",
+        )));
+    }
+
+    let volume_paths = tzap_output_volume_paths(destination, volumes.len());
+    let existing_volume_paths = existing_tzap_volume_paths(destination)?;
+    ensure_tzap_destinations_available(
+        destination,
+        &volume_paths,
+        &existing_volume_paths,
+        replace_existing,
+    )?;
+
+    let mut outputs = Vec::with_capacity(volume_paths.len());
+    for (volume, volume_path) in volumes.iter().zip(&volume_paths) {
+        let mut output = AtomicOutputFile::create(volume_path).map_err(|source| TzapError::Io {
+            path: volume_path.clone(),
+            source,
+        })?;
+        output
+            .file_mut()
+            .map_err(|source| TzapError::Io {
+                path: volume_path.clone(),
+                source,
+            })?
+            .write_all(volume)
+            .map_err(|source| TzapError::Io {
+                path: volume_path.clone(),
+                source,
+            })?;
+        output.close();
+        outputs.push(output);
+    }
+
+    remove_tzap_destinations_for_replace(destination, &existing_volume_paths, replace_existing)?;
+    let created_volume_count = volume_paths.len();
+    for (output, volume_path) in outputs.into_iter().zip(volume_paths) {
+        output
+            .commit_with_file_replace(replace_existing)
+            .map_err(|source| TzapError::Io {
+                path: volume_path,
+                source,
+            })?;
+    }
+
+    Ok(created_volume_count)
+}
+
+fn tzap_output_volume_paths(destination: &Path, count: usize) -> Vec<PathBuf> {
+    if count == 1 {
+        return vec![destination.to_path_buf()];
+    }
+
+    (0..count)
+        .map(|index| tzap_output_volume_path(destination, index))
+        .collect()
+}
+
+fn tzap_output_volume_path(destination: &Path, zero_based_index: usize) -> PathBuf {
+    let mut path = destination.as_os_str().to_os_string();
+    path.push(format!(".{zero_based_index:0TZAP_VOLUME_EXTENSION_WIDTH$}"));
+    PathBuf::from(path)
+}
+
+fn ensure_tzap_destinations_available(
+    destination: &Path,
+    volume_paths: &[PathBuf],
+    existing_volume_paths: &[PathBuf],
+    replace_existing: bool,
+) -> Result<(), TzapError> {
+    ensure_file_destination_available(destination, replace_existing)?;
+    for path in unique_paths(volume_paths, existing_volume_paths) {
+        ensure_file_destination_available(path, replace_existing)?;
+    }
+    Ok(())
+}
+
+fn unique_paths<'a>(left: &'a [PathBuf], right: &'a [PathBuf]) -> Vec<&'a Path> {
+    let mut seen = BTreeSet::new();
+    left.iter()
+        .chain(right.iter())
+        .filter_map(|path| {
+            if seen.insert(path.clone()) {
+                Some(path.as_path())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Result<(), TzapError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            Err(io_error(
+                path,
+                io::ErrorKind::IsADirectory,
+                format!("cannot replace directory {}", path.display()),
+            ))
+        }
+        Ok(_) if !replace_existing => Err(io_error(
+            path,
+            io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn remove_tzap_destinations_for_replace(
+    destination: &Path,
+    existing_volume_paths: &[PathBuf],
+    replace_existing: bool,
+) -> Result<(), TzapError> {
+    if !replace_existing {
+        return Ok(());
+    }
+
+    for path in existing_volume_paths {
+        remove_file_destination_for_replace(path)?;
+    }
+    remove_file_destination_for_replace(destination)
+}
+
+fn remove_file_destination_for_replace(path: &Path) -> Result<(), TzapError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            Err(io_error(
+                path,
+                io::ErrorKind::IsADirectory,
+                format!("cannot replace directory {}", path.display()),
+            ))
+        }
+        Ok(_) => fs::remove_file(path).map_err(|source| TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn existing_tzap_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, TzapError> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let Some(destination_file_name) = destination.file_name().and_then(|name| name.to_str()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(parent).map_err(|source| TzapError::Io {
+        path: parent.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| TzapError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if is_tzap_volume_file_name(file_name, destination_file_name) {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn is_tzap_volume_file_name(file_name: &str, destination_file_name: &str) -> bool {
+    let Some(suffix) = file_name.strip_prefix(destination_file_name) else {
+        return false;
+    };
+    let Some(number) = suffix.strip_prefix('.') else {
+        return false;
+    };
+
+    number.len() >= TZAP_VOLUME_EXTENSION_WIDTH
+        && number.chars().all(|character| character.is_ascii_digit())
+}
+
+fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> TzapError {
+    TzapError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(kind, message.into()),
+    }
 }
 
 /// Lists `.tzap` archive entries with a passphrase.
@@ -281,9 +506,9 @@ pub fn list_tzap_with_password(
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
     let entries = opened
-        .list_files()?
+        .list_index_entries()?
         .into_iter()
-        .map(tzap_entry_from_archive_entry)
+        .map(tzap_entry_from_index_entry)
         .collect();
     Ok(TzapListing { entries })
 }
@@ -369,7 +594,7 @@ pub fn copy_tzap_files_to_writer(
     writer: &mut dyn io::Write,
 ) -> Result<TzapExtractReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
-    let entries = opened.list_files()?;
+    let entries = opened.list_index_entries()?;
     let mut report = TzapExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -381,14 +606,7 @@ pub fn copy_tzap_files_to_writer(
             report.skipped_entries += 1;
             continue;
         }
-        if entry.kind != TarEntryKind::Regular {
-            report.skipped_entries += 1;
-            report
-                .warnings
-                .push(format!("skipped non-file entry {}", entry.path));
-            continue;
-        }
-        let Some(member) = opened.extract_member(&entry.path)? else {
+        let Some(contents) = opened.extract_file(&entry.path)? else {
             report.skipped_entries += 1;
             report
                 .warnings
@@ -396,15 +614,48 @@ pub fn copy_tzap_files_to_writer(
             continue;
         };
         writer
-            .write_all(&member.data)
+            .write_all(&contents)
             .map_err(|source| TzapError::Io {
                 path: PathBuf::from(&entry.path),
                 source,
             })?;
         report.written_entries += 1;
-        report.written_bytes += member.data.len() as u64;
+        report.written_bytes += contents.len() as u64;
     }
     Ok(report)
+}
+
+/// Extracts one regular `.tzap` file member to an exact destination path.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, the member cannot be
+/// extracted by tzap-core, or the destination cannot be committed.
+pub fn extract_tzap_file_to_destination(
+    archive: impl AsRef<Path>,
+    password: &str,
+    entry_path: &str,
+    destination_path: &Path,
+    replace_existing: bool,
+) -> Result<Option<u64>, TzapError> {
+    let opened = open_tzap_archive(archive, password)?;
+    let Some(index_entry) = opened.lookup_index_entry(entry_path)? else {
+        return Ok(None);
+    };
+    let temp_root = TemporaryTzapExtractionRoot::new(destination_path)?;
+    let Some(_diagnostics) = opened.extract_file_to(
+        entry_path,
+        temp_root.path(),
+        SafeExtractionOptions {
+            overwrite_existing: false,
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    let extracted_path = archive_member_path_under_root(temp_root.path(), entry_path)?;
+    commit_extracted_file(&extracted_path, destination_path, replace_existing)?;
+    Ok(Some(index_entry.file_data_size))
 }
 
 fn collect_regular_files(
@@ -644,33 +895,111 @@ fn open_tzap_archive(
     password: &str,
 ) -> Result<OpenedArchive, TzapError> {
     let archive_path = archive.as_ref();
-    let bytes = fs::read(archive_path).map_err(|source| TzapError::Io {
-        path: archive_path.to_path_buf(),
-        source,
+    let volume_paths = discover_tzap_input_volume_paths(archive_path);
+    let first_volume = volume_paths.first().ok_or_else(|| {
+        io_error(
+            archive_path,
+            io::ErrorKind::NotFound,
+            "no TZAP input volumes found",
+        )
     })?;
-    let kdf_params = read_kdf_params_from_volume(&bytes)?;
+    let kdf_params = read_kdf_params_from_path(first_volume)?;
     let KdfParams::Argon2id { .. } = kdf_params else {
         return Err(TzapError::PasswordRequired);
     };
     let master_key = MasterKey::derive_from_passphrase(&kdf_params, password)?;
-    open_archive(&bytes, &master_key).map_err(Into::into)
+    let volume_files = volume_paths
+        .iter()
+        .map(|path| {
+            File::open(path).map_err(|source| TzapError::Io {
+                path: path.clone(),
+                source,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if volume_files.len() == 1 {
+        let volume_file = volume_files
+            .into_iter()
+            .next()
+            .ok_or(FormatError::InvalidArchive("no volumes supplied"))?;
+        return open_seekable_archive(volume_file, &master_key).map_err(Into::into);
+    }
+
+    open_seekable_archive_volumes(volume_files, &master_key).map_err(Into::into)
 }
 
-fn read_kdf_params_from_volume(bytes: &[u8]) -> Result<KdfParams, TzapError> {
-    let header_bytes = bytes
-        .get(..VOLUME_HEADER_LEN)
-        .ok_or(FormatError::InvalidArchive(
-            "volume is too short for VolumeHeader",
-        ))?;
-    let volume_header = VolumeHeader::parse(header_bytes)?;
-    let offset = volume_header.crypto_header_offset as usize;
+pub(crate) fn discover_tzap_input_volume_paths(archive_path: &Path) -> Vec<PathBuf> {
+    if let Some(base_path) = tzap_base_path_from_volume_path(archive_path) {
+        let volume_paths = contiguous_tzap_volume_paths(&base_path);
+        if !volume_paths.is_empty() {
+            return volume_paths;
+        }
+    }
+
+    if archive_path.exists() {
+        return vec![archive_path.to_path_buf()];
+    }
+
+    let volume_paths = contiguous_tzap_volume_paths(archive_path);
+    if !volume_paths.is_empty() {
+        return volume_paths;
+    }
+
+    vec![archive_path.to_path_buf()]
+}
+
+fn tzap_base_path_from_volume_path(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?.to_str()?;
+    let (base_name, volume_index) = file_name.rsplit_once('.')?;
+    if volume_index.len() < TZAP_VOLUME_EXTENSION_WIDTH
+        || !volume_index
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    Some(parent.join(base_name))
+}
+
+fn contiguous_tzap_volume_paths(base_path: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for index in 0usize.. {
+        let path = tzap_output_volume_path(base_path, index);
+        if !path.exists() {
+            break;
+        }
+        paths.push(path);
+    }
+    paths
+}
+
+fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
+    let mut file = File::open(path).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut header_bytes = [0u8; VOLUME_HEADER_LEN];
+    file.read_exact(&mut header_bytes)
+        .map_err(|source| TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let volume_header = VolumeHeader::parse(&header_bytes)?;
+    let offset = u64::from(volume_header.crypto_header_offset);
     let length = volume_header.crypto_header_length as usize;
-    let end = offset
-        .checked_add(length)
-        .ok_or(FormatError::InvalidArchive("CryptoHeader range overflow"))?;
-    let crypto_header_bytes = bytes.get(offset..end).ok_or(FormatError::InvalidArchive(
-        "volume is too short for CryptoHeader",
-    ))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|source| TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut crypto_header_bytes = vec![0u8; length];
+    file.read_exact(&mut crypto_header_bytes)
+        .map_err(|source| TzapError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let fixed_bytes =
         crypto_header_bytes
             .get(..CRYPTO_HEADER_FIXED_LEN)
@@ -686,8 +1015,104 @@ fn read_kdf_params_from_volume(bytes: &[u8]) -> Result<KdfParams, TzapError> {
         )));
     }
     let crypto_header =
-        CryptoHeader::parse(crypto_header_bytes, volume_header.crypto_header_length)?;
+        CryptoHeader::parse(&crypto_header_bytes, volume_header.crypto_header_length)?;
     Ok(crypto_header.kdf_params)
+}
+
+fn commit_extracted_file(
+    source_path: &Path,
+    destination_path: &Path,
+    replace_existing: bool,
+) -> Result<(), TzapError> {
+    if let Some(parent) = destination_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| TzapError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    if replace_existing {
+        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
+            TzapError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            }
+        })?;
+        fs::rename(source_path, destination_path).map_err(|source| TzapError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
+    } else {
+        fs::hard_link(source_path, destination_path).map_err(|source| TzapError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn archive_member_path_under_root(root: &Path, entry_path: &str) -> Result<PathBuf, TzapError> {
+    let mut path = root.to_path_buf();
+    for component in entry_path.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(TzapError::Format(FormatError::UnsafeArchivePath));
+        }
+        path.push(component);
+    }
+    Ok(path)
+}
+
+struct TemporaryTzapExtractionRoot {
+    path: PathBuf,
+}
+
+impl TemporaryTzapExtractionRoot {
+    fn new(destination_path: &Path) -> Result<Self, TzapError> {
+        let parent = destination_path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|source| TzapError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let destination_name = destination_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("entry");
+
+        for attempt in 0..TZAP_TEMP_EXTRACT_ATTEMPTS {
+            let path = parent.join(format!(
+                "{TZAP_TEMP_EXTRACT_PREFIX}-{destination_name}-{}-{now}-{attempt}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(source) => {
+                    return Err(TzapError::Io { path, source });
+                }
+            }
+        }
+
+        Err(io_error(
+            parent,
+            io::ErrorKind::AlreadyExists,
+            "could not allocate temporary TZAP extraction root",
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryTzapExtractionRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn create_kdf_params() -> KdfParams {
@@ -723,18 +1148,13 @@ fn extraction_kind_from_tzap_entry(
     }
 }
 
-fn tzap_entry_from_archive_entry(entry: ArchiveEntry) -> TzapEntry {
+fn tzap_entry_from_index_entry(entry: ArchiveIndexEntry) -> TzapEntry {
     TzapEntry {
         path: entry.path,
-        kind: match entry.kind {
-            TarEntryKind::Regular => TzapEntryKind::File,
-            TarEntryKind::Directory => TzapEntryKind::Directory,
-            TarEntryKind::Symlink => TzapEntryKind::Symlink,
-            TarEntryKind::Hardlink => TzapEntryKind::Hardlink,
-        },
+        kind: TzapEntryKind::File,
         size: entry.file_data_size,
-        mode: entry.mode,
-        mtime: entry.mtime,
+        mode: 0,
+        mtime: 0,
     }
 }
 
@@ -776,4 +1196,105 @@ fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), Tza
         path: destination_path.to_path_buf(),
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_tzap_file_to_destination, is_tzap_archive_path, list_tzap_with_password};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tzap_core::{KdfParams, MasterKey, RegularFile, WriterOptions, write_archive_with_kdf};
+
+    #[test]
+    fn recognizes_tzap_base_and_numbered_volumes() {
+        assert!(is_tzap_archive_path(Path::new("project.tzap")));
+        assert!(is_tzap_archive_path(Path::new("project.tzap.000")));
+        assert!(is_tzap_archive_path(Path::new("project.tzap.001")));
+        assert!(is_tzap_archive_path(Path::new("PROJECT.TZAP.000")));
+
+        assert!(!is_tzap_archive_path(Path::new("project.tzap.tmp")));
+        assert!(!is_tzap_archive_path(Path::new("project.tzap.00a")));
+        assert!(!is_tzap_archive_path(Path::new("project.zip.000")));
+    }
+
+    #[test]
+    fn selected_extract_uses_seekable_core_for_numbered_volumes() {
+        let temp = TestDir::new("tzap_seekable_selected");
+        let base_path = temp.path("sample.tzap");
+        let large = vec![7u8; 1024 * 1024];
+        let archive = create_test_tzap_archive(&[
+            RegularFile::new("large.bin", &large),
+            RegularFile::new("nested/small.txt", b"small target"),
+        ]);
+        for (index, volume) in archive.volumes.iter().enumerate() {
+            fs::write(temp.path(format!("sample.tzap.{index:03}")), volume).unwrap();
+        }
+
+        let listing = list_tzap_with_password(&base_path, "secret").unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == "nested/small.txt")
+        );
+
+        let destination = temp.path("out/selected.txt");
+        let written = extract_tzap_file_to_destination(
+            &base_path,
+            "secret",
+            "nested/small.txt",
+            &destination,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(written, Some(12));
+        assert_eq!(fs::read(&destination).unwrap(), b"small target");
+    }
+
+    fn create_test_tzap_archive(files: &[RegularFile<'_>]) -> tzap_core::writer::WrittenArchive {
+        let kdf = KdfParams::Argon2id {
+            t_cost: 1,
+            m_cost_kib: 8,
+            parallelism: 1,
+            salt: b"12345678".to_vec(),
+        };
+        let key = MasterKey::derive_from_passphrase(&kdf, "secret").unwrap();
+        let options = WriterOptions {
+            stripe_width: 4,
+            volume_loss_tolerance: 0,
+            bit_rot_buffer_pct: 0,
+            zstd_level: 1,
+            ..WriterOptions::default()
+        };
+        write_archive_with_kdf(files, &key, options, &kdf).unwrap()
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
+            self.root.join(relative)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 }

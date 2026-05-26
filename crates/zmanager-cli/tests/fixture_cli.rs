@@ -1296,7 +1296,7 @@ fn zm_volume_size_rejects_tar_zst_and_stdout_output() {
         .unwrap();
     assert_failure("zm create tar.zst --volume-size", &tar);
     assert!(
-        String::from_utf8_lossy(&tar.stderr).contains("supported only for ZIP and 7z"),
+        String::from_utf8_lossy(&tar.stderr).contains("supported only for ZIP, TZAP, and 7z"),
         "{}",
         String::from_utf8_lossy(&tar.stderr)
     );
@@ -1902,7 +1902,7 @@ fn zm_extract_zip_honors_overwrite_policies() {
         "old\n"
     );
     assert_eq!(
-        fs::read_to_string(temp.path("out-rename/file (1).txt")).unwrap(),
+        fs::read_to_string(temp.path("out-rename/file 2.txt")).unwrap(),
         "archive\n"
     );
 
