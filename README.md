@@ -15,7 +15,7 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Latest release: `v1.0.1`
+Latest release: `v1.0.2`
 
 ## Install
 
@@ -45,8 +45,8 @@ brew install zmanager
 Linux users can download a static single-binary tarball from the GitHub release:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm healthcheck
@@ -81,7 +81,7 @@ Install a specific version:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.1 sh
+  | ZMANAGER_VERSION=v1.0.2 sh
 ```
 
 Install somewhere else:
