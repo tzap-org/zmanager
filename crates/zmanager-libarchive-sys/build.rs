@@ -182,15 +182,17 @@ fn configure_windows_static_vcpkg_dependencies(config: &mut cmake::Config) {
 }
 
 fn configure_vcpkg(config: &mut cmake::Config, target: &str) {
+    if !target_uses_vcpkg(target) {
+        return;
+    }
+
     let Some(vcpkg_root) = vcpkg_root() else {
-        assert!(
-            !(target.contains("windows") && target.contains("msvc")),
+        panic!(
             "Windows MSVC builds require a configured vcpkg root. Set \
              {ENV_VCPKG_INSTALLATION_ROOT} or {ENV_VCPKG_ROOT}, or set \
              {ENV_CMAKE_TOOLCHAIN_FILE} to vcpkg.cmake. The CI entry point \
              scripts/ci-windows.ps1 configures this automatically."
         );
-        return;
     };
     let toolchain = vcpkg_root.join("scripts/buildsystems/vcpkg.cmake");
     if toolchain.exists() {
@@ -199,6 +201,10 @@ fn configure_vcpkg(config: &mut cmake::Config, target: &str) {
     if let Ok(triplet) = env::var(ENV_VCPKG_TARGET_TRIPLET) {
         config.define("VCPKG_TARGET_TRIPLET", triplet);
     }
+}
+
+fn target_uses_vcpkg(target: &str) -> bool {
+    target.contains("windows") && target.contains("msvc")
 }
 
 fn vcpkg_root() -> Option<PathBuf> {

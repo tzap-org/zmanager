@@ -15,6 +15,8 @@ const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.
 const PACKAGE_PREVIEW_WORKFLOW: &str =
     include_str!("../../../.github/workflows/package-preview.yml");
 const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
+const LIBARCHIVE_SYS_BUILD_RS: &str =
+    include_str!("../../../crates/zmanager-libarchive-sys/build.rs");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
 const RELEASE_COMPATIBILITY_SH: &str =
@@ -718,7 +720,8 @@ fn tool_dependent_release_compatibility_validation_is_declared() {
 fn linux_release_artifacts_are_static_tarballs() {
     for required in [
         "*-unknown-linux-musl",
-        "musl-gcc is required",
+        "zig is required",
+        "zig cc -target $musl_abi",
         "CARGO_TARGET_${target_env_upper}_LINKER",
     ] {
         assert_contains(PACKAGE_RELEASE_SH, required);
@@ -757,6 +760,16 @@ fn linux_release_artifacts_are_static_tarballs() {
     ] {
         assert_not_contains(RELEASE_WORKFLOW, forbidden);
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
+    }
+}
+
+#[test]
+fn libarchive_cmake_vcpkg_toolchain_is_windows_msvc_only() {
+    for required in [
+        "if !target_uses_vcpkg(target) {\n        return;\n    }",
+        "fn target_uses_vcpkg(target: &str) -> bool {\n    target.contains(\"windows\") && target.contains(\"msvc\")\n}",
+    ] {
+        assert_contains(LIBARCHIVE_SYS_BUILD_RS, required);
     }
 }
 
