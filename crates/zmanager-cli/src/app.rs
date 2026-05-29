@@ -1755,7 +1755,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 recovery_percentage: TZAP_DEFAULT_RECOVERY_PERCENTAGE,
                 volume_loss_tolerance: tzap_default_volume_loss_tolerance(request.volume_size),
                 x509_signing: request.tzap_signing_cert.as_ref().map(|certificate| {
-                    zmanager_core::tzap_backend::TzapX509SigningOptions {
+                    zmanager_core::tzap_backend::TzapX509SigningOptions::CertificateAndKey {
                         signing_certificate: certificate.clone(),
                         signing_private_key: request
                             .tzap_signing_private_key

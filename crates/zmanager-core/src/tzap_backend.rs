@@ -6,6 +6,7 @@ use crate::safety::{
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::secrets::SecretString;
+use openssl::pkcs12::Pkcs12;
 use rand::RngCore as _;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -113,14 +114,25 @@ impl TzapKeySource {
 
 /// X.509 `RootAuth` signing inputs for `.tzap` creation.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct TzapX509SigningOptions {
-    /// PEM or DER leaf signing certificate. PEM bundles may include
-    /// intermediate certificates after the leaf certificate.
-    pub signing_certificate: PathBuf,
-    /// PEM or DER private key matching the leaf signing certificate.
-    pub signing_private_key: PathBuf,
-    /// Optional PEM or DER intermediate certificates.
-    pub signing_chain: Vec<PathBuf>,
+pub enum TzapX509SigningOptions {
+    /// PKCS#12 signing identity containing the leaf certificate, private key,
+    /// and optional intermediate certificates.
+    Pkcs12 {
+        /// PKCS#12 identity file path.
+        identity: PathBuf,
+        /// PKCS#12 import password.
+        password: SecretString,
+    },
+    /// Advanced PEM/DER signing inputs.
+    CertificateAndKey {
+        /// PEM or DER leaf signing certificate. PEM bundles may include
+        /// intermediate certificates after the leaf certificate.
+        signing_certificate: PathBuf,
+        /// PEM or DER private key matching the leaf signing certificate.
+        signing_private_key: PathBuf,
+        /// Optional PEM or DER intermediate certificates.
+        signing_chain: Vec<PathBuf>,
+    },
 }
 
 /// X.509 `RootAuth` trust configuration for `.tzap` verification.
@@ -563,16 +575,79 @@ fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> Tza
 }
 
 fn load_x509_signer(options: &TzapX509SigningOptions) -> Result<X509RootAuthSigner, TzapError> {
-    let certificate = read_x509_input_file(&options.signing_certificate)?;
+    match options {
+        TzapX509SigningOptions::Pkcs12 { identity, password } => {
+            load_x509_signer_from_pkcs12(identity, password)
+        }
+        TzapX509SigningOptions::CertificateAndKey {
+            signing_certificate,
+            signing_private_key,
+            signing_chain,
+        } => load_x509_signer_from_certificate_files(
+            signing_certificate,
+            signing_private_key,
+            signing_chain,
+        ),
+    }
+}
+
+fn load_x509_signer_from_certificate_files(
+    signing_certificate: &Path,
+    signing_private_key: &Path,
+    signing_chain: &[PathBuf],
+) -> Result<X509RootAuthSigner, TzapError> {
+    let certificate = read_x509_input_file(signing_certificate)?;
     let mut certificate_der = certificates_der_from_pem_or_der(&certificate)
         .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
     let leaf_certificate_der = certificate_der.remove(0);
-    let private_key = read_x509_input_file(&options.signing_private_key)?;
+    let private_key = read_x509_input_file(signing_private_key)?;
     let mut chain_der = certificate_der;
-    chain_der.extend(load_x509_certificate_files(&options.signing_chain)?);
+    chain_der.extend(load_x509_certificate_files(signing_chain)?);
     X509RootAuthSigner::from_pem_or_der(
         &leaf_certificate_der,
         &private_key,
+        chain_der,
+        current_unix_seconds_i64()?,
+    )
+    .map_err(|source| TzapError::X509RootAuth(source.to_string()))
+}
+
+fn load_x509_signer_from_pkcs12(
+    identity: &Path,
+    password: &SecretString,
+) -> Result<X509RootAuthSigner, TzapError> {
+    let identity_bytes = read_x509_input_file(identity)?;
+    let pkcs12 = Pkcs12::from_der(&identity_bytes)
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let parsed = pkcs12
+        .parse2(password.expose_secret())
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let certificate = parsed
+        .cert
+        .ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no certificate".to_owned()))?;
+    let private_key = parsed
+        .pkey
+        .ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no private key".to_owned()))?;
+    let chain_der = parsed
+        .ca
+        .map(|chain| {
+            chain
+                .iter()
+                .map(|certificate| {
+                    certificate
+                        .to_der()
+                        .map_err(|source| TzapError::X509RootAuth(source.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    X509RootAuthSigner::new(
+        certificate
+            .to_der()
+            .map_err(|source| TzapError::X509RootAuth(source.to_string()))?,
+        private_key,
         chain_der,
         current_unix_seconds_i64()?,
     )
@@ -1840,8 +1915,10 @@ mod tests {
     use openssl::asn1::Asn1Time;
     use openssl::bn::{BigNum, MsbOption};
     use openssl::hash::MessageDigest;
+    use openssl::pkcs12::Pkcs12;
     use openssl::pkey::{PKey, PKeyRef, Private};
     use openssl::rsa::Rsa;
+    use openssl::stack::Stack;
     use openssl::x509::extension::{BasicConstraints, KeyUsage};
     use openssl::x509::{X509, X509NameBuilder, X509Ref};
     use std::fs;
@@ -1995,7 +2072,7 @@ mod tests {
             volume_size: None,
             recovery_percentage: 0,
             volume_loss_tolerance: 0,
-            x509_signing: Some(TzapX509SigningOptions {
+            x509_signing: Some(TzapX509SigningOptions::CertificateAndKey {
                 signing_certificate: signer_cert_path,
                 signing_private_key: signer_key_path,
                 signing_chain: Vec::new(),
@@ -2105,7 +2182,7 @@ mod tests {
             volume_size: None,
             recovery_percentage: 0,
             volume_loss_tolerance: 0,
-            x509_signing: Some(TzapX509SigningOptions {
+            x509_signing: Some(TzapX509SigningOptions::CertificateAndKey {
                 signing_certificate: signer_bundle_path,
                 signing_private_key: signer_key_path,
                 signing_chain: Vec::new(),
@@ -2140,6 +2217,97 @@ mod tests {
                 "CN=ZManager Test Root CA".to_owned(),
             ]
         );
+        assert_eq!(
+            root_auth.trust_anchor_subject.as_deref(),
+            Some("CN=ZManager Test Root CA")
+        );
+    }
+
+    #[test]
+    fn create_tzap_signs_with_pkcs12_identity() {
+        let temp = TestDir::new("tzap_x509_root_auth_p12");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("signed.tzap");
+        let root_ca_path = temp.path("root-ca.pem");
+        let identity_path = temp.path("signer.p12");
+        fs::write(&source, b"signed payload").unwrap();
+
+        let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
+        let (intermediate_cert, intermediate_key) = test_child_ca_cert(
+            "ZManager Test Intermediate CA",
+            root_cert.as_ref(),
+            root_key.as_ref(),
+        );
+        let (signer_cert, signer_key) = test_leaf_cert(
+            "ZManager Test Signer",
+            intermediate_cert.as_ref(),
+            intermediate_key.as_ref(),
+        );
+        fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
+        let mut chain = Stack::new().unwrap();
+        chain.push(intermediate_cert).unwrap();
+        let identity = Pkcs12::builder()
+            .name("ZManager Test Signer")
+            .pkey(&signer_key)
+            .cert(&signer_cert)
+            .ca(chain)
+            .build2("identity-password")
+            .unwrap();
+        fs::write(&identity_path, identity.to_der().unwrap()).unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 14,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 14,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::Passphrase(SecretString::from("secret")),
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: Some(TzapX509SigningOptions::Pkcs12 {
+                identity: identity_path,
+                password: SecretString::from("identity-password"),
+            }),
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let trust = TzapX509TrustOptions {
+            trusted_ca_certificates: vec![root_ca_path],
+            trusted_system_roots: false,
+        };
+        let report = test_tzap_with_password_filter_and_x509_trust(
+            &archive,
+            "secret",
+            |_| true,
+            Some(&trust),
+        )
+        .unwrap();
+        let root_auth = report.x509_root_auth.unwrap();
+
+        assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
+        assert_eq!(root_auth.issuer, "CN=ZManager Test Intermediate CA");
         assert_eq!(
             root_auth.trust_anchor_subject.as_deref(),
             Some("CN=ZManager Test Root CA")

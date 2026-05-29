@@ -924,54 +924,114 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
         Ok(options) => options,
         Err(status) => return status,
     };
-    let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-    let destination = PathBuf::from(destination);
+    start_archive_create_many_with_options_job(
+        out_job,
+        sources,
+        destination,
+        clean_source,
+        exclude_archive_paths,
+        create_options,
+    )
+}
 
-    spawn_archive_job(out_job, move |thread_token, sink| {
-        let plan_options = archive_plan_options(clean_source, exclude_archive_paths);
-        match create_options {
-            FfiCreateOptions::TarZst(options) => {
-                let _ = zmanager_core::jobs::run_tar_zst_create_job_from_sources_with_plan_options(
-                    &sources,
-                    destination,
-                    &options,
-                    &plan_options,
-                    &thread_token,
-                    sink,
-                );
-            }
-            FfiCreateOptions::Zip(options) => {
-                let _ = zmanager_core::jobs::run_zip_create_job_from_sources_with_plan_options(
-                    &sources,
-                    destination,
-                    &options,
-                    &plan_options,
-                    &thread_token,
-                    sink,
-                );
-            }
-            FfiCreateOptions::SevenZ(options) => {
-                let _ = zmanager_core::jobs::run_7z_create_job_from_sources_with_plan_options(
-                    &sources,
-                    destination,
-                    &options,
-                    &plan_options,
-                    &thread_token,
-                    sink,
-                );
-            }
-            FfiCreateOptions::Tzap(options) => {
-                let _ = zmanager_core::jobs::run_tzap_create_job_from_sources_with_plan_options(
-                    &sources,
-                    destination,
-                    &options,
-                    &plan_options,
-                    &thread_token,
-                    sink,
-                );
-            }
-        }
-    })
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots
+/// with explicit archive-path exclusions, encryption options, split volume size,
+/// TZAP recovery options, and optional TZAP X.509 signing identity inputs.
+///
+/// Callers may pass either certificate/key files or a PKCS#12 identity file.
+/// `tzap_signing_identity_p12` points to a `.p12`/`.pfx` identity containing
+/// certificate, private key, and optional intermediates. `tzap_signing_identity_password`
+/// may be null or empty for identities with an empty import password.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, `exclude_archive_paths`, signing
+/// paths, and `out_job` follow the same pointer rules as
+/// [`zmanager_ffi_start_archive_create_many_with_exclusions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_identity_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+    tzap_recovery_percentage: u8,
+    tzap_volume_loss_tolerance: u8,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    tzap_signing_cert: *const c_char,
+    tzap_signing_private_key: *const c_char,
+    tzap_signing_chain: *const *const c_char,
+    tzap_signing_chain_count: usize,
+    tzap_signing_identity_p12: *const c_char,
+    tzap_signing_identity_password: *const c_char,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    if destination.is_null() || out_job.is_null() {
+        return ZManagerFfiStatus::NullArgument;
+    }
+
+    let Some(archive_format) = ffi_archive_format(archive_format) else {
+        return ZManagerFfiStatus::InvalidArgument;
+    };
+    let sources = match unsafe { c_string_array_arg(sources, source_count) } {
+        Ok(sources) => sources,
+        Err(status) => return status,
+    };
+    let Some(destination) = c_string_arg(destination) else {
+        return ZManagerFfiStatus::InvalidUtf8;
+    };
+    let password = match optional_password_arg(password) {
+        Ok(password) => password,
+        Err(status) => return status,
+    };
+    let exclude_archive_paths = match unsafe {
+        optional_c_string_array_arg(exclude_archive_paths, exclude_archive_path_count)
+    } {
+        Ok(paths) => paths,
+        Err(status) => return status,
+    };
+    let tzap_x509_signing = match unsafe {
+        optional_tzap_x509_signing_identity_arg(
+            tzap_signing_cert,
+            tzap_signing_private_key,
+            tzap_signing_chain,
+            tzap_signing_chain_count,
+            tzap_signing_identity_p12,
+            tzap_signing_identity_password,
+        )
+    } {
+        Ok(signing) => signing,
+        Err(status) => return status,
+    };
+
+    let create_options = match ffi_create_options(FfiCreateRequest {
+        archive_format,
+        password,
+        compression_level,
+        replace_existing,
+        encrypt_file_names,
+        volume_size,
+        tzap_recovery_percentage,
+        tzap_volume_loss_tolerance,
+        tzap_x509_signing,
+    }) {
+        Ok(options) => options,
+        Err(status) => return status,
+    };
+    start_archive_create_many_with_options_job(
+        out_job,
+        sources,
+        destination,
+        clean_source,
+        exclude_archive_paths,
+        create_options,
+    )
 }
 
 /// Starts an archive extraction job routed by archive extension.
@@ -1809,12 +1869,38 @@ unsafe fn optional_tzap_x509_signing_arg(
     let chain = unsafe { optional_c_string_array_arg(chain, chain_count) }?;
 
     match (certificate, private_key) {
-        (Some(certificate), Some(private_key)) => Ok(Some(TzapX509SigningOptions {
-            signing_certificate: PathBuf::from(certificate),
-            signing_private_key: PathBuf::from(private_key),
-            signing_chain: chain.into_iter().map(PathBuf::from).collect(),
-        })),
+        (Some(certificate), Some(private_key)) => {
+            Ok(Some(TzapX509SigningOptions::CertificateAndKey {
+                signing_certificate: PathBuf::from(certificate),
+                signing_private_key: PathBuf::from(private_key),
+                signing_chain: chain.into_iter().map(PathBuf::from).collect(),
+            }))
+        }
         (None, None) if chain.is_empty() => Ok(None),
+        _ => Err(ZManagerFfiStatus::InvalidArgument),
+    }
+}
+
+unsafe fn optional_tzap_x509_signing_identity_arg(
+    certificate: *const c_char,
+    private_key: *const c_char,
+    chain: *const *const c_char,
+    chain_count: usize,
+    identity_p12: *const c_char,
+    identity_password: *const c_char,
+) -> Result<Option<TzapX509SigningOptions>, ZManagerFfiStatus> {
+    let file_identity =
+        unsafe { optional_tzap_x509_signing_arg(certificate, private_key, chain, chain_count) }?;
+    let identity_p12 = optional_c_string_arg(identity_p12)?;
+    let identity_password = pkcs12_password_arg(identity_password)?;
+
+    match (file_identity, identity_p12) {
+        (Some(identity), None) => Ok(Some(identity)),
+        (None, Some(identity)) => Ok(Some(TzapX509SigningOptions::Pkcs12 {
+            identity: PathBuf::from(identity),
+            password: identity_password,
+        })),
+        (None, None) if identity_password.is_empty() => Ok(None),
         _ => Err(ZManagerFfiStatus::InvalidArgument),
     }
 }
@@ -1848,6 +1934,64 @@ fn archive_plan_options(clean_source: bool, exclude_archive_paths: Vec<String>) 
     };
     options.exclude_archive_paths = exclude_archive_paths;
     options
+}
+
+fn start_archive_create_many_with_options_job(
+    out_job: *mut *mut ZManagerFfiJob,
+    sources: Vec<String>,
+    destination: String,
+    clean_source: bool,
+    exclude_archive_paths: Vec<String>,
+    create_options: FfiCreateOptions,
+) -> ZManagerFfiStatus {
+    let sources = sources.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let destination = PathBuf::from(destination);
+
+    spawn_archive_job(out_job, move |thread_token, sink| {
+        let plan_options = archive_plan_options(clean_source, exclude_archive_paths);
+        match create_options {
+            FfiCreateOptions::TarZst(options) => {
+                let _ = zmanager_core::jobs::run_tar_zst_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+            FfiCreateOptions::Zip(options) => {
+                let _ = zmanager_core::jobs::run_zip_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+            FfiCreateOptions::SevenZ(options) => {
+                let _ = zmanager_core::jobs::run_7z_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+            FfiCreateOptions::Tzap(options) => {
+                let _ = zmanager_core::jobs::run_tzap_create_job_from_sources_with_plan_options(
+                    &sources,
+                    destination,
+                    &options,
+                    &plan_options,
+                    &thread_token,
+                    sink,
+                );
+            }
+        }
+    })
 }
 
 fn ffi_status_json(status: ZManagerFfiStatus) -> String {
@@ -1903,6 +2047,18 @@ fn optional_password_arg(
     }
 
     Ok(Some(SecretString::from(password)))
+}
+
+fn pkcs12_password_arg(password: *const c_char) -> Result<SecretString, ZManagerFfiStatus> {
+    if password.is_null() {
+        return Ok(SecretString::from(""));
+    }
+
+    let Some(password) = c_string_arg(password) else {
+        return Err(ZManagerFfiStatus::InvalidUtf8);
+    };
+
+    Ok(SecretString::from(password))
 }
 
 unsafe fn optional_password_string_arg(
@@ -2392,6 +2548,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use zmanager_core::safety::ExtractionPolicy;
+    use zmanager_core::tzap_backend::TzapX509SigningOptions;
 
     const TEST_ARCHIVE_FORMAT_TAR_ZST: i32 = super::ARCHIVE_FORMAT_TAR_ZST;
     const TEST_ARCHIVE_FORMAT_ZIP: i32 = super::ARCHIVE_FORMAT_ZIP;
@@ -2418,6 +2575,89 @@ mod tests {
             super::tzap_default_volume_loss_tolerance(10 * 1024 * 1024),
             1
         );
+    }
+
+    #[test]
+    fn ffi_tzap_signing_identity_args_accept_one_identity_shape() {
+        let cert = CString::new("/tmp/signer.pem").unwrap();
+        let key = CString::new("/tmp/signer.key").unwrap();
+        let chain = CString::new("/tmp/intermediate.pem").unwrap();
+        let identity = CString::new("/tmp/signer.p12").unwrap();
+        let identity_password = CString::new("identity password").unwrap();
+        let chain_paths = [chain.as_ptr()];
+
+        let pkcs12 = unsafe {
+            super::optional_tzap_x509_signing_identity_arg(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                identity.as_ptr(),
+                identity_password.as_ptr(),
+            )
+        }
+        .unwrap()
+        .unwrap();
+        match pkcs12 {
+            TzapX509SigningOptions::Pkcs12 { identity, password } => {
+                assert_eq!(identity, PathBuf::from("/tmp/signer.p12"));
+                assert_eq!(password.expose_secret(), "identity password");
+            }
+            TzapX509SigningOptions::CertificateAndKey { .. } => {
+                panic!("expected PKCS#12 identity")
+            }
+        }
+
+        let advanced = unsafe {
+            super::optional_tzap_x509_signing_identity_arg(
+                cert.as_ptr(),
+                key.as_ptr(),
+                chain_paths.as_ptr(),
+                chain_paths.len(),
+                ptr::null(),
+                ptr::null(),
+            )
+        }
+        .unwrap()
+        .unwrap();
+        match advanced {
+            TzapX509SigningOptions::CertificateAndKey {
+                signing_certificate,
+                signing_private_key,
+                signing_chain,
+            } => {
+                assert_eq!(signing_certificate, PathBuf::from("/tmp/signer.pem"));
+                assert_eq!(signing_private_key, PathBuf::from("/tmp/signer.key"));
+                assert_eq!(signing_chain, vec![PathBuf::from("/tmp/intermediate.pem")]);
+            }
+            TzapX509SigningOptions::Pkcs12 { .. } => {
+                panic!("expected certificate and key identity")
+            }
+        }
+
+        let both = unsafe {
+            super::optional_tzap_x509_signing_identity_arg(
+                cert.as_ptr(),
+                key.as_ptr(),
+                ptr::null(),
+                0,
+                identity.as_ptr(),
+                ptr::null(),
+            )
+        };
+        assert_eq!(both, Err(ZManagerFfiStatus::InvalidArgument));
+
+        let password_only = unsafe {
+            super::optional_tzap_x509_signing_identity_arg(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                identity_password.as_ptr(),
+            )
+        };
+        assert_eq!(password_only, Err(ZManagerFfiStatus::InvalidArgument));
     }
 
     #[test]

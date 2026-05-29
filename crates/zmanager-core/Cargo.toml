@@ -15,6 +15,7 @@ filetime = "0.2.29"
 flate2 = "1.1.9"
 lz4_flex = "0.13.1"
 lzma-rust2 = { version = "0.16.2", default-features = false, features = ["lzip", "std", "xz"] }
+openssl = "0.10.80"
 rand = "0.8.5"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
@@ -25,9 +26,6 @@ zeroize = "1.8.2"
 zmanager-libarchive = { path = "../zmanager-libarchive" }
 zmanager-unrar = { path = "../zmanager-unrar" }
 zstd = { version = "0.13.3", features = ["zstdmt"] }
-
-[dev-dependencies]
-openssl = "0.10.80"
 
 [lints]
 workspace = true
