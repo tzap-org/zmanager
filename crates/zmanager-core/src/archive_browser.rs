@@ -467,8 +467,7 @@ fn list_tzap_entries(
     path: &Path,
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
-    let password = password.ok_or(TzapError::PasswordRequired)?;
-    let listing = crate::tzap_backend::list_tzap_with_password(path, password)?;
+    let listing = crate::tzap_backend::list_tzap_with_optional_password(path, password)?;
     let entries = listing
         .entries
         .into_iter()
@@ -490,8 +489,7 @@ fn extract_tzap_entry(
     policy: &ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
-    let password = password.ok_or(TzapError::PasswordRequired)?;
-    let listing = crate::tzap_backend::list_tzap_with_password(archive_path, password)?;
+    let listing = crate::tzap_backend::list_tzap_with_optional_password(archive_path, password)?;
     let entry = listing
         .entries
         .into_iter()
@@ -520,13 +518,14 @@ fn extract_tzap_entry(
             })
         }
         ExtractionEntryKind::File => {
-            let Some(written_bytes) = crate::tzap_backend::extract_tzap_file_to_destination(
-                archive_path,
-                password,
-                entry_path,
-                &write_plan.destination_path,
-                write_plan.replace_existing,
-            )?
+            let Some(written_bytes) =
+                crate::tzap_backend::extract_tzap_file_to_destination_with_optional_password(
+                    archive_path,
+                    password,
+                    entry_path,
+                    &write_plan.destination_path,
+                    write_plan.replace_existing,
+                )?
             else {
                 return Err(ArchiveBrowserError::EntryNotFound {
                     path: entry_path.to_owned(),
@@ -1025,14 +1024,14 @@ mod tests {
     }
 
     #[test]
-    fn split_tzap_listing_uses_tzap_password_flow() {
+    fn split_tzap_listing_uses_tzap_backend_route() {
         let temp = TestDir::new("browser_split_tzap_route");
         let archive = temp.path("archive.tzap.000");
         fs::write(&archive, b"not a real tzap volume").unwrap();
 
         let error = list_entries(&archive).unwrap_err().to_string();
 
-        assert!(error.contains("tzap password required"), "{error}");
+        assert!(error.contains("TZAP browser operation failed"), "{error}");
         assert!(!error.contains("libarchive"), "{error}");
     }
 

@@ -20,7 +20,9 @@ use zmanager_core::safety::{ExtractionPolicy, OverwritePolicy};
 use zmanager_core::secrets::SecretString;
 use zmanager_core::sevenz_backend::SevenZCreateOptions;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
-use zmanager_core::tzap_backend::TzapCreateOptions;
+use zmanager_core::tzap_backend::{
+    TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
+};
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
 
 /// C ABI status code returned by FFI entry points.
@@ -47,6 +49,8 @@ const TZAP_MIN_COMPRESSION_LEVEL: i32 = 1;
 const TZAP_MAX_COMPRESSION_LEVEL: i32 = 9;
 const TZAP_DEFAULT_COMPRESSION_LEVEL: i32 = 3;
 const TZAP_DEFAULT_RECOVERY_PERCENTAGE: u8 = 5;
+const TZAP_SINGLE_VOLUME_LOSS_TOLERANCE: u8 = 0;
+const TZAP_SPLIT_VOLUME_LOSS_TOLERANCE: u8 = 1;
 const TZAP_MAX_RECOVERY_PERCENTAGE: u8 = 100;
 const SEVENZ_MIN_COMPRESSION_LEVEL: i32 = 1;
 const SEVENZ_MAX_COMPRESSION_LEVEL: i32 = 9;
@@ -767,7 +771,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
             encrypt_file_names,
             volume_size,
             TZAP_DEFAULT_RECOVERY_PERCENTAGE,
-            0,
+            tzap_default_volume_loss_tolerance(volume_size),
             exclude_archive_paths,
             exclude_archive_path_count,
             out_job,
@@ -806,6 +810,70 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
     exclude_archive_path_count: usize,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
+    // SAFETY: this forwards the same checked pointer arguments and no TZAP
+    // signing profile to the signing-aware entry point.
+    unsafe {
+        zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_signing_options(
+            sources,
+            source_count,
+            destination,
+            archive_format,
+            clean_source,
+            password,
+            compression_level,
+            replace_existing,
+            encrypt_file_names,
+            volume_size,
+            tzap_recovery_percentage,
+            tzap_volume_loss_tolerance,
+            exclude_archive_paths,
+            exclude_archive_path_count,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            out_job,
+        )
+    }
+}
+
+/// Starts a ZIP, TAR.ZST, TZAP, or 7z creation job from multiple source roots
+/// with explicit archive-path exclusions, encryption options, split volume size,
+/// TZAP recovery options, and optional TZAP X.509 signing inputs.
+///
+/// `tzap_signing_cert` and `tzap_signing_private_key` must be both null or both
+/// valid UTF-8 file paths. `tzap_signing_cert` may point to a PEM bundle whose
+/// first certificate is the signer and whose remaining certificates are
+/// intermediates. `tzap_signing_chain` is an optional list of extra
+/// intermediate certificate file paths and requires a signing certificate.
+///
+/// # Safety
+///
+/// `sources`, `destination`, `password`, `exclude_archive_paths`, signing
+/// paths, and `out_job` follow the same pointer rules as
+/// [`zmanager_ffi_start_archive_create_many_with_exclusions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_signing_options(
+    sources: *const *const c_char,
+    source_count: usize,
+    destination: *const c_char,
+    archive_format: i32,
+    clean_source: bool,
+    password: *const c_char,
+    compression_level: i32,
+    replace_existing: bool,
+    encrypt_file_names: bool,
+    volume_size: u64,
+    tzap_recovery_percentage: u8,
+    tzap_volume_loss_tolerance: u8,
+    exclude_archive_paths: *const *const c_char,
+    exclude_archive_path_count: usize,
+    tzap_signing_cert: *const c_char,
+    tzap_signing_private_key: *const c_char,
+    tzap_signing_chain: *const *const c_char,
+    tzap_signing_chain_count: usize,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
     if destination.is_null() || out_job.is_null() {
         return ZManagerFfiStatus::NullArgument;
     }
@@ -830,6 +898,17 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
         Ok(paths) => paths,
         Err(status) => return status,
     };
+    let tzap_x509_signing = match unsafe {
+        optional_tzap_x509_signing_arg(
+            tzap_signing_cert,
+            tzap_signing_private_key,
+            tzap_signing_chain,
+            tzap_signing_chain_count,
+        )
+    } {
+        Ok(signing) => signing,
+        Err(status) => return status,
+    };
 
     let create_options = match ffi_create_options(FfiCreateRequest {
         archive_format,
@@ -840,6 +919,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
         volume_size,
         tzap_recovery_percentage,
         tzap_volume_loss_tolerance,
+        tzap_x509_signing,
     }) {
         Ok(options) => options,
         Err(status) => return status,
@@ -1234,6 +1314,125 @@ pub unsafe extern "C" fn zmanager_ffi_list_archive_with_options(
     owned_c_string(&json)
 }
 
+/// Verifies TZAP X.509 `RootAuth` and returns a JSON object.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+/// `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string. `trusted_ca_certs` may be null only when
+/// `trusted_ca_cert_count` is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_verify_tzap_x509(
+    archive_path: *const c_char,
+    password: *const c_char,
+    trusted_ca_certs: *const *const c_char,
+    trusted_ca_cert_count: usize,
+    trusted_system_roots: bool,
+) -> *mut c_char {
+    if archive_path.is_null() {
+        return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
+    }
+    let Some(archive_path) = c_string_arg(archive_path) else {
+        return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
+    };
+    let password = match unsafe { optional_password_string_arg(password) } {
+        Ok(password) => password,
+        Err(message) => return owned_c_string(&ffi_error_json(message)),
+    };
+    let trust = match unsafe {
+        tzap_x509_trust_options_from_ffi(
+            trusted_ca_certs,
+            trusted_ca_cert_count,
+            trusted_system_roots,
+        )
+    } {
+        Ok(trust) => trust,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+    if !trust.has_trust_source() {
+        return owned_c_string(&ffi_error_json("X.509 verification requires trusted roots"));
+    }
+
+    let json =
+        match zmanager_core::tzap_backend::test_tzap_with_optional_password_filter_and_x509_trust(
+            PathBuf::from(archive_path),
+            password.as_deref(),
+            |_| true,
+            Some(&trust),
+        ) {
+            Ok(report) => match report.x509_root_auth.as_ref() {
+                Some(root_auth) => json!({
+                    "ok": true,
+                    "entries": report.entries,
+                    "tested_entries": report.tested_entries,
+                    "skipped_entries": report.skipped_entries,
+                    "tested_bytes": report.tested_bytes,
+                    "root_auth": tzap_x509_root_auth_json(root_auth),
+                })
+                .to_string(),
+                None => ffi_error_json("missing X.509 RootAuth verification report"),
+            },
+            Err(error) => ffi_error_json(&error.to_string()),
+        };
+
+    owned_c_string(&json)
+}
+
+/// Verifies TZAP X.509 `RootAuth` without the archive key and returns JSON.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+/// `trusted_ca_certs` may be null only when `trusted_ca_cert_count` is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_verify_tzap_x509_public_no_key(
+    archive_path: *const c_char,
+    trusted_ca_certs: *const *const c_char,
+    trusted_ca_cert_count: usize,
+    trusted_system_roots: bool,
+) -> *mut c_char {
+    if archive_path.is_null() {
+        return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
+    }
+    let Some(archive_path) = c_string_arg(archive_path) else {
+        return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
+    };
+    let trust = match unsafe {
+        tzap_x509_trust_options_from_ffi(
+            trusted_ca_certs,
+            trusted_ca_cert_count,
+            trusted_system_roots,
+        )
+    } {
+        Ok(trust) => trust,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+    if !trust.has_trust_source() {
+        return owned_c_string(&ffi_error_json("X.509 verification requires trusted roots"));
+    }
+
+    let json = match zmanager_core::tzap_backend::verify_tzap_x509_public_no_key(
+        PathBuf::from(archive_path),
+        &trust,
+    ) {
+        Ok(root_auth) => json!({
+            "ok": true,
+            "verification_mode": "public-no-key",
+            "root_auth": tzap_x509_root_auth_json(&root_auth),
+            "public_diagnostics": &root_auth.diagnostics,
+        })
+        .to_string(),
+        Err(error) => ffi_error_json(&error.to_string()),
+    };
+
+    owned_c_string(&json)
+}
+
 /// Extracts one archive entry to a destination directory and returns a JSON
 /// object.
 ///
@@ -1588,6 +1787,59 @@ unsafe fn optional_c_string_array_arg(
     unsafe { c_string_array_arg(values, value_count) }
 }
 
+fn optional_c_string_arg(value: *const c_char) -> Result<Option<String>, ZManagerFfiStatus> {
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let Some(value) = c_string_arg(value) else {
+        return Err(ZManagerFfiStatus::InvalidUtf8);
+    };
+    Ok((!value.is_empty()).then_some(value))
+}
+
+unsafe fn optional_tzap_x509_signing_arg(
+    certificate: *const c_char,
+    private_key: *const c_char,
+    chain: *const *const c_char,
+    chain_count: usize,
+) -> Result<Option<TzapX509SigningOptions>, ZManagerFfiStatus> {
+    let certificate = optional_c_string_arg(certificate)?;
+    let private_key = optional_c_string_arg(private_key)?;
+    let chain = unsafe { optional_c_string_array_arg(chain, chain_count) }?;
+
+    match (certificate, private_key) {
+        (Some(certificate), Some(private_key)) => Ok(Some(TzapX509SigningOptions {
+            signing_certificate: PathBuf::from(certificate),
+            signing_private_key: PathBuf::from(private_key),
+            signing_chain: chain.into_iter().map(PathBuf::from).collect(),
+        })),
+        (None, None) if chain.is_empty() => Ok(None),
+        _ => Err(ZManagerFfiStatus::InvalidArgument),
+    }
+}
+
+unsafe fn tzap_x509_trust_options_from_ffi(
+    trusted_ca_certs: *const *const c_char,
+    trusted_ca_cert_count: usize,
+    trusted_system_roots: bool,
+) -> Result<TzapX509TrustOptions, ZManagerFfiStatus> {
+    let trusted_ca_certs =
+        unsafe { optional_c_string_array_arg(trusted_ca_certs, trusted_ca_cert_count) }?;
+    Ok(TzapX509TrustOptions {
+        trusted_ca_certificates: trusted_ca_certs.into_iter().map(PathBuf::from).collect(),
+        trusted_system_roots,
+    })
+}
+
+fn tzap_default_volume_loss_tolerance(volume_size: u64) -> u8 {
+    if volume_size == 0 {
+        TZAP_SINGLE_VOLUME_LOSS_TOLERANCE
+    } else {
+        TZAP_SPLIT_VOLUME_LOSS_TOLERANCE
+    }
+}
+
 fn archive_plan_options(clean_source: bool, exclude_archive_paths: Vec<String>) -> PlanOptions {
     let mut options = if clean_source {
         PlanOptions::clean_source()
@@ -1623,6 +1875,7 @@ struct FfiCreateRequest {
     volume_size: u64,
     tzap_recovery_percentage: u8,
     tzap_volume_loss_tolerance: u8,
+    tzap_x509_signing: Option<TzapX509SigningOptions>,
 }
 
 fn ffi_archive_format(value: i32) -> Option<FfiArchiveFormat> {
@@ -1680,51 +1933,61 @@ fn ffi_create_options(request: FfiCreateRequest) -> Result<FfiCreateOptions, ZMa
             if request.password.is_some() {
                 return Err(ZManagerFfiStatus::InvalidArgument);
             }
+            if request.tzap_x509_signing.is_some() {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            }
             if volume_size.is_some() {
                 return Err(ZManagerFfiStatus::InvalidArgument);
             }
             tar_zst_create_options(request.compression_level, request.replace_existing)
                 .map(FfiCreateOptions::TarZst)
         }
-        FfiArchiveFormat::Zip => zip_create_options(
-            request.password,
-            request.compression_level,
-            request.replace_existing,
-            volume_size,
-        )
-        .map(FfiCreateOptions::Zip),
-        FfiArchiveFormat::SevenZ => sevenz_create_options(
-            request.password,
-            request.compression_level,
-            request.replace_existing,
-            request.encrypt_file_names,
-            volume_size,
-        )
-        .map(FfiCreateOptions::SevenZ),
-        FfiArchiveFormat::Tzap => {
-            let Some(passphrase) = request.password else {
+        FfiArchiveFormat::Zip => {
+            if request.tzap_x509_signing.is_some() {
                 return Err(ZManagerFfiStatus::InvalidArgument);
-            };
-            tzap_create_options(
-                passphrase,
+            }
+            zip_create_options(
+                request.password,
                 request.compression_level,
                 request.replace_existing,
                 volume_size,
-                request.tzap_recovery_percentage,
-                request.tzap_volume_loss_tolerance,
             )
-            .map(FfiCreateOptions::Tzap)
+            .map(FfiCreateOptions::Zip)
         }
+        FfiArchiveFormat::SevenZ => {
+            if request.tzap_x509_signing.is_some() {
+                return Err(ZManagerFfiStatus::InvalidArgument);
+            }
+            sevenz_create_options(
+                request.password,
+                request.compression_level,
+                request.replace_existing,
+                request.encrypt_file_names,
+                volume_size,
+            )
+            .map(FfiCreateOptions::SevenZ)
+        }
+        FfiArchiveFormat::Tzap => tzap_create_options(
+            request.password,
+            request.compression_level,
+            request.replace_existing,
+            volume_size,
+            request.tzap_recovery_percentage,
+            request.tzap_volume_loss_tolerance,
+            request.tzap_x509_signing,
+        )
+        .map(FfiCreateOptions::Tzap),
     }
 }
 
 fn tzap_create_options(
-    passphrase: SecretString,
+    password: Option<SecretString>,
     compression_level: i32,
     replace_existing: bool,
     volume_size: Option<u64>,
     recovery_percentage: u8,
     volume_loss_tolerance: u8,
+    x509_signing: Option<TzapX509SigningOptions>,
 ) -> Result<TzapCreateOptions, ZManagerFfiStatus> {
     let level = match compression_level {
         DEFAULT_COMPRESSION_LEVEL_SENTINEL => None,
@@ -1742,13 +2005,14 @@ fn tzap_create_options(
     }
 
     Ok(TzapCreateOptions {
-        passphrase,
+        key_source: password.map_or(TzapKeySource::InsecureZeroKey, TzapKeySource::Passphrase),
         level: level.unwrap_or(TZAP_DEFAULT_COMPRESSION_LEVEL),
         preserve_metadata: true,
         replace_existing,
         volume_size,
         recovery_percentage,
         volume_loss_tolerance,
+        x509_signing,
     })
 }
 
@@ -1954,6 +2218,31 @@ fn archive_listing_to_json(listing: &zmanager_core::archive_browser::BrowserList
     .to_string()
 }
 
+fn tzap_x509_root_auth_json(
+    report: &zmanager_core::tzap_backend::TzapX509VerificationReport,
+) -> Value {
+    let status = report
+        .diagnostics
+        .first()
+        .map_or("root_auth_content_verified", String::as_str);
+    json!({
+        "status": status,
+        "diagnostics": &report.diagnostics,
+        "authenticator": "x509",
+        "archive_root": hex_lower(&report.archive_root),
+        "authenticator_id": report.authenticator_id,
+        "signer_identity_type": report.signer_identity_type,
+        "total_data_block_count": report.total_data_block_count,
+        "subject": report.subject,
+        "issuer": report.issuer,
+        "serial_number": report.serial_number_hex,
+        "certificate_sha256": hex_lower(&report.certificate_sha256),
+        "signed_at_unix_seconds": report.signed_at_unix_seconds,
+        "verified_chain_subjects": report.verified_chain_subjects,
+        "trust_anchor_subject": report.trust_anchor_subject,
+    })
+}
+
 fn browser_entry_kind_name(kind: zmanager_core::archive_browser::BrowserEntryKind) -> &'static str {
     match kind {
         zmanager_core::archive_browser::BrowserEntryKind::File => "file",
@@ -1970,6 +2259,16 @@ fn ffi_error_json(message: &str) -> String {
         "message": message,
     })
     .to_string()
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    output
 }
 
 fn extraction_policy_with_mode(
@@ -2113,7 +2412,16 @@ mod tests {
     }
 
     #[test]
-    fn c_abi_list_split_tzap_prompts_instead_of_libarchive_fallback() {
+    fn ffi_default_tzap_volume_loss_tolerance_matches_split_shape() {
+        assert_eq!(super::tzap_default_volume_loss_tolerance(0), 0);
+        assert_eq!(
+            super::tzap_default_volume_loss_tolerance(10 * 1024 * 1024),
+            1
+        );
+    }
+
+    #[test]
+    fn c_abi_list_split_tzap_uses_tzap_backend_route() {
         let temp = test_root("zmanager-ffi-split-tzap-list-route");
         fs::create_dir_all(&temp).unwrap();
         let archive = temp.join("project.tzap.000");
@@ -2134,7 +2442,10 @@ mod tests {
         }
         fs::remove_dir_all(temp).unwrap();
 
-        assert!(response.contains("tzap password required"), "{response}");
+        assert!(
+            response.contains("TZAP browser operation failed"),
+            "{response}"
+        );
         assert!(!response.contains("libarchive"), "{response}");
     }
 
@@ -2823,8 +3134,8 @@ mod tests {
     }
 
     #[test]
-    fn c_abi_generic_create_many_rejects_tzap_without_password() {
-        let temp = test_root("zmanager-ffi-generic-tzap-password");
+    fn c_abi_generic_create_many_creates_zero_key_tzap_without_password() {
+        let temp = test_root("zmanager-ffi-generic-tzap-zero-key");
         fs::create_dir_all(&temp).unwrap();
         fs::write(temp.join("file.txt"), b"payload").unwrap();
         let source = CString::new(temp.join("file.txt").to_string_lossy().as_ref()).unwrap();
@@ -2848,8 +3159,14 @@ mod tests {
             )
         };
 
-        assert_eq!(status, ZManagerFfiStatus::InvalidArgument);
-        assert!(job.is_null());
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+        let events = drain_job(job);
+        assert!(events.contains("\"type\":\"completed\""), "{events}");
+
+        let listing = c_string(unsafe { zmanager_ffi_list_archive(destination.as_ptr()) });
+        assert!(listing.contains("\"ok\":true"), "{listing}");
+        assert!(listing.contains("\"path\":\"file.txt\""), "{listing}");
         fs::remove_dir_all(temp).unwrap();
     }
 

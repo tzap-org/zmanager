@@ -183,6 +183,28 @@ ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_tza
   ZManagerFfiJob **out_job
 );
 
+ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_tzap_signing_options(
+  const char *const *sources,
+  size_t source_count,
+  const char *destination,
+  int32_t archive_format,
+  bool clean_source,
+  const char *password,
+  int32_t compression_level,
+  bool replace_existing,
+  bool encrypt_file_names,
+  uint64_t volume_size,
+  uint8_t tzap_recovery_percentage,
+  uint8_t tzap_volume_loss_tolerance,
+  const char *const *exclude_archive_paths,
+  size_t exclude_archive_path_count,
+  const char *tzap_signing_cert,
+  const char *tzap_signing_private_key,
+  const char *const *tzap_signing_chain,
+  size_t tzap_signing_chain_count,
+  ZManagerFfiJob **out_job
+);
+
 ZManagerFfiStatus zmanager_ffi_start_extract_archive(
   const char *archive_path,
   const char *destination,
@@ -218,6 +240,19 @@ char *zmanager_ffi_list_archive(const char *archive_path);
 char *zmanager_ffi_list_archive_with_options(
   const char *archive_path,
   const char *password
+);
+char *zmanager_ffi_verify_tzap_x509(
+  const char *archive_path,
+  const char *password,
+  const char *const *trusted_ca_certs,
+  size_t trusted_ca_cert_count,
+  bool trusted_system_roots
+);
+char *zmanager_ffi_verify_tzap_x509_public_no_key(
+  const char *archive_path,
+  const char *const *trusted_ca_certs,
+  size_t trusted_ca_cert_count,
+  bool trusted_system_roots
 );
 char *zmanager_ffi_extract_archive_entry(
   const char *archive_path,

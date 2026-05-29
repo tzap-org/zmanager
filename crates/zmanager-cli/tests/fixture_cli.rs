@@ -871,19 +871,51 @@ fn zm_create_tzap_round_trips_with_password_stdin() {
 }
 
 #[test]
-fn zm_create_tzap_requires_password_source() {
-    let temp = TestDir::new("zm_tzap_requires_password");
+fn zm_create_tzap_without_password_uses_zero_key() {
+    let temp = TestDir::new("zm_tzap_zero_key");
     fs::create_dir_all(temp.path("project")).unwrap();
-    fs::write(temp.path("project/file.txt"), "secret\n").unwrap();
+    fs::write(temp.path("project/file.txt"), "public\n").unwrap();
+    let archive = temp.path("project.tzap");
 
     let create = Command::new(zm_path())
         .arg("create")
-        .arg(temp.path("project.tzap"))
+        .arg(&archive)
         .arg(temp.path("project"))
         .output()
         .unwrap();
-    assert_failure("zm create tzap without password", &create);
-    assert!(String::from_utf8_lossy(&create.stderr).contains("use --encrypt or --password-stdin"));
+    assert_success("zm create tzap without password", &create);
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm list zero-key tzap", &list);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("\"name\":\"project/file.txt\""));
+
+    let test = Command::new(zm_path())
+        .arg("test")
+        .arg(&archive)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm test zero-key tzap", &test);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .arg("--strip-components")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert_success("zm extract zero-key tzap", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/file.txt")).unwrap(),
+        "public\n"
+    );
 }
 
 #[test]

@@ -74,6 +74,9 @@ create_options=(
   '--solid[Use solid 7z mode]'
   '--no-solid[Disable solid 7z mode]'
   '--volume-size[Split ZIP/7z output volumes]:size:(64k 100m 500m 1g 2g 4g)'
+  '--signing-cert[Sign TZAP RootAuth with an X.509 certificate]:certificate:_files'
+  '--signing-private-key[Private key for --signing-cert]:key:_files'
+  '--signing-chain[Intermediate certificate chain for --signing-cert]:certificate:_files'
   '(-j --junk-paths)'{-j,--junk-paths}'[Store basenames only]'
   '(-y --preserve-symlinks)'{-y,--preserve-symlinks}'[Store symlink entries where supported]'
   '--follow-symlinks[Archive symlink target contents]'
@@ -118,6 +121,9 @@ test_options=(
   '(-i --include)'{-i,--include}'[Test archive paths matching glob]:glob'
   '--exclude[Exclude archive paths matching glob]:glob'
   '--password-stdin[Read one password line from stdin]'
+  '--public-no-key[Verify TZAP X.509 RootAuth without the archive key]'
+  '--trusted-ca-cert[Trusted CA certificate for TZAP X.509 RootAuth]:certificate:_files'
+  '--trusted-system-roots[Use system trust roots for TZAP X.509 RootAuth]'
   '--json[Emit machine-readable JSON]'
 )
 

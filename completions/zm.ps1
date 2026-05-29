@@ -32,7 +32,8 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         "--no-hidden", "-i", "--include", "--exclude", "--exclude-from",
         "--format", "--method", "--level", "-0", "-1", "-2", "-3", "-4",
         "-5", "-6", "-7", "-8", "-9", "--store", "--solid", "--no-solid",
-        "--volume-size", "-j", "--junk-paths", "-y", "--preserve-symlinks",
+        "--volume-size", "--signing-cert", "--signing-private-key", "--signing-chain",
+        "-j", "--junk-paths", "-y", "--preserve-symlinks",
         "--follow-symlinks", "--preserve-metadata", "-X", "--no-metadata",
         "-f", "--file", "--force", "--dry-run", "-T", "--test-after", "--encrypt",
         "--password-stdin"
@@ -48,7 +49,8 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     )
     $testOptions = @(
         "-h", "--help", "-f", "--file", "-i", "--include", "--exclude",
-        "--password-stdin", "--json"
+        "--password-stdin", "--public-no-key", "--trusted-ca-cert",
+        "--trusted-system-roots", "--json"
     )
     $planOptions = @(
         "-h", "--help", "--format", "-C", "--directory", "-@",
@@ -198,6 +200,22 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
             return
         }
         "--exclude-from" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
+        "--signing-cert" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
+        "--signing-private-key" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
+        "--signing-chain" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
+        "--trusted-ca-cert" {
             Complete-ZmFiles -Prefix $wordToComplete
             return
         }

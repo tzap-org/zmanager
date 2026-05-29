@@ -99,6 +99,9 @@ const CREATE_FLAGS: &[&str] = &[
     "-T, --test-after",
     "--encrypt",
     "--password-stdin",
+    "--signing-cert <file>",
+    "--signing-private-key <file>",
+    "--signing-chain <file>",
 ];
 
 const EXTRACT_FLAGS: &[&str] = &[
@@ -126,6 +129,9 @@ const TEST_FLAGS: &[&str] = &[
     "-i, --include <glob>",
     "--exclude <glob>",
     "--password-stdin",
+    "--public-no-key",
+    "--trusted-ca-cert <file>",
+    "--trusted-system-roots",
 ];
 
 const PLAN_FLAGS: &[&str] = &[
@@ -175,6 +181,7 @@ const TEST_HELP_NEEDLES: &[&str] = &[
     "Verify archive readability",
     "zm test <archive>",
     "--include <glob>",
+    "--public-no-key",
     "--json",
     FILTER_GLOB_NOTE,
     "printf '%s\\n'",
@@ -381,7 +388,10 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         "strip-components",
         "to-stdout",
         "password-stdin",
+        "public-no-key",
         "volume-size",
+        "signing-cert",
+        "trusted-ca-cert",
     ] {
         assert_contains(COMPLETION_BASH, &format!("--{required_flag}"));
         assert_contains(COMPLETION_FISH, &format!("-l {required_flag}"));

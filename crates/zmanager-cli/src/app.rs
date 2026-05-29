@@ -112,6 +112,8 @@ Examples:
   find src -type f -print0 | zm -cf source.zip --files-from - --null
   zm -jcf flat.zip src/main.rs docs/guide.md
   printf '%s\\n' \"$ZM_PASSWORD\" | zm create secret.7z private/ --encrypt --password-stdin
+  printf '%s\\n' \"$ZM_PASSWORD\" | zm create signed.tzap private/ --format tzap \\
+      --password-stdin --signing-cert signer.pem --signing-private-key signer.key
 
 Input:
   <paths...>                     Files and folders to archive
@@ -159,7 +161,12 @@ Output and safety:
   -T, --test-after               Test the archive after writing
       --encrypt                  Prompt for an archive password where supported
       --password-stdin           Read one password line from stdin
-  TZAP archives are encrypted; use --encrypt or --password-stdin.
+      --signing-cert <file>      Sign TZAP RootAuth with an X.509 cert or PEM bundle
+      --signing-private-key <file>
+                                  Private key for --signing-cert
+      --signing-chain <file>     Extra intermediate certificate chain for --signing-cert
+  TZAP without a password uses tzap's no-secret all-zero key mode.
+  Use --encrypt or --password-stdin when confidentiality is required.
 ";
 
 const EXTRACT_HELP: &str = "\
@@ -240,12 +247,17 @@ Examples:
   zm -Tf project.zip
   zm test project.zip --include 'docs/**'
   printf '%s\\n' \"$ZM_PASSWORD\" | zm test secret.7z --password-stdin
+  printf '%s\\n' \"$ZM_PASSWORD\" | zm test signed.tzap --password-stdin --trusted-ca-cert ca.pem
+  zm test signed.tzap --public-no-key --trusted-ca-cert ca.pem
 
 Options:
   -f, --file <archive>           Archive file path in classic mode
   -i, --include <glob>           Test archive paths matching glob
       --exclude <glob>           Exclude archive paths matching glob
       --password-stdin           Read one password line from stdin
+      --public-no-key            Verify TZAP X.509 RootAuth without the archive key
+      --trusted-ca-cert <file>   Verify TZAP X.509 RootAuth with a trusted CA certificate
+      --trusted-system-roots     Verify TZAP X.509 RootAuth with system trust roots
       --json                     Emit machine-readable JSON
   Glob patterns match archive paths. Quote patterns so the shell does not
   expand them first. Use dir/** for a whole tree; * can match /.
@@ -355,6 +367,9 @@ const FORMAT_DEB: &str = "deb";
 const FORMAT_RAW_STREAM: &str = "raw-stream";
 const FORMAT_LIBARCHIVE: &str = "libarchive";
 const BACKEND_DEB_NESTED: &str = "deb-nested";
+const TZAP_DEFAULT_RECOVERY_PERCENTAGE: u8 = 5;
+const TZAP_SINGLE_VOLUME_LOSS_TOLERANCE: u8 = 0;
+const TZAP_SPLIT_VOLUME_LOSS_TOLERANCE: u8 = 1;
 
 const TEMP_ARCHIVE_PREFIX: &str = ".";
 const TEMP_ARCHIVE_MARKER: &str = ".tmp";
@@ -785,6 +800,9 @@ struct CreateRequest {
     preserve_symlinks: bool,
     follow_symlinks: bool,
     no_metadata: bool,
+    tzap_signing_cert: Option<PathBuf>,
+    tzap_signing_private_key: Option<PathBuf>,
+    tzap_signing_chain: Vec<PathBuf>,
 }
 
 impl Default for CreateRequest {
@@ -815,6 +833,9 @@ impl Default for CreateRequest {
             preserve_symlinks: false,
             follow_symlinks: false,
             no_metadata: false,
+            tzap_signing_cert: None,
+            tzap_signing_private_key: None,
+            tzap_signing_chain: Vec::new(),
         }
     }
 }
@@ -845,11 +866,15 @@ struct ListRequest {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct TestRequest {
     archive: String,
     include: Vec<String>,
     exclude: Vec<String>,
     password_stdin: bool,
+    public_no_key: bool,
+    trusted_ca_certs: Vec<PathBuf>,
+    trusted_system_roots: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1435,6 +1460,18 @@ fn parse_create_request(
                 request.volume_size =
                     Some(parse_volume_size(&take_value(args, &mut index, arg)?, arg)?);
             }
+            "--signing-cert" => {
+                request.tzap_signing_cert = Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
+            "--signing-private-key" => {
+                request.tzap_signing_private_key =
+                    Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
+            "--signing-chain" => {
+                request
+                    .tzap_signing_chain
+                    .push(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
             "--dry-run" => {
                 request.dry_run = true;
                 index += 1;
@@ -1704,22 +1741,29 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 .map_err(|error| error.to_string())
         }
         ArchiveFormat::Tzap => {
-            let Some(passphrase) = password else {
-                return usage_failure(
-                    global,
-                    format_args!(
-                        "create failed: tzap archives require --encrypt or --password-stdin"
-                    ),
-                );
-            };
+            let uses_secret_key = password.is_some();
+            let key_source = password.map_or(
+                zmanager_core::tzap_backend::TzapKeySource::InsecureZeroKey,
+                zmanager_core::tzap_backend::TzapKeySource::Passphrase,
+            );
             let options = zmanager_core::tzap_backend::TzapCreateOptions {
-                passphrase,
+                key_source,
                 level: request.level.unwrap_or(3),
                 preserve_metadata: !request.no_metadata,
                 replace_existing: backend_replace_existing,
                 volume_size: request.volume_size,
-                recovery_percentage: 5,
-                volume_loss_tolerance: 0,
+                recovery_percentage: TZAP_DEFAULT_RECOVERY_PERCENTAGE,
+                volume_loss_tolerance: tzap_default_volume_loss_tolerance(request.volume_size),
+                x509_signing: request.tzap_signing_cert.as_ref().map(|certificate| {
+                    zmanager_core::tzap_backend::TzapX509SigningOptions {
+                        signing_certificate: certificate.clone(),
+                        signing_private_key: request
+                            .tzap_signing_private_key
+                            .clone()
+                            .expect("validated with signing certificate"),
+                        signing_chain: request.tzap_signing_chain.clone(),
+                    }
+                }),
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
@@ -1734,9 +1778,10 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             result
                 .map(|report| CreateOutcome {
                     summary: format!(
-                        "created tzap: {} entries, {} bytes, encrypted true, level {}, {} warnings",
+                        "created tzap: {} entries, {} bytes, encrypted {}, level {}, {} warnings",
                         report.written_entries,
                         report.written_bytes,
+                        uses_secret_key,
                         report.level,
                         report.warnings.len()
                     ),
@@ -1745,7 +1790,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     entries: report.written_entries,
                     bytes: report.written_bytes,
                     warnings: report.warnings.len(),
-                    encrypted: Some(true),
+                    encrypted: Some(uses_secret_key),
                     solid: None,
                     volume_size: report.volume_size,
                     volume_count: report.volume_count,
@@ -1897,6 +1942,29 @@ fn create_stream(
 }
 
 fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Result<(), String> {
+    if request.tzap_signing_cert.is_some()
+        || request.tzap_signing_private_key.is_some()
+        || !request.tzap_signing_chain.is_empty()
+    {
+        if format != ArchiveFormat::Tzap {
+            return Err("certificate signing is supported only for TZAP archives".to_owned());
+        }
+        match (
+            request.tzap_signing_cert.as_ref(),
+            request.tzap_signing_private_key.as_ref(),
+        ) {
+            (Some(_), Some(_)) => {}
+            (None, None) if !request.tzap_signing_chain.is_empty() => {
+                return Err("--signing-chain requires --signing-cert".to_owned());
+            }
+            _ => {
+                return Err(
+                    "--signing-cert and --signing-private-key must be used together".to_owned(),
+                );
+            }
+        }
+    }
+
     if request.volume_size.is_some() {
         if request.archive == "-" {
             return Err("--volume-size cannot be used with stdout archive output".to_owned());
@@ -2006,13 +2074,6 @@ fn create_password(
     request: &CreateRequest,
     global: &GlobalOptions,
 ) -> Result<Option<SecretString>, ExitCode> {
-    if format == ArchiveFormat::Tzap && !request.encrypt && !request.password_stdin {
-        print_error_line(
-            global,
-            format_args!("tzap archives are encrypted; use --encrypt or --password-stdin"),
-        );
-        return Err(ExitCode::from(2));
-    }
     if !request.encrypt && !request.password_stdin {
         return Ok(None);
     }
@@ -2258,7 +2319,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
     } else if is_tzap_archive(&request.archive) {
-        let password = match read_required_tzap_password(request.password_stdin, global) {
+        let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -2266,7 +2327,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             request.archive,
             destination,
             policy,
-            password.expose_secret(),
+            password.as_deref(),
             Some(global),
         )
     } else {
@@ -2540,13 +2601,13 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             }
         }
     } else if is_tzap_archive(&request.archive) {
-        let password = match read_required_tzap_password(request.password_stdin, global) {
+        let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
-        match zmanager_core::tzap_backend::copy_tzap_files_to_writer(
+        match zmanager_core::tzap_backend::copy_tzap_files_to_writer_with_optional_password(
             &request.archive,
-            password.expose_secret(),
+            password.as_deref(),
             |name| entry_selected(name, &request.include, &request.exclude),
             &mut stdout,
         ) {
@@ -2771,16 +2832,9 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = if is_tzap_archive(&request.archive) {
-        match read_required_tzap_password(request.password_stdin, global) {
-            Ok(password) => Some(password),
-            Err(code) => return code,
-        }
-    } else {
-        match read_optional_password_stdin(request.password_stdin, "archive", global) {
-            Ok(password) => password,
-            Err(code) => return code,
-        }
+    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
+        Ok(password) => password,
+        Err(code) => return code,
     };
     match list_entries_with_password(&request.archive, password.as_deref()) {
         Ok(mut entries) => {
@@ -2882,6 +2936,19 @@ fn parse_test_request(
                 request.password_stdin = true;
                 index += 1;
             }
+            "--public-no-key" => {
+                request.public_no_key = true;
+                index += 1;
+            }
+            "--trusted-ca-cert" => {
+                request
+                    .trusted_ca_certs
+                    .push(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
+            "--trusted-system-roots" => {
+                request.trusted_system_roots = true;
+                index += 1;
+            }
             "--" => {
                 positional.extend(args[index + 1..].iter().cloned());
                 break;
@@ -2906,6 +2973,41 @@ fn parse_test_request(
 
 #[allow(clippy::too_many_lines)]
 fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
+    if request.public_no_key && !is_tzap_archive(&request.archive) {
+        return usage_failure(
+            global,
+            format_args!("test failed: --public-no-key is supported only for TZAP archives"),
+        );
+    }
+    if test_request_has_x509_trust(request) && !is_tzap_archive(&request.archive) {
+        return usage_failure(
+            global,
+            format_args!("test failed: X.509 trust options are supported only for TZAP archives"),
+        );
+    }
+    if request.public_no_key && !test_request_has_x509_trust(request) {
+        return usage_failure(
+            global,
+            format_args!(
+                "test failed: --public-no-key requires --trusted-ca-cert or --trusted-system-roots"
+            ),
+        );
+    }
+    if request.public_no_key && request.password_stdin {
+        return usage_failure(
+            global,
+            format_args!("test failed: --public-no-key cannot be combined with --password-stdin"),
+        );
+    }
+    if request.public_no_key && (!request.include.is_empty() || !request.exclude.is_empty()) {
+        return usage_failure(
+            global,
+            format_args!("test failed: --public-no-key cannot be combined with path filters"),
+        );
+    }
+    if request.public_no_key {
+        return run_tzap_public_no_key_test(&request.archive, request, global);
+    }
     if request.password_stdin
         && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
@@ -2915,16 +3017,9 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let password = if is_tzap_archive(&request.archive) {
-        match read_required_tzap_password(request.password_stdin, global) {
-            Ok(password) => Some(password),
-            Err(code) => return code,
-        }
-    } else {
-        match read_optional_password_stdin(request.password_stdin, "archive", global) {
-            Ok(password) => password,
-            Err(code) => return code,
-        }
+    let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
+        Ok(password) => password,
+        Err(code) => return code,
     };
 
     if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
@@ -2977,15 +3072,12 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
     }
     if is_tzap_archive(&request.archive) {
-        let Some(password) = password.as_deref() else {
-            print_error_line(global, format_args!("tzap test failed: password required"));
-            return ExitCode::from(2);
-        };
         return run_tzap_test_new(
             &request.archive,
-            password,
+            password.as_deref(),
             &request.include,
             &request.exclude,
+            request,
             global,
         );
     }
@@ -3024,6 +3116,27 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             print_error_line(global, format_args!("test failed: {error}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn test_request_has_x509_trust(request: &TestRequest) -> bool {
+    !request.trusted_ca_certs.is_empty() || request.trusted_system_roots
+}
+
+fn tzap_default_volume_loss_tolerance(volume_size: Option<u64>) -> u8 {
+    if volume_size.is_some() {
+        TZAP_SPLIT_VOLUME_LOSS_TOLERANCE
+    } else {
+        TZAP_SINGLE_VOLUME_LOSS_TOLERANCE
+    }
+}
+
+fn test_request_x509_trust(
+    request: &TestRequest,
+) -> zmanager_core::tzap_backend::TzapX509TrustOptions {
+    zmanager_core::tzap_backend::TzapX509TrustOptions {
+        trusted_ca_certificates: request.trusted_ca_certs.clone(),
+        trusted_system_roots: request.trusted_system_roots,
     }
 }
 
@@ -3089,22 +3202,39 @@ fn run_7z_test_new(
 
 fn run_tzap_test_new(
     archive: &str,
-    password: &str,
+    password: Option<&str>,
     includes: &[String],
     excludes: &[String],
+    request: &TestRequest,
     global: &GlobalOptions,
 ) -> ExitCode {
-    match zmanager_core::tzap_backend::test_tzap_with_password_filter(archive, password, |name| {
-        entry_selected(name, includes, excludes)
-    }) {
+    let x509_trust = test_request_has_x509_trust(request).then(|| test_request_x509_trust(request));
+    match zmanager_core::tzap_backend::test_tzap_with_optional_password_filter_and_x509_trust(
+        archive,
+        password,
+        |name| entry_selected(name, includes, excludes),
+        x509_trust.as_ref(),
+    ) {
         Ok(report) => {
-            print_data_test_success(
-                FORMAT_TZAP,
-                report.tested_entries,
-                report.skipped_entries,
-                report.tested_bytes,
-                global,
-            );
+            print_tzap_test_success(&report, global);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(global, format_args!("tzap test failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_tzap_public_no_key_test(
+    archive: &str,
+    request: &TestRequest,
+    global: &GlobalOptions,
+) -> ExitCode {
+    let trust = test_request_x509_trust(request);
+    match zmanager_core::tzap_backend::verify_tzap_x509_public_no_key(archive, &trust) {
+        Ok(report) => {
+            print_tzap_public_no_key_success(&report, archive, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -3172,6 +3302,156 @@ fn print_data_test_success(
             ),
         );
     }
+}
+
+fn print_tzap_test_success(
+    report: &zmanager_core::tzap_backend::TzapTestReport,
+    global: &GlobalOptions,
+) {
+    if global.json {
+        print!(
+            "{{\"status\":\"ok\",\"format\":\"{}\",\"entries\":{},\"tested_entries\":{},\"skipped_entries\":{},\"bytes\":{}",
+            FORMAT_TZAP,
+            report.entries,
+            report.tested_entries,
+            report.skipped_entries,
+            report.tested_bytes
+        );
+        if let Some(root_auth) = &report.x509_root_auth {
+            print!(",\"root_auth\":");
+            print_tzap_x509_root_auth_json(root_auth);
+        }
+        println!("}}");
+    } else {
+        print_data_test_success(
+            FORMAT_TZAP,
+            report.tested_entries,
+            report.skipped_entries,
+            report.tested_bytes,
+            global,
+        );
+        if let Some(root_auth) = &report.x509_root_auth {
+            print_tzap_x509_root_auth_text(root_auth, false, global);
+        }
+    }
+}
+
+fn print_tzap_public_no_key_success(
+    root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport,
+    archive: &str,
+    global: &GlobalOptions,
+) {
+    if global.json {
+        print!(
+            "{{\"status\":\"ok\",\"format\":\"{}\",\"verification_mode\":\"public-no-key\",\"archive\":\"{}\",\"root_auth\":",
+            FORMAT_TZAP,
+            json_escape(archive)
+        );
+        print_tzap_x509_root_auth_json(root_auth);
+        print!(",\"public_diagnostics\":");
+        print_json_string_array(&root_auth.diagnostics);
+        println!("}}");
+    } else {
+        print_success_line(
+            global,
+            format_args!(
+                "{FORMAT_TZAP} test ok: public no-key, {} data blocks",
+                root_auth.total_data_block_count
+            ),
+        );
+        print_tzap_x509_root_auth_text(root_auth, true, global);
+        print_tzap_x509_diagnostics_text(root_auth, "public-no-key", global);
+    }
+}
+
+fn print_tzap_x509_root_auth_json(
+    root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport,
+) {
+    let status = root_auth
+        .diagnostics
+        .first()
+        .map_or("root_auth_content_verified", String::as_str);
+    print!("{{\"status\":\"{}\",\"diagnostics\":", json_escape(status));
+    print_json_string_array(&root_auth.diagnostics);
+    print!(
+        ",\"authenticator\":\"x509\",\"archive_root\":\"{}\",\"authenticator_id\":{},\"signer_identity_type\":{},\"total_data_block_count\":{},\"subject\":\"{}\",\"issuer\":\"{}\",\"serial_number\":\"{}\",\"certificate_sha256\":\"{}\",\"signed_at_unix_seconds\":{},\"verified_chain_subjects\":[",
+        hex_lower(&root_auth.archive_root),
+        root_auth.authenticator_id,
+        root_auth.signer_identity_type,
+        root_auth.total_data_block_count,
+        json_escape(&root_auth.subject),
+        json_escape(&root_auth.issuer),
+        json_escape(&root_auth.serial_number_hex),
+        hex_lower(&root_auth.certificate_sha256),
+        root_auth.signed_at_unix_seconds
+    );
+    for (index, subject) in root_auth.verified_chain_subjects.iter().enumerate() {
+        if index > 0 {
+            print!(",");
+        }
+        print!("\"{}\"", json_escape(subject));
+    }
+    print!("],\"trust_anchor_subject\":");
+    match root_auth.trust_anchor_subject.as_deref() {
+        Some(subject) => print!("\"{}\"", json_escape(subject)),
+        None => print!("null"),
+    }
+    print!("}}");
+}
+
+fn print_tzap_x509_root_auth_text(
+    root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport,
+    public_no_key: bool,
+    global: &GlobalOptions,
+) {
+    let mode = if public_no_key {
+        "public-no-key x509"
+    } else {
+        "x509"
+    };
+    print_success_line(
+        global,
+        format_args!(
+            "root-auth: OK {mode} {}",
+            hex_lower(&root_auth.archive_root)
+        ),
+    );
+    print_success_line(
+        global,
+        format_args!("root-auth signer: {}", root_auth.subject),
+    );
+    print_success_line(
+        global,
+        format_args!("root-auth issuer: {}", root_auth.issuer),
+    );
+    if let Some(trust_anchor) = &root_auth.trust_anchor_subject {
+        print_success_line(
+            global,
+            format_args!("root-auth trust-anchor: {trust_anchor}"),
+        );
+    }
+    print_tzap_x509_diagnostics_text(root_auth, "root-auth", global);
+}
+
+fn print_tzap_x509_diagnostics_text(
+    root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport,
+    prefix: &str,
+    global: &GlobalOptions,
+) {
+    for diagnostic in &root_auth.diagnostics {
+        print_success_line(global, format_args!("{prefix}: {diagnostic}"));
+    }
+}
+
+fn print_json_string_array(values: &[String]) {
+    print!("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            print!(",");
+        }
+        print!("\"{}\"", json_escape(value));
+    }
+    print!("]");
 }
 
 fn run_raw_stream_test(
@@ -3798,32 +4078,6 @@ fn read_optional_password_stdin(
     }
 }
 
-fn read_required_tzap_password(
-    password_stdin: bool,
-    global: &GlobalOptions,
-) -> Result<SecretString, ExitCode> {
-    if password_stdin {
-        return prompt_password_from_stdin(Some(global));
-    }
-    if global.no_password_prompt {
-        print_error_line(
-            global,
-            format_args!("tzap password required and prompts are disabled"),
-        );
-        return Err(ExitCode::from(2));
-    }
-    if global.quiet || !io::stdin().is_terminal() {
-        print_error_line(
-            global,
-            format_args!(
-                "tzap password prompt requires an interactive terminal; use --password-stdin"
-            ),
-        );
-        return Err(ExitCode::from(2));
-    }
-    prompt_password("tzap password: ")
-}
-
 fn list_entries_with_password(
     archive: &str,
     password: Option<&str>,
@@ -3874,8 +4128,7 @@ fn list_entries_with_password(
             compressed_size,
         }])
     } else if is_tzap_archive(archive) {
-        let password = password.ok_or_else(|| "tzap password required".to_owned())?;
-        zmanager_core::tzap_backend::list_tzap_with_password(archive, password)
+        zmanager_core::tzap_backend::list_tzap_with_optional_password(archive, password)
             .map(|listing| {
                 listing
                     .entries
@@ -4216,6 +4469,16 @@ fn json_escape(value: &str) -> String {
     escaped
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    output
+}
+
 fn command_usage_error(command: &str, message: &str, global: &GlobalOptions) -> ExitCode {
     let (formatted, unknown_option) = format_command_error(command, message);
     print_error_line(global, format_args!("error: {formatted}"));
@@ -4393,6 +4656,9 @@ const CREATE_OPTIONS: &[&str] = &[
     "--force",
     "--encrypt",
     "--password-stdin",
+    "--signing-cert",
+    "--signing-private-key",
+    "--signing-chain",
     "--dry-run",
     "-T",
     "--test-after",
@@ -4431,6 +4697,8 @@ const LIST_OPTIONS: &[&str] = &[
     "--include",
     "--exclude",
     "--password-stdin",
+    "--trusted-ca-cert",
+    "--trusted-system-roots",
 ];
 
 const TEST_OPTIONS: &[&str] = &[
@@ -4442,6 +4710,9 @@ const TEST_OPTIONS: &[&str] = &[
     "--include",
     "--exclude",
     "--password-stdin",
+    "--public-no-key",
+    "--trusted-ca-cert",
+    "--trusted-system-roots",
 ];
 
 const PLAN_OPTIONS: &[&str] = &[
@@ -5205,7 +5476,7 @@ fn run_tzap_extract_with_policy(
     archive: impl AsRef<std::path::Path>,
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
-    password: &str,
+    password: Option<&str>,
     global: Option<&GlobalOptions>,
 ) -> ExitCode {
     let archive_path = archive.as_ref().to_path_buf();
@@ -5219,7 +5490,7 @@ fn run_tzap_extract_with_policy(
         let stdin = io::stdin();
         let stderr = io::stderr();
         let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
-        zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_password(
+        zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_optional_password(
             &archive_path,
             &destination_path,
             policy,
@@ -5227,7 +5498,7 @@ fn run_tzap_extract_with_policy(
             &mut overwrite_resolver,
         )
     } else {
-        zmanager_core::tzap_backend::extract_tzap_with_password(
+        zmanager_core::tzap_backend::extract_tzap_with_optional_password(
             &archive_path,
             &destination_path,
             policy,
@@ -5712,8 +5983,10 @@ fn plan_command(mut args: impl Iterator<Item = String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        InteractiveOverwriteResolver, normalize_prompted_password, password_arg_or_prompt,
-        publish_archive,
+        ArchiveFormat, CreateRequest, GlobalOptions, InteractiveOverwriteResolver, TestRequest,
+        normalize_prompted_password, parse_create_request, parse_test_request,
+        password_arg_or_prompt, publish_archive, tzap_default_volume_loss_tolerance,
+        validate_create_options,
     };
     use std::fs;
     use std::io::Cursor;
@@ -5742,6 +6015,82 @@ mod tests {
     #[test]
     fn direct_password_arguments_are_rejected() {
         assert!(password_arg_or_prompt(Some("secret"), "Password: ").is_err());
+    }
+
+    #[test]
+    fn create_parser_accepts_tzap_x509_signing_options() {
+        let mut request = CreateRequest::default();
+        let mut global = GlobalOptions::default();
+        let args = strings([
+            "signed.tzap",
+            "src",
+            "--format",
+            "tzap",
+            "--password-stdin",
+            "--signing-cert",
+            "signer.pem",
+            "--signing-private-key",
+            "signer.key",
+            "--signing-chain",
+            "intermediate.pem",
+        ]);
+
+        parse_create_request(&args, &mut global, &mut request).unwrap();
+
+        assert_eq!(request.tzap_signing_cert, Some(PathBuf::from("signer.pem")));
+        assert_eq!(
+            request.tzap_signing_private_key,
+            Some(PathBuf::from("signer.key"))
+        );
+        assert_eq!(
+            request.tzap_signing_chain,
+            vec![PathBuf::from("intermediate.pem")]
+        );
+        assert!(validate_create_options(ArchiveFormat::Tzap, &request).is_ok());
+    }
+
+    #[test]
+    fn create_validation_restricts_x509_signing_to_tzap() {
+        let request = CreateRequest {
+            archive: "signed.zip".to_owned(),
+            sources: vec![PathBuf::from("src")],
+            tzap_signing_cert: Some(PathBuf::from("signer.pem")),
+            tzap_signing_private_key: Some(PathBuf::from("signer.key")),
+            ..CreateRequest::default()
+        };
+
+        let error = validate_create_options(ArchiveFormat::Zip, &request).unwrap_err();
+
+        assert!(error.contains("only for TZAP"));
+    }
+
+    #[test]
+    fn tzap_split_create_defaults_to_one_volume_loss_tolerance() {
+        assert_eq!(tzap_default_volume_loss_tolerance(None), 0);
+        assert_eq!(
+            tzap_default_volume_loss_tolerance(Some(10 * 1024 * 1024)),
+            1
+        );
+    }
+
+    #[test]
+    fn test_parser_accepts_tzap_x509_trust_options() {
+        let mut request = TestRequest::default();
+        let mut global = GlobalOptions::default();
+        let args = strings([
+            "signed.tzap",
+            "--password-stdin",
+            "--public-no-key",
+            "--trusted-ca-cert",
+            "root.pem",
+            "--trusted-system-roots",
+        ]);
+
+        parse_test_request(&args, &mut global, &mut request).unwrap();
+
+        assert_eq!(request.trusted_ca_certs, vec![PathBuf::from("root.pem")]);
+        assert!(request.trusted_system_roots);
+        assert!(request.public_no_key);
     }
 
     #[test]
@@ -5841,6 +6190,10 @@ mod tests {
             archive_path: path.to_owned(),
             destination_path: PathBuf::from(path),
         }
+    }
+
+    fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+        values.map(ToOwned::to_owned).to_vec()
     }
 
     struct TestDir {

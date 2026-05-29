@@ -915,14 +915,6 @@ pub fn run_tzap_extract_job_with_password_and_policy(
         kind: JobKind::TzapExtract,
         total_bytes: None,
     });
-    let Some(password) = password else {
-        let error = TzapError::PasswordRequired;
-        sink.emit(JobEvent::Failed {
-            message: error.to_string(),
-        });
-        return Err(error);
-    };
-
     if token.is_cancelled() {
         sink.emit(JobEvent::Cancelled {
             message: "job cancelled".to_owned(),
@@ -930,8 +922,12 @@ pub fn run_tzap_extract_job_with_password_and_policy(
         return Err(TzapError::Cancelled);
     }
 
-    let result =
-        tzap_backend::extract_tzap_with_password(archive_path, destination, policy, password);
+    let result = tzap_backend::extract_tzap_with_optional_password(
+        archive_path,
+        destination,
+        policy,
+        password,
+    );
     finish_tzap_extract_result(result, sink)
 }
 

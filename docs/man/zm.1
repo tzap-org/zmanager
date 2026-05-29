@@ -153,7 +153,7 @@ Use solid 7z mode.
 .It Fl -no-solid
 Disable solid 7z mode.
 .It Fl -volume-size Ar size
-Split ZIP or 7z output into volumes.
+Split ZIP, TZAP, or 7z output into volumes.
 Sizes accept bytes or
 .Cm k ,
 .Cm m ,
@@ -166,6 +166,14 @@ ZIP writes
 sets; 7z writes
 .Pa .7z.001
 sets.
+.It Fl -signing-cert Ar file
+Sign TZAP RootAuth with an X.509 leaf certificate.
+.It Fl -signing-private-key Ar file
+Private key for
+.Fl -signing-cert .
+.It Fl -signing-chain Ar file
+Intermediate certificate chain for
+.Fl -signing-cert .
 .It Fl j , Fl -junk-paths
 Store basenames only; fail if flattened names collide.
 .It Fl y , Fl -preserve-symlinks
@@ -186,11 +194,12 @@ Test the archive after writing.
 Prompt for an archive password where supported.
 .It Fl -password-stdin
 Read one password line from stdin.
-TZAP archives are encrypted; use
+TZAP archives created without a password use tzap's no-secret all-zero key mode.
+Use
 .Fl -encrypt
 or
 .Fl -password-stdin
-when creating them.
+when confidentiality is required.
 .El
 .Sh EXTRACT OPTIONS
 .Bl -tag -width "--strip-components"
@@ -241,7 +250,7 @@ Read one password line from stdin.
 Emit machine-readable JSON.
 .El
 .Sh TEST OPTIONS
-.Bl -tag -width "--password-stdin"
+.Bl -tag -width "--trusted-system-roots"
 .It Fl i , Fl -include Ar glob
 Test archive paths matching
 .Ar glob .
@@ -250,6 +259,12 @@ Exclude archive paths matching
 .Ar glob .
 .It Fl -password-stdin
 Read one password line from stdin.
+.It Fl -public-no-key
+Verify TZAP X.509 RootAuth without the archive key.
+.It Fl -trusted-ca-cert Ar file
+Verify TZAP X.509 RootAuth with a trusted CA certificate.
+.It Fl -trusted-system-roots
+Verify TZAP X.509 RootAuth with system trust roots.
 .It Fl -json
 Emit machine-readable JSON.
 .El
@@ -355,6 +370,7 @@ Do not pass passwords as command arguments.
 Use
 .Fl -password-stdin
 with a single line on stdin in scripts.
+For TZAP, omitting a password uses tzap's explicit no-secret all-zero key mode.
 .Sh SHELL COMPLETIONS
 Release packages install bash, zsh, and fish completions where supported.
 For manual setup, print the completion script for a shell:

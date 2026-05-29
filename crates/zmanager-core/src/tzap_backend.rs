@@ -17,12 +17,20 @@ use tzap_core::format::{
     CRYPTO_HEADER_FIXED_LEN, FormatError, READER_MAX_ARGON2ID_M_COST_KIB,
     READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST, VOLUME_HEADER_LEN,
 };
-use tzap_core::reader::{ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember};
+use tzap_core::reader::{
+    ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
+    PublicNoKeyVerification, RootAuthDiagnostic, RootAuthVerification,
+};
 use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, VolumeHeader};
 use tzap_core::{
     ArchiveWriteError, ArchiveWriteSink, ExtractError, KdfParams, MasterKey, OpenedArchive,
-    RegularFileSource, SafeExtractionOptions, TarEntryKind, WriterOptions, open_seekable_archive,
-    open_seekable_archive_volumes, write_archive_sources_to_sink,
+    RegularFileSource, RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind, WriterOptions,
+    open_seekable_archive, open_seekable_archive_volumes, public_no_key_verify_volumes_with,
+    write_archive_sources_to_sink,
+};
+use tzap_plugin_signing::x509_chain::{
+    X509_AUTHENTICATOR_ID, X509RootAuthReport, X509RootAuthSigner,
+    certificates_der_from_pem_or_der, verify_root_auth_footer,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
@@ -33,6 +41,7 @@ const TZAP_EXTENSION: &str = "tzap";
 const TZAP_VOLUME_EXTENSION_WIDTH: usize = 3;
 const TZAP_TEMP_EXTRACT_PREFIX: &str = ".zmanager-tzap-extract";
 const TZAP_TEMP_EXTRACT_ATTEMPTS: u32 = 100;
+const TZAP_INSECURE_ZERO_KEY: [u8; 32] = [0; 32];
 
 /// Returns whether a path names a TZAP archive or one of its numbered volumes.
 #[must_use]
@@ -67,8 +76,8 @@ fn is_tzap_volume_archive_file_name(name: &str) -> bool {
 /// Options for `.tzap` creation.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapCreateOptions {
-    /// Passphrase used to derive the archive master key.
-    pub passphrase: SecretString,
+    /// Archive key source.
+    pub key_source: TzapKeySource,
     /// Zstd compression level.
     pub level: i32,
     /// Preserve portable metadata such as mode bits and modification time.
@@ -81,6 +90,83 @@ pub struct TzapCreateOptions {
     pub recovery_percentage: u8,
     /// Number of missing output volumes the archive should tolerate.
     pub volume_loss_tolerance: u8,
+    /// X.509 `RootAuth` signing configuration.
+    pub x509_signing: Option<TzapX509SigningOptions>,
+}
+
+/// Key source for `.tzap` creation and opening.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum TzapKeySource {
+    /// Derive the archive master key from a passphrase with Argon2id.
+    Passphrase(SecretString),
+    /// Use tzap's explicit no-secret convenience key: 32 zero bytes in raw-key mode.
+    InsecureZeroKey,
+}
+
+impl TzapKeySource {
+    /// Returns whether this key source uses secret user input.
+    #[must_use]
+    pub fn uses_secret(&self) -> bool {
+        matches!(self, Self::Passphrase(_))
+    }
+}
+
+/// X.509 `RootAuth` signing inputs for `.tzap` creation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapX509SigningOptions {
+    /// PEM or DER leaf signing certificate. PEM bundles may include
+    /// intermediate certificates after the leaf certificate.
+    pub signing_certificate: PathBuf,
+    /// PEM or DER private key matching the leaf signing certificate.
+    pub signing_private_key: PathBuf,
+    /// Optional PEM or DER intermediate certificates.
+    pub signing_chain: Vec<PathBuf>,
+}
+
+/// X.509 `RootAuth` trust configuration for `.tzap` verification.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct TzapX509TrustOptions {
+    /// PEM or DER trusted CA certificates.
+    pub trusted_ca_certificates: Vec<PathBuf>,
+    /// Allow OpenSSL's default system trust roots.
+    pub trusted_system_roots: bool,
+}
+
+impl TzapX509TrustOptions {
+    /// Returns whether verification has any trust source to use.
+    #[must_use]
+    pub fn has_trust_source(&self) -> bool {
+        !self.trusted_ca_certificates.is_empty() || self.trusted_system_roots
+    }
+}
+
+/// Successful X.509 `RootAuth` verification report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapX509VerificationReport {
+    /// Verified archive root commitment.
+    pub archive_root: [u8; 32],
+    /// `RootAuth` authenticator identifier.
+    pub authenticator_id: u16,
+    /// `RootAuth` signer identity type.
+    pub signer_identity_type: u16,
+    /// Number of data blocks covered by the `RootAuth` footer.
+    pub total_data_block_count: u64,
+    /// Signer-claimed signing time as Unix seconds.
+    pub signed_at_unix_seconds: i64,
+    /// Leaf certificate subject.
+    pub subject: String,
+    /// Leaf certificate issuer.
+    pub issuer: String,
+    /// Leaf certificate serial number.
+    pub serial_number_hex: String,
+    /// SHA-256 fingerprint of the leaf certificate.
+    pub certificate_sha256: [u8; 32],
+    /// Subjects in the verified chain.
+    pub verified_chain_subjects: Vec<String>,
+    /// Trust anchor subject, when OpenSSL reported one.
+    pub trust_anchor_subject: Option<String>,
+    /// Root-auth verification diagnostics reported by `tzap`.
+    pub diagnostics: Vec<String>,
 }
 
 /// `.tzap` creation report.
@@ -159,6 +245,8 @@ pub struct TzapTestReport {
     pub skipped_entries: usize,
     /// Total selected regular-file bytes.
     pub tested_bytes: u64,
+    /// Verified X.509 `RootAuth` details when trust options were supplied.
+    pub x509_root_auth: Option<TzapX509VerificationReport>,
 }
 
 /// `.tzap` backend error.
@@ -170,6 +258,8 @@ pub enum TzapError {
     Io { path: PathBuf, source: io::Error },
     /// Archive format, cryptographic, or metadata validation failed.
     Format(FormatError),
+    /// X.509 `RootAuth` signing or verification failed.
+    X509RootAuth(String),
     /// Extraction safety rejected an entry.
     Safety(ExtractionSafetyError),
     /// Only passphrase-protected `.tzap` archives are currently supported by this backend.
@@ -184,6 +274,7 @@ impl fmt::Display for TzapError {
             Self::Plan(source) => write!(f, "{source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Format(source) => write!(f, "{source}"),
+            Self::X509RootAuth(message) => write!(f, "{message}"),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::PasswordRequired => write!(f, "tzap password required"),
             Self::Cancelled => write!(f, "job cancelled"),
@@ -198,7 +289,7 @@ impl std::error::Error for TzapError {
             Self::Io { source, .. } => Some(source),
             Self::Format(source) => Some(source),
             Self::Safety(source) => Some(source),
-            Self::PasswordRequired | Self::Cancelled => None,
+            Self::X509RootAuth(_) | Self::PasswordRequired | Self::Cancelled => None,
         }
     }
 }
@@ -256,19 +347,41 @@ pub fn create_tzap_from_manifest_with_context(
         writer_options.closed_at_ns = 0;
     }
 
-    let kdf_params = create_kdf_params();
-    let master_key =
-        MasterKey::derive_from_passphrase(&kdf_params, options.passphrase.expose_secret())?;
+    let (master_key, kdf_params) = create_key_material(&options.key_source)?;
     let destination = destination.as_ref();
     let mut sink = TzapArchiveFileSink::new(destination, options.replace_existing)?;
+    let x509_signer = options
+        .x509_signing
+        .as_ref()
+        .map(load_x509_signer)
+        .transpose()?;
+    let root_auth = x509_signer
+        .as_ref()
+        .map(X509RootAuthSigner::root_auth_writer_config)
+        .transpose()
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let mut authenticator = |request: &RootAuthSigningRequest| {
+        x509_signer
+            .as_ref()
+            .ok_or(FormatError::WriterInvariant("missing X.509 signer"))
+            .and_then(|signer| {
+                signer
+                    .authenticator_value_for_request(request)
+                    .map_err(|_| FormatError::WriterUnsupported("X.509 RootAuth signing failed"))
+            })
+    };
+    let authenticator = root_auth.as_ref().map(|_| {
+        &mut authenticator
+            as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
+    });
     let summary = write_archive_sources_to_sink(
         &file_sources,
         &master_key,
         writer_options,
         None,
         &kdf_params,
-        None,
-        None,
+        root_auth,
+        authenticator,
         &mut sink,
     )
     .map_err(|source| tzap_write_error(destination, source))?;
@@ -449,6 +562,146 @@ fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> Tza
     }
 }
 
+fn load_x509_signer(options: &TzapX509SigningOptions) -> Result<X509RootAuthSigner, TzapError> {
+    let certificate = read_x509_input_file(&options.signing_certificate)?;
+    let mut certificate_der = certificates_der_from_pem_or_der(&certificate)
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let leaf_certificate_der = certificate_der.remove(0);
+    let private_key = read_x509_input_file(&options.signing_private_key)?;
+    let mut chain_der = certificate_der;
+    chain_der.extend(load_x509_certificate_files(&options.signing_chain)?);
+    X509RootAuthSigner::from_pem_or_der(
+        &leaf_certificate_der,
+        &private_key,
+        chain_der,
+        current_unix_seconds_i64()?,
+    )
+    .map_err(|source| TzapError::X509RootAuth(source.to_string()))
+}
+
+fn load_x509_certificate_files(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>, TzapError> {
+    let mut certificates = Vec::new();
+    for path in paths {
+        let bytes = read_x509_input_file(path)?;
+        let mut parsed = certificates_der_from_pem_or_der(&bytes)
+            .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+        certificates.append(&mut parsed);
+    }
+    Ok(certificates)
+}
+
+fn read_x509_input_file(path: &Path) -> Result<Vec<u8>, TzapError> {
+    fs::read(path).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn current_unix_seconds_i64() -> Result<i64, TzapError> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?
+        .as_secs();
+    i64::try_from(seconds)
+        .map_err(|_| TzapError::X509RootAuth("current Unix time exceeds i64".to_owned()))
+}
+
+fn verify_opened_x509_root_auth(
+    opened: &OpenedArchive,
+    trust: &TzapX509TrustOptions,
+) -> Result<TzapX509VerificationReport, TzapError> {
+    let trusted_roots_der = load_x509_certificate_files(&trust.trusted_ca_certificates)?;
+    let mut report = None;
+    let mut x509_error = None;
+    let verification = opened
+        .verify_root_auth_with(|footer, archive_root| {
+            match verify_root_auth_footer(
+                footer,
+                archive_root,
+                &trusted_roots_der,
+                trust.trusted_system_roots,
+            ) {
+                Ok(value) => {
+                    report = Some(value);
+                    Ok(true)
+                }
+                Err(error) => {
+                    x509_error = Some(error.to_string());
+                    Ok(false)
+                }
+            }
+        })
+        .map_err(|source| {
+            if let Some(detail) = x509_error {
+                TzapError::X509RootAuth(format!("{source}: {detail}"))
+            } else {
+                TzapError::Format(source)
+            }
+        })?;
+    let report = report.ok_or(TzapError::Format(FormatError::InvalidArchive(
+        "missing X.509 RootAuth verification report",
+    )))?;
+
+    Ok(x509_report_from_root_auth_verification(
+        &verification,
+        report,
+    ))
+}
+
+fn x509_report_from_root_auth_verification(
+    verification: &RootAuthVerification,
+    report: X509RootAuthReport,
+) -> TzapX509VerificationReport {
+    TzapX509VerificationReport {
+        archive_root: verification.archive_root,
+        authenticator_id: verification.authenticator_id,
+        signer_identity_type: verification.signer_identity_type,
+        total_data_block_count: verification.total_data_block_count,
+        signed_at_unix_seconds: report.signed_at_unix_seconds,
+        subject: report.subject,
+        issuer: report.issuer,
+        serial_number_hex: report.serial_number_hex,
+        certificate_sha256: report.certificate_sha256,
+        verified_chain_subjects: report.verified_chain_subjects,
+        trust_anchor_subject: report.trust_anchor_subject,
+        diagnostics: root_auth_diagnostic_labels(&verification.diagnostics),
+    }
+}
+
+fn x509_report_from_public_no_key_verification(
+    verification: &PublicNoKeyVerification,
+    report: X509RootAuthReport,
+) -> TzapX509VerificationReport {
+    TzapX509VerificationReport {
+        archive_root: verification.archive_root,
+        authenticator_id: verification.authenticator_id,
+        signer_identity_type: verification.signer_identity_type,
+        total_data_block_count: verification.total_data_block_count,
+        signed_at_unix_seconds: report.signed_at_unix_seconds,
+        subject: report.subject,
+        issuer: report.issuer,
+        serial_number_hex: report.serial_number_hex,
+        certificate_sha256: report.certificate_sha256,
+        verified_chain_subjects: report.verified_chain_subjects,
+        trust_anchor_subject: report.trust_anchor_subject,
+        diagnostics: public_no_key_diagnostic_labels(&verification.diagnostics),
+    }
+}
+
+fn root_auth_diagnostic_labels(diagnostics: &[RootAuthDiagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.label().to_owned())
+        .collect()
+}
+
+fn public_no_key_diagnostic_labels(diagnostics: &[PublicNoKeyDiagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.label().to_owned())
+        .collect()
+}
+
 /// Lists `.tzap` archive entries with a passphrase.
 ///
 /// # Errors
@@ -457,6 +710,21 @@ fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> Tza
 pub fn list_tzap_with_password(
     archive: impl AsRef<Path>,
     password: &str,
+) -> Result<TzapListing, TzapError> {
+    list_tzap_with_optional_password(archive, Some(password))
+}
+
+/// Lists `.tzap` archive entries with an optional passphrase.
+///
+/// When `password` is [`None`], the archive is opened with tzap's explicit
+/// no-secret all-zero raw key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or listed.
+pub fn list_tzap_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
     let entries = opened
@@ -479,6 +747,24 @@ pub fn extract_tzap_with_password(
     policy: ExtractionPolicy,
     password: &str,
 ) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_optional_password(archive, destination, policy, Some(password))
+}
+
+/// Extracts `.tzap` entries with an optional passphrase.
+///
+/// When `password` is [`None`], the archive is opened with tzap's explicit
+/// no-secret all-zero raw key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// or filesystem writes fail.
+pub fn extract_tzap_with_optional_password(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+) -> Result<TzapExtractReport, TzapError> {
     extract_tzap_inner(archive, destination, policy, password, None)
 }
 
@@ -493,6 +779,28 @@ pub fn extract_tzap_with_overwrite_resolver_and_password(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     password: &str,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_overwrite_resolver_and_optional_password(
+        archive,
+        destination,
+        policy,
+        Some(password),
+        overwrite_resolver,
+    )
+}
+
+/// Extracts `.tzap` entries with an optional passphrase and overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// or filesystem writes fail.
+pub fn extract_tzap_with_overwrite_resolver_and_optional_password(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<TzapExtractReport, TzapError> {
     extract_tzap_inner(
@@ -514,8 +822,50 @@ pub fn test_tzap_with_password_filter(
     password: &str,
     selector: impl Fn(&str) -> bool,
 ) -> Result<TzapTestReport, TzapError> {
+    test_tzap_with_optional_password_filter_and_x509_trust(archive, Some(password), selector, None)
+}
+
+/// Tests `.tzap` archive readability and integrity with optional X.509 `RootAuth` verification.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, verified, or when
+/// requested X.509 `RootAuth` verification fails.
+pub fn test_tzap_with_password_filter_and_x509_trust(
+    archive: impl AsRef<Path>,
+    password: &str,
+    selector: impl Fn(&str) -> bool,
+    x509_trust: Option<&TzapX509TrustOptions>,
+) -> Result<TzapTestReport, TzapError> {
+    test_tzap_with_optional_password_filter_and_x509_trust(
+        archive,
+        Some(password),
+        selector,
+        x509_trust,
+    )
+}
+
+/// Tests `.tzap` archive readability and integrity with an optional passphrase.
+///
+/// When `password` is [`None`], the archive is opened with tzap's explicit
+/// no-secret all-zero raw key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, verified, or when
+/// requested X.509 `RootAuth` verification fails.
+pub fn test_tzap_with_optional_password_filter_and_x509_trust(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    selector: impl Fn(&str) -> bool,
+    x509_trust: Option<&TzapX509TrustOptions>,
+) -> Result<TzapTestReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
     opened.verify()?;
+    let x509_root_auth = x509_trust
+        .filter(|trust| trust.has_trust_source())
+        .map(|trust| verify_opened_x509_root_auth(&opened, trust))
+        .transpose()?;
     let entries = opened.list_files()?;
     let mut tested_entries = 0usize;
     let mut tested_bytes = 0u64;
@@ -532,7 +882,79 @@ pub fn test_tzap_with_password_filter(
         tested_entries,
         skipped_entries: entries.len().saturating_sub(tested_entries),
         tested_bytes,
+        x509_root_auth,
     })
+}
+
+/// Verifies a TZAP X.509 `RootAuth` without the archive key.
+///
+/// This checks the public data-block commitment and X.509 authenticator, but it
+/// does not decrypt entries or prove that recovery/parity material is complete.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive volumes cannot be read, the public
+/// commitment does not verify, or X.509 trust validation fails.
+pub fn verify_tzap_x509_public_no_key(
+    archive: impl AsRef<Path>,
+    trust: &TzapX509TrustOptions,
+) -> Result<TzapX509VerificationReport, TzapError> {
+    if !trust.has_trust_source() {
+        return Err(TzapError::X509RootAuth(
+            "X.509 verification requires trusted roots".to_owned(),
+        ));
+    }
+
+    let archive_path = archive.as_ref();
+    let volume_paths = discover_tzap_input_volume_paths(archive_path);
+    let mut volume_bytes = Vec::with_capacity(volume_paths.len());
+    for path in &volume_paths {
+        volume_bytes.push(fs::read(path).map_err(|source| TzapError::Io {
+            path: path.clone(),
+            source,
+        })?);
+    }
+    let volume_refs = volume_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let trusted_roots_der = load_x509_certificate_files(&trust.trusted_ca_certificates)?;
+    let mut report = None;
+    let mut x509_error = None;
+    let verification = public_no_key_verify_volumes_with(&volume_refs, |footer, archive_root| {
+        if footer.authenticator_id != X509_AUTHENTICATOR_ID {
+            return Err(FormatError::ReaderUnsupported(
+                "X.509 trust can only verify X.509 RootAuth",
+            ));
+        }
+        match verify_root_auth_footer(
+            footer,
+            archive_root,
+            &trusted_roots_der,
+            trust.trusted_system_roots,
+        ) {
+            Ok(value) => {
+                report = Some(value);
+                Ok(true)
+            }
+            Err(error) => {
+                x509_error = Some(error.to_string());
+                Ok(false)
+            }
+        }
+    })
+    .map_err(|source| {
+        if let Some(detail) = x509_error {
+            TzapError::X509RootAuth(format!("{source}: {detail}"))
+        } else {
+            TzapError::Format(source)
+        }
+    })?;
+    let report = report.ok_or(TzapError::Format(FormatError::InvalidArchive(
+        "missing X.509 public no-key verification report",
+    )))?;
+
+    Ok(x509_report_from_public_no_key_verification(
+        &verification,
+        report,
+    ))
 }
 
 /// Copies selected regular `.tzap` members to a writer.
@@ -544,6 +966,21 @@ pub fn test_tzap_with_password_filter(
 pub fn copy_tzap_files_to_writer(
     archive: impl AsRef<Path>,
     password: &str,
+    selector: impl Fn(&str) -> bool,
+    writer: &mut dyn io::Write,
+) -> Result<TzapExtractReport, TzapError> {
+    copy_tzap_files_to_writer_with_optional_password(archive, Some(password), selector, writer)
+}
+
+/// Copies selected regular `.tzap` members to a writer with an optional passphrase.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or selected members
+/// cannot be extracted.
+pub fn copy_tzap_files_to_writer_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
     selector: impl Fn(&str) -> bool,
     writer: &mut dyn io::Write,
 ) -> Result<TzapExtractReport, TzapError> {
@@ -596,6 +1033,29 @@ fn tzap_extract_error(path: &str, source: ExtractError) -> TzapError {
 pub fn extract_tzap_file_to_destination(
     archive: impl AsRef<Path>,
     password: &str,
+    entry_path: &str,
+    destination_path: &Path,
+    replace_existing: bool,
+) -> Result<Option<u64>, TzapError> {
+    extract_tzap_file_to_destination_with_optional_password(
+        archive,
+        Some(password),
+        entry_path,
+        destination_path,
+        replace_existing,
+    )
+}
+
+/// Extracts one regular `.tzap` file member to an exact destination path with
+/// an optional passphrase.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, the member cannot be
+/// extracted by tzap-core, or the destination cannot be committed.
+pub fn extract_tzap_file_to_destination_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
     entry_path: &str,
     destination_path: &Path,
     replace_existing: bool,
@@ -681,7 +1141,7 @@ fn extract_tzap_inner(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
-    password: &str,
+    password: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
 ) -> Result<TzapExtractReport, TzapError> {
     let destination = destination.as_ref();
@@ -847,7 +1307,7 @@ fn materialize_member(
 
 fn open_tzap_archive(
     archive: impl AsRef<Path>,
-    password: &str,
+    password: Option<&str>,
 ) -> Result<OpenedArchive, TzapError> {
     let archive_path = archive.as_ref();
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
@@ -859,10 +1319,16 @@ fn open_tzap_archive(
         )
     })?;
     let kdf_params = read_kdf_params_from_path(first_volume)?;
-    let KdfParams::Argon2id { .. } = kdf_params else {
-        return Err(TzapError::PasswordRequired);
+    let master_key = match (&kdf_params, password) {
+        (KdfParams::Argon2id { .. }, Some(password)) => {
+            MasterKey::derive_from_passphrase(&kdf_params, password)?
+        }
+        (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
+        (KdfParams::Raw, None | Some("")) => insecure_zero_master_key()?,
+        (KdfParams::Raw, Some(_)) => {
+            return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
+        }
     };
-    let master_key = MasterKey::derive_from_passphrase(&kdf_params, password)?;
     let volume_files = volume_paths
         .iter()
         .map(|path| {
@@ -1081,6 +1547,22 @@ fn create_kdf_params() -> KdfParams {
     }
 }
 
+fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfParams), TzapError> {
+    match key_source {
+        TzapKeySource::Passphrase(passphrase) => {
+            let kdf_params = create_kdf_params();
+            let master_key =
+                MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
+            Ok((master_key, kdf_params))
+        }
+        TzapKeySource::InsecureZeroKey => Ok((insecure_zero_master_key()?, KdfParams::Raw)),
+    }
+}
+
+fn insecure_zero_master_key() -> Result<MasterKey, TzapError> {
+    MasterKey::from_raw_key(&TZAP_INSECURE_ZERO_KEY).map_err(Into::into)
+}
+
 fn extraction_kind_from_tzap_entry(
     entry: &ArchiveEntry,
     member: Option<&ExtractedArchiveMember>,
@@ -1286,9 +1768,10 @@ fn tzap_archive_write_error(error: TzapError) -> ArchiveWriteError {
         TzapError::Format(source) => ArchiveWriteError::Format(source),
         TzapError::Io { source, .. } => ArchiveWriteError::Io(source),
         TzapError::Cancelled => ArchiveWriteError::Io(io::Error::other(JobCancelled)),
-        TzapError::Plan(_) | TzapError::Safety(_) | TzapError::PasswordRequired => {
-            ArchiveWriteError::Io(io::Error::other(error))
-        }
+        TzapError::Plan(_)
+        | TzapError::X509RootAuth(_)
+        | TzapError::Safety(_)
+        | TzapError::PasswordRequired => ArchiveWriteError::Io(io::Error::other(error)),
     }
 }
 
@@ -1345,7 +1828,22 @@ fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), Tza
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_tzap_file_to_destination, is_tzap_archive_path, list_tzap_with_password};
+    use super::{
+        TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
+        create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
+        is_tzap_archive_path, list_tzap_with_optional_password, list_tzap_with_password,
+        test_tzap_with_password_filter_and_x509_trust, verify_tzap_x509_public_no_key,
+    };
+    use crate::jobs::{CancellationToken, JobContext};
+    use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
+    use crate::secrets::SecretString;
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::{BigNum, MsbOption};
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::{PKey, PKeyRef, Private};
+    use openssl::rsa::Rsa;
+    use openssl::x509::extension::{BasicConstraints, KeyUsage};
+    use openssl::x509::{X509, X509NameBuilder, X509Ref};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1398,6 +1896,256 @@ mod tests {
         assert_eq!(fs::read(&destination).unwrap(), b"small target");
     }
 
+    #[test]
+    fn create_tzap_without_password_uses_zero_key_raw_mode() {
+        let temp = TestDir::new("tzap_zero_key_create");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("public.tzap");
+        fs::write(&source, b"public payload").unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 14,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 14,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::InsecureZeroKey,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let listing = list_tzap_with_optional_password(&archive, None).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.txt");
+    }
+
+    #[test]
+    fn create_and_test_tzap_with_x509_root_auth() {
+        let temp = TestDir::new("tzap_x509_root_auth");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("signed.tzap");
+        let root_ca_path = temp.path("root-ca.pem");
+        let signer_cert_path = temp.path("signer.pem");
+        let signer_key_path = temp.path("signer.key");
+        fs::write(&source, b"signed payload").unwrap();
+
+        let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
+        let (signer_cert, signer_key) = test_leaf_cert(
+            "ZManager Test Signer",
+            root_cert.as_ref(),
+            root_key.as_ref(),
+        );
+        fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
+        fs::write(&signer_cert_path, signer_cert.to_pem().unwrap()).unwrap();
+        fs::write(
+            &signer_key_path,
+            signer_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 14,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 14,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::Passphrase(SecretString::from("secret")),
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: Some(TzapX509SigningOptions {
+                signing_certificate: signer_cert_path,
+                signing_private_key: signer_key_path,
+                signing_chain: Vec::new(),
+            }),
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let trust = TzapX509TrustOptions {
+            trusted_ca_certificates: vec![root_ca_path],
+            trusted_system_roots: false,
+        };
+        let report = test_tzap_with_password_filter_and_x509_trust(
+            &archive,
+            "secret",
+            |_| true,
+            Some(&trust),
+        )
+        .unwrap();
+        let root_auth = report.x509_root_auth.unwrap();
+
+        assert_eq!(report.tested_entries, 1);
+        assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
+        assert_eq!(root_auth.issuer, "CN=ZManager Test Root CA");
+        assert_eq!(
+            root_auth.trust_anchor_subject.as_deref(),
+            Some("CN=ZManager Test Root CA")
+        );
+        assert!(
+            root_auth
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic == "root_auth_content_verified")
+        );
+
+        let public_report = verify_tzap_x509_public_no_key(&archive, &trust).unwrap();
+        assert_eq!(public_report.archive_root, root_auth.archive_root);
+        assert_eq!(public_report.subject, "CN=ZManager Test Signer");
+        assert_eq!(
+            public_report.trust_anchor_subject.as_deref(),
+            Some("CN=ZManager Test Root CA")
+        );
+        assert_eq!(
+            public_report.diagnostics.first().map(String::as_str),
+            Some("public_data_block_commitment_verified")
+        );
+    }
+
+    #[test]
+    fn create_tzap_embeds_chain_from_signing_certificate_bundle() {
+        let temp = TestDir::new("tzap_x509_root_auth_bundle");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("signed.tzap");
+        let root_ca_path = temp.path("root-ca.pem");
+        let signer_bundle_path = temp.path("signer-fullchain.pem");
+        let signer_key_path = temp.path("signer.key");
+        fs::write(&source, b"signed payload").unwrap();
+
+        let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
+        let (intermediate_cert, intermediate_key) = test_child_ca_cert(
+            "ZManager Test Intermediate CA",
+            root_cert.as_ref(),
+            root_key.as_ref(),
+        );
+        let (signer_cert, signer_key) = test_leaf_cert(
+            "ZManager Test Signer",
+            intermediate_cert.as_ref(),
+            intermediate_key.as_ref(),
+        );
+        fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
+        let mut signer_bundle = signer_cert.to_pem().unwrap();
+        signer_bundle.extend(intermediate_cert.to_pem().unwrap());
+        fs::write(&signer_bundle_path, signer_bundle).unwrap();
+        fs::write(
+            &signer_key_path,
+            signer_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 14,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 14,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::Passphrase(SecretString::from("secret")),
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: Some(TzapX509SigningOptions {
+                signing_certificate: signer_bundle_path,
+                signing_private_key: signer_key_path,
+                signing_chain: Vec::new(),
+            }),
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let trust = TzapX509TrustOptions {
+            trusted_ca_certificates: vec![root_ca_path],
+            trusted_system_roots: false,
+        };
+        let report = test_tzap_with_password_filter_and_x509_trust(
+            &archive,
+            "secret",
+            |_| true,
+            Some(&trust),
+        )
+        .unwrap();
+        let root_auth = report.x509_root_auth.unwrap();
+
+        assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
+        assert_eq!(root_auth.issuer, "CN=ZManager Test Intermediate CA");
+        assert_eq!(
+            root_auth.verified_chain_subjects,
+            vec![
+                "CN=ZManager Test Signer".to_owned(),
+                "CN=ZManager Test Intermediate CA".to_owned(),
+                "CN=ZManager Test Root CA".to_owned(),
+            ]
+        );
+        assert_eq!(
+            root_auth.trust_anchor_subject.as_deref(),
+            Some("CN=ZManager Test Root CA")
+        );
+    }
+
     fn create_test_tzap_archive(files: &[RegularFile<'_>]) -> tzap_core::writer::WrittenArchive {
         let kdf = KdfParams::Argon2id {
             t_cost: 1,
@@ -1414,6 +2162,121 @@ mod tests {
             ..WriterOptions::default()
         };
         write_archive_with_kdf(files, &key, options, &kdf).unwrap()
+    }
+
+    fn test_ca_cert(common_name: &str) -> (X509, PKey<Private>) {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", common_name).unwrap();
+        let name = name.build();
+        let mut builder = X509::builder().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_serial_number(&random_serial_number()).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+        builder
+            .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+            .unwrap();
+        builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .key_cert_sign()
+                    .crl_sign()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        builder.sign(&key, MessageDigest::sha256()).unwrap();
+        (builder.build(), key)
+    }
+
+    fn test_child_ca_cert(
+        common_name: &str,
+        ca_cert: &X509Ref,
+        ca_key: &PKeyRef<Private>,
+    ) -> (X509, PKey<Private>) {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", common_name).unwrap();
+        let name = name.build();
+        let mut builder = X509::builder().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_serial_number(&random_serial_number()).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(ca_cert.subject_name()).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+        builder
+            .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+            .unwrap();
+        builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .key_cert_sign()
+                    .crl_sign()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        builder.sign(ca_key, MessageDigest::sha256()).unwrap();
+        (builder.build(), key)
+    }
+
+    fn test_leaf_cert(
+        common_name: &str,
+        ca_cert: &X509Ref,
+        ca_key: &PKeyRef<Private>,
+    ) -> (X509, PKey<Private>) {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", common_name).unwrap();
+        let name = name.build();
+        let mut builder = X509::builder().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_serial_number(&random_serial_number()).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(ca_cert.subject_name()).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+        builder
+            .append_extension(BasicConstraints::new().build().unwrap())
+            .unwrap();
+        builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .digital_signature()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        builder.sign(ca_key, MessageDigest::sha256()).unwrap();
+        (builder.build(), key)
+    }
+
+    fn random_serial_number() -> openssl::asn1::Asn1Integer {
+        let mut serial = BigNum::new().unwrap();
+        serial.rand(159, MsbOption::MAYBE_ZERO, false).unwrap();
+        serial.to_asn1_integer().unwrap()
     }
 
     struct TestDir {
