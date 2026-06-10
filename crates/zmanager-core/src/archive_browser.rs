@@ -1026,7 +1026,7 @@ mod tests {
     #[test]
     fn split_tzap_listing_uses_tzap_backend_route() {
         let temp = TestDir::new("browser_split_tzap_route");
-        let archive = temp.path("archive.tzap.000");
+        let archive = temp.path("archive.vol000.tzap");
         fs::write(&archive, b"not a real tzap volume").unwrap();
 
         let error = list_entries(&archive).unwrap_err().to_string();

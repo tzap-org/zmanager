@@ -5,7 +5,8 @@
 //! polling-friendly JSON event batches.
 
 use std::ffi::{CStr, CString, c_char};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +14,14 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use openssl::asn1::{Asn1Integer, Asn1Time};
+use openssl::bn::{BigNum, MsbOption};
+use openssl::hash::MessageDigest;
+use openssl::pkcs12::Pkcs12;
+use openssl::pkey::{PKey, Private};
+use openssl::rsa::Rsa;
+use openssl::x509::extension::{BasicConstraints, KeyUsage};
+use openssl::x509::{X509, X509NameBuilder};
 use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
 use zmanager_core::manifest::{PlanOptions, plan_archive, plan_archives};
@@ -62,6 +71,9 @@ const ARCHIVE_FORMAT_TZAP: i32 = 3;
 const OVERWRITE_MODE_REFUSE: u32 = 0;
 const OVERWRITE_MODE_REPLACE: u32 = 1;
 const OVERWRITE_MODE_RENAME: u32 = 2;
+const SELF_SIGNED_IDENTITY_RSA_BITS: u32 = 3072;
+const SELF_SIGNED_IDENTITY_VALID_DAYS: u32 = 3_650;
+const SELF_SIGNED_IDENTITY_SERIAL_BITS: i32 = 159;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum FfiArchiveFormat {
@@ -731,7 +743,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
 ///
 /// `volume_size` is zero for a normal archive. Non-zero sizes are supported for
 /// ZIP, TZAP, and 7z. ZIP creates `.z01`, `.z02`, ..., `.zip` volume sets; TZAP
-/// creates `.tzap.000`, `.tzap.001`, ... sets; 7z creates numbered `.7z.001`,
+/// creates `.vol000.tzap`, `.vol001.tzap`, ... sets; 7z creates numbered `.7z.001`,
 /// `.7z.002`, ... output files.
 ///
 /// # Safety
@@ -1493,6 +1505,118 @@ pub unsafe extern "C" fn zmanager_ffi_verify_tzap_x509_public_no_key(
     owned_c_string(&json)
 }
 
+/// Returns public, no-password TZAP metadata as JSON.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_tzap_public_metadata_summary(
+    archive_path: *const c_char,
+) -> *mut c_char {
+    if archive_path.is_null() {
+        return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
+    }
+    let Some(archive_path) = c_string_arg(archive_path) else {
+        return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
+    };
+
+    let archive_path = PathBuf::from(archive_path);
+    let json = match zmanager_core::tzap_backend::summarize_tzap_public_metadata(&archive_path) {
+        Ok(summary) => {
+            let signature = match zmanager_core::tzap_backend::verify_tzap_x509_public_no_key(
+                &archive_path,
+                &TzapX509TrustOptions {
+                    trusted_ca_certificates: Vec::new(),
+                    trusted_system_roots: true,
+                },
+            ) {
+                Ok(root_auth) => json!({
+                    "status": "verified",
+                    "verification_mode": "public-no-key",
+                    "root_auth": tzap_x509_root_auth_json(&root_auth),
+                }),
+                Err(error) => json!({
+                    "status": "unverified",
+                    "message": error.to_string(),
+                }),
+            };
+
+            json!({
+                "ok": true,
+                "metadata": tzap_public_metadata_json(&summary),
+                "signature": signature,
+            })
+            .to_string()
+        }
+        Err(error) => ffi_error_json(&error.to_string()),
+    };
+
+    owned_c_string(&json)
+}
+
+/// Creates a self-signed TZAP signing identity as PKCS#12 plus a public PEM certificate.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `identity_p12` and `common_name` must point to valid NUL-terminated UTF-8 C
+/// strings. `public_certificate` and `identity_password` may be null; when
+/// non-null they must point to valid NUL-terminated UTF-8 C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_create_tzap_self_signed_identity(
+    identity_p12: *const c_char,
+    public_certificate: *const c_char,
+    common_name: *const c_char,
+    identity_password: *const c_char,
+) -> *mut c_char {
+    if identity_p12.is_null() || common_name.is_null() {
+        return owned_c_string(&ffi_error_json("identity path and name are required"));
+    }
+    let Some(identity_p12) = c_string_arg(identity_p12) else {
+        return owned_c_string(&ffi_error_json("invalid UTF-8 identity path"));
+    };
+    let public_certificate = match optional_c_string_arg(public_certificate) {
+        Ok(path) => path,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+    let Some(common_name) = c_string_arg(common_name) else {
+        return owned_c_string(&ffi_error_json("invalid UTF-8 identity name"));
+    };
+    let common_name = common_name.trim();
+    if common_name.is_empty() {
+        return owned_c_string(&ffi_error_json("signing identity name is required"));
+    }
+    let password = match pkcs12_password_arg(identity_password) {
+        Ok(password) => password,
+        Err(status) => return owned_c_string(&ffi_status_json(status)),
+    };
+
+    let identity_path = PathBuf::from(identity_p12);
+    let public_certificate_path = public_certificate.map(PathBuf::from);
+    let json = match create_self_signed_tzap_identity(
+        &identity_path,
+        public_certificate_path.as_deref(),
+        common_name,
+        &password,
+    ) {
+        Ok(()) => json!({
+            "ok": true,
+            "identity_path": identity_path.display().to_string(),
+            "public_certificate_path": public_certificate_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        })
+        .to_string(),
+        Err(message) => ffi_error_json(&message),
+    };
+
+    owned_c_string(&json)
+}
+
 /// Extracts one archive entry to a destination directory and returns a JSON
 /// object.
 ///
@@ -1936,6 +2060,131 @@ fn archive_plan_options(clean_source: bool, exclude_archive_paths: Vec<String>) 
     options
 }
 
+fn create_self_signed_tzap_identity(
+    identity_path: &Path,
+    public_certificate_path: Option<&Path>,
+    common_name: &str,
+    password: &SecretString,
+) -> Result<(), String> {
+    let key = PKey::from_rsa(
+        Rsa::generate(SELF_SIGNED_IDENTITY_RSA_BITS)
+            .map_err(|source| format!("could not generate signing key: {source}"))?,
+    )
+    .map_err(|source| format!("could not prepare signing key: {source}"))?;
+    let certificate = create_self_signed_certificate(common_name, &key)?;
+    let identity = Pkcs12::builder()
+        .name(common_name)
+        .pkey(&key)
+        .cert(&certificate)
+        .build2(password.expose_secret())
+        .map_err(|source| format!("could not create PKCS#12 identity: {source}"))?;
+
+    write_output_file(
+        identity_path,
+        &identity
+            .to_der()
+            .map_err(|source| format!("could not encode PKCS#12 identity: {source}"))?,
+    )?;
+    if let Some(path) = public_certificate_path {
+        write_output_file(
+            path,
+            &certificate
+                .to_pem()
+                .map_err(|source| format!("could not encode public certificate: {source}"))?,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn create_self_signed_certificate(common_name: &str, key: &PKey<Private>) -> Result<X509, String> {
+    let mut name = X509NameBuilder::new()
+        .map_err(|source| format!("could not create certificate name: {source}"))?;
+    name.append_entry_by_text("CN", common_name)
+        .map_err(|source| format!("could not set certificate name: {source}"))?;
+    let name = name.build();
+
+    let mut builder =
+        X509::builder().map_err(|source| format!("could not create certificate: {source}"))?;
+    builder
+        .set_version(2)
+        .map_err(|source| format!("could not set certificate version: {source}"))?;
+    let serial = random_certificate_serial()?;
+    builder
+        .set_serial_number(&serial)
+        .map_err(|source| format!("could not set certificate serial number: {source}"))?;
+    builder
+        .set_subject_name(&name)
+        .map_err(|source| format!("could not set certificate subject: {source}"))?;
+    builder
+        .set_issuer_name(&name)
+        .map_err(|source| format!("could not set certificate issuer: {source}"))?;
+    builder
+        .set_pubkey(key)
+        .map_err(|source| format!("could not set certificate public key: {source}"))?;
+    let not_before = Asn1Time::days_from_now(0)
+        .map_err(|source| format!("could not set certificate start date: {source}"))?;
+    builder
+        .set_not_before(&not_before)
+        .map_err(|source| format!("could not set certificate start date: {source}"))?;
+    let not_after = Asn1Time::days_from_now(SELF_SIGNED_IDENTITY_VALID_DAYS)
+        .map_err(|source| format!("could not set certificate expiry: {source}"))?;
+    builder
+        .set_not_after(&not_after)
+        .map_err(|source| format!("could not set certificate expiry: {source}"))?;
+    builder
+        .append_extension(
+            BasicConstraints::new()
+                .critical()
+                .ca()
+                .build()
+                .map_err(|source| format!("could not set certificate constraints: {source}"))?,
+        )
+        .map_err(|source| format!("could not set certificate constraints: {source}"))?;
+    builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .digital_signature()
+                .key_cert_sign()
+                .crl_sign()
+                .build()
+                .map_err(|source| format!("could not set certificate key usage: {source}"))?,
+        )
+        .map_err(|source| format!("could not set certificate key usage: {source}"))?;
+    builder
+        .sign(key, MessageDigest::sha256())
+        .map_err(|source| format!("could not sign certificate: {source}"))?;
+
+    Ok(builder.build())
+}
+
+fn random_certificate_serial() -> Result<Asn1Integer, String> {
+    let mut serial =
+        BigNum::new().map_err(|source| format!("could not create serial number: {source}"))?;
+    serial
+        .rand(
+            SELF_SIGNED_IDENTITY_SERIAL_BITS,
+            MsbOption::MAYBE_ZERO,
+            false,
+        )
+        .map_err(|source| format!("could not create serial number: {source}"))?;
+    serial
+        .to_asn1_integer()
+        .map_err(|source| format!("could not encode serial number: {source}"))
+}
+
+fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|source| format!("could not create {}: {source}", parent.display()))?;
+    }
+
+    fs::write(path, bytes).map_err(|source| format!("could not write {}: {source}", path.display()))
+}
+
 fn start_archive_create_many_with_options_job(
     out_job: *mut *mut ZManagerFfiJob,
     sources: Vec<String>,
@@ -2161,7 +2410,7 @@ fn tzap_create_options(
     }
 
     Ok(TzapCreateOptions {
-        key_source: password.map_or(TzapKeySource::InsecureZeroKey, TzapKeySource::Passphrase),
+        key_source: password.map_or(TzapKeySource::NoPassword, TzapKeySource::Passphrase),
         level: level.unwrap_or(TZAP_DEFAULT_COMPRESSION_LEVEL),
         preserve_metadata: true,
         replace_existing,
@@ -2374,6 +2623,56 @@ fn archive_listing_to_json(listing: &zmanager_core::archive_browser::BrowserList
     .to_string()
 }
 
+fn tzap_public_metadata_json(
+    summary: &zmanager_core::tzap_backend::TzapPublicMetadataSummary,
+) -> Value {
+    let volumes = summary
+        .volumes
+        .iter()
+        .map(|volume| {
+            json!({
+                "index": volume.index,
+                "path": volume.path.display().to_string(),
+                "size": volume.size,
+            })
+        })
+        .collect::<Vec<_>>();
+    let format = &summary.format;
+
+    json!({
+        "requested_path": summary.requested_path.display().to_string(),
+        "expected_volume_count": summary.expected_volume_count,
+        "present_volume_count": summary.present_volume_count,
+        "missing_volume_indices": &summary.missing_volume_indices,
+        "total_size": summary.total_size,
+        "expected_volume_size": summary.expected_volume_size,
+        "volumes": volumes,
+        "format": {
+            "format_version": format.format_version,
+            "volume_format_revision": format.volume_format_revision,
+            "archive_uuid": hex_lower(&format.archive_uuid),
+            "session_id": hex_lower(&format.session_id),
+            "compression_algorithm": format.compression_algorithm,
+            "encryption_algorithm": format.encryption_algorithm,
+            "recovery_algorithm": format.recovery_algorithm,
+            "key_derivation": format.key_derivation,
+            "password_required": format.password_required,
+            "bit_rot_buffer_percentage": format.bit_rot_buffer_percentage,
+            "volume_loss_tolerance": format.volume_loss_tolerance,
+            "data_shard_count": format.data_shard_count,
+            "parity_shard_count": format.parity_shard_count,
+            "index_data_shard_count": format.index_data_shard_count,
+            "index_parity_shard_count": format.index_parity_shard_count,
+            "index_root_data_shard_count": format.index_root_data_shard_count,
+            "index_root_parity_shard_count": format.index_root_parity_shard_count,
+            "block_size": format.block_size,
+            "chunk_size": format.chunk_size,
+            "envelope_target_size": format.envelope_target_size,
+            "has_dictionary": format.has_dictionary,
+        },
+    })
+}
+
 fn tzap_x509_root_auth_json(
     report: &zmanager_core::tzap_backend::TzapX509VerificationReport,
 ) -> Value {
@@ -2523,8 +2822,8 @@ fn is_rar_archive(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_extract_archive_entry,
-        zmanager_ffi_extract_archive_entry_with_options,
+        ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_create_tzap_self_signed_identity,
+        zmanager_ffi_extract_archive_entry, zmanager_ffi_extract_archive_entry_with_options,
         zmanager_ffi_extract_archive_entry_with_policy, zmanager_ffi_job_free,
         zmanager_ffi_job_is_finished, zmanager_ffi_list_archive,
         zmanager_ffi_list_archive_with_options, zmanager_ffi_plan_archive,
@@ -2539,6 +2838,7 @@ mod tests {
         zmanager_ffi_start_extract_archive_with_policy, zmanager_ffi_start_zip_create,
         zmanager_ffi_start_zip_create_encrypted, zmanager_ffi_start_zip_create_many,
         zmanager_ffi_start_zip_create_many_with_options, zmanager_ffi_string_free,
+        zmanager_ffi_tzap_public_metadata_summary,
     };
     use std::ffi::{CStr, CString};
     use std::fs;
@@ -2561,8 +2861,8 @@ mod tests {
     #[test]
     fn ffi_tzap_routing_recognizes_numbered_volumes() {
         assert!(super::is_tzap_archive(Path::new("project.tzap")));
-        assert!(super::is_tzap_archive(Path::new("project.tzap.000")));
-        assert!(super::is_tzap_archive(Path::new("project.tzap.001")));
+        assert!(super::is_tzap_archive(Path::new("project.vol000.tzap")));
+        assert!(super::is_tzap_archive(Path::new("project.vol001.tzap")));
 
         assert!(!super::is_tzap_archive(Path::new("project.tzap.tmp")));
         assert!(!super::is_tzap_archive(Path::new("project.zip.000")));
@@ -2575,6 +2875,55 @@ mod tests {
             super::tzap_default_volume_loss_tolerance(10 * 1024 * 1024),
             1
         );
+    }
+
+    #[test]
+    fn c_abi_create_tzap_self_signed_identity_writes_pkcs12_and_public_cert() {
+        let temp = test_root("zmanager-ffi-self-signed-identity");
+        fs::create_dir_all(&temp).unwrap();
+        let identity_path = temp.join("signer.p12");
+        let cert_path = temp.join("signer.pem");
+        let identity = CString::new(identity_path.to_string_lossy().as_ref()).unwrap();
+        let cert = CString::new(cert_path.to_string_lossy().as_ref()).unwrap();
+        let common_name = CString::new("Local Signing Identity").unwrap();
+        let password = CString::new("identity password").unwrap();
+
+        let response = c_string(unsafe {
+            zmanager_ffi_create_tzap_self_signed_identity(
+                identity.as_ptr(),
+                cert.as_ptr(),
+                common_name.as_ptr(),
+                password.as_ptr(),
+            )
+        });
+
+        assert!(response.contains("\"ok\":true"), "{response}");
+        assert!(identity_path.exists());
+        assert!(cert_path.exists());
+
+        let parsed_identity = openssl::pkcs12::Pkcs12::from_der(&fs::read(&identity_path).unwrap())
+            .unwrap()
+            .parse2("identity password")
+            .unwrap();
+        let identity_cert = parsed_identity.cert.unwrap();
+        let public_cert = openssl::x509::X509::from_pem(&fs::read(&cert_path).unwrap()).unwrap();
+        assert_eq!(
+            identity_cert
+                .subject_name()
+                .entries()
+                .next()
+                .unwrap()
+                .data()
+                .as_utf8()
+                .unwrap()
+                .to_string(),
+            "Local Signing Identity"
+        );
+        assert_eq!(
+            identity_cert.to_der().unwrap(),
+            public_cert.to_der().unwrap()
+        );
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
@@ -2664,7 +3013,7 @@ mod tests {
     fn c_abi_list_split_tzap_uses_tzap_backend_route() {
         let temp = test_root("zmanager-ffi-split-tzap-list-route");
         fs::create_dir_all(&temp).unwrap();
-        let archive = temp.join("project.tzap.000");
+        let archive = temp.join("project.vol000.tzap");
         fs::write(&archive, b"not a real tzap volume").unwrap();
         let archive = CString::new(archive.to_string_lossy().as_ref()).unwrap();
 
@@ -3374,8 +3723,8 @@ mod tests {
     }
 
     #[test]
-    fn c_abi_generic_create_many_creates_zero_key_tzap_without_password() {
-        let temp = test_root("zmanager-ffi-generic-tzap-zero-key");
+    fn c_abi_generic_create_many_creates_unencrypted_tzap_without_password() {
+        let temp = test_root("zmanager-ffi-generic-tzap-unencrypted");
         fs::create_dir_all(&temp).unwrap();
         fs::write(temp.join("file.txt"), b"payload").unwrap();
         let source = CString::new(temp.join("file.txt").to_string_lossy().as_ref()).unwrap();
@@ -3407,6 +3756,13 @@ mod tests {
         let listing = c_string(unsafe { zmanager_ffi_list_archive(destination.as_ptr()) });
         assert!(listing.contains("\"ok\":true"), "{listing}");
         assert!(listing.contains("\"path\":\"file.txt\""), "{listing}");
+
+        let summary =
+            c_string(unsafe { zmanager_ffi_tzap_public_metadata_summary(destination.as_ptr()) });
+        assert!(summary.contains("\"ok\":true"), "{summary}");
+        assert!(summary.contains("\"expected_volume_count\":1"), "{summary}");
+        assert!(summary.contains("\"present_volume_count\":1"), "{summary}");
+        assert!(summary.contains("\"password_required\":false"), "{summary}");
         fs::remove_dir_all(temp).unwrap();
     }
 

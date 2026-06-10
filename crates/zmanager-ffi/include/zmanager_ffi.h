@@ -158,7 +158,7 @@ ZManagerFfiStatus zmanager_ffi_start_archive_create_many_with_exclusions_and_adv
   bool replace_existing,
   bool encrypt_file_names,
   // Zero creates a normal archive. Non-zero splits ZIP into .z01/.zip sets,
-  // TZAP into .tzap.000 sets, and 7z into .7z.001 sets.
+  // TZAP into .vol000.tzap sets, and 7z into .7z.001 sets.
   uint64_t volume_size,
   const char *const *exclude_archive_paths,
   size_t exclude_archive_path_count,
@@ -277,6 +277,13 @@ char *zmanager_ffi_verify_tzap_x509_public_no_key(
   const char *const *trusted_ca_certs,
   size_t trusted_ca_cert_count,
   bool trusted_system_roots
+);
+char *zmanager_ffi_tzap_public_metadata_summary(const char *archive_path);
+char *zmanager_ffi_create_tzap_self_signed_identity(
+  const char *identity_p12,
+  const char *public_certificate,
+  const char *common_name,
+  const char *identity_password
 );
 char *zmanager_ffi_extract_archive_entry(
   const char *archive_path,

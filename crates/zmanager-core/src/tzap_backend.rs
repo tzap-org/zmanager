@@ -15,8 +15,9 @@ use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tzap_core::format::{
-    CRYPTO_HEADER_FIXED_LEN, FormatError, READER_MAX_ARGON2ID_M_COST_KIB,
-    READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST, VOLUME_HEADER_LEN,
+    AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FecAlgo, FormatError, KdfAlgo,
+    READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST,
+    VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
     ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
@@ -39,10 +40,12 @@ const DEFAULT_ARGON2_M_COST_KIB: u32 = 262_144;
 const DEFAULT_ARGON2_PARALLELISM: u32 = 4;
 const DEFAULT_ARGON2_SALT_LEN: usize = 16;
 const TZAP_EXTENSION: &str = "tzap";
-const TZAP_VOLUME_EXTENSION_WIDTH: usize = 3;
+const TZAP_EXTENSION_SUFFIX: &str = ".tzap";
+const TZAP_VOLUME_MARKER: &str = ".vol";
+const TZAP_VOLUME_INDEX_WIDTH: usize = 3;
 const TZAP_TEMP_EXTRACT_PREFIX: &str = ".zmanager-tzap-extract";
 const TZAP_TEMP_EXTRACT_ATTEMPTS: u32 = 100;
-const TZAP_INSECURE_ZERO_KEY: [u8; 32] = [0; 32];
+const TZAP_PLACEHOLDER_MASTER_KEY: [u8; 32] = [0; 32];
 
 /// Returns whether a path names a TZAP archive or one of its numbered volumes.
 #[must_use]
@@ -61,17 +64,7 @@ pub fn is_tzap_archive_path(path: &Path) -> bool {
 }
 
 fn is_tzap_volume_archive_file_name(name: &str) -> bool {
-    let Some((base_name, volume_index)) = name.rsplit_once('.') else {
-        return false;
-    };
-
-    volume_index.len() >= TZAP_VOLUME_EXTENSION_WIDTH
-        && volume_index
-            .chars()
-            .all(|character| character.is_ascii_digit())
-        && base_name
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(TZAP_EXTENSION))
+    parse_tzap_volume_file_name(name).is_some()
 }
 
 /// Options for `.tzap` creation.
@@ -100,8 +93,8 @@ pub struct TzapCreateOptions {
 pub enum TzapKeySource {
     /// Derive the archive master key from a passphrase with Argon2id.
     Passphrase(SecretString),
-    /// Use tzap's explicit no-secret convenience key: 32 zero bytes in raw-key mode.
-    InsecureZeroKey,
+    /// Create the archive without password-based encryption.
+    NoPassword,
 }
 
 impl TzapKeySource {
@@ -152,6 +145,34 @@ impl TzapX509TrustOptions {
     }
 }
 
+impl TzapPublicFormatSummary {
+    fn from_headers(volume_header: &VolumeHeader, crypto_header: &CryptoHeaderFixed) -> Self {
+        Self {
+            format_version: volume_header.format_version,
+            volume_format_revision: volume_header.volume_format_rev,
+            archive_uuid: volume_header.archive_uuid,
+            session_id: volume_header.session_id,
+            compression_algorithm: compression_algorithm_label(crypto_header.compression_algo),
+            encryption_algorithm: aead_algorithm_label(crypto_header.aead_algo),
+            recovery_algorithm: fec_algorithm_label(crypto_header.fec_algo),
+            key_derivation: kdf_algorithm_label(crypto_header.kdf_algo),
+            password_required: crypto_header.kdf_algo == KdfAlgo::Argon2id,
+            bit_rot_buffer_percentage: crypto_header.bit_rot_buffer_pct,
+            volume_loss_tolerance: crypto_header.volume_loss_tolerance,
+            data_shard_count: crypto_header.fec_data_shards,
+            parity_shard_count: crypto_header.fec_parity_shards,
+            index_data_shard_count: crypto_header.index_fec_data_shards,
+            index_parity_shard_count: crypto_header.index_fec_parity_shards,
+            index_root_data_shard_count: crypto_header.index_root_fec_data_shards,
+            index_root_parity_shard_count: crypto_header.index_root_fec_parity_shards,
+            block_size: crypto_header.block_size,
+            chunk_size: crypto_header.chunk_size,
+            envelope_target_size: crypto_header.envelope_target_size,
+            has_dictionary: crypto_header.has_dictionary != 0,
+        }
+    }
+}
+
 /// Successful X.509 `RootAuth` verification report.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapX509VerificationReport {
@@ -179,6 +200,85 @@ pub struct TzapX509VerificationReport {
     pub trust_anchor_subject: Option<String>,
     /// Root-auth verification diagnostics reported by `tzap`.
     pub diagnostics: Vec<String>,
+}
+
+/// Public, no-password `.tzap` archive metadata.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapPublicMetadataSummary {
+    /// Path that was requested by the caller.
+    pub requested_path: PathBuf,
+    /// Expected total volume count from the archive header.
+    pub expected_volume_count: usize,
+    /// Number of expected volumes found beside the selected path.
+    pub present_volume_count: usize,
+    /// Missing volume indexes in the expected set.
+    pub missing_volume_indices: Vec<usize>,
+    /// Total bytes across the expected volumes that are present.
+    pub total_size: u64,
+    /// Requested volume size embedded in the crypto header, when present.
+    pub expected_volume_size: u64,
+    /// Per-volume details for expected volumes that were found.
+    pub volumes: Vec<TzapPublicVolumeSummary>,
+    /// Header and recovery policy details.
+    pub format: TzapPublicFormatSummary,
+}
+
+/// Public details for one `.tzap` volume.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapPublicVolumeSummary {
+    /// Path of the volume file.
+    pub path: PathBuf,
+    /// Zero-based volume index encoded in the volume header.
+    pub index: usize,
+    /// Volume bytes on disk.
+    pub size: u64,
+}
+
+/// Public `.tzap` format and recovery policy details.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapPublicFormatSummary {
+    /// TZAP format version.
+    pub format_version: u16,
+    /// TZAP volume format revision.
+    pub volume_format_revision: u16,
+    /// Archive UUID encoded in every volume header.
+    pub archive_uuid: [u8; 16],
+    /// Session identifier encoded in every volume header.
+    pub session_id: [u8; 16],
+    /// Compression algorithm label.
+    pub compression_algorithm: &'static str,
+    /// Authenticated encryption algorithm label.
+    pub encryption_algorithm: &'static str,
+    /// Forward error correction algorithm label.
+    pub recovery_algorithm: &'static str,
+    /// Key derivation mode label.
+    pub key_derivation: &'static str,
+    /// Whether opening archive contents requires a password.
+    pub password_required: bool,
+    /// Per-object bit-rot recovery budget percentage.
+    pub bit_rot_buffer_percentage: u8,
+    /// Number of missing volumes the archive is intended to tolerate.
+    pub volume_loss_tolerance: u8,
+    /// Number of data shards per regular payload FEC class.
+    pub data_shard_count: u16,
+    /// Number of parity shards per regular payload FEC class.
+    pub parity_shard_count: u16,
+    /// Number of data shards per index FEC class.
+    pub index_data_shard_count: u16,
+    /// Number of parity shards per index FEC class.
+    pub index_parity_shard_count: u16,
+    /// Number of data shards per index-root FEC class.
+    pub index_root_data_shard_count: u16,
+    /// Number of parity shards per index-root FEC class.
+    pub index_root_parity_shard_count: u16,
+    /// Archive block size in bytes.
+    pub block_size: u32,
+    /// Compression chunk size in bytes.
+    pub chunk_size: u32,
+    /// Target plaintext envelope size in bytes.
+    pub envelope_target_size: u32,
+    /// Whether the archive has a compression dictionary object.
+    pub has_dictionary: bool,
 }
 
 /// `.tzap` creation report.
@@ -358,6 +458,9 @@ pub fn create_tzap_from_manifest_with_context(
     if !options.preserve_metadata {
         writer_options.closed_at_ns = 0;
     }
+    if matches!(options.key_source, TzapKeySource::NoPassword) {
+        writer_options.aead_algo = AeadAlgo::None;
+    }
 
     let (master_key, kdf_params) = create_key_material(&options.key_source)?;
     let destination = destination.as_ref();
@@ -437,9 +540,24 @@ fn tzap_output_volume_paths(destination: &Path, count: usize) -> Vec<PathBuf> {
 }
 
 fn tzap_output_volume_path(destination: &Path, zero_based_index: usize) -> PathBuf {
-    let mut path = destination.as_os_str().to_os_string();
-    path.push(format!(".{zero_based_index:0TZAP_VOLUME_EXTENSION_WIDTH$}"));
-    PathBuf::from(path)
+    let Some(file_name) = destination.file_name().and_then(|name| name.to_str()) else {
+        let mut path = destination.as_os_str().to_os_string();
+        path.push(format!(
+            "{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}"
+        ));
+        return PathBuf::from(path);
+    };
+    let base_name = tzap_multi_volume_base_name(file_name);
+    let volume_file_name = format!(
+        "{base_name}{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}"
+    );
+    match destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        Some(parent) => parent.join(volume_file_name),
+        None => PathBuf::from(volume_file_name),
+    }
 }
 
 fn ensure_tzap_destinations_available(
@@ -533,6 +651,7 @@ fn existing_tzap_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, TzapEr
     let Some(destination_file_name) = destination.file_name().and_then(|name| name.to_str()) else {
         return Ok(Vec::new());
     };
+    let destination_base_name = tzap_multi_volume_base_name(destination_file_name);
 
     let mut paths = Vec::new();
     for entry in fs::read_dir(parent).map_err(|source| TzapError::Io {
@@ -547,24 +666,51 @@ fn existing_tzap_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, TzapEr
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if is_tzap_volume_file_name(file_name, destination_file_name) {
-            paths.push(entry.path());
+        if let Some(pattern) = parse_tzap_volume_file_name(file_name)
+            && pattern.base == destination_base_name
+        {
+            paths.push((pattern.volume_index, entry.path()));
         }
     }
-    paths.sort();
-    Ok(paths)
+    paths.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    Ok(paths.into_iter().map(|(_, path)| path).collect())
 }
 
-fn is_tzap_volume_file_name(file_name: &str, destination_file_name: &str) -> bool {
-    let Some(suffix) = file_name.strip_prefix(destination_file_name) else {
-        return false;
-    };
-    let Some(number) = suffix.strip_prefix('.') else {
-        return false;
-    };
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct TzapVolumeFileName {
+    base: String,
+    volume_index: usize,
+}
 
-    number.len() >= TZAP_VOLUME_EXTENSION_WIDTH
-        && number.chars().all(|character| character.is_ascii_digit())
+fn parse_tzap_volume_file_name(file_name: &str) -> Option<TzapVolumeFileName> {
+    let stem = strip_ascii_case_insensitive_suffix(file_name, TZAP_EXTENSION_SUFFIX)?;
+    let (base, digits) = stem.rsplit_once(TZAP_VOLUME_MARKER)?;
+    if base.is_empty() || digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(TzapVolumeFileName {
+        base: base.to_owned(),
+        volume_index: digits.parse().ok()?,
+    })
+}
+
+fn tzap_multi_volume_base_name(file_name: &str) -> String {
+    strip_ascii_case_insensitive_suffix(file_name, TZAP_EXTENSION_SUFFIX)
+        .unwrap_or(file_name)
+        .to_owned()
+}
+
+fn strip_ascii_case_insensitive_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    if value.len() < suffix.len() {
+        return None;
+    }
+    let prefix_len = value.len() - suffix.len();
+    let candidate = value.get(prefix_len..)?;
+    if !candidate.eq_ignore_ascii_case(suffix) {
+        return None;
+    }
+    value.get(..prefix_len)
 }
 
 fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> TzapError {
@@ -791,8 +937,8 @@ pub fn list_tzap_with_password(
 
 /// Lists `.tzap` archive entries with an optional passphrase.
 ///
-/// When `password` is [`None`], the archive is opened with tzap's explicit
-/// no-secret all-zero raw key.
+/// When `password` is [`None`], unencrypted archives are opened without a key,
+/// and legacy no-secret raw-key archives are opened with tzap's all-zero key.
 ///
 /// # Errors
 ///
@@ -827,8 +973,8 @@ pub fn extract_tzap_with_password(
 
 /// Extracts `.tzap` entries with an optional passphrase.
 ///
-/// When `password` is [`None`], the archive is opened with tzap's explicit
-/// no-secret all-zero raw key.
+/// When `password` is [`None`], unencrypted archives are opened without a key,
+/// and legacy no-secret raw-key archives are opened with tzap's all-zero key.
 ///
 /// # Errors
 ///
@@ -922,8 +1068,8 @@ pub fn test_tzap_with_password_filter_and_x509_trust(
 
 /// Tests `.tzap` archive readability and integrity with an optional passphrase.
 ///
-/// When `password` is [`None`], the archive is opened with tzap's explicit
-/// no-secret all-zero raw key.
+/// When `password` is [`None`], unencrypted archives are opened without a key,
+/// and legacy no-secret raw-key archives are opened with tzap's all-zero key.
 ///
 /// # Errors
 ///
@@ -1030,6 +1176,93 @@ pub fn verify_tzap_x509_public_no_key(
         &verification,
         report,
     ))
+}
+
+/// Reads public `.tzap` metadata without decrypting archive contents.
+///
+/// This is intentionally limited to header and volume-level details suitable
+/// for Finder/Quick Look surfaces where no password is available.
+///
+/// # Errors
+///
+/// Returns an error when no TZAP volume can be found, the public headers are
+/// malformed, sibling volumes do not belong to the same archive, or filesystem
+/// metadata cannot be read.
+pub fn summarize_tzap_public_metadata(
+    archive_path: impl AsRef<Path>,
+) -> Result<TzapPublicMetadataSummary, TzapError> {
+    let requested_path = archive_path.as_ref();
+    let discovered_volume_paths = discover_tzap_input_volume_paths(requested_path);
+    let first_volume_path = discovered_volume_paths
+        .iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            io_error(
+                requested_path,
+                io::ErrorKind::NotFound,
+                "no TZAP input volumes found",
+            )
+        })?;
+    let first_header = read_public_tzap_header(first_volume_path)?;
+    let expected_volume_count =
+        usize::try_from(first_header.volume_header.stripe_width).map_err(|_| {
+            TzapError::Format(FormatError::InvalidArchive("TZAP volume count overflow"))
+        })?;
+    let expected_paths =
+        expected_tzap_input_volume_paths(requested_path, first_volume_path, expected_volume_count);
+
+    let mut volumes = Vec::new();
+    let mut missing_volume_indices = Vec::new();
+    let mut total_size = 0u64;
+
+    for (expected_index, volume_path) in expected_paths.iter().enumerate() {
+        if !volume_path.exists() {
+            missing_volume_indices.push(expected_index);
+            continue;
+        }
+
+        let metadata = fs::metadata(volume_path).map_err(|source| TzapError::Io {
+            path: volume_path.clone(),
+            source,
+        })?;
+        let header = read_public_tzap_header(volume_path)?;
+        validate_public_tzap_volume_header(&first_header.volume_header, &header.volume_header)?;
+
+        let index = usize::try_from(header.volume_header.volume_index).map_err(|_| {
+            TzapError::Format(FormatError::InvalidArchive("TZAP volume index overflow"))
+        })?;
+        if index != expected_index {
+            return Err(TzapError::Format(FormatError::InvalidArchive(
+                "TZAP volume index does not match expected path",
+            )));
+        }
+        total_size = total_size
+            .checked_add(metadata.len())
+            .ok_or(TzapError::Format(FormatError::InvalidArchive(
+                "TZAP volume size overflow",
+            )))?;
+        volumes.push(TzapPublicVolumeSummary {
+            path: volume_path.clone(),
+            index,
+            size: metadata.len(),
+        });
+    }
+
+    volumes.sort_by_key(|volume| volume.index);
+
+    Ok(TzapPublicMetadataSummary {
+        requested_path: requested_path.to_path_buf(),
+        expected_volume_count,
+        present_volume_count: volumes.len(),
+        missing_volume_indices,
+        total_size,
+        expected_volume_size: first_header.crypto_header.expected_volume_size,
+        volumes,
+        format: TzapPublicFormatSummary::from_headers(
+            &first_header.volume_header,
+            &first_header.crypto_header,
+        ),
+    })
 }
 
 /// Copies selected regular `.tzap` members to a writer.
@@ -1395,11 +1628,11 @@ fn open_tzap_archive(
     })?;
     let kdf_params = read_kdf_params_from_path(first_volume)?;
     let master_key = match (&kdf_params, password) {
+        (KdfParams::None, _) | (KdfParams::Raw, None | Some("")) => placeholder_master_key()?,
         (KdfParams::Argon2id { .. }, Some(password)) => {
             MasterKey::derive_from_passphrase(&kdf_params, password)?
         }
         (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
-        (KdfParams::Raw, None | Some("")) => insecure_zero_master_key()?,
         (KdfParams::Raw, Some(_)) => {
             return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
         }
@@ -1425,18 +1658,17 @@ fn open_tzap_archive(
 }
 
 pub(crate) fn discover_tzap_input_volume_paths(archive_path: &Path) -> Vec<PathBuf> {
-    if let Some(base_path) = tzap_base_path_from_volume_path(archive_path) {
-        let volume_paths = contiguous_tzap_volume_paths(&base_path);
-        if !volume_paths.is_empty() {
-            return volume_paths;
-        }
+    if let Some(volume_paths) = discover_tzap_sibling_volume_paths(archive_path)
+        && !volume_paths.is_empty()
+    {
+        return volume_paths;
     }
 
     if archive_path.exists() {
         return vec![archive_path.to_path_buf()];
     }
 
-    let volume_paths = contiguous_tzap_volume_paths(archive_path);
+    let volume_paths = discover_tzap_volume_paths_for_destination(archive_path);
     if !volume_paths.is_empty() {
         return volume_paths;
     }
@@ -1444,34 +1676,113 @@ pub(crate) fn discover_tzap_input_volume_paths(archive_path: &Path) -> Vec<PathB
     vec![archive_path.to_path_buf()]
 }
 
-fn tzap_base_path_from_volume_path(path: &Path) -> Option<PathBuf> {
+fn tzap_destination_path_from_volume_path(path: &Path) -> Option<PathBuf> {
     let file_name = path.file_name()?.to_str()?;
-    let (base_name, volume_index) = file_name.rsplit_once('.')?;
-    if volume_index.len() < TZAP_VOLUME_EXTENSION_WIDTH
-        || !volume_index
-            .chars()
-            .all(|character| character.is_ascii_digit())
-    {
-        return None;
-    }
+    let pattern = parse_tzap_volume_file_name(file_name)?;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    Some(parent.join(base_name))
+    Some(parent.join(format!("{}{TZAP_EXTENSION_SUFFIX}", pattern.base)))
 }
 
-fn contiguous_tzap_volume_paths(base_path: &Path) -> Vec<PathBuf> {
+fn discover_tzap_sibling_volume_paths(path: &Path) -> Option<Vec<PathBuf>> {
+    let file_name = path.file_name()?.to_str()?;
+    let pattern = parse_tzap_volume_file_name(file_name)?;
+    Some(discover_tzap_volume_paths_by_base(
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        &pattern.base,
+    ))
+}
+
+fn discover_tzap_volume_paths_for_destination(destination: &Path) -> Vec<PathBuf> {
+    let Some(file_name) = destination.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let base_name = tzap_multi_volume_base_name(file_name);
+    discover_tzap_volume_paths_by_base(
+        destination.parent().unwrap_or_else(|| Path::new(".")),
+        &base_name,
+    )
+}
+
+fn discover_tzap_volume_paths_by_base(parent: &Path, base_name: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+
     let mut paths = Vec::new();
-    for index in 0usize.. {
-        let path = tzap_output_volume_path(base_path, index);
-        if !path.exists() {
-            break;
+    for entry in entries.filter_map(Result::ok) {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if let Some(candidate) = parse_tzap_volume_file_name(file_name)
+            && candidate.base == base_name
+        {
+            paths.push((candidate.volume_index, entry.path()));
         }
-        paths.push(path);
     }
-    paths
+    paths.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    paths.into_iter().map(|(_, path)| path).collect()
 }
 
-fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
+#[derive(Debug, Clone)]
+struct PublicTzapHeader {
+    volume_header: VolumeHeader,
+    crypto_header: CryptoHeaderFixed,
+}
+
+fn expected_tzap_input_volume_paths(
+    requested_path: &Path,
+    first_volume_path: &Path,
+    expected_volume_count: usize,
+) -> Vec<PathBuf> {
+    if expected_volume_count <= 1 {
+        return vec![first_volume_path.to_path_buf()];
+    }
+
+    let base_path = tzap_destination_path_from_volume_path(first_volume_path)
+        .or_else(|| tzap_destination_path_from_volume_path(requested_path))
+        .unwrap_or_else(|| {
+            if first_volume_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case(TZAP_EXTENSION))
+            {
+                first_volume_path.to_path_buf()
+            } else {
+                requested_path.to_path_buf()
+            }
+        });
+
+    (0..expected_volume_count)
+        .map(|index| tzap_output_volume_path(&base_path, index))
+        .collect()
+}
+
+fn read_public_tzap_header(path: &Path) -> Result<PublicTzapHeader, TzapError> {
+    let (volume_header, crypto_header_bytes) = read_tzap_crypto_header_bytes(path)?;
+    let fixed_bytes =
+        crypto_header_bytes
+            .get(..CRYPTO_HEADER_FIXED_LEN)
+            .ok_or(FormatError::InvalidLength {
+                structure: "CryptoHeaderFixed",
+                expected: CRYPTO_HEADER_FIXED_LEN,
+                actual: crypto_header_bytes.len(),
+            })?;
+    let crypto_header = CryptoHeaderFixed::parse(fixed_bytes, volume_header.crypto_header_length)?;
+    if crypto_header.stripe_width != volume_header.stripe_width {
+        return Err(TzapError::Format(FormatError::InvalidArchive(
+            "VolumeHeader and CryptoHeader stripe_width differ",
+        )));
+    }
+
+    Ok(PublicTzapHeader {
+        volume_header,
+        crypto_header,
+    })
+}
+
+fn read_tzap_crypto_header_bytes(path: &Path) -> Result<(VolumeHeader, Vec<u8>), TzapError> {
     let mut file = File::open(path).map_err(|source| TzapError::Io {
         path: path.to_path_buf(),
         source,
@@ -1496,6 +1807,41 @@ fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
             path: path.to_path_buf(),
             source,
         })?;
+    Ok((volume_header, crypto_header_bytes))
+}
+
+fn validate_public_tzap_volume_header(
+    first: &VolumeHeader,
+    current: &VolumeHeader,
+) -> Result<(), TzapError> {
+    if first.archive_uuid != current.archive_uuid {
+        return Err(TzapError::Format(FormatError::InvalidArchive(
+            "TZAP volume archive UUID mismatch",
+        )));
+    }
+    if first.session_id != current.session_id {
+        return Err(TzapError::Format(FormatError::InvalidArchive(
+            "TZAP volume session ID mismatch",
+        )));
+    }
+    if first.stripe_width != current.stripe_width {
+        return Err(TzapError::Format(FormatError::InvalidArchive(
+            "TZAP volume count mismatch",
+        )));
+    }
+    if first.format_version != current.format_version
+        || first.volume_format_rev != current.volume_format_rev
+    {
+        return Err(TzapError::Format(FormatError::InvalidArchive(
+            "TZAP volume format mismatch",
+        )));
+    }
+
+    Ok(())
+}
+
+fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
+    let (volume_header, crypto_header_bytes) = read_tzap_crypto_header_bytes(path)?;
     let fixed_bytes =
         crypto_header_bytes
             .get(..CRYPTO_HEADER_FIXED_LEN)
@@ -1513,6 +1859,38 @@ fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
     let crypto_header =
         CryptoHeader::parse(&crypto_header_bytes, volume_header.crypto_header_length)?;
     Ok(crypto_header.kdf_params)
+}
+
+const fn compression_algorithm_label(algorithm: CompressionAlgo) -> &'static str {
+    match algorithm {
+        CompressionAlgo::None => "none",
+        CompressionAlgo::ZstdFramed => "zstd",
+    }
+}
+
+const fn aead_algorithm_label(algorithm: AeadAlgo) -> &'static str {
+    match algorithm {
+        AeadAlgo::None => "none",
+        AeadAlgo::AesGcmSiv256 => "aes-gcm-siv-256",
+        AeadAlgo::XChaCha20Poly1305 => "xchacha20-poly1305",
+        AeadAlgo::AesGcm256 => "aes-gcm-256",
+    }
+}
+
+const fn fec_algorithm_label(algorithm: FecAlgo) -> &'static str {
+    match algorithm {
+        FecAlgo::None => "none",
+        FecAlgo::ReedSolomonGF16 => "reed-solomon-gf16",
+        FecAlgo::Wirehair => "wirehair",
+    }
+}
+
+const fn kdf_algorithm_label(algorithm: KdfAlgo) -> &'static str {
+    match algorithm {
+        KdfAlgo::None => "none",
+        KdfAlgo::Raw => "raw",
+        KdfAlgo::Argon2id => "argon2id",
+    }
 }
 
 fn commit_extracted_file(
@@ -1630,12 +2008,12 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
                 MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
             Ok((master_key, kdf_params))
         }
-        TzapKeySource::InsecureZeroKey => Ok((insecure_zero_master_key()?, KdfParams::Raw)),
+        TzapKeySource::NoPassword => Ok((placeholder_master_key()?, KdfParams::None)),
     }
 }
 
-fn insecure_zero_master_key() -> Result<MasterKey, TzapError> {
-    MasterKey::from_raw_key(&TZAP_INSECURE_ZERO_KEY).map_err(Into::into)
+fn placeholder_master_key() -> Result<MasterKey, TzapError> {
+    MasterKey::from_raw_key(&TZAP_PLACEHOLDER_MASTER_KEY).map_err(Into::into)
 }
 
 fn extraction_kind_from_tzap_entry(
@@ -1907,7 +2285,8 @@ mod tests {
         TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
         create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
         is_tzap_archive_path, list_tzap_with_optional_password, list_tzap_with_password,
-        test_tzap_with_password_filter_and_x509_trust, verify_tzap_x509_public_no_key,
+        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
+        verify_tzap_x509_public_no_key,
     };
     use crate::jobs::{CancellationToken, JobContext};
     use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
@@ -1929,29 +2308,28 @@ mod tests {
     #[test]
     fn recognizes_tzap_base_and_numbered_volumes() {
         assert!(is_tzap_archive_path(Path::new("project.tzap")));
-        assert!(is_tzap_archive_path(Path::new("project.tzap.000")));
-        assert!(is_tzap_archive_path(Path::new("project.tzap.001")));
-        assert!(is_tzap_archive_path(Path::new("PROJECT.TZAP.000")));
+        assert!(is_tzap_archive_path(Path::new("project.vol000.tzap")));
+        assert!(is_tzap_archive_path(Path::new("project.vol001.tzap")));
+        assert!(is_tzap_archive_path(Path::new("PROJECT.vol000.TZAP")));
 
         assert!(!is_tzap_archive_path(Path::new("project.tzap.tmp")));
-        assert!(!is_tzap_archive_path(Path::new("project.tzap.00a")));
         assert!(!is_tzap_archive_path(Path::new("project.zip.000")));
     }
 
     #[test]
     fn selected_extract_uses_seekable_core_for_numbered_volumes() {
         let temp = TestDir::new("tzap_seekable_selected");
-        let base_path = temp.path("sample.tzap");
         let large = vec![7u8; 1024 * 1024];
         let archive = create_test_tzap_archive(&[
             RegularFile::new("large.bin", &large),
             RegularFile::new("nested/small.txt", b"small target"),
         ]);
         for (index, volume) in archive.volumes.iter().enumerate() {
-            fs::write(temp.path(format!("sample.tzap.{index:03}")), volume).unwrap();
+            fs::write(temp.path(format!("sample.vol{index:03}.tzap")), volume).unwrap();
         }
 
-        let listing = list_tzap_with_password(&base_path, "secret").unwrap();
+        let selected_volume_path = temp.path("sample.vol001.tzap");
+        let listing = list_tzap_with_password(&selected_volume_path, "secret").unwrap();
         assert!(
             listing
                 .entries
@@ -1961,7 +2339,7 @@ mod tests {
 
         let destination = temp.path("out/selected.txt");
         let written = extract_tzap_file_to_destination(
-            &base_path,
+            &selected_volume_path,
             "secret",
             "nested/small.txt",
             &destination,
@@ -1974,8 +2352,32 @@ mod tests {
     }
 
     #[test]
-    fn create_tzap_without_password_uses_zero_key_raw_mode() {
-        let temp = TestDir::new("tzap_zero_key_create");
+    fn public_metadata_summary_reads_numbered_volume_headers_without_password() {
+        let temp = TestDir::new("tzap_public_metadata");
+        let base_path = temp.path("sample.tzap");
+        let archive = create_test_tzap_archive(&[RegularFile::new("hello.txt", b"hello")]);
+        for (index, volume) in archive.volumes.iter().enumerate() {
+            fs::write(temp.path(format!("sample.vol{index:03}.tzap")), volume).unwrap();
+        }
+
+        let summary = summarize_tzap_public_metadata(&base_path).unwrap();
+
+        assert_eq!(summary.expected_volume_count, 4);
+        assert_eq!(summary.present_volume_count, 4);
+        assert_eq!(summary.missing_volume_indices, Vec::<usize>::new());
+        assert_eq!(summary.volumes.len(), 4);
+        assert!(summary.format.password_required);
+        assert_eq!(summary.format.volume_loss_tolerance, 0);
+        assert_eq!(summary.format.bit_rot_buffer_percentage, 0);
+        assert_eq!(
+            summary.total_size,
+            archive.volumes.iter().map(Vec::len).sum::<usize>() as u64
+        );
+    }
+
+    #[test]
+    fn create_tzap_without_password_uses_unencrypted_mode() {
+        let temp = TestDir::new("tzap_unencrypted_create");
         let source = temp.path("payload.txt");
         let archive = temp.path("public.tzap");
         fs::write(&source, b"public payload").unwrap();
@@ -2000,7 +2402,7 @@ mod tests {
             warnings: Vec::new(),
         };
         let options = TzapCreateOptions {
-            key_source: TzapKeySource::InsecureZeroKey,
+            key_source: TzapKeySource::NoPassword,
             level: 1,
             preserve_metadata: true,
             replace_existing: false,
@@ -2019,6 +2421,67 @@ mod tests {
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 1);
         assert_eq!(listing.entries[0].path, "payload.txt");
+
+        let summary = summarize_tzap_public_metadata(&archive).unwrap();
+        assert_eq!(summary.format.encryption_algorithm, "none");
+        assert_eq!(summary.format.key_derivation, "none");
+        assert!(!summary.format.password_required);
+    }
+
+    #[test]
+    fn create_split_tzap_uses_os_friendly_volume_names() {
+        let temp = TestDir::new("tzap_split_volume_names");
+        let source = temp.path("payload.bin");
+        let archive = temp.path("public.tzap");
+        let payload = deterministic_bytes(3 * 1024 * 1024);
+        fs::write(&source, &payload).unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.bin".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: payload.len() as u64,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: payload.len() as u64,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: Some(1024 * 1024),
+            recovery_percentage: 0,
+            volume_loss_tolerance: 1,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        let report =
+            create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+                .unwrap();
+
+        assert!(report.volume_count > 1);
+        assert!(!archive.exists());
+        assert!(temp.path("public.vol000.tzap").exists());
+        assert!(temp.path("public.vol001.tzap").exists());
+
+        let selected_volume = temp.path("public.vol001.tzap");
+        let listing = list_tzap_with_optional_password(&selected_volume, None).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.bin");
     }
 
     #[test]
@@ -2445,6 +2908,15 @@ mod tests {
         let mut serial = BigNum::new().unwrap();
         serial.rand(159, MsbOption::MAYBE_ZERO, false).unwrap();
         serial.to_asn1_integer().unwrap()
+    }
+
+    fn deterministic_bytes(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|index| {
+                u8::try_from((index.wrapping_mul(31).wrapping_add(17)) % 251)
+                    .expect("deterministic byte is reduced below u8::MAX")
+            })
+            .collect()
     }
 
     struct TestDir {

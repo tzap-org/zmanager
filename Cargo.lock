@@ -229,12 +229,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
 name = "bzip2"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -548,7 +542,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -713,12 +707,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hkdf"
@@ -1159,7 +1147,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1340,7 +1328,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1418,21 +1406,18 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "tzap-core"
-version = "0.1.1"
-source = "git+https://github.com/frankmanzhu/tzap?rev=7cb4f8194fe165f777098b6a74997cd7762824af#7cb4f8194fe165f777098b6a74997cd7762824af"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73293baa31a218b0f583f3eabafa4ff5bfb50c3be2de57bbb5055610f5863776"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
  "argon2",
- "byteorder",
  "chacha20poly1305",
  "crc32c",
- "hex",
  "hkdf",
  "hmac 0.12.1",
- "rand",
  "sha2 0.10.9",
- "subtle",
  "tar",
  "tempfile",
  "thiserror",
@@ -1445,8 +1430,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.1.0"
-source = "git+https://github.com/frankmanzhu/tzap?rev=7cb4f8194fe165f777098b6a74997cd7762824af#7cb4f8194fe165f777098b6a74997cd7762824af"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c36acc1b339dddd5787a20668001f4dfd4b110844a02bfd997974e5d13014256"
 dependencies = [
  "ed25519-dalek",
  "openssl",
@@ -1924,6 +1910,7 @@ dependencies = [
 name = "zmanager-ffi"
 version = "1.0.1"
 dependencies = [
+ "openssl",
  "serde_json",
  "zmanager-core",
 ]

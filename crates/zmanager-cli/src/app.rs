@@ -145,7 +145,7 @@ Archive format and compression:
       --solid                    Use solid 7z mode
       --no-solid                 Disable solid 7z mode
       --volume-size <size>       Split ZIP/TZAP/7z output; accepts bytes or k/m/g/t suffixes
-                                  ZIP writes .z01/.zip sets; TZAP writes .tzap.000 sets; 7z writes .7z.001 sets
+                                  ZIP writes .z01/.zip sets; TZAP writes .vol000.tzap sets; 7z writes .7z.001 sets
 
 Paths, links, and metadata:
   -j, --junk-paths               Store basenames only; fail if flattened names collide
@@ -165,7 +165,7 @@ Output and safety:
       --signing-private-key <file>
                                   Private key for --signing-cert
       --signing-chain <file>     Extra intermediate certificate chain for --signing-cert
-  TZAP without a password uses tzap's no-secret all-zero key mode.
+  TZAP without a password uses tzap's unencrypted mode.
   Use --encrypt or --password-stdin when confidentiality is required.
 ";
 
@@ -1743,7 +1743,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         ArchiveFormat::Tzap => {
             let uses_secret_key = password.is_some();
             let key_source = password.map_or(
-                zmanager_core::tzap_backend::TzapKeySource::InsecureZeroKey,
+                zmanager_core::tzap_backend::TzapKeySource::NoPassword,
                 zmanager_core::tzap_backend::TzapKeySource::Passphrase,
             );
             let options = zmanager_core::tzap_backend::TzapCreateOptions {
