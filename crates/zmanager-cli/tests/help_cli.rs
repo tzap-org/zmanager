@@ -775,11 +775,13 @@ fn linux_release_artifacts_are_static_tarballs() {
 
 #[test]
 fn libarchive_cmake_vcpkg_toolchain_is_windows_msvc_only() {
+    let build_rs = normalize_newlines(LIBARCHIVE_SYS_BUILD_RS);
+
     for required in [
         "if !target_uses_vcpkg(target) {\n        return;\n    }",
         "fn target_uses_vcpkg(target: &str) -> bool {\n    target.contains(\"windows\") && target.contains(\"msvc\")\n}",
     ] {
-        assert_contains(LIBARCHIVE_SYS_BUILD_RS, required);
+        assert_contains(&build_rs, required);
     }
 }
 
