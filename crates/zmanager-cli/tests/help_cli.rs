@@ -14,7 +14,7 @@ const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 const PACKAGE_PREVIEW_WORKFLOW: &str =
     include_str!("../../../.github/workflows/package-preview.yml");
-const RELEASE_NOTES_1_0_1: &str = include_str!("../../../docs/release-notes/1.0.1.md");
+const RELEASE_NOTES_1_0_3: &str = include_str!("../../../docs/release-notes/1.0.3.md");
 const LIBARCHIVE_SYS_BUILD_RS: &str =
     include_str!("../../../crates/zmanager-libarchive-sys/build.rs");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
@@ -639,7 +639,7 @@ fn package_channel_metadata_uses_release_checksums() {
 
 #[test]
 fn release_validation_artifacts_are_declared() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.1");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "1.0.3");
 
     for required in [
         "*.deps.txt",
@@ -665,14 +665,14 @@ fn release_validation_artifacts_are_declared() {
     }
 
     for required in [
-        "Z-Manager CLI 1.0.1 Release Notes",
+        "Z-Manager CLI 1.0.3 Release Notes",
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",
         "zm-x86_64-unknown-linux-musl.tar.gz",
         "zm-x86_64-pc-windows-msvc.zip",
     ] {
-        assert_contains(RELEASE_NOTES_1_0_1, required);
+        assert_contains(RELEASE_NOTES_1_0_3, required);
     }
 }
 

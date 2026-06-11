@@ -22,8 +22,8 @@ Verify checksums before installing.
 Unix:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zm-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/zm-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
@@ -88,8 +88,8 @@ Linux release archives are statically linked musl builds. They are intended to
 run as a single executable without installing extra runtime packages.
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/SHA256SUMS
+curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm --version
@@ -111,7 +111,7 @@ elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.2 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_VERSION=v1.0.3 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 If no matching binary exists, the installer falls back to building from source.
@@ -131,8 +131,8 @@ generate it locally from release artifacts:
 
 ```sh
 scripts/generate-package-metadata.sh \
-  v1.0.2 \
-  https://github.com/frankmanzhu/zmanager/releases/download/v1.0.2 \
+  v1.0.3 \
+  https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3 \
   dist/SHA256SUMS \
   dist/package-metadata
 ```
@@ -146,7 +146,7 @@ After release metadata is generated, validate the manifests before submitting
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.2
+winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.3
 ```
 
 After the manifest is accepted, users install with:
@@ -160,7 +160,7 @@ formula, so installer hashes should not be edited by hand.
 
 ## Linux Channels
 
-As of 1.0.2, the supported Linux path is direct tarball installation with checksum
+As of 1.0.3, the supported Linux path is direct tarball installation with checksum
 verification. `.deb`, `.rpm`, and repository maintenance can be added later if
 there is enough demand to justify owning distro-specific update flows.
 

@@ -40,7 +40,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 3. Tag the CLI repository:
 
    ```sh
-   git tag v1.0.1
+   git tag v1.0.3
    git push origin main --tags
    ```
 
@@ -57,8 +57,8 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 
    ```sh
    scripts/generate-package-metadata.sh \
-     v1.0.1 \
-     https://github.com/frankmanzhu/zmanager/releases/download/v1.0.1 \
+     v1.0.3 \
+     https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3 \
      dist/SHA256SUMS \
      dist/package-metadata
    ```
@@ -77,7 +77,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 7. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.1
+   winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.3
    ```
 
 8. Validate the Linux static tarballs on Ubuntu 22.04 and 24.04:
@@ -94,6 +94,6 @@ do not hand-edit release asset hashes.
 
 ## Release Notes
 
-Use [docs/release-notes/1.0.1.md](docs/release-notes/1.0.1.md) as the release
-notes source for the `v1.0.1` GitHub release. Update the versioned file first
+Use [docs/release-notes/1.0.3.md](docs/release-notes/1.0.3.md) as the release
+notes source for the `v1.0.3` GitHub release. Update the versioned file first
 when preparing a later release.
