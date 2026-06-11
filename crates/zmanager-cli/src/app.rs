@@ -20,7 +20,7 @@ const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
 const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or quit";
 
 const USAGE: &str = "\
-Z-Manager archive utility
+ZManager archive utility
 
 Usage:
   zm [options] <command>

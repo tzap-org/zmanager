@@ -1,4 +1,4 @@
-# Z-Manager CLI
+# ZManager CLI
 
 [![CI](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml/badge.svg)](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml)
 [![Release](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml/badge.svg)](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
@@ -10,7 +10,7 @@
 simple: extract almost anything safely, and create new archives only with
 modern, practical formats.
 
-The CLI is the open-source part of Z-Manager. It shares the Rust archive engine
+The CLI is the open-source part of ZManager. It shares the Rust archive engine
 with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
@@ -131,9 +131,9 @@ subcommands are there for readable scripts.
   duplicate normalized paths, case collisions, and accidental overwrite traps.
 - Provides both classic archive flags and readable subcommands.
 
-## Why Z-Manager
+## Why ZManager
 
-Z-Manager treats extraction and creation differently:
+ZManager treats extraction and creation differently:
 
 - **Extract broadly.** Open old, obscure, downloaded, package, mobile, and
   developer archives without knowing which backend normally handles them.

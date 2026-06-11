@@ -665,7 +665,7 @@ fn release_validation_artifacts_are_declared() {
     }
 
     for required in [
-        "Z-Manager CLI 1.0.3 Release Notes",
+        "ZManager CLI 1.0.3 Release Notes",
         "Known Backend Limits",
         "SHA256SUMS",
         "zm-aarch64-apple-darwin.tar.gz",

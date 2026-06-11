@@ -1,4 +1,4 @@
-//! Core engine primitives for Z-Manager.
+//! Core engine primitives for ZManager.
 
 mod atomic_file;
 

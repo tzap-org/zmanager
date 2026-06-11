@@ -235,7 +235,7 @@ def render_notices(
         "The referenced license files are shipped beside this notice under",
         "`third-party-licenses/`.",
         "",
-        "## Z-Manager",
+        "## ZManager",
         "",
         "- License: Apache-2.0",
         "- License file: LICENSE",

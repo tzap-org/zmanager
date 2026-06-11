@@ -17,7 +17,7 @@ readonly DEBIAN_STANDARDS_VERSION="4.6.2"
 readonly MAINTAINER="Frank Zhu <frankmanzhu@users.noreply.github.com>"
 readonly HOMEPAGE="https://github.com/frankmanzhu/zmanager"
 readonly DESCRIPTION_SHORT="Fast, safe archive utility"
-readonly DESCRIPTION_LONG="Z-Manager CLI extracts broad real-world archive formats safely and creates focused modern ZIP, TAR.ZST, and 7z archives."
+readonly DESCRIPTION_LONG="ZManager CLI extracts broad real-world archive formats safely and creates focused modern ZIP, TAR.ZST, and 7z archives."
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly STAGE="$(mktemp -d "${TMPDIR:-/tmp}/zmanager-deb.XXXXXX")"
 readonly SHLIBS_WORK="$(mktemp -d "${TMPDIR:-/tmp}/zmanager-shlibs.XXXXXX")"
@@ -128,7 +128,7 @@ write_copyright_file() {
   local doc_dir=$1
   cat > "$doc_dir/copyright" <<'COPYRIGHT'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: Z-Manager CLI
+Upstream-Name: ZManager CLI
 Source: https://github.com/frankmanzhu/zmanager
 
 Files: *
@@ -153,7 +153,7 @@ write_changelog_file() {
   cat > "$doc_dir/changelog.Debian" <<CHANGELOG
 $PACKAGE_NAME ($deb_version) unstable; urgency=medium
 
-  * Release Z-Manager CLI $VERSION.
+  * Release ZManager CLI $VERSION.
 
  -- $MAINTAINER  $changelog_date
 CHANGELOG

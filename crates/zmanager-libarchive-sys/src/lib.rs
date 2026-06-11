@@ -1,4 +1,4 @@
-//! Narrow raw FFI declarations for the libarchive APIs used by Z-Manager.
+//! Narrow raw FFI declarations for the libarchive APIs used by ZManager.
 //!
 //! This is intentionally not a complete libarchive binding. Keep additions
 //! close to actual call sites in `zmanager-libarchive`.

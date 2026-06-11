@@ -10,7 +10,7 @@ exposes a small C ABI to Rust.
   `vendor/unrar/version.hpp`.
 - License: `vendor/unrar/license.txt`.
 
-Keep `vendor/unrar` as close to upstream as possible. Z-Manager integration
+Keep `vendor/unrar` as close to upstream as possible. ZManager integration
 belongs in this crate's Rust/C++ bridge and build script.
 
 ## Local Build Patch

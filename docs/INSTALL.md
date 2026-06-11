@@ -1,4 +1,4 @@
-# Installing Z-Manager CLI
+# Installing ZManager CLI
 
 This document covers the CLI-first distribution paths for `zm`. Release
 artifacts are built by GitHub Actions and published with a

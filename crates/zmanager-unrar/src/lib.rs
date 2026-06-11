@@ -155,7 +155,7 @@ impl fmt::Display for UnrarError {
 
 impl std::error::Error for UnrarError {}
 
-/// Returns whether a large RAR dictionary request is within Z-Manager's limit.
+/// Returns whether a large RAR dictionary request is within ZManager's limit.
 #[must_use]
 pub fn large_dictionary_allowed_bytes(bytes: u64) -> bool {
     let kilobytes = bytes.div_ceil(KIBIBYTE_BYTES);

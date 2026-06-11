@@ -22,5 +22,5 @@ The generated files are staged by `scripts/package-release.sh` on Unix and
 - libarchive 3.8.7: `vendor/libarchive/libarchive-3.8.7/COPYING`
 - UnRAR: `vendor/unrar/license.txt`
 
-The bundled UnRAR code is extraction-only. Z-Manager must not use it to create
+The bundled UnRAR code is extraction-only. ZManager must not use it to create
 RAR archives or recreate the RAR compression algorithm.
