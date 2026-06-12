@@ -641,6 +641,7 @@ fn progress_job_label(kind: JobKind) -> &'static str {
         JobKind::TzapCreate => "tzap create",
         JobKind::TzapExtract => "tzap extract",
         JobKind::ArchiveExtract => "archive extract",
+        JobKind::RawStreamExtract => "raw stream extract",
     }
 }
 

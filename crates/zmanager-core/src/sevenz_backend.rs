@@ -1,3 +1,4 @@
+use crate::jobs::{JobCancelled, JobContext};
 use crate::manifest::{
     ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive,
 };
@@ -136,6 +137,8 @@ pub enum SevenZError {
     InvalidPassword,
     /// Filesystem I/O failed.
     Io { path: PathBuf, source: io::Error },
+    /// Job was cancelled cooperatively.
+    Cancelled,
     /// Extraction safety rejected an entry.
     Safety(ExtractionSafetyError),
 }
@@ -152,6 +155,7 @@ impl fmt::Display for SevenZError {
             Self::PasswordRequired => write!(f, "password required to decrypt 7z data"),
             Self::InvalidPassword => write!(f, "provided 7z password is incorrect"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
+            Self::Cancelled => write!(f, "job cancelled"),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
         }
     }
@@ -164,9 +168,10 @@ impl std::error::Error for SevenZError {
             Self::SevenZ(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
-            Self::VolumeSizeTooSmall { .. } | Self::PasswordRequired | Self::InvalidPassword => {
-                None
-            }
+            Self::VolumeSizeTooSmall { .. }
+            | Self::PasswordRequired
+            | Self::InvalidPassword
+            | Self::Cancelled => None,
         }
     }
 }
@@ -186,6 +191,12 @@ impl From<sevenz_rust2::Error> for SevenZError {
 impl From<ExtractionSafetyError> for SevenZError {
     fn from(source: ExtractionSafetyError) -> Self {
         Self::Safety(source)
+    }
+}
+
+impl From<JobCancelled> for SevenZError {
+    fn from(_source: JobCancelled) -> Self {
+        Self::Cancelled
     }
 }
 
@@ -831,7 +842,7 @@ pub fn extract_7z(
     password: Option<&str>,
     policy: ExtractionPolicy,
 ) -> Result<SevenZExtractReport, SevenZError> {
-    extract_7z_inner(archive_path, destination, password, policy, None)
+    extract_7z_inner(archive_path, destination, password, policy, None, None)
 }
 
 /// Extracts a `.7z` archive with an overwrite resolver.
@@ -854,6 +865,31 @@ pub fn extract_7z_with_overwrite_resolver(
         password,
         policy,
         Some(overwrite_resolver),
+        None,
+    )
+}
+
+/// Extracts a `.7z` archive through the shared extraction safety policy with a
+/// reporting context.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when the archive cannot be read, an entry is unsafe,
+/// password validation fails, or filesystem writes fail.
+pub fn extract_7z_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    context: &mut JobContext<'_>,
+) -> Result<SevenZExtractReport, SevenZError> {
+    extract_7z_inner(
+        archive_path,
+        destination,
+        password,
+        policy,
+        None,
+        Some(context),
     )
 }
 
@@ -863,6 +899,7 @@ fn extract_7z_inner(
     password: Option<&str>,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<SevenZExtractReport, SevenZError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
@@ -890,7 +927,13 @@ fn extract_7z_inner(
     let mut callback_error = None;
 
     let result = reader.for_each_entries(|entry, entry_reader| {
-        match extract_entry(entry, entry_reader, &decisions, &mut report) {
+        match extract_entry(
+            entry,
+            entry_reader,
+            &decisions,
+            &mut report,
+            context.as_deref_mut(),
+        ) {
             Ok(()) => Ok(true),
             Err(error) => {
                 callback_error = Some(error);
@@ -1179,13 +1222,24 @@ fn extract_entry(
     reader: &mut dyn Read,
     decisions: &HashMap<String, ExtractionDecision>,
     report: &mut SevenZExtractReport,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<(), SevenZError> {
+    let path = entry.name().to_owned();
+    if let Some(context) = context.as_deref_mut() {
+        context.entry_started(&path, Some(entry.size()));
+    }
+    let mut processed_bytes = 0_u64;
+
     if entry.is_anti_item() {
         drain_reader(reader, entry.name())?;
         report.skipped_entries += 1;
         report
             .warnings
             .push(format!("skipped anti-item {}", entry.name()));
+        if let Some(context) = context {
+            context.warning(format!("skipped anti-item {path}"));
+            context.entry_finished(&path, 0);
+        }
         return Ok(());
     }
 
@@ -1213,9 +1267,16 @@ fn extract_entry(
                 })?;
                 report.written_entries += 1;
             } else {
-                let written_bytes = write_file_entry(reader, destination_path, *replace_existing)?;
+                let written_bytes = write_file_entry(
+                    reader,
+                    destination_path,
+                    *replace_existing,
+                    Some(&path),
+                    context.as_deref_mut(),
+                )?;
                 report.written_entries += 1;
                 report.written_bytes += written_bytes;
+                processed_bytes = written_bytes;
             }
         }
         ExtractionDecision::Skip { reason, .. } => {
@@ -1225,6 +1286,10 @@ fn extract_entry(
                 .warnings
                 .push(format!("skipped {}: {reason}", entry.name()));
         }
+    }
+
+    if let Some(context) = context {
+        context.entry_finished(&path, processed_bytes);
     }
 
     Ok(())
@@ -1240,6 +1305,8 @@ fn write_file_entry(
     reader: &mut dyn Read,
     destination_path: &Path,
     replace_existing: bool,
+    path: Option<&str>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<u64, SevenZError> {
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -1248,17 +1315,36 @@ fn write_file_entry(
                 source,
             }
         })?;
-    let copied = io::copy(
-        reader,
-        output.file_mut().map_err(|source| SevenZError::Io {
+    let mut copied = 0_u64;
+    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+    loop {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+        }
+        let read = reader.read(&mut buffer).map_err(|source| SevenZError::Io {
             path: destination_path.to_path_buf(),
             source,
-        })?,
-    )
-    .map_err(|source| SevenZError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })?;
+        })?;
+        if read == 0 {
+            break;
+        }
+        output
+            .file_mut()
+            .map_err(|source| SevenZError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?
+            .write_all(&buffer[..read])
+            .map_err(|source| SevenZError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?;
+        let read = read as u64;
+        copied += read;
+        if let Some(context) = context.as_deref_mut() {
+            context.bytes_processed(path, read);
+        }
+    }
     output
         .commit_with_replace(replace_existing)
         .map_err(|source| SevenZError::Io {

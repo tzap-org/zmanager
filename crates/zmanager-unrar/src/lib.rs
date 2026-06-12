@@ -208,11 +208,31 @@ pub fn extract_selected(
     password: Option<&str>,
     selections: &BTreeMap<String, PathBuf>,
 ) -> Result<(), UnrarError> {
+    extract_selected_with_progress(archive, password, selections, None)
+}
+
+/// Extracts selected RAR file entries to exact destination paths and emits
+/// progress callbacks.
+///
+/// The caller is responsible for validating archive paths and preparing
+/// destination parent directories before calling this function.
+///
+/// # Errors
+///
+/// Returns [`UnrarError`] when `UnRAR` cannot extract the archive, a selected
+/// destination cannot be passed to the C ABI, or the progress callback fails.
+pub fn extract_selected_with_progress(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    selections: &BTreeMap<String, PathBuf>,
+    progress: Option<&mut dyn FnMut(String, u64)>,
+) -> Result<(), UnrarError> {
     let archive = path_to_cstring(archive.as_ref())?;
     let password = optional_password_to_c_buffer(password)?;
     let mut context = ExtractContext {
         selections,
         error: None,
+        progress,
     };
 
     let code = unsafe {
@@ -235,9 +255,10 @@ struct ListContext {
     error: Option<UnrarError>,
 }
 
-struct ExtractContext<'a> {
+struct ExtractContext<'a, 'b> {
     selections: &'a BTreeMap<String, PathBuf>,
     error: Option<UnrarError>,
+    progress: Option<&'b mut dyn FnMut(String, u64)>,
 }
 
 extern "C" fn list_callback(
@@ -278,14 +299,14 @@ extern "C" fn list_callback(
 extern "C" fn extract_callback(
     user: *mut c_void,
     path: *const c_char,
-    _unpacked_size: u64,
+    unpacked_size: u64,
     _flags: c_uint,
     _redir_type: c_uint,
     _redir_target: *const c_char,
     destination: *mut c_char,
     destination_size: usize,
 ) -> c_int {
-    let context = unsafe { &mut *user.cast::<ExtractContext<'_>>() };
+    let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
     let Some(path) = c_path_to_string(path) else {
         context.error = Some(UnrarError::InvalidEntryName);
         return -1;
@@ -293,6 +314,10 @@ extern "C" fn extract_callback(
     let Some(destination_path) = context.selections.get(&path) else {
         return 0;
     };
+
+    if let Some(progress) = context.progress.as_mut() {
+        progress(path.clone(), unpacked_size);
+    }
 
     let destination_string = match destination_to_cstring(destination_path) {
         Ok(destination) => destination,

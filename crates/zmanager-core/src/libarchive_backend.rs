@@ -1,3 +1,4 @@
+use crate::jobs::{JobCancelled, JobContext};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
@@ -95,6 +96,8 @@ pub enum LibarchiveError {
     MissingLinkTarget { path: String },
     /// Requested archive entry was not found.
     EntryNotFound { path: String },
+    /// Job was cancelled cooperatively.
+    Cancelled,
     /// Stdout extraction must resolve to one regular file.
     StdoutSelectionNotSingleFile { selected_files: usize },
 }
@@ -110,6 +113,7 @@ impl fmt::Display for LibarchiveError {
                 write!(f, "libarchive link entry has no target: {path}")
             }
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
+            Self::Cancelled => write!(f, "job cancelled"),
             Self::StdoutSelectionNotSingleFile { selected_files } => write!(
                 f,
                 "extract --to-stdout requires exactly one selected regular file; selected {selected_files}"
@@ -127,8 +131,15 @@ impl std::error::Error for LibarchiveError {
             Self::MissingPath
             | Self::MissingLinkTarget { .. }
             | Self::EntryNotFound { .. }
+            | Self::Cancelled
             | Self::StdoutSelectionNotSingleFile { .. } => None,
         }
+    }
+}
+
+impl From<JobCancelled> for LibarchiveError {
+    fn from(_: JobCancelled) -> Self {
+        Self::Cancelled
     }
 }
 
@@ -209,7 +220,40 @@ pub fn extract_archive_with_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
-    extract_archive_inner(archive_path, destination, policy, password, None, None)
+    extract_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        password,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Extracts an archive through the shared extraction safety policy, optionally
+/// with progress reporting.
+///
+/// # Errors
+///
+/// Returns [`LibarchiveError`] when libarchive cannot read the archive, an entry
+/// is unsafe, or filesystem writes fail.
+pub fn extract_archive_with_password_and_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    context: &mut JobContext<'_>,
+) -> Result<LibarchiveExtractReport, LibarchiveError> {
+    extract_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        password,
+        None,
+        None,
+        Some(context),
+    )
 }
 
 /// Extracts an archive with an overwrite resolver and optional password.
@@ -232,6 +276,7 @@ pub fn extract_archive_with_overwrite_resolver_and_password(
         password,
         None,
         Some(overwrite_resolver),
+        None,
     )
 }
 
@@ -272,6 +317,7 @@ pub fn extract_archive_entry_with_password(
         policy,
         password,
         Some(entry_path),
+        None,
         None,
     )
 }
@@ -379,6 +425,7 @@ fn extract_archive_inner(
     password: Option<&str>,
     selected_entry: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
     let destination = destination.as_ref();
     let destination_root =
@@ -407,6 +454,9 @@ fn extract_archive_inner(
     let mut found_selected_entry = selected_entry.is_none();
 
     while let Some(entry) = archive.next_entry()? {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+        }
         let owned_entry = OwnedEntry::from_entry(&entry)?;
         if let Some(selected_entry) = selected_entry
             && owned_entry.path != selected_entry
@@ -421,7 +471,14 @@ fn extract_archive_inner(
             report
                 .warnings
                 .push("skipped archive root directory entry".to_owned());
+            if let Some(context) = context.as_deref_mut() {
+                context.warning("skipped archive root directory entry");
+                context.entry_finished(&owned_entry.path, 0);
+            }
             continue;
+        }
+        if let Some(context) = context.as_deref_mut() {
+            context.entry_started(&owned_entry.path, nonnegative_size(owned_entry.size));
         }
         let safety_entry = ExtractionEntry {
             archive_path: owned_entry.path.clone(),
@@ -430,21 +487,23 @@ fn extract_archive_inner(
             compressed_size: None,
         };
 
-        match planner.validate_entry(&safety_entry)? {
+        let processed = match planner.validate_entry(&safety_entry)? {
             ExtractionDecision::Write {
                 destination_path,
                 replace_existing,
                 link_target_path,
                 ..
             } => {
-                write_entry(
+                let processed = write_entry(
                     &mut archive,
                     &owned_entry,
                     &destination_path,
                     replace_existing,
                     link_target_path.as_deref(),
                     &mut report,
+                    context.as_deref_mut(),
                 )?;
+                processed
             }
             ExtractionDecision::Skip { reason, .. } => {
                 archive.skip_data()?;
@@ -452,7 +511,14 @@ fn extract_archive_inner(
                 report
                     .warnings
                     .push(format!("skipped {}: {reason}", owned_entry.path));
+                if let Some(context) = context.as_deref_mut() {
+                    context.warning(format!("skipped {}: {reason}", owned_entry.path));
+                }
+                0
             }
+        };
+        if let Some(context) = context.as_deref_mut() {
+            context.entry_finished(&owned_entry.path, processed);
         }
     }
 
@@ -797,7 +863,8 @@ fn write_entry(
     replace_existing: bool,
     link_target_path: Option<&Path>,
     report: &mut LibarchiveExtractReport,
-) -> Result<(), LibarchiveError> {
+    mut context: Option<&mut JobContext<'_>>,
+) -> Result<u64, LibarchiveError> {
     if replace_existing && !matches!(entry.extraction_kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
             LibarchiveError::Io {
@@ -815,11 +882,14 @@ fn write_entry(
                 source,
             })?;
             report.written_entries += 1;
+            Ok(0)
         }
         ExtractionEntryKind::File => {
-            let written_bytes = write_file_entry(archive, destination_path, replace_existing)?;
+            let written_bytes =
+                write_file_entry(archive, destination_path, replace_existing, context)?;
             report.written_entries += 1;
             report.written_bytes += written_bytes;
+            Ok(written_bytes)
         }
         ExtractionEntryKind::Symlink { target } => {
             archive.skip_data()?;
@@ -828,9 +898,14 @@ fn write_entry(
                 report
                     .warnings
                     .push(crate::safety::unsupported_symlink_warning(&entry.path));
+                if let Some(context) = context.as_deref_mut() {
+                    context.warning(crate::safety::unsupported_symlink_warning(&entry.path));
+                }
+                Ok(0)
             } else {
                 write_symlink(target, destination_path)?;
                 report.written_entries += 1;
+                Ok(0)
             }
         }
         ExtractionEntryKind::Hardlink { target } => {
@@ -848,6 +923,7 @@ fn write_entry(
             })?;
             write_hardlink(source_path, destination_path)?;
             report.written_entries += 1;
+            Ok(0)
         }
         ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
             archive.skip_data()?;
@@ -855,16 +931,19 @@ fn write_entry(
             report
                 .warnings
                 .push(format!("skipped unsupported special entry {}", entry.path));
+            if let Some(context) = context.as_deref_mut() {
+                context.warning(format!("skipped unsupported special entry {}", entry.path));
+            }
+            Ok(0)
         }
     }
-
-    Ok(())
 }
 
 fn write_file_entry(
     archive: &mut ReadArchive,
     destination_path: &Path,
     replace_existing: bool,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<u64, LibarchiveError> {
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -877,6 +956,9 @@ fn write_file_entry(
     let mut written_bytes = 0_u64;
 
     loop {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+        }
         let read = archive.read_data(&mut buffer)?;
         if read == 0 {
             break;
@@ -892,7 +974,11 @@ fn write_file_entry(
                 path: destination_path.to_path_buf(),
                 source,
             })?;
-        written_bytes += read as u64;
+        let read = read as u64;
+        written_bytes += read;
+        if let Some(context) = context.as_deref_mut() {
+            context.bytes_processed(None, read);
+        }
     }
 
     output

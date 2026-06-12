@@ -1,3 +1,4 @@
+use crate::jobs::JobContext;
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver, normalize_archive_path,
@@ -177,7 +178,7 @@ pub fn extract_rar_with_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<RarExtractReport, RarBackendError> {
-    extract_rar_inner(archive, destination, policy, password, None)
+    extract_rar_inner(archive, destination, policy, password, None, None)
 }
 
 /// Extracts a RAR archive with an overwrite resolver.
@@ -199,7 +200,25 @@ pub fn extract_rar_with_overwrite_resolver_and_password(
         policy,
         password,
         Some(overwrite_resolver),
+        None,
     )
+}
+
+/// Extracts a RAR archive through bundled `UnRAR` and the shared safety
+/// planner, with progress reporting.
+///
+/// # Errors
+///
+/// Returns [`RarBackendError`] when `UnRAR` cannot read the archive, an entry
+/// is unsafe, or filesystem writes fail.
+pub fn extract_rar_with_password_and_context(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    context: &mut JobContext<'_>,
+) -> Result<RarExtractReport, RarBackendError> {
+    extract_rar_inner(archive, destination, policy, password, None, Some(context))
 }
 
 fn extract_rar_inner(
@@ -208,6 +227,7 @@ fn extract_rar_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<RarExtractReport, RarBackendError> {
     let archive = archive.as_ref();
     let destination = destination.as_ref();
@@ -223,10 +243,33 @@ fn extract_rar_inner(
     let PlannedRarExtraction {
         selections,
         deferred_links,
+        entry_progress,
         mut report,
     } = plan_rar_entries(entries, &destination_root, policy, overwrite_resolver)?;
 
-    zmanager_unrar::extract_selected(archive, password, &selections)?;
+    if let Some(context) = context.as_deref_mut() {
+        for (path, bytes) in &entry_progress {
+            context.entry_started(path, Some(*bytes));
+        }
+    }
+
+    match context.as_deref_mut() {
+        Some(context) => {
+            let mut progress = |path: String, bytes: u64| {
+                context.bytes_processed(Some(path.as_str()), bytes);
+                context.entry_finished(path, bytes);
+            };
+            zmanager_unrar::extract_selected_with_progress(
+                archive,
+                password,
+                &selections,
+                Some(&mut progress),
+            )?;
+        }
+        None => {
+            zmanager_unrar::extract_selected_with_progress(archive, password, &selections, None)?;
+        }
+    }
     report.written_entries += selections.len();
     for link in deferred_links {
         materialize_deferred_link(&link, &mut report)?;
@@ -237,6 +280,7 @@ fn extract_rar_inner(
 struct PlannedRarExtraction {
     selections: BTreeMap<String, PathBuf>,
     deferred_links: Vec<DeferredLink>,
+    entry_progress: Vec<(String, u64)>,
     report: RarExtractReport,
 }
 
@@ -255,6 +299,7 @@ fn plan_rar_entries(
     };
     let mut selections = BTreeMap::new();
     let mut deferred_links = Vec::new();
+    let mut entry_progress = Vec::new();
     let mut report = RarExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -293,6 +338,7 @@ fn plan_rar_entries(
                     replace_existing,
                     selections: &mut selections,
                     deferred_links: &mut deferred_links,
+                    entry_progress: &mut entry_progress,
                     report: &mut report,
                 },
             )?,
@@ -308,6 +354,7 @@ fn plan_rar_entries(
     Ok(PlannedRarExtraction {
         selections,
         deferred_links,
+        entry_progress,
         report,
     })
 }
@@ -327,6 +374,7 @@ struct WritableEntryPlan<'a> {
     replace_existing: bool,
     selections: &'a mut BTreeMap<String, PathBuf>,
     deferred_links: &'a mut Vec<DeferredLink>,
+    entry_progress: &'a mut Vec<(String, u64)>,
     report: &'a mut RarExtractReport,
 }
 
@@ -336,6 +384,9 @@ fn plan_writable_entry(
     target_policy: &ExtractionPolicy,
     mut plan: WritableEntryPlan<'_>,
 ) -> Result<(), RarBackendError> {
+    plan.entry_progress
+        .push((entry.path.clone(), entry.unpacked_size));
+
     match entry.kind {
         RarEntryKind::Directory => plan_directory_entry(&mut plan)?,
         RarEntryKind::File => plan_file_entry(entry, plan)?,

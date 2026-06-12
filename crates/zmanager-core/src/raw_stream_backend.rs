@@ -5,6 +5,7 @@ use crate::safety::{
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TEMP_OUTPUT_PREFIX: &str = ".zmanager";
 const TEMP_OUTPUT_SUFFIX: &str = ".tmp";
 const RAW_STREAM_TEMP_EXTENSION: &str = "tmp.Z";
+
+type ProgressCallback<'a> = Option<&'a mut dyn FnMut(u64)>;
 
 pub const RAW_STREAM_SUFFIXES: &[&str] = &[
     ".zst", ".gz", ".bz2", ".xz", ".lzma", ".lz", ".br", ".lz4", ".lzo", ".Z", ".lrz",
@@ -229,7 +232,59 @@ pub fn extract_raw_stream(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
-    extract_raw_stream_inner(archive_path, format, destination, policy, None)
+    extract_raw_stream_inner(archive_path, format, destination, policy, None, None, false)
+}
+
+/// Extracts a raw single-file compression stream with progress reporting.
+///
+/// # Errors
+///
+/// Returns [`RawStreamError`] when the stream cannot be decoded, the output
+/// name is unsafe, filesystem writes fail, or the resolver aborts extraction.
+pub fn extract_raw_stream_with_progress(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    on_progress: ProgressCallback<'_>,
+    track_source_progress: bool,
+) -> Result<RawStreamExtractReport, RawStreamError> {
+    extract_raw_stream_inner(
+        archive_path,
+        format,
+        destination,
+        policy,
+        None,
+        on_progress,
+        track_source_progress,
+    )
+}
+
+/// Attempts to return the uncompressed byte size for a raw stream before
+/// extraction.
+///
+/// For formats where this metadata is not reliably recoverable from the stream
+/// header, this returns `None`.
+#[must_use]
+pub fn estimate_raw_stream_uncompressed_size(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+) -> Option<u64> {
+    let archive_path = archive_path.as_ref();
+
+    match format {
+        RawStreamFormat::Gzip => estimate_gzip_uncompressed_size(archive_path),
+        RawStreamFormat::Zstd
+        | RawStreamFormat::Bzip2
+        | RawStreamFormat::Xz
+        | RawStreamFormat::Lzma
+        | RawStreamFormat::Lzip
+        | RawStreamFormat::Brotli
+        | RawStreamFormat::Lz4
+        | RawStreamFormat::Lzo
+        | RawStreamFormat::UnixCompress
+        | RawStreamFormat::Lrzip => None,
+    }
 }
 
 /// Extracts a raw single-file compression stream with an overwrite resolver.
@@ -251,6 +306,18 @@ pub fn extract_raw_stream_with_overwrite_resolver(
         destination,
         policy,
         Some(overwrite_resolver),
+        None,
+        false,
+    )
+}
+
+/// Returns `true` when raw stream extraction can report input-stream byte
+/// progress independently from output bytes.
+#[must_use]
+pub const fn can_track_source_progress(format: RawStreamFormat) -> bool {
+    !matches!(
+        format,
+        RawStreamFormat::Lzo | RawStreamFormat::UnixCompress | RawStreamFormat::Lrzip
     )
 }
 
@@ -260,6 +327,8 @@ fn extract_raw_stream_inner(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    on_progress: ProgressCallback<'_>,
+    track_source_progress: bool,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
@@ -312,6 +381,8 @@ fn extract_raw_stream_inner(
                 &destination_path,
                 replace_existing,
                 max_expanded_bytes,
+                on_progress,
+                track_source_progress,
             )?;
             report.written_entries = 1;
             report.written_bytes = written_bytes;
@@ -339,21 +410,150 @@ pub fn copy_raw_stream_to_writer<W: Write>(
     format: RawStreamFormat,
     output: &mut W,
 ) -> Result<u64, RawStreamError> {
+    copy_raw_stream_to_writer_with_progress(archive_path, format, output, None, false)
+}
+
+pub fn copy_raw_stream_to_writer_with_progress<W: Write>(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    output: &mut W,
+    on_progress: ProgressCallback<'_>,
+    track_source_progress: bool,
+) -> Result<u64, RawStreamError> {
     let archive_path = archive_path.as_ref();
     if format == RawStreamFormat::Lrzip {
-        return copy_lrzip_to_writer(archive_path, output);
+        return copy_lrzip_to_writer(archive_path, output, on_progress);
     }
     if format == RawStreamFormat::UnixCompress {
-        return copy_unix_compress_to_writer(archive_path, output);
+        return copy_unix_compress_to_writer(archive_path, output, on_progress);
     }
     if let Some(tool) = external_stream_tool(format) {
-        return copy_external_tool_to_writer(tool, archive_path, output);
+        return copy_external_tool_to_writer(tool, archive_path, output, on_progress);
     }
+
+    if track_source_progress {
+        if let Some(on_progress) = on_progress {
+            let file = File::open(archive_path).map_err(|source| RawStreamError::Io {
+                path: archive_path.to_path_buf(),
+                source,
+            })?;
+            let reader = BufReader::new(file);
+            let mut reader = open_decoder_from_reader(
+                CountingRead::new(reader, on_progress),
+                format,
+                archive_path,
+            )?;
+            return copy_reader_to_writer_with_progress(&mut reader, output, archive_path, None);
+        }
+    }
+
     let mut reader = open_decoder(archive_path, format)?;
-    io::copy(&mut reader, output).map_err(|source| RawStreamError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })
+
+    copy_reader_to_writer_with_progress(&mut reader, output, archive_path, on_progress)
+}
+
+struct CountingRead<R, F> {
+    inner: R,
+    on_progress: F,
+}
+
+impl<R, F> CountingRead<R, F> {
+    fn new(inner: R, on_progress: F) -> Self {
+        Self { inner, on_progress }
+    }
+}
+
+impl<R, F> Read for CountingRead<R, F>
+where
+    R: Read,
+    F: FnMut(u64),
+{
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        if read > 0 {
+            let read_u64 = u64::try_from(read)
+                .map_err(|_| io::Error::other("read chunk size exceeded u64"))?;
+            (self.on_progress)(read_u64);
+        }
+        Ok(read)
+    }
+}
+
+fn open_decoder_from_reader<'a, R: Read + 'a>(
+    reader: R,
+    format: RawStreamFormat,
+    archive_path: &Path,
+) -> Result<Box<dyn Read + 'a>, RawStreamError> {
+    match format {
+        RawStreamFormat::Zstd => zstd::stream::read::Decoder::new(reader)
+            .map(|decoder| Box::new(decoder) as Box<dyn Read + 'a>)
+            .map_err(|source| RawStreamError::Io {
+                path: archive_path.to_path_buf(),
+                source,
+            }),
+        RawStreamFormat::Gzip => Ok(Box::new(flate2::read::MultiGzDecoder::new(reader))),
+        RawStreamFormat::Bzip2 => Ok(Box::new(bzip2::read::BzDecoder::new(reader))),
+        RawStreamFormat::Xz => Ok(Box::new(lzma_rust2::XzReader::new(reader, true))),
+        RawStreamFormat::Lzma => lzma_rust2::LzmaReader::new_mem_limit(reader, u32::MAX, None)
+            .map(|decoder| Box::new(decoder) as Box<dyn Read + 'a>)
+            .map_err(|source| RawStreamError::Io {
+                path: archive_path.to_path_buf(),
+                source,
+            }),
+        RawStreamFormat::Lzip => Ok(Box::new(lzma_rust2::LzipReader::new(reader))),
+        RawStreamFormat::Brotli => Ok(Box::new(brotli::Decompressor::new(
+            reader,
+            crate::DEFAULT_IO_BUFFER_BYTES,
+        ))),
+        RawStreamFormat::Lz4 => Ok(Box::new(lz4_flex::frame::FrameDecoder::new(reader))),
+        RawStreamFormat::Lzo | RawStreamFormat::UnixCompress | RawStreamFormat::Lrzip => {
+            Err(RawStreamError::ExternalToolFailed {
+                tool: format.name(),
+                archive_path: archive_path.to_path_buf(),
+                status: None,
+                message: "format is handled by a streaming tool adapter".to_owned(),
+            })
+        }
+    }
+}
+
+fn copy_reader_to_writer_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    output: &mut W,
+    path: &Path,
+    mut on_progress: ProgressCallback<'_>,
+) -> Result<u64, RawStreamError> {
+    let mut total_written = 0_u64;
+    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|source| RawStreamError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|source| RawStreamError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        let read_u64 = u64::try_from(read).map_err(|_| RawStreamError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::other("read chunk size exceeded u64"),
+        })?;
+        if let Some(on_progress) = &mut on_progress {
+            on_progress(read_u64);
+        }
+        total_written = total_written.saturating_add(read_u64);
+    }
+
+    Ok(total_written)
 }
 
 /// Reads a raw stream and discards decoded bytes.
@@ -374,6 +574,8 @@ fn write_raw_stream_to_file(
     destination_path: &Path,
     replace_existing: bool,
     max_expanded_bytes: Option<u64>,
+    on_progress: ProgressCallback<'_>,
+    track_source_progress: bool,
 ) -> Result<u64, RawStreamError> {
     if let Some(parent) = destination_path.parent() {
         fs::create_dir_all(parent).map_err(|source| RawStreamError::Io {
@@ -388,7 +590,13 @@ fn write_raw_stream_to_file(
         source,
     })?;
     let mut output = SizeLimitWriter::new(&mut output, max_expanded_bytes);
-    let written = match copy_raw_stream_to_writer(archive_path, format, &mut output) {
+    let written = match copy_raw_stream_to_writer_with_progress(
+        archive_path,
+        format,
+        &mut output,
+        on_progress,
+        track_source_progress,
+    ) {
         Ok(written) => written,
         Err(error) => {
             let _ = fs::remove_file(&temp_path);
@@ -420,7 +628,7 @@ fn write_raw_stream_to_file(
     Ok(written)
 }
 
-fn open_decoder(
+pub(crate) fn open_decoder(
     archive_path: &Path,
     format: RawStreamFormat,
 ) -> Result<Box<dyn Read>, RawStreamError> {
@@ -429,38 +637,7 @@ fn open_decoder(
         source,
     })?;
     let reader = BufReader::new(file);
-
-    match format {
-        RawStreamFormat::Zstd => zstd::stream::read::Decoder::new(reader)
-            .map(|decoder| Box::new(decoder) as Box<dyn Read>)
-            .map_err(|source| RawStreamError::Io {
-                path: archive_path.to_path_buf(),
-                source,
-            }),
-        RawStreamFormat::Gzip => Ok(Box::new(flate2::read::MultiGzDecoder::new(reader))),
-        RawStreamFormat::Bzip2 => Ok(Box::new(bzip2::read::BzDecoder::new(reader))),
-        RawStreamFormat::Xz => Ok(Box::new(lzma_rust2::XzReader::new(reader, true))),
-        RawStreamFormat::Lzma => lzma_rust2::LzmaReader::new_mem_limit(reader, u32::MAX, None)
-            .map(|decoder| Box::new(decoder) as Box<dyn Read>)
-            .map_err(|source| RawStreamError::Io {
-                path: archive_path.to_path_buf(),
-                source,
-            }),
-        RawStreamFormat::Lzip => Ok(Box::new(lzma_rust2::LzipReader::new(reader))),
-        RawStreamFormat::Brotli => Ok(Box::new(brotli::Decompressor::new(
-            reader,
-            crate::DEFAULT_IO_BUFFER_BYTES,
-        ))),
-        RawStreamFormat::Lz4 => Ok(Box::new(lz4_flex::frame::FrameDecoder::new(reader))),
-        RawStreamFormat::Lzo | RawStreamFormat::UnixCompress | RawStreamFormat::Lrzip => {
-            Err(RawStreamError::ExternalToolFailed {
-                tool: format.name(),
-                archive_path: archive_path.to_path_buf(),
-                status: None,
-                message: "format is handled by a streaming tool adapter".to_owned(),
-            })
-        }
-    }
+    open_decoder_from_reader(reader, format, archive_path)
 }
 
 fn external_stream_tool(format: RawStreamFormat) -> Option<ExternalStreamTool> {
@@ -529,6 +706,7 @@ fn copy_external_tool_to_writer<W: Write>(
     tool: ExternalStreamTool,
     archive_path: &Path,
     output: &mut W,
+    mut on_progress: ProgressCallback<'_>,
 ) -> Result<u64, RawStreamError> {
     let mut child = Command::new(tool.name)
         .args(tool.args)
@@ -549,10 +727,36 @@ fn copy_external_tool_to_writer<W: Write>(
             status: None,
             message: "decoder stdout was not available".to_owned(),
         })?;
-    let written_bytes = io::copy(&mut stdout, output).map_err(|source| RawStreamError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
+    let written_bytes = {
+        let mut total_written = 0_u64;
+        let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+        loop {
+            let read = stdout
+                .read(&mut buffer)
+                .map_err(|source| RawStreamError::Io {
+                    path: archive_path.to_path_buf(),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|source| RawStreamError::Io {
+                    path: archive_path.to_path_buf(),
+                    source,
+                })?;
+            let read_u64 = u64::try_from(read).map_err(|_| RawStreamError::Io {
+                path: archive_path.to_path_buf(),
+                source: io::Error::other("read chunk size exceeded u64"),
+            })?;
+            if let Some(on_progress) = &mut on_progress {
+                on_progress(read_u64);
+            }
+            total_written = total_written.saturating_add(read_u64);
+        }
+        total_written
+    };
     let process_output =
         child
             .wait_with_output()
@@ -578,6 +782,7 @@ fn copy_external_tool_to_writer<W: Write>(
 fn copy_lrzip_to_writer<W: Write>(
     archive_path: &Path,
     output: &mut W,
+    on_progress: ProgressCallback<'_>,
 ) -> Result<u64, RawStreamError> {
     let temp_path = temp_external_output_path("lrzip");
     let process_output = Command::new("lrzip")
@@ -611,13 +816,12 @@ fn copy_lrzip_to_writer<W: Write>(
             source,
         }
     })?;
-    let written_bytes = io::copy(&mut decoded, output).map_err(|source| {
-        let _ = fs::remove_file(&temp_path);
-        RawStreamError::Io {
-            path: temp_path.clone(),
-            source,
-        }
-    })?;
+    let written_bytes =
+        copy_reader_to_writer_with_progress(&mut decoded, output, &temp_path, on_progress)
+            .map_err(|source| {
+                let _ = fs::remove_file(&temp_path);
+                source
+            })?;
     fs::remove_file(&temp_path).map_err(|source| RawStreamError::Io {
         path: temp_path,
         source,
@@ -629,6 +833,7 @@ fn copy_lrzip_to_writer<W: Write>(
 fn copy_unix_compress_to_writer<W: Write>(
     archive_path: &Path,
     output: &mut W,
+    on_progress: ProgressCallback<'_>,
 ) -> Result<u64, RawStreamError> {
     let temp_input =
         temp_external_output_path("compress").with_extension(RAW_STREAM_TEMP_EXTENSION);
@@ -666,19 +871,48 @@ fn copy_unix_compress_to_writer<W: Write>(
             source,
         }
     })?;
-    let written_bytes = io::copy(&mut decoded, output).map_err(|source| {
-        let _ = fs::remove_file(&temp_output);
-        RawStreamError::Io {
-            path: temp_output.clone(),
-            source,
-        }
-    })?;
+    let written_bytes =
+        copy_reader_to_writer_with_progress(&mut decoded, output, &temp_output, on_progress)
+            .map_err(|source| {
+                let _ = fs::remove_file(&temp_output);
+                source
+            })?;
     fs::remove_file(&temp_output).map_err(|source| RawStreamError::Io {
         path: temp_output,
         source,
     })?;
 
     Ok(written_bytes)
+}
+
+fn estimate_gzip_uncompressed_size(archive_path: &Path) -> Option<u64> {
+    let mut archive = File::open(archive_path).ok()?;
+
+    let mut header = [0_u8; 2];
+    archive.read_exact(&mut header).ok()?;
+    if header != [0x1f, 0x8b] {
+        return None;
+    }
+
+    let mut compression_method = [0_u8; 1];
+    archive.read_exact(&mut compression_method).ok()?;
+    if compression_method[0] != 8 {
+        return None;
+    }
+
+    let archive_len = archive.metadata().ok()?.len();
+    if archive_len < 18 {
+        return None;
+    }
+
+    archive.seek(SeekFrom::End(-8)).ok()?;
+
+    let mut trailer = [0_u8; 8];
+    archive.read_exact(&mut trailer).ok()?;
+
+    Some(u64::from(u32::from_le_bytes([
+        trailer[4], trailer[5], trailer[6], trailer[7],
+    ])))
 }
 
 fn external_process_message(output: &std::process::Output) -> String {
@@ -777,9 +1011,12 @@ fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RawStreamFormat, detect_raw_stream_format, extract_raw_stream, output_name_for_raw_stream,
+        RawStreamFormat, detect_raw_stream_format, estimate_raw_stream_uncompressed_size,
+        extract_raw_stream, output_name_for_raw_stream,
     };
     use crate::safety::{ExtractionLimits, ExtractionPolicy};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::fs::{self, File};
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
@@ -841,6 +1078,25 @@ mod tests {
 
         assert!(error.to_string().contains("expanded stream reached"));
         assert!(!temp.path("out/payload.txt").exists());
+    }
+
+    #[test]
+    fn estimates_gzip_uncompressed_size_from_trailer() {
+        let temp = TestDir::new("raw_stream_gzip_uncompressed_size");
+        let archive = temp.path("payload.txt.gz");
+
+        let payload = b"raw stream size hint";
+        {
+            let output = File::create(&archive).unwrap();
+            let mut encoder = GzEncoder::new(output, Compression::default());
+            encoder.write_all(payload).unwrap();
+            encoder.finish().unwrap();
+        }
+
+        let estimated = estimate_raw_stream_uncompressed_size(&archive, RawStreamFormat::Gzip)
+            .expect("expected gzip uncompressed size hint");
+
+        assert_eq!(estimated, payload.len() as u64);
     }
 
     struct TestDir {

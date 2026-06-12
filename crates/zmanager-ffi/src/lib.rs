@@ -1221,6 +1221,17 @@ unsafe fn start_extract_archive_job(
                 &thread_token,
                 sink,
             );
+        } else if let Some(format) =
+            zmanager_core::raw_stream_backend::detect_raw_stream_format(&archive_path)
+        {
+            let _ = zmanager_core::jobs::run_raw_stream_extract_job_with_policy(
+                archive_path,
+                format,
+                destination,
+                policy,
+                &thread_token,
+                sink,
+            );
         } else {
             let _ = zmanager_core::jobs::run_libarchive_extract_job_with_password_and_policy(
                 archive_path,
@@ -2770,6 +2781,7 @@ fn job_kind_name(kind: JobKind) -> &'static str {
         JobKind::TzapCreate => "tzap_create",
         JobKind::TzapExtract => "tzap_extract",
         JobKind::ArchiveExtract => "archive_extract",
+        JobKind::RawStreamExtract => "raw_stream_extract",
     }
 }
 
@@ -3962,6 +3974,46 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.join("out/payload/file.txt")).unwrap(),
             "extract me"
+        );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_lists_and_extracts_raw_bzip2_stream() {
+        const RAW_BZIP2_PAYLOAD: &[u8] = &[
+            0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0x60, 0x95, 0x84, 0xfa,
+            0x00, 0x00, 0x04, 0x11, 0x80, 0x40, 0x00, 0x24, 0x04, 0xd0, 0xa0, 0x20, 0x00, 0x31,
+            0x06, 0x4c, 0x41, 0x00, 0xd3, 0xd2, 0x08, 0x13, 0x63, 0xd8, 0xf1, 0x77, 0x24, 0x53,
+            0x85, 0x09, 0x06, 0x09, 0x58, 0x4f, 0xa0,
+        ];
+        let temp = test_root("zmanager-ffi-raw-bzip2");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("payload.txt.bz2"), RAW_BZIP2_PAYLOAD).unwrap();
+
+        let archive =
+            CString::new(temp.join("payload.txt.bz2").to_string_lossy().as_ref()).unwrap();
+        let destination = CString::new(temp.join("out").to_string_lossy().as_ref()).unwrap();
+
+        // SAFETY: `archive` is a valid C string for the duration of the call.
+        let listing = c_string(unsafe { zmanager_ffi_list_archive(archive.as_ptr()) });
+        assert!(listing.contains("\"ok\":true"));
+        assert!(listing.contains("\"path\":\"payload.txt\""));
+
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+        // SAFETY: the C strings live for the duration of the call and
+        // `job` is valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive(archive.as_ptr(), destination.as_ptr(), &raw mut job)
+        };
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"raw_stream_extract\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            fs::read_to_string(temp.join("out/payload.txt")).unwrap(),
+            "raw payload"
         );
         fs::remove_dir_all(temp).unwrap();
     }

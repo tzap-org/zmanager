@@ -1,4 +1,5 @@
 use crate::libarchive_backend::{self, LibarchiveEntryKind, LibarchiveError};
+use crate::raw_stream_backend::{self, RawStreamError, RawStreamFormat};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy,
@@ -115,6 +116,8 @@ pub enum ArchiveBrowserError {
     Tzap(TzapError),
     /// Libarchive backend failed.
     Libarchive(LibarchiveError),
+    /// Raw single-file stream backend failed.
+    RawStream(RawStreamError),
     /// Filesystem I/O failed.
     Io { path: PathBuf, source: io::Error },
     /// Extraction safety rejected an entry.
@@ -136,6 +139,7 @@ impl fmt::Display for ArchiveBrowserError {
             Self::SevenZ(source) => write!(f, "7z browser operation failed: {source}"),
             Self::Tzap(source) => write!(f, "TZAP browser operation failed: {source}"),
             Self::Libarchive(source) => write!(f, "libarchive browser operation failed: {source}"),
+            Self::RawStream(source) => write!(f, "raw stream browser operation failed: {source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
@@ -154,6 +158,7 @@ impl std::error::Error for ArchiveBrowserError {
             Self::SevenZ(source) => Some(source),
             Self::Tzap(source) => Some(source),
             Self::Libarchive(source) => Some(source),
+            Self::RawStream(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
             Self::EntryNotFound { .. } | Self::UnsupportedEntry { .. } => None,
@@ -191,6 +196,12 @@ impl From<LibarchiveError> for ArchiveBrowserError {
     }
 }
 
+impl From<RawStreamError> for ArchiveBrowserError {
+    fn from(source: RawStreamError) -> Self {
+        Self::RawStream(source)
+    }
+}
+
 impl From<ExtractionSafetyError> for ArchiveBrowserError {
     fn from(source: ExtractionSafetyError) -> Self {
         Self::Safety(source)
@@ -224,6 +235,8 @@ pub fn list_entries_with_options(
         list_7z_entries(path, options.password)
     } else if is_tzap_archive_path(path) {
         list_tzap_entries(path, options.password)
+    } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(path) {
+        list_raw_stream_entry(path, format)
     } else {
         list_libarchive_entries(path)
     }
@@ -291,6 +304,8 @@ pub fn extract_entry_with_options(
             &policy,
             options.password,
         )
+    } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(archive_path) {
+        extract_raw_stream_entry(archive_path, format, entry_path, &destination_root, &policy)
     } else {
         let report = libarchive_backend::extract_archive_entry_with_password(
             archive_path,
@@ -442,6 +457,28 @@ fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowser
         })
         .collect();
     Ok(BrowserListing { entries })
+}
+
+fn list_raw_stream_entry(
+    path: &Path,
+    format: RawStreamFormat,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let entry_name =
+        raw_stream_backend::output_name_for_raw_stream(path, format).ok_or_else(|| {
+            RawStreamError::MissingOutputName {
+                archive_path: path.to_path_buf(),
+            }
+        })?;
+    let compressed_size = path.metadata().ok().map(|metadata| metadata.len());
+    Ok(BrowserListing {
+        entries: vec![BrowserEntry {
+            path: entry_name,
+            kind: BrowserEntryKind::File,
+            size: None,
+            compressed_size,
+            modified: None,
+        }],
+    })
 }
 
 fn list_7z_entries(
@@ -645,6 +682,40 @@ fn extract_tar_zst_entry(
 
     Err(ArchiveBrowserError::EntryNotFound {
         path: entry_path.to_owned(),
+    })
+}
+
+fn extract_raw_stream_entry(
+    archive_path: &Path,
+    format: RawStreamFormat,
+    entry_path: &str,
+    destination: &Path,
+    policy: &ExtractionPolicy,
+) -> Result<EntryExtractReport, ArchiveBrowserError> {
+    let expected_entry = raw_stream_backend::output_name_for_raw_stream(archive_path, format)
+        .ok_or_else(|| RawStreamError::MissingOutputName {
+            archive_path: archive_path.to_path_buf(),
+        })?;
+    if entry_path != expected_entry {
+        return Err(ArchiveBrowserError::EntryNotFound {
+            path: entry_path.to_owned(),
+        });
+    }
+
+    let mut reader = raw_stream_backend::open_decoder(archive_path, format)?;
+    let safety_entry = ExtractionEntry {
+        archive_path: expected_entry,
+        kind: ExtractionEntryKind::File,
+        uncompressed_size: None,
+        compressed_size: archive_path.metadata().ok().map(|metadata| metadata.len()),
+    };
+    let decision =
+        ExtractionSafetyPlanner::new(destination, policy.clone()).validate_entry(&safety_entry)?;
+    let write_plan = decision_write_plan(decision, &safety_entry.archive_path)?;
+    let written_bytes = write_selected_entry(&mut reader, &safety_entry, &write_plan)?;
+    Ok(EntryExtractReport {
+        destination_path: write_plan.destination_path,
+        written_bytes,
     })
 }
 
@@ -921,6 +992,8 @@ mod tests {
     use crate::sevenz_backend::{SevenZCreateOptions, create_7z_from_path};
     use crate::tar_zst_backend::{TarZstdCreateOptions, create_tar_zst_from_path};
     use crate::zip_backend::{ZipCreateOptions, create_zip_from_path};
+    use bzip2::Compression;
+    use bzip2::write::BzEncoder;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1054,6 +1127,27 @@ mod tests {
     }
 
     #[test]
+    fn lists_and_extracts_raw_bzip2_stream() {
+        let temp = TestDir::new("browser_raw_bzip2");
+        let archive = temp.path("payload.txt.bz2");
+        write_bz2(&archive, b"raw payload");
+
+        let listing = list_entries(&archive).unwrap();
+
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.txt");
+        assert_eq!(listing.entries[0].kind, super::BrowserEntryKind::File);
+        assert!(listing.entries[0].compressed_size.is_some());
+
+        let report = extract_entry(&archive, "payload.txt", temp.path("out")).unwrap();
+        assert_eq!(report.written_bytes, 11);
+        assert_eq!(
+            fs::read_to_string(temp.path("out/payload.txt")).unwrap(),
+            "raw payload"
+        );
+    }
+
+    #[test]
     fn preview_entry_uses_temporary_cleanup_root() {
         let temp = TestDir::new("browser_preview");
         temp.write_file("project/file.txt", b"preview");
@@ -1104,6 +1198,13 @@ mod tests {
             builder.append_data(&mut header, *name, *contents).unwrap();
         }
         builder.finish().unwrap();
+    }
+
+    fn write_bz2(path: &Path, contents: &[u8]) {
+        let file = File::create(path).unwrap();
+        let mut encoder = BzEncoder::new(file, Compression::best());
+        encoder.write_all(contents).unwrap();
+        encoder.finish().unwrap();
     }
 
     struct TestDir {

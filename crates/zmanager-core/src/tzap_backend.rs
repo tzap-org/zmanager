@@ -986,7 +986,23 @@ pub fn extract_tzap_with_optional_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<TzapExtractReport, TzapError> {
-    extract_tzap_inner(archive, destination, policy, password, None)
+    extract_tzap_inner(archive, destination, policy, password, None, None)
+}
+
+/// Extracts `.tzap` entries with a passphrase, emitting job events.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// or filesystem writes fail.
+pub fn extract_tzap_with_optional_password_and_context(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    context: &mut JobContext<'_>,
+) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_inner(archive, destination, policy, password, None, Some(context))
 }
 
 /// Extracts `.tzap` entries with a passphrase and overwrite resolver.
@@ -1030,6 +1046,7 @@ pub fn extract_tzap_with_overwrite_resolver_and_optional_password(
         policy,
         password,
         Some(overwrite_resolver),
+        None,
     )
 }
 
@@ -1451,6 +1468,7 @@ fn extract_tzap_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<TzapExtractReport, TzapError> {
     let destination = destination.as_ref();
     let destination_root =
@@ -1476,6 +1494,9 @@ fn extract_tzap_inner(
     };
 
     for entry in entries {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+        }
         let preloaded_member =
             if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
                 opened.extract_member(&entry.path)?
@@ -1488,6 +1509,9 @@ fn extract_tzap_inner(
             uncompressed_size: Some(entry.file_data_size),
             compressed_size: None,
         };
+        if let Some(context) = context.as_deref_mut() {
+            context.entry_started(&entry.path, Some(entry.file_data_size));
+        }
         match planner.validate_entry(&safety_entry)? {
             ExtractionDecision::Write {
                 destination_path,
@@ -1504,21 +1528,33 @@ fn extract_tzap_inner(
                     report
                         .warnings
                         .push(format!("skipped missing entry {}", entry.path));
+                    if let Some(context) = context.as_deref_mut() {
+                        context.warning(format!("skipped missing entry {}", entry.path));
+                        context.entry_finished(&entry.path, 0);
+                    }
                     continue;
                 };
-                materialize_member(
+                let processed = materialize_member(
                     &member,
                     &destination_path,
                     replace_existing,
                     link_target_path.as_deref(),
                     &mut report,
                 )?;
+                if let Some(context) = context.as_deref_mut() {
+                    context.bytes_processed(Some(&entry.path), processed);
+                    context.entry_finished(&entry.path, processed);
+                }
             }
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
                 report
                     .warnings
                     .push(format!("skipped {}: {reason}", entry.path));
+                if let Some(context) = context.as_deref_mut() {
+                    context.warning(format!("skipped {}: {reason}", entry.path));
+                    context.entry_finished(&entry.path, 0);
+                }
             }
         }
     }
@@ -1532,7 +1568,7 @@ fn materialize_member(
     replace_existing: bool,
     link_target_path: Option<&Path>,
     report: &mut TzapExtractReport,
-) -> Result<(), TzapError> {
+) -> Result<u64, TzapError> {
     if replace_existing && member.kind != TarEntryKind::Regular {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
             TzapError::Io {
@@ -1568,6 +1604,7 @@ fn materialize_member(
                 })?;
             report.written_entries += 1;
             report.written_bytes += member.data.len() as u64;
+            return Ok(member.data.len() as u64);
         }
         TarEntryKind::Directory => {
             fs::create_dir_all(destination_path).map_err(|source| TzapError::Io {
@@ -1575,6 +1612,7 @@ fn materialize_member(
                 source,
             })?;
             report.written_entries += 1;
+            return Ok(0);
         }
         TarEntryKind::Symlink => {
             if crate::safety::should_skip_symlink_materialization(&ExtractionEntryKind::Symlink {
@@ -1608,9 +1646,10 @@ fn materialize_member(
             })?;
             write_hardlink(source_path, destination_path)?;
             report.written_entries += 1;
+            return Ok(0);
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 fn open_tzap_archive(

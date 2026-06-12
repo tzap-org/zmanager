@@ -259,6 +259,41 @@ pub fn extract_tar_zst(
     extract_tar_zst_inner(archive_path, destination, policy, None, None)
 }
 
+/// Estimates the uncompressed byte size of a `.tar.zst` archive by summing
+/// entry headers.
+///
+/// # Errors
+///
+/// Returns [`TarZstdError`] when the archive cannot be opened or read.
+pub fn estimate_tar_zst_uncompressed_size(
+    archive_path: impl AsRef<Path>,
+) -> Result<u64, TarZstdError> {
+    let archive_path = archive_path.as_ref();
+    let file = File::open(archive_path).map_err(|source| TarZstdError::Io {
+        path: archive_path.to_path_buf(),
+        source,
+    })?;
+    let decoder = zstd::stream::read::Decoder::new(file).map_err(|source| TarZstdError::Io {
+        path: archive_path.to_path_buf(),
+        source,
+    })?;
+    let mut archive = Archive::new(decoder);
+    let mut total = 0_u64;
+
+    for entry in archive.entries().map_err(|source| TarZstdError::Io {
+        path: archive_path.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| TarZstdError::Io {
+            path: archive_path.to_path_buf(),
+            source,
+        })?;
+        total = total.saturating_add(entry.header().size().unwrap_or(0));
+    }
+
+    Ok(total)
+}
+
 /// Copies selected regular `.tar.zst` file entries to a writer in archive order.
 ///
 /// # Errors
