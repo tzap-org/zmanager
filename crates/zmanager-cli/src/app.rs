@@ -20,7 +20,8 @@ const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
 const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or quit";
 
 const USAGE: &str = "\
-ZManager archive utility
+ZManager is a universal file archiver built for high-performance compression,
+safe extraction, and seamless handling of virtually any archive format.
 
 Usage:
   zm [options] <command>

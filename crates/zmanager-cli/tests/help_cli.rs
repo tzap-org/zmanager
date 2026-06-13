@@ -240,6 +240,10 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
     assert_success("zm --help", &output);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_contains(
+        &stdout,
+        "ZManager is a universal file archiver built for high-performance compression",
+    );
     assert_contains(&stdout, "Usage:");
     assert_contains(&stdout, "zm [options] <command>");
     assert_contains(&stdout, "zm -cf <archive> [create-options] <paths...>");

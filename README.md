@@ -6,9 +6,9 @@
 [![Downloads](https://img.shields.io/github/downloads/frankmanzhu/zmanager/total)](https://github.com/frankmanzhu/zmanager/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`zm` is a fast, safe archive utility for macOS, Linux, and Windows. Its goal is
-simple: extract almost anything safely, and create new archives only with
-modern, practical formats.
+`zm` is a universal file archiver for macOS, Linux, and Windows, built for
+high-performance compression, safe extraction, and seamless handling of
+virtually any archive format.
 
 The CLI is the open-source part of ZManager. It shares the Rust archive engine
 with the macOS app, but it is useful on its own: create clean project archives,

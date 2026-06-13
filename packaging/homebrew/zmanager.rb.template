@@ -1,5 +1,5 @@
 class Zmanager < Formula
-  desc "Fast, safe archive utility for ZIP, 7z, TAR.ZST, and broad extraction"
+  desc "Universal file archiver for fast compression and safe extraction"
   homepage "https://github.com/frankmanzhu/zmanager"
   license all_of: ["Apache-2.0", :cannot_represent]
 
