@@ -1328,7 +1328,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1407,8 +1407,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e638be81015af9a0e501c9ca1fcef5a63352ad6f61018caf425a2535d79658b"
+source = "git+https://github.com/frankmanzhu/tzap.git?rev=dc088ae#dc088ae6e73cdcf807201866c69fa58af4bbd7fc"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",

@@ -1328,14 +1328,18 @@ fn finish_raw_stream_extract_result(
 mod tests {
     use super::{
         CancellationToken, JobEvent, run_clean_source_tar_zst_create_job,
-        run_clean_source_tar_zst_create_job_from_sources, run_raw_stream_extract_job_with_policy,
-        run_tar_zst_create_job, run_zip_create_job, run_zip_create_job_from_sources,
-        run_zip_extract_job,
+        run_clean_source_tar_zst_create_job_from_sources,
+        run_7z_create_job_from_sources_with_plan_options, run_raw_stream_extract_job_with_policy,
+        run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
+        run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
+        run_zip_create_job_from_sources, run_zip_extract_job,
     };
     use crate::archive_browser::list_entries;
     use crate::raw_stream_backend::RawStreamFormat;
     use crate::safety::ExtractionPolicy;
+    use crate::sevenz_backend::SevenZCreateOptions;
     use crate::tar_zst_backend::TarZstdCreateOptions;
+    use crate::tzap_backend::{TzapCreateOptions, TzapKeySource};
     use crate::zip_backend::{ZipBackendError, ZipCreateOptions, list_zip};
     use bzip2::Compression;
     use bzip2::write::BzEncoder;
@@ -1483,6 +1487,84 @@ mod tests {
             })
         );
         assert!(last_processed_bytes <= source_size);
+    }
+
+    #[test]
+    fn tzap_create_job_emits_progress_before_completion_for_large_file() {
+        let temp = TestDir::new("tzap_create_job_emits_progress_before_completion_for_large_file");
+        let payload = large_tzap_progress_payload();
+        temp.write_file("project/payload.bin", &payload);
+        let mut events = Vec::new();
+
+        run_tzap_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.tzap"),
+            &test_tzap_create_options(),
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+    }
+
+    #[test]
+    fn sevenz_create_job_emits_progress_before_completion_for_large_file() {
+        let temp =
+            TestDir::new("sevenz_create_job_emits_progress_before_completion_for_large_file");
+        let payload = large_tzap_progress_payload();
+        temp.write_file("project/payload.bin", &payload);
+        let mut events = Vec::new();
+
+        run_7z_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.7z"),
+            &SevenZCreateOptions {
+                level: Some(1),
+                ..SevenZCreateOptions::default()
+            },
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+    }
+
+    #[test]
+    fn tzap_extract_job_emits_progress_before_completion_for_large_file() {
+        let temp = TestDir::new("tzap_extract_job_emits_progress_before_completion_for_large_file");
+        let payload = large_tzap_progress_payload();
+        temp.write_file("project/payload.bin", &payload);
+
+        run_tzap_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.tzap"),
+            &test_tzap_create_options(),
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        run_tzap_extract_job_with_password_and_policy(
+            temp.path("archive.tzap"),
+            temp.path("out"),
+            None,
+            ExtractionPolicy::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+        assert_eq!(
+            fs::read(temp.path("out/project/payload.bin")).unwrap(),
+            payload
+        );
     }
 
     #[test]
@@ -1661,6 +1743,56 @@ mod tests {
             .map(|entry| entry.path.as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, vec!["a.txt", "folder", "folder/b.txt"]);
+    }
+
+    fn large_tzap_progress_payload() -> Vec<u8> {
+        (0..(512 * 1024)).map(|index| (index % 251) as u8).collect()
+    }
+
+    fn test_tzap_create_options() -> TzapCreateOptions {
+        TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        }
+    }
+
+    fn assert_monotonic_progress_reaches_total_before_completion(
+        events: &[JobEvent],
+        expected_total: u64,
+    ) {
+        let progress_totals = progress_totals_before_completion(events);
+
+        assert!(!progress_totals.is_empty());
+        assert!(progress_totals.iter().all(|total| *total <= expected_total));
+        assert!(
+            progress_totals
+                .windows(2)
+                .all(|window| window[0] <= window[1])
+        );
+        assert_eq!(progress_totals.last(), Some(&expected_total));
+    }
+
+    fn progress_totals_before_completion(events: &[JobEvent]) -> Vec<u64> {
+        let completed_index = events
+            .iter()
+            .position(|event| matches!(event, JobEvent::Completed { .. }))
+            .expect("expected completed event");
+        events[..completed_index]
+            .iter()
+            .filter_map(|event| match event {
+                JobEvent::BytesProcessed {
+                    total_bytes_processed,
+                    ..
+                } => Some(*total_bytes_processed),
+                _ => None,
+            })
+            .collect()
     }
 
     struct TestDir {

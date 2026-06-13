@@ -21,3 +21,6 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+[patch.crates-io]
+tzap-core = { git = "https://github.com/frankmanzhu/tzap.git", rev = "dc088ae" }

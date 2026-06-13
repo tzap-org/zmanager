@@ -28,7 +28,7 @@ use tzap_core::{
     ArchiveWriteError, ArchiveWriteSink, ExtractError, KdfParams, MasterKey, OpenedArchive,
     RegularFileSource, RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind, WriterOptions,
     open_seekable_archive, open_seekable_archive_volumes, public_no_key_verify_volumes_with,
-    write_archive_sources_to_sink,
+    write_archive_sources_to_sink_with_progress,
 };
 use tzap_plugin_signing::x509_chain::{
     X509_AUTHENTICATOR_ID, X509RootAuthReport, X509RootAuthSigner,
@@ -489,7 +489,10 @@ pub fn create_tzap_from_manifest_with_context(
         &mut authenticator
             as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
     });
-    let summary = write_archive_sources_to_sink(
+    let mut progress = |archive_path: &str, bytes: u64| {
+        context.bytes_processed(Some(archive_path), bytes);
+    };
+    let summary = write_archive_sources_to_sink_with_progress(
         &file_sources,
         &master_key,
         writer_options,
@@ -498,6 +501,7 @@ pub fn create_tzap_from_manifest_with_context(
         root_auth,
         authenticator,
         &mut sink,
+        &mut progress,
     )
     .map_err(|source| tzap_write_error(destination, source))?;
 
@@ -508,7 +512,6 @@ pub fn create_tzap_from_manifest_with_context(
         )));
     }
     for file in &file_sources {
-        context.bytes_processed(Some(&file.archive_path), file.size);
         context.entry_finished(&file.archive_path, file.size);
     }
 
@@ -1519,6 +1522,34 @@ fn extract_tzap_inner(
                 link_target_path,
                 ..
             } => {
+                if matches!(&safety_entry.kind, ExtractionEntryKind::File) {
+                    let Some(processed) = stream_regular_member_to_destination(
+                        &opened,
+                        &entry.path,
+                        entry.file_data_size,
+                        &destination_path,
+                        replace_existing,
+                        context.as_deref_mut(),
+                    )?
+                    else {
+                        report.skipped_entries += 1;
+                        report
+                            .warnings
+                            .push(format!("skipped missing entry {}", entry.path));
+                        if let Some(context) = context.as_deref_mut() {
+                            context.warning(format!("skipped missing entry {}", entry.path));
+                            context.entry_finished(&entry.path, 0);
+                        }
+                        continue;
+                    };
+                    report.written_entries += 1;
+                    report.written_bytes += processed;
+                    if let Some(context) = context.as_deref_mut() {
+                        context.entry_finished(&entry.path, processed);
+                    }
+                    continue;
+                }
+
                 let member = match preloaded_member {
                     Some(member) => Some(member),
                     None => opened.extract_member(&entry.path)?,
@@ -1534,7 +1565,7 @@ fn extract_tzap_inner(
                     }
                     continue;
                 };
-                let processed = materialize_member(
+                let processed = materialize_non_regular_member(
                     &member,
                     &destination_path,
                     replace_existing,
@@ -1562,7 +1593,48 @@ fn extract_tzap_inner(
     Ok(report)
 }
 
-fn materialize_member(
+fn stream_regular_member_to_destination(
+    opened: &OpenedArchive,
+    entry_path: &str,
+    entry_size: u64,
+    destination_path: &Path,
+    replace_existing: bool,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<Option<u64>, TzapError> {
+    let mut output =
+        AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
+    let output_file = output.file_mut().map_err(|source| TzapError::Io {
+        path: destination_path.to_path_buf(),
+        source,
+    })?;
+    let extracted = match context {
+        Some(context) => {
+            let mut progress = |archive_path: &str, bytes: u64| {
+                context.bytes_processed(Some(archive_path), bytes);
+            };
+            opened.extract_file_to_writer_with_progress(entry_path, output_file, &mut progress)
+        }
+        None => opened.extract_file_to_writer(entry_path, output_file),
+    }
+    .map_err(|source| tzap_extract_error(entry_path, source))?;
+
+    let Some(_diagnostics) = extracted else {
+        return Ok(None);
+    };
+
+    output
+        .commit_with_replace(replace_existing)
+        .map_err(|source| TzapError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
+    Ok(Some(entry_size))
+}
+
+fn materialize_non_regular_member(
     member: &ExtractedArchiveMember,
     destination_path: &Path,
     replace_existing: bool,
@@ -1580,31 +1652,9 @@ fn materialize_member(
 
     match member.kind {
         TarEntryKind::Regular => {
-            let mut output =
-                AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
-            output
-                .file_mut()
-                .map_err(|source| TzapError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?
-                .write_all(&member.data)
-                .map_err(|source| TzapError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
-            output
-                .commit_with_replace(replace_existing)
-                .map_err(|source| TzapError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
-            report.written_entries += 1;
-            report.written_bytes += member.data.len() as u64;
-            return Ok(member.data.len() as u64);
+            return Err(TzapError::Format(FormatError::InvalidArchive(
+                "regular TZAP member reached non-regular materializer",
+            )));
         }
         TarEntryKind::Directory => {
             fs::create_dir_all(destination_path).map_err(|source| TzapError::Io {
