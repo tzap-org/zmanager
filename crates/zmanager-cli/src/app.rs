@@ -1807,6 +1807,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 encrypt_file_names: true,
                 replace_existing: backend_replace_existing,
                 volume_size: request.volume_size,
+                ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
             };
             zmanager_core::sevenz_backend::create_7z_from_manifest(
                 &manifest,
@@ -1815,10 +1816,11 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             )
             .map(|report| CreateOutcome {
                 summary: format!(
-                    "created 7z: {} entries, {} bytes, solid {}, encrypted {}, {} warnings",
+                    "created 7z: {} entries, {} bytes, solid {}, threads {:?}, encrypted {}, {} warnings",
                     report.written_entries,
                     report.written_bytes,
                     report.solid,
+                    report.threads,
                     report.encrypted,
                     report.warnings.len()
                 ),
@@ -5576,14 +5578,16 @@ fn run_7z_create(
         encrypt_file_names: true,
         replace_existing: false,
         volume_size: None,
+        ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
     };
     match zmanager_core::sevenz_backend::create_7z_from_path(source, destination, &options) {
         Ok(report) => {
             println!(
-                "created 7z: {} entries, {} bytes, solid {}, encrypted {}, {} warnings",
+                "created 7z: {} entries, {} bytes, solid {}, threads {:?}, encrypted {}, {} warnings",
                 report.written_entries,
                 report.written_bytes,
                 report.solid,
+                report.threads,
                 report.encrypted,
                 report.warnings.len()
             );

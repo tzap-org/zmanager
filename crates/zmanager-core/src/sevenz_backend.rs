@@ -1,4 +1,4 @@
-use crate::jobs::{JobCancelled, JobContext};
+use crate::jobs::{CancellationToken, JobCancelled, JobContext};
 use crate::manifest::{
     ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive,
 };
@@ -12,14 +12,22 @@ use sevenz_rust2::{
     Archive, ArchiveEntry, ArchiveReader, ArchiveWriter, EncoderMethod, Password, SourceReader,
 };
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const MIN_VOLUME_SIZE_BYTES: u64 = 1_048_576;
+const DEFAULT_SEVENZ_COMPRESSION_LEVEL: u32 = 6;
+const DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES: u64 = 16 * 1_024 * 1_024;
+const MAX_SEVENZ_LZMA2_THREADS: u32 = 256;
 const SEVENZ_VOLUME_EXTENSION_WIDTH: usize = 3;
+
+type SevenZProgressCallback<'a> = Rc<RefCell<dyn FnMut(Option<&str>, u64) + 'a>>;
 
 /// Options for `.7z` creation.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -29,6 +37,10 @@ pub struct SevenZCreateOptions {
     pub solid: bool,
     /// Compression level for LZMA2 where supported.
     pub level: Option<u32>,
+    /// LZMA2 worker count. `None` leaves the backend's single-thread default.
+    pub threads: Option<u32>,
+    /// LZMA2 independent chunk size for multi-threaded compression.
+    pub chunk_size: Option<u64>,
     /// Preserve timestamps and attributes exposed by the 7z backend.
     pub preserve_metadata: bool,
     /// Optional AES password. Empty strings are treated as no password.
@@ -46,6 +58,8 @@ impl Default for SevenZCreateOptions {
         Self {
             solid: true,
             level: None,
+            threads: default_sevenz_threads(),
+            chunk_size: Some(DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES),
             preserve_metadata: true,
             password: None,
             encrypt_file_names: true,
@@ -64,6 +78,8 @@ pub struct SevenZCreateReport {
     pub written_bytes: u64,
     /// Whether solid compression was requested.
     pub solid: bool,
+    /// LZMA2 worker count requested for archive creation.
+    pub threads: Option<u32>,
     /// Whether AES encryption was enabled.
     pub encrypted: bool,
     /// Requested split volume size, when the archive was split.
@@ -225,6 +241,44 @@ pub fn create_7z_from_manifest(
     destination: impl AsRef<Path>,
     options: &SevenZCreateOptions,
 ) -> Result<SevenZCreateReport, SevenZError> {
+    create_7z_from_manifest_inner(manifest, destination, options, None, None, None)
+}
+
+/// Creates a `.7z` archive from a manifest while emitting source-byte progress.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when source files cannot be read or 7z writing fails.
+pub fn create_7z_from_manifest_with_context(
+    manifest: &ArchiveManifest,
+    destination: impl AsRef<Path>,
+    options: &SevenZCreateOptions,
+    context: &mut JobContext<'_>,
+) -> Result<SevenZCreateReport, SevenZError> {
+    let cancellation_token = context.cancellation_token();
+    let cancellation_observed = Rc::new(Cell::new(false));
+    let progress: SevenZProgressCallback<'_> =
+        Rc::new(RefCell::new(move |path: Option<&str>, bytes: u64| {
+            context.bytes_processed(path, bytes);
+        }));
+    create_7z_from_manifest_inner(
+        manifest,
+        destination,
+        options,
+        Some(&progress),
+        Some(&cancellation_token),
+        Some(&cancellation_observed),
+    )
+}
+
+fn create_7z_from_manifest_inner(
+    manifest: &ArchiveManifest,
+    destination: impl AsRef<Path>,
+    options: &SevenZCreateOptions,
+    progress: Option<&SevenZProgressCallback<'_>>,
+    cancellation_token: Option<&CancellationToken>,
+    cancellation_observed: Option<&Rc<Cell<bool>>>,
+) -> Result<SevenZCreateReport, SevenZError> {
     validate_volume_size(options.volume_size)?;
 
     let destination = destination.as_ref();
@@ -246,32 +300,43 @@ pub fn create_7z_from_manifest(
         written_entries: 0,
         written_bytes: 0,
         solid: options.solid,
+        threads: sevenz_threads(options),
         encrypted,
         volume_size: options.volume_size,
         volume_count: 1,
         warnings: Vec::new(),
     };
 
-    if options.solid {
+    let write_result = if options.solid {
         write_solid_manifest(
             &mut writer,
             manifest,
             options.preserve_metadata,
             &mut report,
-        )?;
+            progress,
+            cancellation_token,
+            cancellation_observed,
+        )
     } else {
         write_non_solid_manifest(
             &mut writer,
             manifest,
             options.preserve_metadata,
             &mut report,
-        )?;
-    }
+            progress,
+            cancellation_token,
+            cancellation_observed,
+        )
+    };
+    map_cancelled_7z_create_result(write_result, cancellation_observed)?;
 
-    writer.finish().map_err(|source| SevenZError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    map_cancelled_7z_create_result(
+        writer.finish().map_err(|source| SevenZError::Io {
+            path: destination.to_path_buf(),
+            source,
+        }),
+        cancellation_observed,
+    )?;
     if let Some(volume_size) = options.volume_size {
         output.close();
         report.volume_count = split_7z_temp_archive(
@@ -290,6 +355,69 @@ pub fn create_7z_from_manifest(
     }
 
     Ok(report)
+}
+
+fn map_cancelled_7z_create_result<T>(
+    result: Result<T, SevenZError>,
+    cancellation_observed: Option<&Rc<Cell<bool>>>,
+) -> Result<T, SevenZError> {
+    match result {
+        Err(_) if cancellation_observed.is_some_and(|observed| observed.get()) => {
+            Err(SevenZError::Cancelled)
+        }
+        result => result,
+    }
+}
+
+struct SevenZProgressReader<'a, R> {
+    inner: R,
+    archive_path: String,
+    progress: Option<SevenZProgressCallback<'a>>,
+    cancellation_token: Option<CancellationToken>,
+    cancellation_observed: Option<Rc<Cell<bool>>>,
+}
+
+impl<'a, R> SevenZProgressReader<'a, R> {
+    fn new(
+        inner: R,
+        archive_path: impl Into<String>,
+        progress: Option<SevenZProgressCallback<'a>>,
+        cancellation_token: Option<CancellationToken>,
+        cancellation_observed: Option<Rc<Cell<bool>>>,
+    ) -> Self {
+        Self {
+            inner,
+            archive_path: archive_path.into(),
+            progress,
+            cancellation_token,
+            cancellation_observed,
+        }
+    }
+}
+
+impl<R: Read> Read for SevenZProgressReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self
+            .cancellation_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            if let Some(observed) = &self.cancellation_observed {
+                observed.set(true);
+            }
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "job cancelled"));
+        }
+
+        let read = self.inner.read(buffer)?;
+        if read > 0
+            && let Some(progress) = &self.progress
+        {
+            let read_u64 = u64::try_from(read)
+                .map_err(|_| io::Error::other("7z progress byte count overflow"))?;
+            progress.borrow_mut()(Some(&self.archive_path), read_u64);
+        }
+        Ok(read)
+    }
 }
 
 fn validate_volume_size(volume_size: Option<u64>) -> Result<(), SevenZError> {
@@ -1017,13 +1145,13 @@ fn configure_content_methods<W: io::Write + io::Seek>(
         .as_ref()
         .map(SecretString::expose_secret)
         .filter(|password| !password.is_empty());
-    let level = options.level.map(Lzma2Options::from_level);
+    let lzma2_options = sevenz_lzma2_options(options);
 
-    match (password, level) {
-        (Some(password), Some(level)) => {
+    match (password, lzma2_options) {
+        (Some(password), Some(lzma2_options)) => {
             writer.set_content_methods(vec![
                 AesEncoderOptions::new(Password::from(password)).into(),
-                level.into(),
+                lzma2_options.into(),
             ]);
             true
         }
@@ -1034,12 +1162,43 @@ fn configure_content_methods<W: io::Write + io::Seek>(
             ]);
             true
         }
-        (None, Some(level)) => {
-            writer.set_content_methods(vec![level.into()]);
+        (None, Some(lzma2_options)) => {
+            writer.set_content_methods(vec![lzma2_options.into()]);
             false
         }
         (None, None) => false,
     }
+}
+
+fn sevenz_lzma2_options(options: &SevenZCreateOptions) -> Option<Lzma2Options> {
+    let level = options.level.unwrap_or(DEFAULT_SEVENZ_COMPRESSION_LEVEL);
+    let Some(threads) = sevenz_threads(options) else {
+        return options.level.map(Lzma2Options::from_level);
+    };
+
+    if threads <= 1 {
+        return Some(Lzma2Options::from_level(level));
+    }
+
+    Some(Lzma2Options::from_level_mt(
+        level,
+        threads,
+        options
+            .chunk_size
+            .unwrap_or(DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES),
+    ))
+}
+
+fn sevenz_threads(options: &SevenZCreateOptions) -> Option<u32> {
+    options
+        .threads
+        .map(|threads| threads.clamp(1, MAX_SEVENZ_LZMA2_THREADS))
+}
+
+fn default_sevenz_threads() -> Option<u32> {
+    let threads = std::thread::available_parallelism().ok()?.get();
+
+    u32::try_from(threads).ok().filter(|threads| *threads > 1)
 }
 
 fn archive_password(password: Option<&str>) -> Password {
@@ -1061,9 +1220,20 @@ fn write_non_solid_manifest<W: Write + Seek>(
     manifest: &ArchiveManifest,
     preserve_metadata: bool,
     report: &mut SevenZCreateReport,
+    progress: Option<&SevenZProgressCallback<'_>>,
+    cancellation_token: Option<&CancellationToken>,
+    cancellation_observed: Option<&Rc<Cell<bool>>>,
 ) -> Result<(), SevenZError> {
     for entry in &manifest.entries {
-        append_non_solid_entry(writer, entry, preserve_metadata, report)?;
+        append_non_solid_entry(
+            writer,
+            entry,
+            preserve_metadata,
+            report,
+            progress,
+            cancellation_token,
+            cancellation_observed,
+        )?;
     }
 
     Ok(())
@@ -1074,6 +1244,9 @@ fn append_non_solid_entry<W: Write + Seek>(
     entry: &ManifestEntry,
     preserve_metadata: bool,
     report: &mut SevenZCreateReport,
+    progress: Option<&SevenZProgressCallback<'_>>,
+    cancellation_token: Option<&CancellationToken>,
+    cancellation_observed: Option<&Rc<Cell<bool>>>,
 ) -> Result<(), SevenZError> {
     match entry.file_type {
         ManifestFileType::Directory => {
@@ -1087,7 +1260,14 @@ fn append_non_solid_entry<W: Write + Seek>(
                 path: entry.source_path.clone(),
                 source,
             })?;
-            writer.push_archive_entry(archive_entry, Some(file))?;
+            let reader = SevenZProgressReader::new(
+                file,
+                entry.archive_path.clone(),
+                progress.cloned(),
+                cancellation_token.cloned(),
+                cancellation_observed.cloned(),
+            );
+            writer.push_archive_entry(archive_entry, Some(reader))?;
             report.written_entries += 1;
             report.written_bytes += entry.size;
         }
@@ -1113,6 +1293,9 @@ fn write_solid_manifest<W: Write + Seek>(
     manifest: &ArchiveManifest,
     preserve_metadata: bool,
     report: &mut SevenZCreateReport,
+    progress: Option<&SevenZProgressCallback<'_>>,
+    cancellation_token: Option<&CancellationToken>,
+    cancellation_observed: Option<&Rc<Cell<bool>>>,
 ) -> Result<(), SevenZError> {
     let mut solid_entries = Vec::new();
     let mut solid_readers = Vec::new();
@@ -1130,8 +1313,15 @@ fn write_solid_manifest<W: Write + Seek>(
                     path: entry.source_path.clone(),
                     source,
                 })?;
+                let reader = SevenZProgressReader::new(
+                    file,
+                    entry.archive_path.clone(),
+                    progress.cloned(),
+                    cancellation_token.cloned(),
+                    cancellation_observed.cloned(),
+                );
                 solid_entries.push(archive_entry);
-                solid_readers.push(SourceReader::new(file));
+                solid_readers.push(SourceReader::new(reader));
                 report.written_entries += 1;
                 report.written_bytes += entry.size;
             }
@@ -1378,6 +1568,64 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn default_7z_create_options_request_parallel_lzma2_when_available() {
+        let options = SevenZCreateOptions::default();
+
+        assert_eq!(options.threads, super::default_sevenz_threads());
+        assert_eq!(
+            options.chunk_size,
+            Some(super::DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES)
+        );
+    }
+
+    #[test]
+    fn sevenz_thread_count_is_clamped_to_backend_limits() {
+        let mut options = SevenZCreateOptions {
+            threads: Some(0),
+            ..SevenZCreateOptions::default()
+        };
+        assert_eq!(super::sevenz_threads(&options), Some(1));
+
+        options.threads = Some(super::MAX_SEVENZ_LZMA2_THREADS + 1);
+        assert_eq!(
+            super::sevenz_threads(&options),
+            Some(super::MAX_SEVENZ_LZMA2_THREADS)
+        );
+    }
+
+    #[test]
+    fn create_report_includes_configured_7z_thread_count() {
+        let temp = TestDir::new("create_report_includes_configured_7z_thread_count");
+        temp.write_file("payload/file.txt", b"hello");
+        let archive = temp.path("payload.7z");
+
+        let report = create_7z_from_path(
+            temp.path("payload"),
+            &archive,
+            &SevenZCreateOptions {
+                level: Some(1),
+                threads: Some(2),
+                chunk_size: Some(super::MIN_VOLUME_SIZE_BYTES),
+                ..SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.threads, Some(2));
+        extract_7z(
+            &archive,
+            temp.path("out"),
+            None,
+            ExtractionPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
     fn creates_and_extracts_solid_7z_archive() {
         let temp = TestDir::new("creates_and_extracts_solid_7z_archive");
         temp.write_file("payload/file.txt", b"hello");
@@ -1435,12 +1683,7 @@ mod tests {
             &archive,
             &SevenZCreateOptions {
                 solid: false,
-                level: None,
-                preserve_metadata: true,
-                password: None,
-                encrypt_file_names: true,
-                replace_existing: false,
-                volume_size: None,
+                ..SevenZCreateOptions::default()
             },
         )
         .unwrap();
@@ -1671,13 +1914,8 @@ mod tests {
             temp.path("payload"),
             &archive,
             &SevenZCreateOptions {
-                solid: true,
-                level: None,
-                preserve_metadata: true,
                 password: Some(SecretString::from("correct horse")),
-                encrypt_file_names: true,
-                replace_existing: false,
-                volume_size: None,
+                ..SevenZCreateOptions::default()
             },
         )
         .unwrap();
@@ -1724,13 +1962,9 @@ mod tests {
             temp.path("payload"),
             &archive,
             &SevenZCreateOptions {
-                solid: true,
-                level: None,
-                preserve_metadata: true,
                 password: Some(SecretString::from("correct horse")),
                 encrypt_file_names: false,
-                replace_existing: false,
-                volume_size: None,
+                ..SevenZCreateOptions::default()
             },
         )
         .unwrap();

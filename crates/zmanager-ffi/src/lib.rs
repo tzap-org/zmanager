@@ -2503,6 +2503,7 @@ fn sevenz_create_options(
         encrypt_file_names,
         replace_existing,
         volume_size,
+        ..SevenZCreateOptions::default()
     })
 }
 

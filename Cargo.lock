@@ -1328,7 +1328,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1406,8 +1406,9 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "tzap-core"
-version = "0.1.4"
-source = "git+https://github.com/frankmanzhu/tzap.git?rev=dc088ae#dc088ae6e73cdcf807201866c69fa58af4bbd7fc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fb67af8e87f797e4fc19b7db119a2fab192dda8ad1c53b120a8bbcc9404ca70"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1429,9 +1430,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e8d66c74502f29225a9e287b855430f47e2aa6870421ff07af8d3381fe291b7"
+checksum = "fc3f03a515cfb7c14d4c3c094a94bc9a0061b7dd1c53dfc6e901b95c255a6f4e"
 dependencies = [
  "ed25519-dalek",
  "openssl",

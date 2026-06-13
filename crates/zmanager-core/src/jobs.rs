@@ -222,6 +222,13 @@ impl<'a> JobContext<'a> {
             Ok(())
         }
     }
+
+    /// Returns a clone of the cancellation token for reader adapters that
+    /// cannot hold a borrow of the full job context.
+    #[must_use]
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.token.clone()
+    }
 }
 
 /// Runs a ZIP create job and emits lifecycle/progress events.
@@ -627,7 +634,7 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
     destination: impl AsRef<Path>,
     options: &SevenZCreateOptions,
     plan_options: &PlanOptions,
-    _token: &CancellationToken,
+    token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<SevenZCreateReport, SevenZError> {
     let manifest = match plan_archives(sources, plan_options) {
@@ -648,7 +655,20 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
         kind: JobKind::SevenZCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let result = sevenz_backend::create_7z_from_manifest(&manifest, destination, options);
+    let mut context = JobContext::new(token, sink);
+    let result = sevenz_backend::create_7z_from_manifest_with_context(
+        &manifest,
+        destination,
+        options,
+        &mut context,
+    );
+    finish_7z_create_result(result, sink)
+}
+
+fn finish_7z_create_result(
+    result: Result<SevenZCreateReport, SevenZError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<SevenZCreateReport, SevenZError> {
     match result {
         Ok(report) => {
             sink.emit(JobEvent::Completed {
@@ -656,6 +676,12 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
                 bytes: report.written_bytes,
             });
             Ok(report)
+        }
+        Err(SevenZError::Cancelled) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(SevenZError::Cancelled)
         }
         Err(error) => {
             sink.emit(JobEvent::Failed {
@@ -1327,17 +1353,17 @@ fn finish_raw_stream_extract_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        CancellationToken, JobEvent, run_clean_source_tar_zst_create_job,
-        run_clean_source_tar_zst_create_job_from_sources,
-        run_7z_create_job_from_sources_with_plan_options, run_raw_stream_extract_job_with_policy,
-        run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
+        CancellationToken, JobEvent, run_7z_create_job_from_sources_with_plan_options,
+        run_clean_source_tar_zst_create_job, run_clean_source_tar_zst_create_job_from_sources,
+        run_raw_stream_extract_job_with_policy, run_tar_zst_create_job,
+        run_tzap_create_job_from_sources_with_plan_options,
         run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
         run_zip_create_job_from_sources, run_zip_extract_job,
     };
     use crate::archive_browser::list_entries;
     use crate::raw_stream_backend::RawStreamFormat;
     use crate::safety::ExtractionPolicy;
-    use crate::sevenz_backend::SevenZCreateOptions;
+    use crate::sevenz_backend::{SevenZCreateOptions, SevenZError};
     use crate::tar_zst_backend::TarZstdCreateOptions;
     use crate::tzap_backend::{TzapCreateOptions, TzapKeySource};
     use crate::zip_backend::{ZipBackendError, ZipCreateOptions, list_zip};
@@ -1531,6 +1557,45 @@ mod tests {
         .unwrap();
 
         assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+    }
+
+    #[test]
+    fn sevenz_create_job_can_be_cancelled_during_file_progress() {
+        let temp = TestDir::new("sevenz_create_job_can_be_cancelled_during_file_progress");
+        let payload = large_tzap_progress_payload();
+        temp.write_file("project/payload.bin", &payload);
+        let token = CancellationToken::new();
+        let token_for_sink = token.clone();
+        let mut events = Vec::new();
+
+        let result = run_7z_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.7z"),
+            &SevenZCreateOptions {
+                level: Some(1),
+                ..SevenZCreateOptions::default()
+            },
+            &crate::manifest::PlanOptions::default(),
+            &token,
+            &mut |event| {
+                if matches!(event, JobEvent::BytesProcessed { .. }) {
+                    token_for_sink.cancel();
+                }
+                events.push(event);
+            },
+        );
+
+        assert!(matches!(result, Err(SevenZError::Cancelled)));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, JobEvent::Cancelled { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, JobEvent::Completed { .. }))
+        );
     }
 
     #[test]
