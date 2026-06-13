@@ -1048,8 +1048,9 @@ pub unsafe extern "C" fn zmanager_ffi_start_archive_create_many_with_exclusions_
 
 /// Starts an archive extraction job routed by archive extension.
 ///
-/// ZIP, TAR.ZST, TZAP, 7z, and RAR use their native extraction backends. Other
-/// formats use the libarchive fallback with coarse lifecycle events.
+/// ZIP, TAR.ZST, TZAP, 7z, and passworded RAR use their native extraction
+/// backends. Other formats use the libarchive fallback with coarse lifecycle
+/// events.
 ///
 /// # Safety
 ///
@@ -1078,8 +1079,9 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
 /// Starts an archive extraction job with optional password and overwrite
 /// behavior routed by archive extension.
 ///
-/// ZIP, TAR.ZST, TZAP, 7z, and RAR use their native extraction backends. Other
-/// formats use the libarchive fallback with coarse lifecycle events.
+/// ZIP, TAR.ZST, TZAP, 7z, and passworded RAR use their native extraction
+/// backends. Other formats use the libarchive fallback with coarse lifecycle
+/// events.
 ///
 /// # Safety
 ///
@@ -1195,7 +1197,7 @@ unsafe fn start_extract_archive_job(
                 &thread_token,
                 sink,
             );
-        } else if is_rar_archive(&archive_path) {
+        } else if is_rar_archive(&archive_path) && password.is_some() {
             let _ = zmanager_core::jobs::run_rar_extract_job_with_password_and_policy(
                 archive_path,
                 destination,
@@ -4292,26 +4294,6 @@ mod tests {
         );
 
         let archive = CString::new(archive_path.to_string_lossy().as_ref()).unwrap();
-        let missing_password_destination =
-            CString::new(temp.join("missing-password").to_string_lossy().as_ref()).unwrap();
-        let mut missing_password_job: *mut ZManagerFfiJob = ptr::null_mut();
-
-        // SAFETY: the C strings live for the duration of the call and
-        // `missing_password_job` is valid writable storage for the out pointer.
-        let status = unsafe {
-            zmanager_ffi_start_extract_archive(
-                archive.as_ptr(),
-                missing_password_destination.as_ptr(),
-                &raw mut missing_password_job,
-            )
-        };
-
-        assert_eq!(status, ZManagerFfiStatus::Ok);
-        assert!(!missing_password_job.is_null());
-        let missing_password_events = drain_job(missing_password_job);
-        assert!(missing_password_events.contains("\"kind\":\"rar_extract\""));
-        assert!(missing_password_events.to_lowercase().contains("password"));
-
         let destination = CString::new(temp.join("out").to_string_lossy().as_ref()).unwrap();
         let password = CString::new("secret").unwrap();
         let mut job: *mut ZManagerFfiJob = ptr::null_mut();
@@ -4337,6 +4319,70 @@ mod tests {
             fs::read_to_string(temp.join("out/payload/file.txt")).unwrap(),
             "secret rar"
         );
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn c_abi_extract_archive_uses_libarchive_for_unencrypted_split_rar_when_available() {
+        let Some(rar) = find_on_path("rar") else {
+            return;
+        };
+        let temp = test_root("zmanager-ffi-extract-split-rar");
+        fs::create_dir_all(temp.join("source/project")).unwrap();
+        fs::write(temp.join("source/project/file.txt"), b"absolute split rar").unwrap();
+        fs::write(
+            temp.join("source/project/big.bin"),
+            deterministic_bytes(16 * 1024),
+        )
+        .unwrap();
+
+        let archive_base = temp.join("archive.rar");
+        let create = Command::new(rar)
+            .current_dir(&temp)
+            .arg("a")
+            .arg("-idq")
+            .arg("-ma5")
+            .arg("-v4k")
+            .arg(&archive_base)
+            .arg(temp.join("source/project"))
+            .output()
+            .unwrap();
+        assert!(
+            create.status.success(),
+            "rar create failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&create.stdout),
+            String::from_utf8_lossy(&create.stderr)
+        );
+
+        let first_part = temp.join("archive.part1.rar");
+        assert!(first_part.exists());
+        let archive = CString::new(first_part.to_string_lossy().as_ref()).unwrap();
+        let destination = CString::new(temp.join("out").to_string_lossy().as_ref()).unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: the C strings live for the duration of the call and `job` is
+        // valid writable storage for the out pointer.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_policy(
+                archive.as_ptr(),
+                destination.as_ptr(),
+                ptr::null(),
+                super::OVERWRITE_MODE_RENAME,
+                0,
+                &raw mut job,
+            )
+        };
+        assert_eq!(status, ZManagerFfiStatus::Ok);
+        assert!(!job.is_null());
+
+        let events = drain_job(job);
+        assert!(events.contains("\"kind\":\"archive_extract\""));
+        assert!(events.contains("\"type\":\"completed\""));
+        assert_eq!(
+            find_file_contents(&temp.join("out"), "file.txt").as_deref(),
+            Some("absolute split rar")
+        );
+
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -4437,5 +4483,20 @@ mod tests {
             .split(':')
             .map(|directory| Path::new(directory).join(command))
             .find(|candidate| candidate.is_file())
+    }
+
+    fn find_file_contents(root: &Path, file_name: &str) -> Option<String> {
+        for entry in fs::read_dir(root).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(contents) = find_file_contents(&path, file_name) {
+                    return Some(contents);
+                }
+            } else if path.file_name().and_then(|name| name.to_str()) == Some(file_name) {
+                return fs::read_to_string(path).ok();
+            }
+        }
+        None
     }
 }

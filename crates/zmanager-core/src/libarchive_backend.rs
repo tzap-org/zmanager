@@ -5,14 +5,16 @@ use crate::safety::{
 };
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_libarchive::{FileType, ReadArchive};
 
 const NUMBERED_VOLUME_EXTENSION_WIDTH: usize = 3;
 const NUMBERED_VOLUME_ARCHIVE_SUFFIXES: &[&str] = &[".7z", ".zip"];
+const TAR_BROTLI_SUFFIX: &str = ".tar.br";
 
 /// One libarchive listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -86,6 +88,8 @@ pub struct LibarchiveTestReport {
 pub enum LibarchiveError {
     /// libarchive returned an error.
     Archive(zmanager_libarchive::Error),
+    /// A compressed tar wrapper could not be decoded before libarchive read it.
+    RawStream(crate::raw_stream_backend::RawStreamError),
     /// Filesystem I/O failed.
     Io { path: PathBuf, source: io::Error },
     /// Extraction safety rejected an entry.
@@ -106,6 +110,7 @@ impl fmt::Display for LibarchiveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Archive(source) => write!(f, "libarchive operation failed: {source}"),
+            Self::RawStream(source) => write!(f, "compressed tar decode failed: {source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::MissingPath => write!(f, "libarchive entry has no path"),
@@ -126,6 +131,7 @@ impl std::error::Error for LibarchiveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Archive(source) => Some(source),
+            Self::RawStream(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
             Self::MissingPath
@@ -531,19 +537,122 @@ fn extract_archive_inner(
     Ok(report)
 }
 
-fn open_archive(path: &Path, password: Option<&str>) -> Result<ReadArchive, LibarchiveError> {
+fn open_archive(path: &Path, password: Option<&str>) -> Result<OpenedArchive, LibarchiveError> {
     let password = password.filter(|password| !password.is_empty());
-    let parts = discover_multi_volume_paths(path);
+    let input = ArchiveReadInput::new(path)?;
+    let parts = discover_multi_volume_paths(input.path());
 
     match (parts.len() > 1, password) {
-        (true, Some(password)) => Ok(ReadArchive::open_filenames_with_passphrase(
-            parts.as_slice(),
-            password,
-        )?),
-        (true, None) => Ok(ReadArchive::open_filenames(parts.as_slice())?),
-        (false, Some(password)) => Ok(ReadArchive::open_with_passphrase(path, password)?),
-        (false, None) => Ok(ReadArchive::open(path)?),
+        (true, Some(password)) => Ok(OpenedArchive::new(
+            ReadArchive::open_filenames_with_passphrase(parts.as_slice(), password)?,
+            input,
+        )),
+        (true, None) => Ok(OpenedArchive::new(
+            ReadArchive::open_filenames(parts.as_slice())?,
+            input,
+        )),
+        (false, Some(password)) => Ok(OpenedArchive::new(
+            ReadArchive::open_with_passphrase(input.path(), password)?,
+            input,
+        )),
+        (false, None) => Ok(OpenedArchive::new(ReadArchive::open(input.path())?, input)),
     }
+}
+
+struct OpenedArchive {
+    archive: ReadArchive,
+    _input: ArchiveReadInput,
+}
+
+impl OpenedArchive {
+    fn new(archive: ReadArchive, input: ArchiveReadInput) -> Self {
+        Self {
+            archive,
+            _input: input,
+        }
+    }
+}
+
+impl Deref for OpenedArchive {
+    type Target = ReadArchive;
+
+    fn deref(&self) -> &Self::Target {
+        &self.archive
+    }
+}
+
+impl DerefMut for OpenedArchive {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.archive
+    }
+}
+
+struct ArchiveReadInput {
+    path: PathBuf,
+    temporary: bool,
+}
+
+impl ArchiveReadInput {
+    fn new(path: &Path) -> Result<Self, LibarchiveError> {
+        if !is_tar_brotli_archive(path) {
+            return Ok(Self {
+                path: path.to_path_buf(),
+                temporary: false,
+            });
+        }
+
+        let decoded_path = temporary_decoded_tar_path();
+        let mut decoded = File::create(&decoded_path).map_err(|source| LibarchiveError::Io {
+            path: decoded_path.clone(),
+            source,
+        })?;
+        crate::raw_stream_backend::copy_raw_stream_to_writer(
+            path,
+            crate::raw_stream_backend::RawStreamFormat::Brotli,
+            &mut decoded,
+        )
+        .map_err(|source| {
+            let _ = fs::remove_file(&decoded_path);
+            LibarchiveError::RawStream(source)
+        })?;
+        decoded.flush().map_err(|source| {
+            let _ = fs::remove_file(&decoded_path);
+            LibarchiveError::Io {
+                path: decoded_path.clone(),
+                source,
+            }
+        })?;
+
+        Ok(Self {
+            path: decoded_path,
+            temporary: true,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ArchiveReadInput {
+    fn drop(&mut self) {
+        if self.temporary {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn is_tar_brotli_archive(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(TAR_BROTLI_SUFFIX))
+}
+
+fn temporary_decoded_tar_path() -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    std::env::temp_dir().join(format!("zmanager-tar-br-{}-{now}.tar", std::process::id()))
 }
 
 /// Returns true when `path` belongs to a standard split ZIP set.
@@ -1066,6 +1175,7 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::fs::File;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1100,6 +1210,29 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
             "hello"
+        );
+    }
+
+    #[test]
+    fn lists_and_extracts_brotli_compressed_tar_archive() {
+        let temp = TestDir::new("lists_and_extracts_brotli_compressed_tar_archive");
+        let archive = temp.path("archive.tar.br");
+        write_tar_brotli_with_file(&archive, "payload/file.txt", b"hello brotli tar");
+
+        let listing = list_archive(&archive).unwrap();
+        let report =
+            extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.path == "payload/file.txt")
+        );
+        assert_eq!(report.written_bytes, 16);
+        assert_eq!(
+            fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
+            "hello brotli tar"
         );
     }
 
@@ -1340,6 +1473,29 @@ mod tests {
             .unwrap();
 
         builder.finish().unwrap();
+    }
+
+    fn write_tar_brotli_with_file(path: &Path, entry_path: &str, contents: &[u8]) {
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(contents.len().try_into().unwrap());
+            header.set_mode(0o644);
+            header.set_mtime(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, entry_path, contents)
+                .unwrap();
+            builder.finish().unwrap();
+        }
+
+        let file = fs::File::create(path).unwrap();
+        let mut encoder =
+            brotli::CompressorWriter::new(file, crate::DEFAULT_IO_BUFFER_BYTES, 5, 22);
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.flush().unwrap();
     }
 
     struct TestDir {
