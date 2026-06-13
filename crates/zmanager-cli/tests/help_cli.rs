@@ -824,6 +824,27 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
 }
 
 #[test]
+fn windows_ci_and_release_builds_use_static_crt() {
+    for workflow in [CI_WORKFLOW, RELEASE_WORKFLOW, PACKAGE_PREVIEW_WORKFLOW] {
+        assert_contains(workflow, "triplet: x64-windows-static");
+        assert_contains(workflow, "triplet: arm64-windows-static");
+        assert_not_contains(workflow, "triplet: x64-windows-static-md");
+        assert_not_contains(workflow, "triplet: arm64-windows-static-md");
+    }
+
+    for required in [
+        "-C target-feature=+crt-static",
+        "RUSTFLAGS",
+        "static Windows runtime dependency inspection failed",
+        "MSVCP[0-9]+\\.dll",
+        "VCRUNTIME[0-9_]*\\.dll",
+        "api-ms-win-crt-.*\\.dll",
+    ] {
+        assert_contains(CI_WINDOWS_PS1, required);
+    }
+}
+
+#[test]
 fn macos_ci_and_release_builds_set_deployment_target() {
     for workflow in [CI_WORKFLOW, PACKAGE_PREVIEW_WORKFLOW, RELEASE_WORKFLOW] {
         assert_contains(workflow, "MACOSX_DEPLOYMENT_TARGET: \"11.0\"");

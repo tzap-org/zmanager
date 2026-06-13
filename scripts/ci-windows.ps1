@@ -189,6 +189,18 @@ function Ensure-Vcpkg {
 
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
     [Environment]::SetEnvironmentVariable("Path", ($debugRuntimePath + ";" + $runtimePath + ";" + $currentPath), "Process")
+
+    if (($Triplet -like "*-static") -and ($Triplet -notlike "*-static-md")) {
+        $staticCrtFlag = "-C target-feature=+crt-static"
+        $currentRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
+        if (-not $currentRustFlags) {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $staticCrtFlag, "Process")
+        } elseif ($currentRustFlags -notlike "*+crt-static*") {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", ($currentRustFlags + " " + $staticCrtFlag), "Process")
+        }
+
+        Write-Host ("RUSTFLAGS=" + [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process"))
+    }
 }
 
 function Invoke-CargoTest {
@@ -361,6 +373,17 @@ function Write-RuntimeDependencyReport {
         Add-Content -Path $report -Value ("Exited with code " + $status)
         Write-GitHubFailure -Title "dumpbin failed on $TargetTriple" -LogPath $report
         exit $status
+    }
+
+    if (($Triplet -like "*-static") -and ($Triplet -notlike "*-static-md")) {
+        $dynamicRuntime = Select-String `
+            -Path $report `
+            -Pattern "MSVCP[0-9]+\.dll", "VCRUNTIME[0-9_]*\.dll", "api-ms-win-crt-.*\.dll" `
+            -CaseSensitive:$false
+        if ($dynamicRuntime) {
+            Write-GitHubFailure -Title "static Windows runtime dependency inspection failed" -LogPath $report
+            exit 1
+        }
     }
 }
 
