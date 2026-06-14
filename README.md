@@ -28,14 +28,6 @@ Install from the Homebrew tap:
 
 ```sh
 brew install tzap-org/zmanager/zmanager
-zm healthcheck
-```
-
-Equivalent explicit form after tapping:
-
-```sh
-brew tap tzap-org/zmanager
-brew install zmanager
 ```
 
 ### Linux
