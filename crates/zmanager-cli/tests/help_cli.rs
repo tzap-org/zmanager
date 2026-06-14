@@ -27,9 +27,9 @@ const RUNTIME_DEPS_SH: &str = include_str!("../../../scripts/inspect-runtime-dep
 const CI_WINDOWS_PS1: &str = include_str!("../../../scripts/ci-windows.ps1");
 const HOMEBREW_TEMPLATE: &str = include_str!("../../../packaging/homebrew/zmanager.rb.template");
 const WINGET_INSTALLER_TEMPLATE: &str =
-    include_str!("../../../packaging/winget/FrankZhu.ZManagerCLI.installer.yaml.template");
+    include_str!("../../../packaging/winget/TzapOrg.ZManagerCLI.installer.yaml.template");
 const WINGET_LOCALE_TEMPLATE: &str =
-    include_str!("../../../packaging/winget/FrankZhu.ZManagerCLI.locale.en-US.yaml.template");
+    include_str!("../../../packaging/winget/TzapOrg.ZManagerCLI.locale.en-US.yaml.template");
 const PUBLIC_COMMANDS: &[&str] = &[
     "create",
     "extract",
@@ -626,8 +626,8 @@ fn package_channel_metadata_uses_release_checksums() {
     for required in [
         "SHA256SUMS",
         "package-metadata/homebrew/Formula/zmanager.rb",
-        "package-metadata\\winget\\FrankZhu.ZManagerCLI",
-        "brew install frankmanzhu/zmanager/zmanager",
+        "package-metadata\\winget\\TzapOrg.ZManagerCLI",
+        "brew install tzap-org/zmanager/zmanager",
         "winget validate",
     ] {
         assert_contains(INSTALL_DOC, required);

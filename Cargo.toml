@@ -13,7 +13,7 @@ resolver = "2"
 version = "1.0.4"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/frankmanzhu/zmanager"
+repository = "https://github.com/tzap-org/zmanager"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

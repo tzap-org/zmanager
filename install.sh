@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO_URL="${ZMANAGER_REPO_URL:-https://github.com/frankmanzhu/zmanager}"
+REPO_URL="${ZMANAGER_REPO_URL:-https://github.com/tzap-org/zmanager}"
 VERSION="${ZMANAGER_VERSION:-latest}"
 INSTALL_DIR="${ZMANAGER_INSTALL_DIR:-$HOME/.local/bin}"
 TMPDIR="${TMPDIR:-/tmp}"

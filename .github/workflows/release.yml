@@ -126,7 +126,7 @@ jobs:
         run: |
           scripts/generate-package-metadata.sh \
             "$TAG_NAME" \
-            "https://github.com/frankmanzhu/zmanager/releases/download/$TAG_NAME" \
+            "https://github.com/tzap-org/zmanager/releases/download/$TAG_NAME" \
             release-artifacts/SHA256SUMS \
             release-artifacts/package-metadata
           tar -C release-artifacts/package-metadata -czf release-artifacts/package-metadata.tar.gz .

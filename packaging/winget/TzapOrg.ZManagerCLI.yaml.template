@@ -1,4 +1,4 @@
-PackageIdentifier: FrankZhu.ZManagerCLI
+PackageIdentifier: TzapOrg.ZManagerCLI
 PackageVersion: __PACKAGE_VERSION__
 DefaultLocale: en-US
 ManifestType: version

@@ -14,8 +14,8 @@ readonly PACKAGE_REVISION="1"
 readonly PACKAGE_SECTION="utils"
 readonly PACKAGE_PRIORITY="optional"
 readonly DEBIAN_STANDARDS_VERSION="4.6.2"
-readonly MAINTAINER="Frank Zhu <frankmanzhu@users.noreply.github.com>"
-readonly HOMEPAGE="https://github.com/frankmanzhu/zmanager"
+readonly MAINTAINER="Tzap Org <frankmanzhu@users.noreply.github.com>"
+readonly HOMEPAGE="https://github.com/tzap-org/zmanager"
 readonly DESCRIPTION_SHORT="Universal file archiver"
 readonly DESCRIPTION_LONG="ZManager CLI provides high-performance compression, safe extraction, and seamless handling of ZIP, 7z, TAR.ZST, TZAP, RAR, and many other archive formats."
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -129,7 +129,7 @@ write_copyright_file() {
   cat > "$doc_dir/copyright" <<'COPYRIGHT'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: ZManager CLI
-Source: https://github.com/frankmanzhu/zmanager
+Source: https://github.com/tzap-org/zmanager
 
 Files: *
 Copyright: 2026 Frank Zhu

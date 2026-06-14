@@ -1,9 +1,9 @@
 # ZManager CLI
 
-[![CI](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml/badge.svg)](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml)
-[![Release](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml/badge.svg)](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
-[![Release version](https://img.shields.io/github/v/release/frankmanzhu/zmanager?include_prereleases&label=release)](https://github.com/frankmanzhu/zmanager/releases)
-[![Downloads](https://img.shields.io/github/downloads/frankmanzhu/zmanager/total)](https://github.com/frankmanzhu/zmanager/releases)
+[![CI](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml/badge.svg)](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml)
+[![Release](https://github.com/tzap-org/zmanager/actions/workflows/release.yml/badge.svg)](https://github.com/tzap-org/zmanager/actions/workflows/release.yml)
+[![Release version](https://img.shields.io/github/v/release/tzap-org/zmanager?include_prereleases&label=release)](https://github.com/tzap-org/zmanager/releases)
+[![Downloads](https://img.shields.io/github/downloads/tzap-org/zmanager/total)](https://github.com/tzap-org/zmanager/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 `zm` is a universal file archiver for macOS, Linux, and Windows, built for
@@ -18,7 +18,7 @@ archive workflows without opening a GUI.
 ## Install
 
 Release builds are published on the
-[latest release page](https://github.com/frankmanzhu/zmanager/releases/latest).
+[latest release page](https://github.com/tzap-org/zmanager/releases/latest).
 For full installation details and checksum examples, see
 [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -27,14 +27,14 @@ For full installation details and checksum examples, see
 Install from the Homebrew tap:
 
 ```sh
-brew install frankmanzhu/zmanager/zmanager
+brew install tzap-org/zmanager/zmanager
 zm healthcheck
 ```
 
 Equivalent explicit form after tapping:
 
 ```sh
-brew tap frankmanzhu/zmanager
+brew tap tzap-org/zmanager
 brew install zmanager
 ```
 
@@ -43,8 +43,8 @@ brew install zmanager
 Linux users can download a static single-binary tarball from the GitHub release:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm healthcheck
@@ -58,34 +58,37 @@ includes the man page and bash, zsh, fish, and PowerShell completions.
 ### Windows
 
 Download the Windows `.zip` for your CPU from the
-[latest release](https://github.com/frankmanzhu/zmanager/releases/latest),
+[latest release](https://github.com/tzap-org/zmanager/releases/latest),
 verify it with `SHA256SUMS`, and place `zm.exe` on `PATH`.
 
-When the WinGet package is published, install with:
+Install with WinGet:
 
 ```powershell
-winget install FrankZhu.ZManagerCLI
+winget install TzapOrg.ZManagerCLI
 ```
+
+Earlier preview manifests used `FrankZhu.ZManagerCLI`; new releases use the
+organization-scoped package identity.
 
 ### Install Script
 
 Install the latest release binary into `$HOME/.local/bin`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
 ```
 
 Install a specific version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.3 sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
+  | ZMANAGER_VERSION=v1.0.4 sh
 ```
 
 Install somewhere else:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
   | ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
@@ -206,7 +209,7 @@ and raw archive payloads from `--to-stdout` are never colorized.
 ## Build From Source
 
 ```sh
-git clone https://github.com/frankmanzhu/zmanager.git
+git clone https://github.com/tzap-org/zmanager.git
 cd zmanager
 cargo build -p zmanager-cli --release
 ./target/release/zm --help
@@ -225,10 +228,10 @@ the core suite is deterministic and should pass without network access.
 
 ## Project Links
 
-- [Releases](https://github.com/frankmanzhu/zmanager/releases)
-- [Issues](https://github.com/frankmanzhu/zmanager/issues)
-- [CI](https://github.com/frankmanzhu/zmanager/actions/workflows/ci.yml)
-- [Release workflow](https://github.com/frankmanzhu/zmanager/actions/workflows/release.yml)
+- [Releases](https://github.com/tzap-org/zmanager/releases)
+- [Issues](https://github.com/tzap-org/zmanager/issues)
+- [CI](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml)
+- [Release workflow](https://github.com/tzap-org/zmanager/actions/workflows/release.yml)
 - [CLI guide](docs/CLI.md)
 - [Install guide](docs/INSTALL.md)
 - [Release maintainer notes](RELEASE.md)

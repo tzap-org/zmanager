@@ -1,12 +1,12 @@
-PackageIdentifier: FrankZhu.ZManagerCLI
+PackageIdentifier: TzapOrg.ZManagerCLI
 PackageVersion: __PACKAGE_VERSION__
 PackageLocale: en-US
-Publisher: Frank Zhu
-PublisherUrl: https://github.com/frankmanzhu
+Publisher: Tzap Org
+PublisherUrl: https://github.com/tzap-org
 PackageName: ZManager CLI
-PackageUrl: https://github.com/frankmanzhu/zmanager
+PackageUrl: https://github.com/tzap-org/zmanager
 License: Apache-2.0
-LicenseUrl: https://github.com/frankmanzhu/zmanager/blob/__TAG__/LICENSE
+LicenseUrl: https://github.com/tzap-org/zmanager/blob/__TAG__/LICENSE
 ShortDescription: Universal file archiver for fast compression and safe extraction.
 Description: ZManager CLI is a universal file archiver for high-performance compression, safe extraction, and seamless handling of ZIP, 7z, TAR.ZST, TZAP, RAR, and many other archive formats.
 Tags:

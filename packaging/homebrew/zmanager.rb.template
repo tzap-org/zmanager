@@ -1,6 +1,6 @@
 class Zmanager < Formula
   desc "Universal file archiver for fast compression and safe extraction"
-  homepage "https://github.com/frankmanzhu/zmanager"
+  homepage "https://github.com/tzap-org/zmanager"
   license all_of: ["Apache-2.0", :cannot_represent]
 
   uses_from_macos "bzip2"

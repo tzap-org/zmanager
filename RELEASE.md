@@ -5,17 +5,17 @@
 The standalone CLI repository is expected to use:
 
 ```sh
-git remote add origin https://github.com/frankmanzhu/zmanager.git
+git remote add origin https://github.com/tzap-org/zmanager.git
 ```
 
 The Homebrew tap should live in a separate repository named
 `homebrew-zmanager`:
 
 ```sh
-https://github.com/frankmanzhu/homebrew-zmanager.git
+https://github.com/tzap-org/homebrew-zmanager.git
 ```
 
-That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
+That naming lets users run `brew install tzap-org/zmanager/zmanager`.
 
 ## Release Checklist
 
@@ -50,7 +50,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    release-artifacts/SHA256SUMS
    release-artifacts/zm-<target>.deps.txt
    release-artifacts/package-metadata/homebrew/Formula/zmanager.rb
-   release-artifacts/package-metadata/winget/FrankZhu.ZManagerCLI/<version>/
+   release-artifacts/package-metadata/winget/TzapOrg.ZManagerCLI/<version>/
    ```
 
    To regenerate locally from downloaded artifacts:
@@ -58,7 +58,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
    ```sh
    scripts/generate-package-metadata.sh \
      v1.0.4 \
-     https://github.com/frankmanzhu/zmanager/releases/download/v1.0.4 \
+     https://github.com/tzap-org/zmanager/releases/download/v1.0.4 \
      dist/SHA256SUMS \
      dist/package-metadata
    ```
@@ -77,7 +77,7 @@ That naming lets users run `brew install frankmanzhu/zmanager/zmanager`.
 7. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.4
+   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\1.0.4
    ```
 
 8. Validate the Linux static tarballs on Ubuntu 22.04 and 24.04:

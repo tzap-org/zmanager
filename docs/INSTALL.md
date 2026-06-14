@@ -22,8 +22,8 @@ Verify checksums before installing.
 Unix:
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/zm-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/zm-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
@@ -88,8 +88,8 @@ Linux release archives are statically linked musl builds. They are intended to
 run as a single executable without installing extra runtime packages.
 
 ```sh
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/SHA256SUMS
-curl -LO https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm --version
@@ -103,14 +103,14 @@ macOS and Linux users can install the latest matching release into
 `$HOME/.local/bin`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
 ```
 
 Set `ZMANAGER_VERSION` and `ZMANAGER_INSTALL_DIR` to pin a version or install
 elsewhere:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/frankmanzhu/zmanager/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
   | ZMANAGER_VERSION=v1.0.3 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
@@ -122,7 +122,7 @@ The Homebrew tap repository should be named `homebrew-zmanager`. After the
 generated formula is copied to the tap, users install with:
 
 ```sh
-brew install frankmanzhu/zmanager/zmanager
+brew install tzap-org/zmanager/zmanager
 ```
 
 The release workflow renders the formula from
@@ -132,13 +132,13 @@ generate it locally from release artifacts:
 ```sh
 scripts/generate-package-metadata.sh \
   v1.0.3 \
-  https://github.com/frankmanzhu/zmanager/releases/download/v1.0.3 \
+  https://github.com/tzap-org/zmanager/releases/download/v1.0.3 \
   dist/SHA256SUMS \
   dist/package-metadata
 ```
 
 Copy `dist/package-metadata/homebrew/Formula/zmanager.rb` to
-`frankmanzhu/homebrew-zmanager`.
+`tzap-org/homebrew-zmanager`.
 
 ## WinGet
 
@@ -146,13 +146,13 @@ After release metadata is generated, validate the manifests before submitting
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\FrankZhu.ZManagerCLI\1.0.3
+winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\1.0.3
 ```
 
 After the manifest is accepted, users install with:
 
 ```powershell
-winget install FrankZhu.ZManagerCLI
+winget install TzapOrg.ZManagerCLI
 ```
 
 WinGet metadata is generated from the same `SHA256SUMS` file as the Homebrew
