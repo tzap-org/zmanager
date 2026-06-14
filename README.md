@@ -57,39 +57,6 @@ winget install TzapOrg.ZManagerCLI
 Earlier preview manifests used `FrankZhu.ZManagerCLI`; new releases use the
 organization-scoped package identity.
 
-### macOS/Linux Install Script
-
-Install the latest release binary into `$HOME/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
-```
-
-Install a specific version:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.4 sh
-```
-
-Install somewhere else:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_INSTALL_DIR="$HOME/bin" sh
-```
-
-Install system-wide:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | sudo env ZMANAGER_INSTALL_DIR=/usr/local/bin sh
-```
-
-If a release binary is not available for the platform, the installer falls back
-to building from source. Source fallback requires `git`, Rust/Cargo, CMake, and
-the native compression development libraries used by libarchive.
-
 ## Quick Start
 
 ```sh
