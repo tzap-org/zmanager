@@ -61,6 +61,54 @@ install_binary() {
   chmod 0755 "$INSTALL_DIR/zm"
 }
 
+print_path_hint() {
+  shell_name="$(basename "${SHELL:-sh}")"
+  case "$shell_name" in
+    fish)
+      say "Add zm to PATH for future fish sessions:"
+      say "  fish_add_path $INSTALL_DIR"
+      ;;
+    zsh)
+      say "Add zm to PATH for future zsh sessions:"
+      say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
+      say "  export PATH=\"$INSTALL_DIR:\$PATH\""
+      ;;
+    bash)
+      say "Add zm to PATH for future bash sessions:"
+      say "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
+      say "  export PATH=\"$INSTALL_DIR:\$PATH\""
+      ;;
+    *)
+      say "Add zm to PATH for future shell sessions:"
+      say "  export PATH=\"$INSTALL_DIR:\$PATH\""
+      ;;
+  esac
+}
+
+print_success() {
+  installed="$INSTALL_DIR/zm"
+  version="$("$installed" --version 2>/dev/null || printf 'zm')"
+
+  say ""
+  say "ZManager CLI installed"
+  say "  Binary:  $installed"
+  say "  Version: $version"
+  say ""
+
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*)
+      say "Try it:"
+      say "  zm healthcheck"
+      ;;
+    *)
+      say "Try it now:"
+      say "  $installed healthcheck"
+      say ""
+      print_path_hint
+      ;;
+  esac
+}
+
 download_release() {
   target="$1"
   asset="zm-$target.tar.gz"
@@ -126,8 +174,4 @@ if ! download_release "$target"; then
   build_from_source
 fi
 
-say "Installed zm to $INSTALL_DIR/zm"
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *) say "Add $INSTALL_DIR to PATH to run zm without a full path." ;;
-esac
+print_success
