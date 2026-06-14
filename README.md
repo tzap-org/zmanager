@@ -15,8 +15,6 @@ with the macOS app, but it is useful on its own: create clean project archives,
 extract a broad set of formats safely, inspect archive contents, and script
 archive workflows without opening a GUI.
 
-Latest release: `v1.0.3`
-
 ## Install
 
 Release builds are published on the
