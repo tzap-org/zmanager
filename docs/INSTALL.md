@@ -20,7 +20,14 @@ a release or install elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
+```
+
+Use `sudo env` for system-wide locations:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
+  | sudo env ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 If no matching binary exists, the installer falls back to building from source.
@@ -135,7 +142,14 @@ elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
+```
+
+Use `sudo env` for system-wide locations:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
+  | sudo env ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ## Homebrew

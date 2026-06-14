@@ -15,6 +15,17 @@ fail() {
   exit 1
 }
 
+fail_install_permission() {
+  printf 'zmanager install: cannot write to %s\n' "$INSTALL_DIR" >&2
+  printf 'Try a user-writable install directory, or rerun with sudo:\n' >&2
+  if [ "$VERSION" = "latest" ]; then
+    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_INSTALL_DIR=%s sh\n' "$INSTALL_DIR" >&2
+  else
+    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_VERSION=%s ZMANAGER_INSTALL_DIR=%s sh\n' "$VERSION" "$INSTALL_DIR" >&2
+  fi
+  exit 1
+}
+
 need() {
   command -v "$1" >/dev/null 2>&1 || return 1
 }
@@ -56,9 +67,10 @@ sha256_file() {
 
 install_binary() {
   src="$1"
-  mkdir -p "$INSTALL_DIR"
-  cp "$src" "$INSTALL_DIR/zm"
-  chmod 0755 "$INSTALL_DIR/zm"
+  mkdir -p "$INSTALL_DIR" || fail_install_permission
+  [ -w "$INSTALL_DIR" ] || fail_install_permission
+  cp "$src" "$INSTALL_DIR/zm" || fail_install_permission
+  chmod 0755 "$INSTALL_DIR/zm" || fail "could not mark $INSTALL_DIR/zm executable"
 }
 
 print_path_hint() {

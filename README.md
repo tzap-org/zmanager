@@ -84,7 +84,14 @@ Install somewhere else:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_INSTALL_DIR="$HOME/bin" sh
+```
+
+Install system-wide:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
+  | sudo env ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 If a release binary is not available for the platform, the installer falls back
