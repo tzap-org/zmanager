@@ -40,20 +40,15 @@ brew install zmanager
 
 ### Linux
 
-Linux users can download a static single-binary tarball from the GitHub release:
+Install the latest matching release into `$HOME/.local/bin`:
 
 ```sh
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/SHA256SUMS
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/zm-x86_64-unknown-linux-musl.tar.gz
-sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
-./zm healthcheck
-install -m 0755 zm "$HOME/.local/bin/zm"
-zm healthcheck
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
 ```
 
-Use `zm-aarch64-unknown-linux-musl.tar.gz` on ARM64 systems. The archive also
-includes the man page and bash, zsh, fish, and PowerShell completions.
+The installer selects the right static Linux binary for x86_64 or ARM64,
+verifies checksums, and prints the exact command to run next. For manual
+downloads and checksum examples, see [docs/INSTALL.md](docs/INSTALL.md).
 
 ### Windows
 
@@ -70,7 +65,7 @@ winget install TzapOrg.ZManagerCLI
 Earlier preview manifests used `FrankZhu.ZManagerCLI`; new releases use the
 organization-scoped package identity.
 
-### Install Script
+### macOS/Linux Install Script
 
 Install the latest release binary into `$HOME/.local/bin`:
 

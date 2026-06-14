@@ -4,9 +4,33 @@ This document covers the CLI-first distribution paths for `zm`. Release
 artifacts are built by GitHub Actions and published with a
 top-level `SHA256SUMS` file.
 
+## Linux Install Script
+
+Linux users can install the latest matching static release into
+`$HOME/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
+```
+
+The installer selects the correct `x86_64-unknown-linux-musl` or
+`aarch64-unknown-linux-musl` asset, verifies it against `SHA256SUMS`, and prints
+the next command to run. Set `ZMANAGER_VERSION` or `ZMANAGER_INSTALL_DIR` to pin
+a release or install elsewhere:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
+  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+```
+
+If no matching binary exists, the installer falls back to building from source.
+Source fallback requires `git`, Rust/Cargo, CMake, and the native compression
+development libraries used by libarchive.
+
 ## Direct Downloads
 
-Download the archive for your platform from the GitHub release:
+Manual downloads are useful for offline packaging, pinned checksums, and custom
+install layouts. Download the archive for your platform from the GitHub release:
 
 | Platform | Asset |
 | --- | --- |
@@ -22,8 +46,8 @@ Verify checksums before installing.
 Unix:
 
 ```sh
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/SHA256SUMS
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/zm-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/zm-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
@@ -84,12 +108,13 @@ zm completions powershell > zm.ps1
 
 ## Linux Direct Install
 
-Linux release archives are statically linked musl builds. They are intended to
-run as a single executable without installing extra runtime packages.
+Linux release archives are statically linked musl builds. The install script is
+the recommended path; use the manual flow when you want to inspect or stage the
+tarball yourself.
 
 ```sh
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/SHA256SUMS
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.3/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm --version
@@ -97,10 +122,9 @@ tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 
 Use `zm-aarch64-unknown-linux-musl.tar.gz` on ARM64 systems.
 
-## Install Script
+## macOS Install Script
 
-macOS and Linux users can install the latest matching release into
-`$HOME/.local/bin`:
+macOS users can also install the latest matching release into `$HOME/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
@@ -111,10 +135,8 @@ elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v1.0.3 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | ZMANAGER_VERSION=v1.0.4 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
-
-If no matching binary exists, the installer falls back to building from source.
 
 ## Homebrew
 
@@ -131,8 +153,8 @@ generate it locally from release artifacts:
 
 ```sh
 scripts/generate-package-metadata.sh \
-  v1.0.3 \
-  https://github.com/tzap-org/zmanager/releases/download/v1.0.3 \
+  v1.0.4 \
+  https://github.com/tzap-org/zmanager/releases/download/v1.0.4 \
   dist/SHA256SUMS \
   dist/package-metadata
 ```
