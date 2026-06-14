@@ -38,15 +38,7 @@ Install the latest matching release into `$HOME/.local/bin`:
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
 ```
 
-The installer selects the right static Linux binary for x86_64 or ARM64,
-verifies checksums, and prints the exact command to run next. For manual
-downloads and checksum examples, see [docs/INSTALL.md](docs/INSTALL.md).
-
 ### Windows
-
-Download the Windows `.zip` for your CPU from the
-[latest release](https://github.com/tzap-org/zmanager/releases/latest),
-verify it with `SHA256SUMS`, and place `zm.exe` on `PATH`.
 
 Install with WinGet:
 
