@@ -33,8 +33,8 @@ detect_target() {
       ;;
     Linux)
       case "$arch" in
-        x86_64) printf 'x86_64-unknown-linux-gnu' ;;
-        aarch64|arm64) printf 'aarch64-unknown-linux-gnu' ;;
+        x86_64) printf 'x86_64-unknown-linux-musl' ;;
+        aarch64|arm64) printf 'aarch64-unknown-linux-musl' ;;
         *) return 1 ;;
       esac
       ;;
