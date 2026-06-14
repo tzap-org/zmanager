@@ -11,9 +11,9 @@ high-performance compression, safe extraction, and seamless handling of
 virtually any archive format.
 
 The CLI is the open-source part of ZManager. It shares the Rust archive engine
-with the macOS app, but it is useful on its own: create clean project archives,
-extract a broad set of formats safely, inspect archive contents, and script
-archive workflows without opening a GUI.
+with the desktop GUI app, but it is useful on its own: create clean project
+archives, extract a broad set of formats safely, inspect archive contents, and
+script archive workflows without opening a GUI.
 
 ## Install
 
@@ -241,7 +241,7 @@ the core suite is deterministic and should pass without network access.
 - `crates/zmanager-cli`: user-facing `zm` command.
 - `crates/zmanager-core`: archive planning, creation, extraction, listing,
   testing, safety checks, and backend routing.
-- `crates/zmanager-ffi`: C ABI consumed by the macOS app.
+- `crates/zmanager-ffi`: C ABI consumed by the desktop GUI app.
 - `crates/zmanager-unrar`: bundled extraction-only UnRAR bridge for passworded
   RAR extraction.
 - `fixtures/`: committed compatibility fixtures used by integration tests.
