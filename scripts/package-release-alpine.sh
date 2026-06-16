@@ -49,8 +49,6 @@ docker run --rm \
       pkgconf \
       python3
 
-    rustup target add "$TARGET"
-
     export CC_aarch64_unknown_linux_musl=cc
     export CXX_aarch64_unknown_linux_musl=c++
     export AR_aarch64_unknown_linux_musl=ar
