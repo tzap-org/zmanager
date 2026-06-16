@@ -542,7 +542,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1147,7 +1147,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1338,7 +1338,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1417,8 +1417,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "223ef0d7a168efb4ec0efd25aaed59ec802e46fe754db3324608fecee0b9512f"
+source = "git+https://github.com/tzap-org/tzap?rev=d5536b814a74162dfa1e421c0049e026d7496d28#d5536b814a74162dfa1e421c0049e026d7496d28"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1441,8 +1440,7 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-signing"
 version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a067e975751d7733624436c9ca0787d92694fe07acd4cb5ec8189c165d262bff"
+source = "git+https://github.com/tzap-org/tzap?rev=d5536b814a74162dfa1e421c0049e026d7496d28#d5536b814a74162dfa1e421c0049e026d7496d28"
 dependencies = [
  "ed25519-dalek",
  "openssl",

@@ -19,8 +19,8 @@ openssl = "0.10.80"
 rand = "0.8.5"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = "0.1.7"
-tzap-plugin-signing = "0.1.7"
+tzap-core = { git = "https://github.com/tzap-org/tzap", rev = "d5536b814a74162dfa1e421c0049e026d7496d28" }
+tzap-plugin-signing = { git = "https://github.com/tzap-org/tzap", rev = "d5536b814a74162dfa1e421c0049e026d7496d28" }
 zip = "8.6.0"
 zeroize = "1.8.2"
 zmanager-libarchive = { path = "../zmanager-libarchive" }
