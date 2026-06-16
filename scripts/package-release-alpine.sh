@@ -36,7 +36,7 @@ docker run --rm \
   -e HOST_GID="$(id -g)" \
   -e ZM_USE_SYSTEM_MUSL_TOOLCHAIN=1 \
   "$IMAGE" \
-  /bin/sh -lc '
+  /bin/sh -c '
     set -eu
     apk add --no-cache \
       bash \

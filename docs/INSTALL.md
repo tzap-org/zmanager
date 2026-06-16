@@ -115,9 +115,9 @@ zm completions powershell > zm.ps1
 
 ## Linux Direct Install
 
-Linux release archives are statically linked musl builds. The install script is
-the recommended path; use the manual flow when you want to inspect or stage the
-tarball yourself.
+Linux release archives are statically linked musl builds that run
+without installing extra runtime packages. The install script is the recommended
+path; use the manual flow when you want to inspect or stage the tarball yourself.
 
 ```sh
 curl -LO https://github.com/tzap-org/zmanager/releases/download/v1.0.4/SHA256SUMS
