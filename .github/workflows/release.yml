@@ -53,7 +53,7 @@ jobs:
         run: brew install cmake libb2 lz4 xz zstd
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'aarch64-unknown-linux-musl'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -68,6 +68,7 @@ jobs:
           echo /opt/zig >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
@@ -79,8 +80,12 @@ jobs:
           python-version: "3.x"
 
       - name: Package Unix
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.target != 'aarch64-unknown-linux-musl'
         run: scripts/package-release.sh "${{ matrix.target }}" dist
+
+      - name: Package Linux ARM64 musl in Alpine
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: scripts/package-release-alpine.sh "${{ matrix.target }}" dist
 
       - name: Package Windows
         if: runner.os == 'Windows'

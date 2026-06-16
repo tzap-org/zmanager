@@ -37,13 +37,29 @@ configure_static_linux_target() {
           ;;
       esac
 
+      local target_env=${TARGET//-/_}
+      local target_env_upper=${target_env^^}
+
+      if [[ "${ZM_USE_SYSTEM_MUSL_TOOLCHAIN:-}" == "1" ]]; then
+        local cc_env="CC_${target_env}"
+        local cxx_env="CXX_${target_env}"
+        local ar_env="AR_${target_env}"
+        local cxxstdlib_env="CXXSTDLIB_${target_env}"
+        local linker_env="CARGO_TARGET_${target_env_upper}_LINKER"
+
+        export "$cc_env=${!cc_env:-${CC:-cc}}"
+        export "$cxx_env=${!cxx_env:-${CXX:-c++}}"
+        export "$ar_env=${!ar_env:-${AR:-ar}}"
+        export "$cxxstdlib_env=${!cxxstdlib_env:-stdc++}"
+        export "$linker_env=${!linker_env:-${!cc_env}}"
+        return
+      fi
+
       if ! command -v zig >/dev/null 2>&1; then
         echo "zig is required to build static Linux release artifacts for $TARGET" >&2
         exit 1
       fi
 
-      local target_env=${TARGET//-/_}
-      local target_env_upper=${target_env^^}
       local tool_dir="$ROOT/target/zmanager-tools/$TARGET"
       local zig_cc="$tool_dir/zig-cc"
       local zig_cxx="$tool_dir/zig-cxx"
