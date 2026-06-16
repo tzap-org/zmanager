@@ -278,6 +278,13 @@ char *zmanager_ffi_verify_tzap_x509_public_no_key(
   size_t trusted_ca_cert_count,
   bool trusted_system_roots
 );
+char *zmanager_ffi_inspect_tzap_x509_signer(
+  const char *archive_path,
+  const char *password
+);
+char *zmanager_ffi_inspect_tzap_x509_public_no_key_signer(
+  const char *archive_path
+);
 char *zmanager_ffi_tzap_public_metadata_summary(const char *archive_path);
 char *zmanager_ffi_create_tzap_self_signed_identity(
   const char *identity_p12,

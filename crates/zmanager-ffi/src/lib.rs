@@ -21,7 +21,7 @@ use openssl::pkcs12::Pkcs12;
 use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
 use openssl::x509::extension::{BasicConstraints, KeyUsage};
-use openssl::x509::{X509, X509NameBuilder};
+use openssl::x509::{X509, X509NameBuilder, X509NameRef};
 use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
 use zmanager_core::manifest::{PlanOptions, plan_archive, plan_archives};
@@ -1518,6 +1518,80 @@ pub unsafe extern "C" fn zmanager_ffi_verify_tzap_x509_public_no_key(
     owned_c_string(&json)
 }
 
+/// Inspects TZAP X.509 `RootAuth` signer metadata without trusted roots.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+/// `password` may be null; if non-null it must point to a valid
+/// NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_inspect_tzap_x509_signer(
+    archive_path: *const c_char,
+    password: *const c_char,
+) -> *mut c_char {
+    if archive_path.is_null() {
+        return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
+    }
+    let Some(archive_path) = c_string_arg(archive_path) else {
+        return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
+    };
+    let password = match unsafe { optional_password_string_arg(password) } {
+        Ok(password) => password,
+        Err(message) => return owned_c_string(&ffi_error_json(message)),
+    };
+
+    let json = match zmanager_core::tzap_backend::inspect_tzap_x509_signer(
+        PathBuf::from(archive_path),
+        password.as_deref(),
+    ) {
+        Ok(report) => json!({
+            "ok": true,
+            "inspection_mode": "full",
+            "root_auth": tzap_x509_signer_inspection_json(&report),
+        })
+        .to_string(),
+        Err(error) => ffi_error_json(&error.to_string()),
+    };
+
+    owned_c_string(&json)
+}
+
+/// Inspects TZAP X.509 `RootAuth` signer metadata without the archive key or trusted roots.
+///
+/// The returned string must be released with [`zmanager_ffi_string_free`].
+///
+/// # Safety
+///
+/// `archive_path` must point to a valid NUL-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_inspect_tzap_x509_public_no_key_signer(
+    archive_path: *const c_char,
+) -> *mut c_char {
+    if archive_path.is_null() {
+        return owned_c_string("{\"ok\":false,\"message\":\"null archive path\"}");
+    }
+    let Some(archive_path) = c_string_arg(archive_path) else {
+        return owned_c_string("{\"ok\":false,\"message\":\"invalid UTF-8 archive path\"}");
+    };
+
+    let json = match zmanager_core::tzap_backend::inspect_tzap_x509_public_no_key_signer(
+        PathBuf::from(archive_path),
+    ) {
+        Ok(report) => json!({
+            "ok": true,
+            "inspection_mode": "public-no-key",
+            "root_auth": tzap_x509_signer_inspection_json(&report),
+        })
+        .to_string(),
+        Err(error) => ffi_error_json(&error.to_string()),
+    };
+
+    owned_c_string(&json)
+}
+
 /// Returns public, no-password TZAP metadata as JSON.
 ///
 /// The returned string must be released with [`zmanager_ffi_string_free`].
@@ -1551,10 +1625,24 @@ pub unsafe extern "C" fn zmanager_ffi_tzap_public_metadata_summary(
                     "verification_mode": "public-no-key",
                     "root_auth": tzap_x509_root_auth_json(&root_auth),
                 }),
-                Err(error) => json!({
-                    "status": "unverified",
-                    "message": error.to_string(),
-                }),
+                Err(error) => {
+                    match zmanager_core::tzap_backend::inspect_tzap_x509_public_no_key_signer(
+                        &archive_path,
+                    ) {
+                        Ok(root_auth) => json!({
+                            "status": "unverified",
+                            "verification_mode": "public-no-key-inspection",
+                            "message": format!(
+                                "Signer certificate inspected, but trust was not verified: {error}"
+                            ),
+                            "root_auth": tzap_x509_signer_inspection_json(&root_auth),
+                        }),
+                        Err(_) => json!({
+                            "status": "unverified",
+                            "message": error.to_string(),
+                        }),
+                    }
+                }
             };
 
             json!({
@@ -1616,12 +1704,13 @@ pub unsafe extern "C" fn zmanager_ffi_create_tzap_self_signed_identity(
         common_name,
         &password,
     ) {
-        Ok(()) => json!({
+        Ok(certificate) => json!({
             "ok": true,
             "identity_path": identity_path.display().to_string(),
             "public_certificate_path": public_certificate_path
                 .as_ref()
                 .map(|path| path.display().to_string()),
+            "certificate": certificate,
         })
         .to_string(),
         Err(message) => ffi_error_json(&message),
@@ -2078,7 +2167,7 @@ fn create_self_signed_tzap_identity(
     public_certificate_path: Option<&Path>,
     common_name: &str,
     password: &SecretString,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     let key = PKey::from_rsa(
         Rsa::generate(SELF_SIGNED_IDENTITY_RSA_BITS)
             .map_err(|source| format!("could not generate signing key: {source}"))?,
@@ -2107,7 +2196,7 @@ fn create_self_signed_tzap_identity(
         )?;
     }
 
-    Ok(())
+    x509_certificate_summary_json(&certificate)
 }
 
 fn create_self_signed_certificate(common_name: &str, key: &PKey<Private>) -> Result<X509, String> {
@@ -2185,6 +2274,42 @@ fn random_certificate_serial() -> Result<Asn1Integer, String> {
     serial
         .to_asn1_integer()
         .map_err(|source| format!("could not encode serial number: {source}"))
+}
+
+fn x509_certificate_summary_json(certificate: &X509) -> Result<Value, String> {
+    let fingerprint = certificate
+        .digest(MessageDigest::sha256())
+        .map_err(|source| format!("could not fingerprint certificate: {source}"))?;
+    let serial_number = certificate
+        .serial_number()
+        .to_bn()
+        .map_err(|source| format!("could not read certificate serial number: {source}"))?
+        .to_hex_str()
+        .map_err(|source| format!("could not encode certificate serial number: {source}"))?
+        .to_string();
+
+    Ok(json!({
+        "subject": x509_name_to_string(certificate.subject_name()),
+        "issuer": x509_name_to_string(certificate.issuer_name()),
+        "serial_number": serial_number,
+        "certificate_sha256": hex_lower(fingerprint.as_ref()),
+        "not_before": certificate.not_before().to_string(),
+        "not_after": certificate.not_after().to_string(),
+    }))
+}
+
+fn x509_name_to_string(name: &X509NameRef) -> String {
+    let mut parts = Vec::new();
+    for entry in name.entries() {
+        let key = entry.object().nid().short_name().unwrap_or("OID");
+        let value = entry
+            .data()
+            .as_utf8()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|_| hex_lower(entry.data().as_slice()));
+        parts.push(format!("{key}={value}"));
+    }
+    parts.join(", ")
 }
 
 fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -2702,6 +2827,8 @@ fn tzap_x509_root_auth_json(
         "authenticator_id": report.authenticator_id,
         "signer_identity_type": report.signer_identity_type,
         "total_data_block_count": report.total_data_block_count,
+        "signature_verified": true,
+        "trust_validated": true,
         "subject": report.subject,
         "issuer": report.issuer,
         "serial_number": report.serial_number_hex,
@@ -2709,6 +2836,33 @@ fn tzap_x509_root_auth_json(
         "signed_at_unix_seconds": report.signed_at_unix_seconds,
         "verified_chain_subjects": report.verified_chain_subjects,
         "trust_anchor_subject": report.trust_anchor_subject,
+    })
+}
+
+fn tzap_x509_signer_inspection_json(
+    report: &zmanager_core::tzap_backend::TzapX509SignerInspection,
+) -> Value {
+    let status = report
+        .diagnostics
+        .first()
+        .map_or("root_auth_signer_inspected", String::as_str);
+    json!({
+        "status": status,
+        "diagnostics": &report.diagnostics,
+        "authenticator": "x509",
+        "archive_root": hex_lower(&report.archive_root),
+        "authenticator_id": report.authenticator_id,
+        "signer_identity_type": report.signer_identity_type,
+        "total_data_block_count": report.total_data_block_count,
+        "signature_verified": true,
+        "trust_validated": false,
+        "subject": report.subject,
+        "issuer": report.issuer,
+        "serial_number": report.serial_number_hex,
+        "certificate_sha256": hex_lower(&report.certificate_sha256),
+        "signed_at_unix_seconds": report.signed_at_unix_seconds,
+        "verified_chain_subjects": [],
+        "trust_anchor_subject": Value::Null,
     })
 }
 
@@ -2912,7 +3066,24 @@ mod tests {
             )
         });
 
-        assert!(response.contains("\"ok\":true"), "{response}");
+        let response_json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response_json["ok"], true);
+        assert_eq!(
+            response_json["certificate"]["subject"],
+            "CN=Local Signing Identity"
+        );
+        assert_eq!(
+            response_json["certificate"]["issuer"],
+            "CN=Local Signing Identity"
+        );
+        assert!(response_json["certificate"]["serial_number"].is_string());
+        assert_eq!(
+            response_json["certificate"]["certificate_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
         assert!(identity_path.exists());
         assert!(cert_path.exists());
 
