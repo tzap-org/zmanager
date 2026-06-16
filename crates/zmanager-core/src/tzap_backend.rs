@@ -6,10 +6,11 @@ use crate::safety::{
     ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::secrets::SecretString;
+use crate::x509_format::x509_name_to_string;
 use openssl::hash::MessageDigest;
 use openssl::pkcs12::Pkcs12;
 use openssl::sign::Verifier;
-use openssl::x509::{X509, X509NameRef};
+use openssl::x509::X509;
 use rand::RngCore as _;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -1506,30 +1507,6 @@ fn read_x509_i64(value: &[u8], offset: usize) -> Result<i64, TzapError> {
     Ok(i64::from_le_bytes([
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
-}
-
-fn x509_name_to_string(name: &X509NameRef) -> String {
-    let mut parts = Vec::new();
-    for entry in name.entries() {
-        let key = entry.object().nid().short_name().unwrap_or("OID");
-        let value = entry
-            .data()
-            .as_utf8()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| hex_lower(entry.data().as_slice()));
-        parts.push(format!("{key}={value}"));
-    }
-    parts.join(", ")
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[usize::from(byte >> 4)] as char);
-        output.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    output
 }
 
 fn read_tzap_input_volume_bytes(archive_path: &Path) -> Result<Vec<Vec<u8>>, TzapError> {

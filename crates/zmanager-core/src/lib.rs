@@ -14,6 +14,7 @@ pub mod secrets;
 pub mod sevenz_backend;
 pub mod tar_zst_backend;
 pub mod tzap_backend;
+pub mod x509_format;
 pub mod zip_backend;
 
 /// The stable engine name used in diagnostics and health checks.

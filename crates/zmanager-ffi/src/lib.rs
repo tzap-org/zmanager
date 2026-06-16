@@ -21,7 +21,7 @@ use openssl::pkcs12::Pkcs12;
 use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
 use openssl::x509::extension::{BasicConstraints, KeyUsage};
-use openssl::x509::{X509, X509NameBuilder, X509NameRef};
+use openssl::x509::{X509, X509NameBuilder};
 use serde_json::{Value, json};
 use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
 use zmanager_core::manifest::{PlanOptions, plan_archive, plan_archives};
@@ -32,6 +32,7 @@ use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
 use zmanager_core::tzap_backend::{
     TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
 };
+use zmanager_core::x509_format::{hex_lower, x509_name_to_string};
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
 
 /// C ABI status code returned by FFI entry points.
@@ -2298,20 +2299,6 @@ fn x509_certificate_summary_json(certificate: &X509) -> Result<Value, String> {
     }))
 }
 
-fn x509_name_to_string(name: &X509NameRef) -> String {
-    let mut parts = Vec::new();
-    for entry in name.entries() {
-        let key = entry.object().nid().short_name().unwrap_or("OID");
-        let value = entry
-            .data()
-            .as_utf8()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|_| hex_lower(entry.data().as_slice()));
-        parts.push(format!("{key}={value}"));
-    }
-    parts.join(", ")
-}
-
 fn write_output_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -2882,16 +2869,6 @@ fn ffi_error_json(message: &str) -> String {
         "message": message,
     })
     .to_string()
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[usize::from(byte >> 4)] as char);
-        output.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    output
 }
 
 fn extraction_policy_with_mode(
