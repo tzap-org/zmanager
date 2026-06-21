@@ -9,6 +9,7 @@ use crate::secrets::SecretString;
 use crate::x509_format::x509_name_to_string;
 use openssl::hash::MessageDigest;
 use openssl::pkcs12::Pkcs12;
+use openssl::pkey::PKey;
 use openssl::sign::Verifier;
 use openssl::x509::X509;
 use rand::RngCore as _;
@@ -19,20 +20,30 @@ use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tzap_core::format::{
-    AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FecAlgo, FormatError, KdfAlgo,
-    READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST,
-    VOLUME_HEADER_LEN,
+    AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FORMAT_VERSION, FecAlgo, FormatError,
+    KdfAlgo, READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM,
+    READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV_44, VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
     ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
-    PublicNoKeyVerification, RootAuthDiagnostic, RootAuthVerification,
+    PublicNoKeyVerification, RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
 };
-use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, RootAuthFooterV1, VolumeHeader};
+use tzap_core::wire::{
+    CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
+};
 use tzap_core::{
     ArchiveWriteError, ArchiveWriteSink, ExtractError, KdfParams, MasterKey, OpenedArchive,
-    RegularFileSource, RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind, WriterOptions,
-    open_seekable_archive, open_seekable_archive_volumes, public_no_key_verify_volumes_with,
+    ReaderOptions, RegularFileSource, RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind,
+    WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
+    open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
+    public_no_key_verify_volumes_with,
+    write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records,
     write_archive_sources_to_sink_with_progress,
+};
+use tzap_plugin_keywrap::{
+    ArchiveIdentity as KeyWrapArchiveIdentity, KeyWrapOutcome, KeyWrapSuite, PrivateKeyLookup,
+    RecipientRecordInput, RecipientRecordMetadata, dispatch_key_wrap_record,
+    wrap_master_key_for_recipient,
 };
 use tzap_plugin_signing::x509_chain::{
     X509_AUTHENTICATOR_ID, X509_SIGNER_IDENTITY_TYPE_DER_CERT, X509RootAuthReport,
@@ -101,6 +112,8 @@ pub struct TzapCreateOptions {
 pub enum TzapKeySource {
     /// Derive the archive master key from a passphrase with Argon2id.
     Passphrase(SecretString),
+    /// Wrap a random archive master key to one X.509 recipient certificate.
+    RecipientCertificate(PathBuf),
     /// Create the archive without password-based encryption.
     NoPassword,
 }
@@ -405,10 +418,14 @@ pub enum TzapError {
     Format(FormatError),
     /// X.509 `RootAuth` signing or verification failed.
     X509RootAuth(String),
+    /// X.509 recipient key wrapping failed.
+    KeyWrap(String),
     /// Extraction safety rejected an entry.
     Safety(ExtractionSafetyError),
-    /// Only passphrase-protected `.tzap` archives are currently supported by this backend.
+    /// A passphrase-protected `.tzap` archive was opened without a password.
     PasswordRequired,
+    /// A recipient-wrapped `.tzap` archive was opened without a recipient private key.
+    RecipientKeyRequired,
     /// Job was cancelled cooperatively.
     Cancelled,
 }
@@ -420,8 +437,10 @@ impl fmt::Display for TzapError {
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Format(source) => write!(f, "{source}"),
             Self::X509RootAuth(message) => write!(f, "{message}"),
+            Self::KeyWrap(message) => write!(f, "{message}"),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::PasswordRequired => write!(f, "tzap password required"),
+            Self::RecipientKeyRequired => write!(f, "tzap recipient private key required"),
             Self::Cancelled => write!(f, "job cancelled"),
         }
     }
@@ -434,7 +453,11 @@ impl std::error::Error for TzapError {
             Self::Io { source, .. } => Some(source),
             Self::Format(source) => Some(source),
             Self::Safety(source) => Some(source),
-            Self::X509RootAuth(_) | Self::PasswordRequired | Self::Cancelled => None,
+            Self::X509RootAuth(_)
+            | Self::KeyWrap(_)
+            | Self::PasswordRequired
+            | Self::RecipientKeyRequired
+            | Self::Cancelled => None,
         }
     }
 }
@@ -496,6 +519,17 @@ pub fn create_tzap_from_manifest_with_context(
     }
 
     let (master_key, kdf_params) = create_key_material(&options.key_source)?;
+    let recipient_record = match &options.key_source {
+        TzapKeySource::RecipientCertificate(recipient_certificate) => {
+            validate_recipient_wrap_create_options(options)?;
+            Some(build_recipient_wrap_record(
+                recipient_certificate,
+                &master_key,
+                &mut writer_options,
+            )?)
+        }
+        TzapKeySource::Passphrase(_) | TzapKeySource::NoPassword => None,
+    };
     let destination = destination.as_ref();
     let mut sink = TzapArchiveFileSink::new(destination, options.replace_existing)?;
     let x509_signer = options
@@ -522,20 +556,32 @@ pub fn create_tzap_from_manifest_with_context(
         &mut authenticator
             as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
     });
-    let mut progress = |archive_path: &str, bytes: u64| {
-        context.bytes_processed(Some(archive_path), bytes);
-    };
-    let summary = write_archive_sources_to_sink_with_progress(
-        &file_sources,
-        &master_key,
-        writer_options,
-        None,
-        &kdf_params,
-        root_auth,
-        authenticator,
-        &mut sink,
-        &mut progress,
-    )
+    let summary = if let Some(recipient_record) = recipient_record {
+        write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records(
+            &file_sources,
+            &master_key,
+            writer_options,
+            vec![recipient_record],
+            root_auth,
+            authenticator,
+            &mut sink,
+        )
+    } else {
+        let mut progress = |archive_path: &str, bytes: u64| {
+            context.bytes_processed(Some(archive_path), bytes);
+        };
+        write_archive_sources_to_sink_with_progress(
+            &file_sources,
+            &master_key,
+            writer_options,
+            None,
+            &kdf_params,
+            root_auth,
+            authenticator,
+            &mut sink,
+            &mut progress,
+        )
+    }
     .map_err(|source| tzap_write_error(destination, source))?;
 
     let volume_count = sink.commit()?;
@@ -854,6 +900,257 @@ fn read_x509_input_file(path: &Path) -> Result<Vec<u8>, TzapError> {
     })
 }
 
+fn validate_recipient_wrap_create_options(options: &TzapCreateOptions) -> Result<(), TzapError> {
+    if options.x509_signing.is_some() {
+        return Err(TzapError::Format(FormatError::WriterUnsupported(
+            "recipient certificate encryption is not yet supported with X.509 RootAuth signing",
+        )));
+    }
+    if options.volume_size.is_some() || options.volume_loss_tolerance != 0 {
+        return Err(TzapError::Format(FormatError::WriterUnsupported(
+            "recipient certificate encryption is currently supported only for single-volume TZAP create",
+        )));
+    }
+    Ok(())
+}
+
+fn build_recipient_wrap_record(
+    recipient_certificate_path: &Path,
+    master_key: &MasterKey,
+    options: &mut WriterOptions,
+) -> Result<RecipientRecordV1, TzapError> {
+    let recipient_certificate =
+        load_single_x509_certificate_file("recipient certificate", recipient_certificate_path)?;
+    let archive_identity = recipient_wrap_archive_identity_for_writer(options);
+    let master_key_bytes = master_key.0;
+    for suite in [
+        KeyWrapSuite::X25519HkdfSha256ChaCha20Poly1305,
+        KeyWrapSuite::P256HkdfSha256Aes256Gcm,
+    ] {
+        match wrap_master_key_for_recipient(
+            archive_identity.clone(),
+            &recipient_certificate,
+            &master_key_bytes,
+            suite,
+        ) {
+            Ok(record) => return Ok(record),
+            Err(KeyWrapOutcome::InvalidRecord | KeyWrapOutcome::UnsupportedSuite) => {}
+            Err(outcome) => return Err(key_wrap_outcome_error(outcome)),
+        }
+    }
+    Err(TzapError::Format(FormatError::WriterUnsupported(
+        "recipient certificate is not supported by keywrap-v1 suites",
+    )))
+}
+
+fn load_single_x509_certificate_file(
+    label: &'static str,
+    path: &Path,
+) -> Result<Vec<u8>, TzapError> {
+    let bytes = read_x509_input_file(path)?;
+    let certificates = certificates_der_from_pem_or_der(&bytes).map_err(|source| {
+        TzapError::KeyWrap(format!(
+            "failed to parse {label} {}: {source}",
+            path.display()
+        ))
+    })?;
+    match certificates.as_slice() {
+        [certificate] => Ok(certificate.clone()),
+        [] => Err(TzapError::KeyWrap(format!(
+            "{label} must contain exactly one X.509 certificate"
+        ))),
+        _ => Err(TzapError::KeyWrap(format!(
+            "{label} must contain exactly one X.509 certificate"
+        ))),
+    }
+}
+
+fn recipient_wrap_archive_identity_for_writer(
+    options: &mut WriterOptions,
+) -> KeyWrapArchiveIdentity {
+    let archive_uuid = *options.archive_uuid.get_or_insert_with(random_16_bytes);
+    let session_id = *options.session_id.get_or_insert_with(random_16_bytes);
+    KeyWrapArchiveIdentity {
+        archive_uuid,
+        session_id,
+        format_version: FORMAT_VERSION,
+        volume_format_rev: VOLUME_FORMAT_REV_44,
+    }
+}
+
+fn random_16_bytes() -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes
+}
+
+fn key_wrap_outcome_error(outcome: KeyWrapOutcome) -> TzapError {
+    match outcome {
+        KeyWrapOutcome::UnsupportedProfileId => TzapError::Format(FormatError::ReaderUnsupported(
+            "unsupported keywrap recipient profile",
+        )),
+        KeyWrapOutcome::UnsupportedArchiveIdentity => TzapError::Format(
+            FormatError::ReaderUnsupported("unsupported keywrap archive identity"),
+        ),
+        KeyWrapOutcome::UnsupportedRecipientIdentity => TzapError::Format(
+            FormatError::ReaderUnsupported("unsupported keywrap recipient identity"),
+        ),
+        KeyWrapOutcome::UnsupportedSuite => TzapError::Format(FormatError::ReaderUnsupported(
+            "unsupported keywrap recipient suite",
+        )),
+        KeyWrapOutcome::CertificatePolicyRejected => TzapError::Format(
+            FormatError::ReaderUnsupported("recipient certificate policy rejected"),
+        ),
+        KeyWrapOutcome::InvalidRecord => TzapError::Format(FormatError::InvalidArchive(
+            "invalid keywrap recipient record",
+        )),
+        KeyWrapOutcome::NoMatchingPrivateKey => {
+            TzapError::KeyWrap("no matching recipient private key for archive".to_owned())
+        }
+        KeyWrapOutcome::UnwrappedCandidateMasterKey { .. } => TzapError::Format(
+            FormatError::WriterInvariant("keywrap success outcome cannot be converted to error"),
+        ),
+    }
+}
+
+#[derive(Debug)]
+struct TzapRecipientPrivateKeyLookup {
+    private_key_bytes: Vec<u8>,
+    private_key_spki_der: Option<Vec<u8>>,
+}
+
+impl PrivateKeyLookup for TzapRecipientPrivateKeyLookup {
+    fn lookup_private_key(
+        &self,
+        _archive_identity: &KeyWrapArchiveIdentity,
+        _metadata: &RecipientRecordMetadata,
+        recipient_identity_bytes: &[u8],
+    ) -> Option<Vec<u8>> {
+        if let Some(private_key_spki_der) = self.private_key_spki_der.as_ref() {
+            let certificate = X509::from_der(recipient_identity_bytes).ok()?;
+            let certificate_spki_der = certificate.public_key().ok()?.public_key_to_der().ok()?;
+            if certificate_spki_der != *private_key_spki_der {
+                return None;
+            }
+        }
+        Some(self.private_key_bytes.clone())
+    }
+}
+
+fn load_recipient_private_key_lookup(
+    path: &Path,
+) -> Result<TzapRecipientPrivateKeyLookup, TzapError> {
+    let bytes = fs::read(path).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if bytes.len() == 32 {
+        return Ok(TzapRecipientPrivateKeyLookup {
+            private_key_bytes: bytes,
+            private_key_spki_der: None,
+        });
+    }
+    let private_key = if bytes.starts_with(b"-----BEGIN") {
+        PKey::private_key_from_pem(&bytes)
+    } else {
+        PKey::private_key_from_der(&bytes)
+    }
+    .map_err(|source| {
+        TzapError::KeyWrap(format!(
+            "failed to parse recipient private key {}: {source}",
+            path.display()
+        ))
+    })?;
+    let private_key_bytes = private_key.private_key_to_der().map_err(|source| {
+        TzapError::KeyWrap(format!(
+            "failed to normalize recipient private key {}: {source}",
+            path.display()
+        ))
+    })?;
+    let private_key_spki_der = private_key.public_key_to_der().ok();
+    Ok(TzapRecipientPrivateKeyLookup {
+        private_key_bytes,
+        private_key_spki_der,
+    })
+}
+
+#[derive(Debug, Default)]
+struct RecipientWrapOpenStats {
+    records_seen: usize,
+    no_matching_private_key: usize,
+    invalid_record_or_unwrap: usize,
+    unsupported_record: usize,
+    candidate_count: usize,
+}
+
+fn recipient_wrap_candidates_for_record(
+    context: RecipientWrapRecordContext<'_>,
+    lookup: &TzapRecipientPrivateKeyLookup,
+    stats: &mut RecipientWrapOpenStats,
+) -> Result<Vec<[u8; 32]>, FormatError> {
+    stats.records_seen += 1;
+    let input = RecipientRecordInput {
+        archive_identity: KeyWrapArchiveIdentity {
+            archive_uuid: context.archive_identity.archive_uuid,
+            session_id: context.archive_identity.session_id,
+            format_version: context.archive_identity.format_version,
+            volume_format_rev: context.archive_identity.volume_format_rev,
+        },
+        metadata: RecipientRecordMetadata {
+            profile_id: context.record.profile_id,
+            recipient_identity_type: context.record.recipient_identity_type,
+            recipient_identity_digest: context.record.recipient_identity_digest,
+        },
+        recipient_identity_bytes: context.record.recipient_identity_bytes.clone(),
+        profile_payload_bytes: context.record.profile_payload_bytes.clone(),
+    };
+    match dispatch_key_wrap_record(input, lookup) {
+        KeyWrapOutcome::UnwrappedCandidateMasterKey { master_key, .. } => {
+            stats.candidate_count += 1;
+            Ok(vec![master_key])
+        }
+        KeyWrapOutcome::NoMatchingPrivateKey => {
+            stats.no_matching_private_key += 1;
+            Ok(Vec::new())
+        }
+        KeyWrapOutcome::InvalidRecord | KeyWrapOutcome::CertificatePolicyRejected => {
+            stats.invalid_record_or_unwrap += 1;
+            Ok(Vec::new())
+        }
+        KeyWrapOutcome::UnsupportedProfileId
+        | KeyWrapOutcome::UnsupportedArchiveIdentity
+        | KeyWrapOutcome::UnsupportedRecipientIdentity
+        | KeyWrapOutcome::UnsupportedSuite => {
+            stats.unsupported_record += 1;
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn recipient_wrap_open_error(source: FormatError, stats: &RecipientWrapOpenStats) -> TzapError {
+    if !matches!(source, FormatError::KeyMaterialMismatch) {
+        return TzapError::Format(source);
+    }
+    if stats.candidate_count > 0 {
+        return TzapError::KeyWrap(format!(
+            "{source}: recipient private key unwrapped a candidate, but archive header HMAC did not verify"
+        ));
+    }
+    if stats.records_seen == 0 {
+        return TzapError::KeyWrap(format!(
+            "{source}: recipient-wrap archive has no recipient records"
+        ));
+    }
+    if stats.no_matching_private_key > 0 && stats.invalid_record_or_unwrap == 0 {
+        return TzapError::KeyWrap(format!(
+            "{source}: no matching recipient private key for archive"
+        ));
+    }
+    TzapError::KeyWrap(format!(
+        "{source}: recipient private key did not match any recipient record or failed recipient unwrap"
+    ))
+}
+
 fn current_unix_seconds_i64() -> Result<i64, TzapError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -984,6 +1281,23 @@ pub fn list_tzap_with_optional_password(
     password: Option<&str>,
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
+    list_opened_tzap_archive(opened)
+}
+
+/// Lists recipient-wrapped `.tzap` archive entries with a private key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or listed.
+pub fn list_tzap_with_recipient_key(
+    archive: impl AsRef<Path>,
+    recipient_private_key: impl AsRef<Path>,
+) -> Result<TzapListing, TzapError> {
+    let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
+    list_opened_tzap_archive(opened)
+}
+
+fn list_opened_tzap_archive(opened: OpenedArchive) -> Result<TzapListing, TzapError> {
     let entries = opened
         .list_index_entries()?
         .into_iter()
@@ -1022,7 +1336,30 @@ pub fn extract_tzap_with_optional_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<TzapExtractReport, TzapError> {
-    extract_tzap_inner(archive, destination, policy, password, None, None)
+    extract_tzap_inner(archive, destination, policy, password, None, None, None)
+}
+
+/// Extracts recipient-wrapped `.tzap` entries with a private key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// or filesystem writes fail.
+pub fn extract_tzap_with_recipient_key(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    recipient_private_key: impl AsRef<Path>,
+) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_inner(
+        archive,
+        destination,
+        policy,
+        None,
+        Some(recipient_private_key.as_ref()),
+        None,
+        None,
+    )
 }
 
 /// Extracts `.tzap` entries with a passphrase, emitting job events.
@@ -1038,7 +1375,15 @@ pub fn extract_tzap_with_optional_password_and_context(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<TzapExtractReport, TzapError> {
-    extract_tzap_inner(archive, destination, policy, password, None, Some(context))
+    extract_tzap_inner(
+        archive,
+        destination,
+        policy,
+        password,
+        None,
+        None,
+        Some(context),
+    )
 }
 
 /// Extracts `.tzap` entries with a passphrase and overwrite resolver.
@@ -1081,6 +1426,31 @@ pub fn extract_tzap_with_overwrite_resolver_and_optional_password(
         destination,
         policy,
         password,
+        None,
+        Some(overwrite_resolver),
+        None,
+    )
+}
+
+/// Extracts recipient-wrapped `.tzap` entries with a private key and overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// or filesystem writes fail.
+pub fn extract_tzap_with_overwrite_resolver_and_recipient_key(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    recipient_private_key: impl AsRef<Path>,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_inner(
+        archive,
+        destination,
+        policy,
+        None,
+        Some(recipient_private_key.as_ref()),
         Some(overwrite_resolver),
         None,
     )
@@ -1135,6 +1505,30 @@ pub fn test_tzap_with_optional_password_filter_and_x509_trust(
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
+    test_opened_tzap_archive(opened, selector, x509_trust)
+}
+
+/// Tests recipient-wrapped `.tzap` readability and integrity with a private key.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, verified, or when
+/// requested X.509 `RootAuth` verification fails.
+pub fn test_tzap_with_recipient_key_filter_and_x509_trust(
+    archive: impl AsRef<Path>,
+    recipient_private_key: impl AsRef<Path>,
+    selector: impl Fn(&str) -> bool,
+    x509_trust: Option<&TzapX509TrustOptions>,
+) -> Result<TzapTestReport, TzapError> {
+    let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
+    test_opened_tzap_archive(opened, selector, x509_trust)
+}
+
+fn test_opened_tzap_archive(
+    opened: OpenedArchive,
+    selector: impl Fn(&str) -> bool,
+    x509_trust: Option<&TzapX509TrustOptions>,
+) -> Result<TzapTestReport, TzapError> {
     opened.verify()?;
     let x509_root_auth = x509_trust
         .filter(|trust| trust.has_trust_source())
@@ -1636,6 +2030,30 @@ pub fn copy_tzap_files_to_writer_with_optional_password(
     writer: &mut dyn io::Write,
 ) -> Result<TzapExtractReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
+    copy_opened_tzap_files_to_writer(&opened, selector, writer)
+}
+
+/// Copies selected regular recipient-wrapped `.tzap` members to a writer.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or selected members
+/// cannot be extracted.
+pub fn copy_tzap_files_to_writer_with_recipient_key(
+    archive: impl AsRef<Path>,
+    recipient_private_key: impl AsRef<Path>,
+    selector: impl Fn(&str) -> bool,
+    writer: &mut dyn io::Write,
+) -> Result<TzapExtractReport, TzapError> {
+    let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
+    copy_opened_tzap_files_to_writer(&opened, selector, writer)
+}
+
+fn copy_opened_tzap_files_to_writer(
+    opened: &OpenedArchive,
+    selector: impl Fn(&str) -> bool,
+    writer: &mut dyn io::Write,
+) -> Result<TzapExtractReport, TzapError> {
     let entries = opened.list_index_entries()?;
     let mut report = TzapExtractReport {
         written_entries: 0,
@@ -1712,6 +2130,32 @@ pub fn extract_tzap_file_to_destination_with_optional_password(
     replace_existing: bool,
 ) -> Result<Option<u64>, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
+    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing)
+}
+
+/// Extracts one regular recipient-wrapped `.tzap` member to an exact destination path.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, the member cannot be
+/// extracted by tzap-core, or the destination cannot be committed.
+pub fn extract_tzap_file_to_destination_with_recipient_key(
+    archive: impl AsRef<Path>,
+    recipient_private_key: impl AsRef<Path>,
+    entry_path: &str,
+    destination_path: &Path,
+    replace_existing: bool,
+) -> Result<Option<u64>, TzapError> {
+    let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
+    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing)
+}
+
+fn extract_tzap_file_from_opened_archive(
+    opened: &OpenedArchive,
+    entry_path: &str,
+    destination_path: &Path,
+    replace_existing: bool,
+) -> Result<Option<u64>, TzapError> {
     let Some(index_entry) = opened.lookup_index_entry(entry_path)? else {
         return Ok(None);
     };
@@ -1793,6 +2237,7 @@ fn extract_tzap_inner(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     password: Option<&str>,
+    recipient_private_key: Option<&Path>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<TzapExtractReport, TzapError> {
@@ -1802,7 +2247,7 @@ fn extract_tzap_inner(
             path: destination.to_path_buf(),
             source,
         })?;
-    let opened = open_tzap_archive(archive, password)?;
+    let opened = open_tzap_archive_with_key_options(archive, password, recipient_private_key)?;
     let entries = opened.list_files()?;
     let mut planner = match overwrite_resolver {
         Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
@@ -2029,6 +2474,21 @@ fn open_tzap_archive(
     archive: impl AsRef<Path>,
     password: Option<&str>,
 ) -> Result<OpenedArchive, TzapError> {
+    open_tzap_archive_with_key_options(archive, password, None)
+}
+
+fn open_tzap_archive_with_recipient_key(
+    archive: impl AsRef<Path>,
+    recipient_private_key: impl AsRef<Path>,
+) -> Result<OpenedArchive, TzapError> {
+    open_tzap_archive_with_key_options(archive, None, Some(recipient_private_key.as_ref()))
+}
+
+fn open_tzap_archive_with_key_options(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    recipient_private_key: Option<&Path>,
+) -> Result<OpenedArchive, TzapError> {
     let archive_path = archive.as_ref();
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
     let first_volume = volume_paths.first().ok_or_else(|| {
@@ -2039,16 +2499,6 @@ fn open_tzap_archive(
         )
     })?;
     let kdf_params = read_kdf_params_from_path(first_volume)?;
-    let master_key = match (&kdf_params, password) {
-        (KdfParams::None, _) | (KdfParams::Raw, None | Some("")) => placeholder_master_key()?,
-        (KdfParams::Argon2id { .. }, Some(password)) => {
-            MasterKey::derive_from_passphrase(&kdf_params, password)?
-        }
-        (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
-        (KdfParams::Raw, Some(_)) => {
-            return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
-        }
-    };
     let volume_files = volume_paths
         .iter()
         .map(|path| {
@@ -2058,6 +2508,36 @@ fn open_tzap_archive(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if matches!(kdf_params, KdfParams::RecipientWrap { .. }) {
+        if password.is_some() {
+            return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
+        }
+        let Some(recipient_private_key) = recipient_private_key else {
+            return Err(TzapError::RecipientKeyRequired);
+        };
+        let lookup = load_recipient_private_key_lookup(recipient_private_key)?;
+        let mut stats = RecipientWrapOpenStats::default();
+        return open_seekable_archive_volumes_with_recipient_wrap_resolver_options(
+            volume_files,
+            |context| recipient_wrap_candidates_for_record(context, &lookup, &mut stats),
+            ReaderOptions::default(),
+        )
+        .map_err(|source| recipient_wrap_open_error(source, &stats));
+    }
+    if recipient_private_key.is_some() {
+        return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
+    }
+    let master_key = match (&kdf_params, password) {
+        (KdfParams::None, _) | (KdfParams::Raw, None | Some("")) => placeholder_master_key()?,
+        (KdfParams::Argon2id { .. }, Some(password)) => {
+            MasterKey::derive_from_passphrase(&kdf_params, password)?
+        }
+        (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
+        (KdfParams::Raw, Some(_)) => {
+            return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
+        }
+        (KdfParams::RecipientWrap { .. }, _) => unreachable!("recipient wrap handled above"),
+    };
     if volume_files.len() == 1 {
         let volume_file = volume_files
             .into_iter()
@@ -2302,6 +2782,7 @@ const fn kdf_algorithm_label(algorithm: KdfAlgo) -> &'static str {
         KdfAlgo::None => "none",
         KdfAlgo::Raw => "raw",
         KdfAlgo::Argon2id => "argon2id",
+        KdfAlgo::RecipientWrap => "recipient-wrap",
     }
 }
 
@@ -2420,8 +2901,17 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
                 MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
             Ok((master_key, kdf_params))
         }
+        TzapKeySource::RecipientCertificate(_) => {
+            Ok((generate_random_master_key()?, KdfParams::None))
+        }
         TzapKeySource::NoPassword => Ok((placeholder_master_key()?, KdfParams::None)),
     }
+}
+
+fn generate_random_master_key() -> Result<MasterKey, TzapError> {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    MasterKey::from_raw_key(&bytes).map_err(Into::into)
 }
 
 fn placeholder_master_key() -> Result<MasterKey, TzapError> {
@@ -2635,8 +3125,10 @@ fn tzap_archive_write_error(error: TzapError) -> ArchiveWriteError {
         TzapError::Cancelled => ArchiveWriteError::Io(io::Error::other(JobCancelled)),
         TzapError::Plan(_)
         | TzapError::X509RootAuth(_)
+        | TzapError::KeyWrap(_)
         | TzapError::Safety(_)
-        | TzapError::PasswordRequired => ArchiveWriteError::Io(io::Error::other(error)),
+        | TzapError::PasswordRequired
+        | TzapError::RecipientKeyRequired => ArchiveWriteError::Io(io::Error::other(error)),
     }
 }
 
@@ -2696,16 +3188,20 @@ mod tests {
     use super::{
         TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
         create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
-        is_tzap_archive_path, list_tzap_with_optional_password, list_tzap_with_password,
-        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
-        verify_tzap_x509_public_no_key,
+        extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
+        list_tzap_with_password, list_tzap_with_recipient_key, summarize_tzap_public_metadata,
+        test_tzap_with_password_filter_and_x509_trust,
+        test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
     };
     use crate::jobs::{CancellationToken, JobContext};
     use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
+    use crate::safety::ExtractionPolicy;
     use crate::secrets::SecretString;
     use openssl::asn1::Asn1Time;
     use openssl::bn::{BigNum, MsbOption};
+    use openssl::ec::{EcGroup, EcKey};
     use openssl::hash::MessageDigest;
+    use openssl::nid::Nid;
     use openssl::pkcs12::Pkcs12;
     use openssl::pkey::{PKey, PKeyRef, Private};
     use openssl::rsa::Rsa;
@@ -2838,6 +3334,96 @@ mod tests {
         assert_eq!(summary.format.encryption_algorithm, "none");
         assert_eq!(summary.format.key_derivation, "none");
         assert!(!summary.format.password_required);
+    }
+
+    #[test]
+    fn create_tzap_with_recipient_certificate_opens_with_private_key() {
+        let temp = TestDir::new("tzap_recipient_wrap_create");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("sealed.tzap");
+        let recipient_cert_path = temp.path("recipient.pem");
+        let recipient_key_path = temp.path("recipient.key");
+        fs::write(&source, b"sealed payload").unwrap();
+
+        let (recipient_cert, recipient_key) = test_p256_recipient_cert("ZManager Test Recipient");
+        fs::write(&recipient_cert_path, recipient_cert.to_pem().unwrap()).unwrap();
+        fs::write(
+            &recipient_key_path,
+            recipient_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 14,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 14,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::RecipientCertificate(recipient_cert_path),
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let summary = summarize_tzap_public_metadata(&archive).unwrap();
+        assert_eq!(summary.format.key_derivation, "recipient-wrap");
+        assert_eq!(summary.format.encryption_algorithm, "aes-gcm-siv-256");
+        assert!(!summary.format.password_required);
+
+        let no_key_error = list_tzap_with_optional_password(&archive, None).unwrap_err();
+        assert!(no_key_error.to_string().contains("recipient private key"));
+
+        let listing = list_tzap_with_recipient_key(&archive, &recipient_key_path).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.txt");
+
+        let report = test_tzap_with_recipient_key_filter_and_x509_trust(
+            &archive,
+            &recipient_key_path,
+            |_| true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.tested_entries, 1);
+        assert_eq!(report.tested_bytes, 14);
+
+        let out = temp.path("out");
+        let extract_report = extract_tzap_with_recipient_key(
+            &archive,
+            &out,
+            ExtractionPolicy::default(),
+            &recipient_key_path,
+        )
+        .unwrap();
+        assert_eq!(extract_report.written_entries, 1);
+        assert_eq!(
+            fs::read(out.join("payload.txt")).unwrap(),
+            b"sealed payload"
+        );
     }
 
     #[test]
@@ -3313,6 +3899,41 @@ mod tests {
             )
             .unwrap();
         builder.sign(ca_key, MessageDigest::sha256()).unwrap();
+        (builder.build(), key)
+    }
+
+    fn test_p256_recipient_cert(common_name: &str) -> (X509, PKey<Private>) {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", common_name).unwrap();
+        let name = name.build();
+        let mut builder = X509::builder().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_serial_number(&random_serial_number()).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+            .unwrap();
+        builder
+            .append_extension(BasicConstraints::new().build().unwrap())
+            .unwrap();
+        builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .key_agreement()
+                    .digital_signature()
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        builder.sign(&key, MessageDigest::sha256()).unwrap();
         (builder.build(), key)
     }
 

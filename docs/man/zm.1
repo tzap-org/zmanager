@@ -170,6 +170,8 @@ ZIP writes
 sets; 7z writes
 .Pa .7z.001
 sets.
+.It Fl -recipient-cert Ar file
+Encrypt TZAP to one X.509 recipient certificate.
 .It Fl -signing-cert Ar file
 Sign TZAP RootAuth with an X.509 leaf certificate.
 .It Fl -signing-private-key Ar file
@@ -233,9 +235,11 @@ Expand known package payloads; currently
 .Pa .deb .
 .It Fl -password-stdin
 Read one password line from stdin.
+.It Fl -recipient-key Ar file
+Open TZAP RecipientWrap archives with a private key.
 .El
 .Sh LIST OPTIONS
-.Bl -tag -width "--password-stdin"
+.Bl -tag -width "--recipient-key"
 .It Fl l , Fl -long
 Show type, size, compressed size, and path.
 .It Fl -name-only
@@ -250,6 +254,8 @@ Exclude archive paths matching
 .Ar glob .
 .It Fl -password-stdin
 Read one password line from stdin.
+.It Fl -recipient-key Ar file
+Open TZAP RecipientWrap archives with a private key.
 .It Fl -json
 Emit machine-readable JSON.
 .El
@@ -263,6 +269,8 @@ Exclude archive paths matching
 .Ar glob .
 .It Fl -password-stdin
 Read one password line from stdin.
+.It Fl -recipient-key Ar file
+Open TZAP RecipientWrap archives with a private key.
 .It Fl -public-no-key
 Verify TZAP X.509 RootAuth without the archive key.
 .It Fl -trusted-ca-cert Ar file
@@ -338,7 +346,7 @@ Create and extract
 and
 .Pa .tzst .
 .It Cm tzap
-Create, extract, list, and test passphrase-protected
+Create, extract, list, and test passphrase-protected, recipient-wrapped, or unencrypted
 .Pa .tzap
 archives.
 .It Cm 7z
@@ -375,6 +383,10 @@ Use
 .Fl -password-stdin
 with a single line on stdin in scripts.
 For TZAP, omitting a password uses tzap's explicit no-secret all-zero key mode.
+Recipient-wrapped TZAP archives are created with
+.Fl -recipient-cert
+and opened with
+.Fl -recipient-key .
 .Sh SHELL COMPLETIONS
 Release packages install bash, zsh, and fish completions where supported.
 For manual setup, print the completion script for a shell:
@@ -408,6 +420,8 @@ zm extract project.tar.zst --strip-components 1 -C out/
 zm list project.zip --tree
 zm test project.zip --json
 printf '%s\n' "$ZM_PASSWORD" | zm create secret.7z private/ --encrypt --password-stdin
+zm create sealed.tzap private/ --format tzap --recipient-cert recipient.pem
+zm extract sealed.tzap -C out/ --recipient-key recipient.key
 printf '%s\n' "$RAR_PASSWORD" | zm extract secret.rar -C out/ --password-stdin
 .Ed
 .Sh SEE ALSO

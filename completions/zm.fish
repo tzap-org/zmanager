@@ -62,6 +62,7 @@ complete -c zm -n "__fish_seen_subcommand_from create" -l store -d "Store ZIP en
 complete -c zm -n "__fish_seen_subcommand_from create" -l solid -d "Use solid 7z mode"
 complete -c zm -n "__fish_seen_subcommand_from create" -l no-solid -d "Disable solid 7z mode"
 complete -c zm -n "__fish_seen_subcommand_from create" -l volume-size -xa "64k 100m 500m 1g 2g 4g" -d "Split ZIP/7z output volumes"
+complete -c zm -n "__fish_seen_subcommand_from create" -l recipient-cert -r -d "Encrypt TZAP to one X.509 recipient certificate"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-cert -r -d "Sign TZAP RootAuth with an X.509 cert or PEM bundle"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-private-key -r -d "Private key for --signing-cert"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-chain -r -d "Extra intermediate certificate chain for --signing-cert"
@@ -87,6 +88,7 @@ complete -c zm -n "__fish_seen_subcommand_from extract" -l strip-components -r -
 complete -c zm -n "__fish_seen_subcommand_from extract" -l to-stdout -d "Write selected regular file bytes to stdout"
 complete -c zm -n "__fish_seen_subcommand_from extract" -l extract-nested -d "Expand known package payloads"
 complete -c zm -n "__fish_seen_subcommand_from extract" -l password-stdin -d "Read one password line from stdin"
+complete -c zm -n "__fish_seen_subcommand_from extract" -l recipient-key -r -d "Open TZAP RecipientWrap archives with a private key"
 
 complete -c zm -n "__fish_seen_subcommand_from list" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from list" -s f -l file -r -d "Archive file path"
@@ -96,6 +98,7 @@ complete -c zm -n "__fish_seen_subcommand_from list" -l tree -d "Print a hierarc
 complete -c zm -n "__fish_seen_subcommand_from list" -s i -l include -r -d "List archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from list" -l exclude -r -d "Exclude archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from list" -l password-stdin -d "Read one password line from stdin"
+complete -c zm -n "__fish_seen_subcommand_from list" -l recipient-key -r -d "Open TZAP RecipientWrap archives with a private key"
 complete -c zm -n "__fish_seen_subcommand_from list" -l json -d "Emit machine-readable JSON"
 
 complete -c zm -n "__fish_seen_subcommand_from test" -s h -l help -d "Show help"
@@ -103,6 +106,7 @@ complete -c zm -n "__fish_seen_subcommand_from test" -s f -l file -r -d "Archive
 complete -c zm -n "__fish_seen_subcommand_from test" -s i -l include -r -d "Test archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from test" -l exclude -r -d "Exclude archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from test" -l password-stdin -d "Read one password line from stdin"
+complete -c zm -n "__fish_seen_subcommand_from test" -l recipient-key -r -d "Open TZAP RecipientWrap archives with a private key"
 complete -c zm -n "__fish_seen_subcommand_from test" -l public-no-key -d "Verify TZAP X.509 RootAuth without the archive key"
 complete -c zm -n "__fish_seen_subcommand_from test" -l trusted-ca-cert -r -d "Trusted CA certificate for TZAP X.509 RootAuth"
 complete -c zm -n "__fish_seen_subcommand_from test" -l trusted-system-roots -d "Use system trust roots for TZAP X.509 RootAuth"

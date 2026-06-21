@@ -32,7 +32,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         "--no-hidden", "-i", "--include", "--exclude", "--exclude-from",
         "--format", "--method", "--level", "-0", "-1", "-2", "-3", "-4",
         "-5", "-6", "-7", "-8", "-9", "--store", "--solid", "--no-solid",
-        "--volume-size", "--signing-cert", "--signing-private-key", "--signing-chain",
+        "--volume-size", "--recipient-cert", "--signing-cert", "--signing-private-key", "--signing-chain",
         "-j", "--junk-paths", "-y", "--preserve-symlinks",
         "--follow-symlinks", "--preserve-metadata", "-X", "--no-metadata",
         "-f", "--file", "--force", "--dry-run", "-T", "--test-after", "--encrypt",
@@ -41,15 +41,15 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $extractOptions = @(
         "-h", "--help", "-C", "-d", "--directory", "--here", "--overwrite",
         "-i", "--include", "--exclude", "--strip-components", "--to-stdout",
-        "--extract-nested", "--password-stdin"
+        "--extract-nested", "--password-stdin", "--recipient-key"
     )
     $listOptions = @(
         "-h", "--help", "-f", "--file", "-l", "--long", "--name-only",
-        "--tree", "-i", "--include", "--exclude", "--password-stdin", "--json"
+        "--tree", "-i", "--include", "--exclude", "--password-stdin", "--recipient-key", "--json"
     )
     $testOptions = @(
         "-h", "--help", "-f", "--file", "-i", "--include", "--exclude",
-        "--password-stdin", "--public-no-key", "--trusted-ca-cert",
+        "--password-stdin", "--recipient-key", "--public-no-key", "--trusted-ca-cert",
         "--trusted-system-roots", "--json"
     )
     $planOptions = @(
@@ -203,6 +203,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
             Complete-ZmFiles -Prefix $wordToComplete
             return
         }
+        "--recipient-cert" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
         "--signing-cert" {
             Complete-ZmFiles -Prefix $wordToComplete
             return
@@ -212,6 +216,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
             return
         }
         "--signing-chain" {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
+        "--recipient-key" {
             Complete-ZmFiles -Prefix $wordToComplete
             return
         }

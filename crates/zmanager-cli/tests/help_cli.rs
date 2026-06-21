@@ -99,6 +99,7 @@ const CREATE_FLAGS: &[&str] = &[
     "-T, --test-after",
     "--encrypt",
     "--password-stdin",
+    "--recipient-cert <file>",
     "--signing-cert <file>",
     "--signing-private-key <file>",
     "--signing-chain <file>",
@@ -114,6 +115,7 @@ const EXTRACT_FLAGS: &[&str] = &[
     "--to-stdout",
     "--extract-nested",
     "--password-stdin",
+    "--recipient-key <file>",
 ];
 
 const LIST_FLAGS: &[&str] = &[
@@ -123,12 +125,14 @@ const LIST_FLAGS: &[&str] = &[
     "-i, --include <glob>",
     "--exclude <glob>",
     "--password-stdin",
+    "--recipient-key <file>",
 ];
 
 const TEST_FLAGS: &[&str] = &[
     "-i, --include <glob>",
     "--exclude <glob>",
     "--password-stdin",
+    "--recipient-key <file>",
     "--public-no-key",
     "--trusted-ca-cert <file>",
     "--trusted-system-roots",
@@ -392,6 +396,8 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         "strip-components",
         "to-stdout",
         "password-stdin",
+        "recipient-cert",
+        "recipient-key",
         "public-no-key",
         "volume-size",
         "signing-cert",

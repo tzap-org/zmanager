@@ -115,6 +115,7 @@ Examples:
   printf '%s\\n' \"$ZM_PASSWORD\" | zm create secret.7z private/ --encrypt --password-stdin
   printf '%s\\n' \"$ZM_PASSWORD\" | zm create signed.tzap private/ --format tzap \\
       --password-stdin --signing-cert signer.pem --signing-private-key signer.key
+  zm create sealed.tzap private/ --format tzap --recipient-cert recipient.pem
 
 Input:
   <paths...>                     Files and folders to archive
@@ -162,6 +163,7 @@ Output and safety:
   -T, --test-after               Test the archive after writing
       --encrypt                  Prompt for an archive password where supported
       --password-stdin           Read one password line from stdin
+      --recipient-cert <file>    Encrypt TZAP to one X.509 recipient certificate
       --signing-cert <file>      Sign TZAP RootAuth with an X.509 cert or PEM bundle
       --signing-private-key <file>
                                   Private key for --signing-cert
@@ -185,6 +187,7 @@ Examples:
   zm extract file.txt.zst
   zm extract package.deb -C out/ --extract-nested
   printf '%s\\n' \"$RAR_PASSWORD\" | zm extract secret.rar -C out/ --password-stdin
+  zm extract sealed.tzap -C out/ --recipient-key recipient.key
 
 Destination:
   -C, -d, --directory <dir>      Extract into dir
@@ -199,6 +202,7 @@ Selection and output:
       --to-stdout                Write selected regular file bytes to stdout
       --extract-nested           Expand known package payloads; currently .deb
       --password-stdin           Read one password line from stdin
+      --recipient-key <file>     Open TZAP RecipientWrap archives with a private key
   Glob patterns match archive paths. Quote patterns so the shell does not
   expand them first. Use dir/** for a whole tree; * can match /.
 
@@ -220,6 +224,7 @@ Examples:
   zm list project.zip --tree
   zm list project.zip --name-only --include 'docs/**'
   printf '%s\\n' \"$RAR_PASSWORD\" | zm list secret.rar --password-stdin
+  zm list sealed.tzap --recipient-key recipient.key
 
 Options:
   -f, --file <archive>           Archive file path in classic mode
@@ -229,6 +234,7 @@ Options:
   -i, --include <glob>           List archive paths matching glob
       --exclude <glob>           Exclude archive paths matching glob
       --password-stdin           Read one password line from stdin
+      --recipient-key <file>     Open TZAP RecipientWrap archives with a private key
       --json                     Emit machine-readable JSON
   Glob patterns match archive paths. Quote patterns so the shell does not
   expand them first. Use dir/** for a whole tree; * can match /.
@@ -250,12 +256,14 @@ Examples:
   printf '%s\\n' \"$ZM_PASSWORD\" | zm test secret.7z --password-stdin
   printf '%s\\n' \"$ZM_PASSWORD\" | zm test signed.tzap --password-stdin --trusted-ca-cert ca.pem
   zm test signed.tzap --public-no-key --trusted-ca-cert ca.pem
+  zm test sealed.tzap --recipient-key recipient.key
 
 Options:
   -f, --file <archive>           Archive file path in classic mode
   -i, --include <glob>           Test archive paths matching glob
       --exclude <glob>           Exclude archive paths matching glob
       --password-stdin           Read one password line from stdin
+      --recipient-key <file>     Open TZAP RecipientWrap archives with a private key
       --public-no-key            Verify TZAP X.509 RootAuth without the archive key
       --trusted-ca-cert <file>   Verify TZAP X.509 RootAuth with a trusted CA certificate
       --trusted-system-roots     Verify TZAP X.509 RootAuth with system trust roots
@@ -802,6 +810,7 @@ struct CreateRequest {
     preserve_symlinks: bool,
     follow_symlinks: bool,
     no_metadata: bool,
+    tzap_recipient_cert: Option<PathBuf>,
     tzap_signing_cert: Option<PathBuf>,
     tzap_signing_private_key: Option<PathBuf>,
     tzap_signing_chain: Vec<PathBuf>,
@@ -835,6 +844,7 @@ impl Default for CreateRequest {
             preserve_symlinks: false,
             follow_symlinks: false,
             no_metadata: false,
+            tzap_recipient_cert: None,
             tzap_signing_cert: None,
             tzap_signing_private_key: None,
             tzap_signing_chain: Vec::new(),
@@ -853,6 +863,7 @@ struct ExtractRequest {
     to_stdout: bool,
     extract_nested: bool,
     password_stdin: bool,
+    recipient_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -865,6 +876,7 @@ struct ListRequest {
     include: Vec<String>,
     exclude: Vec<String>,
     password_stdin: bool,
+    recipient_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -874,6 +886,7 @@ struct TestRequest {
     include: Vec<String>,
     exclude: Vec<String>,
     password_stdin: bool,
+    recipient_key: Option<PathBuf>,
     public_no_key: bool,
     trusted_ca_certs: Vec<PathBuf>,
     trusted_system_roots: bool,
@@ -1462,6 +1475,10 @@ fn parse_create_request(
                 request.volume_size =
                     Some(parse_volume_size(&take_value(args, &mut index, arg)?, arg)?);
             }
+            "--recipient-cert" => {
+                request.tzap_recipient_cert =
+                    Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
             "--signing-cert" => {
                 request.tzap_signing_cert = Some(PathBuf::from(take_value(args, &mut index, arg)?));
             }
@@ -1743,11 +1760,17 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 .map_err(|error| error.to_string())
         }
         ArchiveFormat::Tzap => {
-            let uses_secret_key = password.is_some();
-            let key_source = password.map_or(
-                zmanager_core::tzap_backend::TzapKeySource::NoPassword,
-                zmanager_core::tzap_backend::TzapKeySource::Passphrase,
-            );
+            let uses_secret_key = password.is_some() || request.tzap_recipient_cert.is_some();
+            let key_source = if let Some(recipient_certificate) = &request.tzap_recipient_cert {
+                zmanager_core::tzap_backend::TzapKeySource::RecipientCertificate(
+                    recipient_certificate.clone(),
+                )
+            } else {
+                password.map_or(
+                    zmanager_core::tzap_backend::TzapKeySource::NoPassword,
+                    zmanager_core::tzap_backend::TzapKeySource::Passphrase,
+                )
+            };
             let options = zmanager_core::tzap_backend::TzapCreateOptions {
                 key_source,
                 level: request.level.unwrap_or(3),
@@ -1946,6 +1969,30 @@ fn create_stream(
 }
 
 fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Result<(), String> {
+    if request.tzap_recipient_cert.is_some() {
+        if format != ArchiveFormat::Tzap {
+            return Err("recipient certificates are supported only for TZAP archives".to_owned());
+        }
+        if request.encrypt || request.password_stdin {
+            return Err(
+                "--recipient-cert cannot be combined with --encrypt or --password-stdin".to_owned(),
+            );
+        }
+        if request.tzap_signing_cert.is_some()
+            || request.tzap_signing_private_key.is_some()
+            || !request.tzap_signing_chain.is_empty()
+        {
+            return Err(
+                "--recipient-cert cannot be combined with X.509 signing options".to_owned(),
+            );
+        }
+        if request.volume_size.is_some() {
+            return Err(
+                "--recipient-cert is supported only for single-volume TZAP create".to_owned(),
+            );
+        }
+    }
+
     if request.tzap_signing_cert.is_some()
         || request.tzap_signing_private_key.is_some()
         || !request.tzap_signing_chain.is_empty()
@@ -2211,6 +2258,9 @@ fn parse_extract_request(
                 request.password_stdin = true;
                 index += 1;
             }
+            "--recipient-key" => {
+                request.recipient_key = Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
             _ if arg.starts_with('-') => return Err(format!("unknown extract option: {arg}")),
             _ => {
                 positional.push(arg.clone());
@@ -2236,6 +2286,15 @@ fn parse_extract_request(
 
 #[allow(clippy::too_many_lines)]
 fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitCode {
+    if let Some(code) = validate_recipient_key_open_option(
+        "extract",
+        &request.archive,
+        request.password_stdin,
+        request.recipient_key.as_ref(),
+        global,
+    ) {
+        return code;
+    }
     if request.to_stdout {
         return run_extract_to_stdout(request, global);
     }
@@ -2332,6 +2391,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             destination,
             policy,
             password.as_deref(),
+            request.recipient_key.as_deref(),
             Some(global),
         )
     } else {
@@ -2609,12 +2669,22 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             Ok(password) => password,
             Err(code) => return code,
         };
-        match zmanager_core::tzap_backend::copy_tzap_files_to_writer_with_optional_password(
-            &request.archive,
-            password.as_deref(),
-            |name| entry_selected(name, &request.include, &request.exclude),
-            &mut stdout,
-        ) {
+        let result = if let Some(recipient_key) = request.recipient_key.as_deref() {
+            zmanager_core::tzap_backend::copy_tzap_files_to_writer_with_recipient_key(
+                &request.archive,
+                recipient_key,
+                |name| entry_selected(name, &request.include, &request.exclude),
+                &mut stdout,
+            )
+        } else {
+            zmanager_core::tzap_backend::copy_tzap_files_to_writer_with_optional_password(
+                &request.archive,
+                password.as_deref(),
+                |name| entry_selected(name, &request.include, &request.exclude),
+                &mut stdout,
+            )
+        };
+        match result {
             Ok(report) => {
                 if global.verbose > 0 && !global.quiet {
                     output::stderr_line(
@@ -2804,6 +2874,9 @@ fn parse_list_request(
                 request.password_stdin = true;
                 index += 1;
             }
+            "--recipient-key" => {
+                request.recipient_key = Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
             "--" => {
                 positional.extend(args[index + 1..].iter().cloned());
                 break;
@@ -2827,6 +2900,15 @@ fn parse_list_request(
 }
 
 fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
+    if let Some(code) = validate_recipient_key_open_option(
+        "list",
+        &request.archive,
+        request.password_stdin,
+        request.recipient_key.as_ref(),
+        global,
+    ) {
+        return code;
+    }
     if request.password_stdin
         && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
@@ -2840,7 +2922,11 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
         Ok(password) => password,
         Err(code) => return code,
     };
-    match list_entries_with_password(&request.archive, password.as_deref()) {
+    match list_entries_with_password(
+        &request.archive,
+        password.as_deref(),
+        request.recipient_key.as_deref(),
+    ) {
         Ok(mut entries) => {
             filter_entries(&mut entries, &request.include, &request.exclude);
             if global.json {
@@ -2940,6 +3026,9 @@ fn parse_test_request(
                 request.password_stdin = true;
                 index += 1;
             }
+            "--recipient-key" => {
+                request.recipient_key = Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
             "--public-no-key" => {
                 request.public_no_key = true;
                 index += 1;
@@ -2983,6 +3072,15 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             format_args!("test failed: --public-no-key is supported only for TZAP archives"),
         );
     }
+    if let Some(code) = validate_recipient_key_open_option(
+        "test",
+        &request.archive,
+        request.password_stdin,
+        request.recipient_key.as_ref(),
+        global,
+    ) {
+        return code;
+    }
     if test_request_has_x509_trust(request) && !is_tzap_archive(&request.archive) {
         return usage_failure(
             global,
@@ -3001,6 +3099,12 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         return usage_failure(
             global,
             format_args!("test failed: --public-no-key cannot be combined with --password-stdin"),
+        );
+    }
+    if request.public_no_key && request.recipient_key.is_some() {
+        return usage_failure(
+            global,
+            format_args!("test failed: --public-no-key cannot be combined with --recipient-key"),
         );
     }
     if request.public_no_key && (!request.include.is_empty() || !request.exclude.is_empty()) {
@@ -3086,7 +3190,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
     }
 
-    match list_entries_with_password(&request.archive, password.as_deref()) {
+    match list_entries_with_password(&request.archive, password.as_deref(), None) {
         Ok(mut entries) => {
             let total_entries = entries.len();
             filter_entries(&mut entries, &request.include, &request.exclude);
@@ -3213,12 +3317,22 @@ fn run_tzap_test_new(
     global: &GlobalOptions,
 ) -> ExitCode {
     let x509_trust = test_request_has_x509_trust(request).then(|| test_request_x509_trust(request));
-    match zmanager_core::tzap_backend::test_tzap_with_optional_password_filter_and_x509_trust(
-        archive,
-        password,
-        |name| entry_selected(name, includes, excludes),
-        x509_trust.as_ref(),
-    ) {
+    let result = if let Some(recipient_key) = request.recipient_key.as_deref() {
+        zmanager_core::tzap_backend::test_tzap_with_recipient_key_filter_and_x509_trust(
+            archive,
+            recipient_key,
+            |name| entry_selected(name, includes, excludes),
+            x509_trust.as_ref(),
+        )
+    } else {
+        zmanager_core::tzap_backend::test_tzap_with_optional_password_filter_and_x509_trust(
+            archive,
+            password,
+            |name| entry_selected(name, includes, excludes),
+            x509_trust.as_ref(),
+        )
+    };
+    match result {
         Ok(report) => {
             print_tzap_test_success(&report, global);
             ExitCode::SUCCESS
@@ -4082,9 +4196,35 @@ fn read_optional_password_stdin(
     }
 }
 
+fn validate_recipient_key_open_option(
+    command: &str,
+    archive: &str,
+    password_stdin: bool,
+    recipient_key: Option<&PathBuf>,
+    global: &GlobalOptions,
+) -> Option<ExitCode> {
+    recipient_key?;
+    if !is_tzap_archive(archive) {
+        return Some(usage_failure(
+            global,
+            format_args!("{command} failed: --recipient-key is supported only for TZAP archives"),
+        ));
+    }
+    if password_stdin {
+        return Some(usage_failure(
+            global,
+            format_args!(
+                "{command} failed: --recipient-key cannot be combined with --password-stdin"
+            ),
+        ));
+    }
+    None
+}
+
 fn list_entries_with_password(
     archive: &str,
     password: Option<&str>,
+    recipient_key: Option<&Path>,
 ) -> Result<Vec<GenericEntry>, String> {
     if is_zip_family_archive(archive) && !is_split_zip_archive_path(archive) {
         zmanager_core::zip_backend::list_zip(archive)
@@ -4132,7 +4272,12 @@ fn list_entries_with_password(
             compressed_size,
         }])
     } else if is_tzap_archive(archive) {
-        zmanager_core::tzap_backend::list_tzap_with_optional_password(archive, password)
+        let listing = if let Some(recipient_key) = recipient_key {
+            zmanager_core::tzap_backend::list_tzap_with_recipient_key(archive, recipient_key)
+        } else {
+            zmanager_core::tzap_backend::list_tzap_with_optional_password(archive, password)
+        };
+        listing
             .map(|listing| {
                 listing
                     .entries
@@ -4660,6 +4805,7 @@ const CREATE_OPTIONS: &[&str] = &[
     "--force",
     "--encrypt",
     "--password-stdin",
+    "--recipient-cert",
     "--signing-cert",
     "--signing-private-key",
     "--signing-chain",
@@ -4686,6 +4832,7 @@ const EXTRACT_OPTIONS: &[&str] = &[
     "--to-stdout",
     "--extract-nested",
     "--password-stdin",
+    "--recipient-key",
 ];
 
 const LIST_OPTIONS: &[&str] = &[
@@ -4701,6 +4848,7 @@ const LIST_OPTIONS: &[&str] = &[
     "--include",
     "--exclude",
     "--password-stdin",
+    "--recipient-key",
     "--trusted-ca-cert",
     "--trusted-system-roots",
 ];
@@ -4714,6 +4862,7 @@ const TEST_OPTIONS: &[&str] = &[
     "--include",
     "--exclude",
     "--password-stdin",
+    "--recipient-key",
     "--public-no-key",
     "--trusted-ca-cert",
     "--trusted-system-roots",
@@ -5481,6 +5630,7 @@ fn run_tzap_extract_with_policy(
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
     password: Option<&str>,
+    recipient_key: Option<&Path>,
     global: Option<&GlobalOptions>,
 ) -> ExitCode {
     let archive_path = archive.as_ref().to_path_buf();
@@ -5494,12 +5644,29 @@ fn run_tzap_extract_with_policy(
         let stdin = io::stdin();
         let stderr = io::stderr();
         let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
-        zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_optional_password(
+        if let Some(recipient_key) = recipient_key {
+            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_recipient_key(
+                &archive_path,
+                &destination_path,
+                policy,
+                recipient_key,
+                &mut overwrite_resolver,
+            )
+        } else {
+            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_optional_password(
+                &archive_path,
+                &destination_path,
+                policy,
+                password,
+                &mut overwrite_resolver,
+            )
+        }
+    } else if let Some(recipient_key) = recipient_key {
+        zmanager_core::tzap_backend::extract_tzap_with_recipient_key(
             &archive_path,
             &destination_path,
             policy,
-            password,
-            &mut overwrite_resolver,
+            recipient_key,
         )
     } else {
         zmanager_core::tzap_backend::extract_tzap_with_optional_password(
@@ -5989,10 +6156,10 @@ fn plan_command(mut args: impl Iterator<Item = String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArchiveFormat, CreateRequest, GlobalOptions, InteractiveOverwriteResolver, TestRequest,
-        normalize_prompted_password, parse_create_request, parse_test_request,
-        password_arg_or_prompt, publish_archive, tzap_default_volume_loss_tolerance,
-        validate_create_options,
+        ArchiveFormat, CreateRequest, ExtractRequest, GlobalOptions, InteractiveOverwriteResolver,
+        ListRequest, TestRequest, normalize_prompted_password, parse_create_request,
+        parse_extract_request, parse_list_request, parse_test_request, password_arg_or_prompt,
+        publish_archive, tzap_default_volume_loss_tolerance, validate_create_options,
     };
     use std::fs;
     use std::io::Cursor;
@@ -6068,6 +6235,70 @@ mod tests {
         let error = validate_create_options(ArchiveFormat::Zip, &request).unwrap_err();
 
         assert!(error.contains("only for TZAP"));
+    }
+
+    #[test]
+    fn create_parser_accepts_tzap_recipient_certificate() {
+        let mut request = CreateRequest::default();
+        let mut global = GlobalOptions::default();
+        let args = strings([
+            "sealed.tzap",
+            "src",
+            "--format",
+            "tzap",
+            "--recipient-cert",
+            "recipient.pem",
+        ]);
+
+        parse_create_request(&args, &mut global, &mut request).unwrap();
+
+        assert_eq!(
+            request.tzap_recipient_cert,
+            Some(PathBuf::from("recipient.pem"))
+        );
+        assert!(validate_create_options(ArchiveFormat::Tzap, &request).is_ok());
+    }
+
+    #[test]
+    fn create_validation_rejects_recipient_certificate_password_mode() {
+        let request = CreateRequest {
+            archive: "sealed.tzap".to_owned(),
+            sources: vec![PathBuf::from("src")],
+            format: Some(ArchiveFormat::Tzap),
+            password_stdin: true,
+            tzap_recipient_cert: Some(PathBuf::from("recipient.pem")),
+            ..CreateRequest::default()
+        };
+
+        let error = validate_create_options(ArchiveFormat::Tzap, &request).unwrap_err();
+
+        assert!(error.contains("--recipient-cert cannot be combined"));
+    }
+
+    #[test]
+    fn open_parsers_accept_tzap_recipient_key() {
+        let mut global = GlobalOptions::default();
+
+        let mut extract = ExtractRequest::default();
+        let extract_args = strings([
+            "sealed.tzap",
+            "-C",
+            "out",
+            "--recipient-key",
+            "recipient.key",
+        ]);
+        parse_extract_request(&extract_args, &mut global, &mut extract).unwrap();
+        assert_eq!(extract.recipient_key, Some(PathBuf::from("recipient.key")));
+
+        let mut list = ListRequest::default();
+        let list_args = strings(["sealed.tzap", "--recipient-key", "recipient.key"]);
+        parse_list_request(&list_args, &mut global, &mut list).unwrap();
+        assert_eq!(list.recipient_key, Some(PathBuf::from("recipient.key")));
+
+        let mut test = TestRequest::default();
+        let test_args = strings(["sealed.tzap", "--recipient-key", "recipient.key"]);
+        parse_test_request(&test_args, &mut global, &mut test).unwrap();
+        assert_eq!(test.recipient_key, Some(PathBuf::from("recipient.key")));
     }
 
     #[test]
