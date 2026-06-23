@@ -4,6 +4,8 @@ mod atomic_file;
 
 pub mod archive_browser;
 pub mod deb_backend;
+pub mod jcs;
+pub mod p256_signature;
 pub mod jobs;
 pub mod libarchive_backend;
 pub mod manifest;
@@ -14,6 +16,7 @@ pub mod secrets;
 pub mod sevenz_backend;
 pub mod tar_zst_backend;
 pub mod tzap_backend;
+pub mod trust;
 pub mod x509_format;
 pub mod zip_backend;
 
