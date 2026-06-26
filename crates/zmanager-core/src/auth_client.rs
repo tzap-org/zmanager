@@ -648,6 +648,9 @@ pub enum TzapAuthError {
         expected: String,
         actual: String,
     },
+    Transport {
+        message: String,
+    },
     HttpStatus {
         status_code: u16,
     },
@@ -732,6 +735,9 @@ impl fmt::Display for TzapAuthError {
                     "session audience mismatch: expected {expected}, got {actual}"
                 )
             }
+            Self::Transport { message } => {
+                write!(f, "hosted auth HTTP transport failed: {message}")
+            }
             Self::HttpStatus { status_code } => {
                 write!(
                     f,
@@ -809,18 +815,28 @@ fn reject_url_session_material(callback_url: Option<&str>) -> Result<(), TzapAut
     let Some(callback_url) = callback_url else {
         return Ok(());
     };
-    let Some(parameter_text) = callback_url
-        .split_once('?')
-        .map(|(_, query)| query)
-        .or_else(|| callback_url.split_once('#').map(|(_, fragment)| fragment))
-    else {
+    let (before_fragment, fragment) = callback_url
+        .split_once('#')
+        .map_or((callback_url, None), |(before, fragment)| {
+            (before, Some(fragment))
+        });
+    let query = before_fragment.split_once('?').map(|(_, query)| query);
+    reject_url_session_material_parameters(query)?;
+    reject_url_session_material_parameters(fragment)?;
+    Ok(())
+}
+
+fn reject_url_session_material_parameters(
+    parameter_text: Option<&str>,
+) -> Result<(), TzapAuthError> {
+    let Some(parameter_text) = parameter_text else {
         return Ok(());
     };
     for parameter in parameter_text.split('&') {
         let key = parameter.split_once('=').map_or(parameter, |(key, _)| key);
         if matches!(
             key,
-            "access_token" | "session_token" | "id_token" | "refresh_token"
+            "relay_body" | "access_token" | "session_token" | "id_token" | "refresh_token"
         ) {
             return Err(TzapAuthError::SessionTokenInCallbackUrl);
         }
@@ -1235,6 +1251,27 @@ mod tests {
 
         assert!(matches!(
             tracker.consume_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
+            Err(TzapAuthError::SessionTokenInCallbackUrl)
+        ));
+
+        let mut tracker = TzapOAuthStateTracker::new();
+        tracker.insert_pending(pending.clone()).unwrap();
+        let mut fragment_callback = hosted_auth_callback(&pending, relay_success_body());
+        fragment_callback.callback_url = Some(
+            "zmanager://auth/callback?state=ok#access_token=never&relay_body=never".to_owned(),
+        );
+        assert!(matches!(
+            tracker.consume_handoff(&fragment_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
+            Err(TzapAuthError::SessionTokenInCallbackUrl)
+        ));
+
+        let mut tracker = TzapOAuthStateTracker::new();
+        tracker.insert_pending(pending.clone()).unwrap();
+        let mut relay_query_callback = hosted_auth_callback(&pending, relay_success_body());
+        relay_query_callback.callback_url =
+            Some("zmanager://auth/callback?state=ok&relay_body=never".to_owned());
+        assert!(matches!(
+            tracker.consume_handoff(&relay_query_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
             Err(TzapAuthError::SessionTokenInCallbackUrl)
         ));
 

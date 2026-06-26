@@ -28,6 +28,7 @@ pub const TZAP_MVP_LEAF_KEY_ALGORITHMS: &[&str] = &[TZAP_LEAF_KEY_ALGORITHM];
 pub const TZAP_MVP_CERTIFICATE_SIGNATURE_ALGORITHMS: &[&str] =
     &[TZAP_LEAF_CERTIFICATE_SIGNATURE_ALGORITHM];
 pub const TZAP_MVP_PAYLOAD_DIGEST_ALGORITHMS: &[&str] = &[TZAP_PAYLOAD_DIGEST_ALGORITHM];
+pub const TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA: &str = "all_certificates_issued_by_ca";
 
 /// MVP OIDs (numeric UUID-derived arcs).
 pub const TZAP_OID_DOCUMENT_SIGNING_EKU: &str = "2.25.201653505380392472132808080578384925035";
@@ -267,6 +268,23 @@ pub const OFFICIAL_TZAP_ROOT_PINS: TzapRootPinSet = TzapRootPinSet {
     current: &[],
     planned_successors: &[],
 };
+
+pub fn certificate_pem_or_der_to_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    match X509::from_pem(bytes) {
+        Ok(certificate) => certificate.to_der().map_err(|error| error.to_string()),
+        Err(_) => {
+            X509::from_der(bytes).map_err(|error| error.to_string())?;
+            Ok(bytes.to_vec())
+        }
+    }
+}
+
+#[must_use]
+pub fn certificate_sha256_identifier_for_der(der: &[u8]) -> String {
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&Sha256::digest(der));
+    format_certificate_sha256(&digest)
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TzapOfficialRootPinKind {

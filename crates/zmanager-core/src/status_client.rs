@@ -161,7 +161,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
                 field: "issuer_sha256",
             }
         })?;
-        self.get_bytes(&path)
+        crl_download_to_der(&self.get_bytes(&path)?)
     }
 
     fn get_json(&self, path: &str) -> Result<Value, TzapStatusClientError> {
@@ -404,9 +404,10 @@ pub struct TzapBulkStatusItem {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapCrlManifestEntry {
     pub crl_scope: String,
+    pub crl_url: String,
     pub issuer_certificate_sha256: String,
+    pub crl_sha256: String,
     pub crl_number: String,
-    pub der_sha256: String,
     pub this_update_unix_seconds: i64,
     pub next_update_unix_seconds: i64,
 }
@@ -480,7 +481,7 @@ pub fn validate_crl_der_against_manifest(
     crl_der: &[u8],
     issuer_certificate_der: &[u8],
 ) -> Result<(), TzapStatusClientError> {
-    if sha256_identifier(crl_der) != entry.der_sha256 {
+    if sha256_identifier(crl_der) != entry.crl_sha256 {
         return Err(TzapStatusClientError::CrlValidation {
             reason: "DER SHA-256 does not match manifest".to_owned(),
         });
@@ -538,6 +539,22 @@ fn parse_crl_der<'a>(
         Err(TzapStatusClientError::CrlValidation {
             reason: "CRL has trailing DER bytes".to_owned(),
         })
+    }
+}
+
+fn crl_download_to_der(bytes: &[u8]) -> Result<Vec<u8>, TzapStatusClientError> {
+    match X509Crl::from_pem(bytes) {
+        Ok(crl) => crl
+            .to_der()
+            .map_err(|error| TzapStatusClientError::CrlValidation {
+                reason: error.to_string(),
+            }),
+        Err(_) => {
+            X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation {
+                reason: error.to_string(),
+            })?;
+            Ok(bytes.to_vec())
+        }
     }
 }
 
@@ -672,24 +689,35 @@ fn parse_crl_manifest(bytes: &[u8]) -> Result<Vec<TzapCrlManifestEntry>, TzapSta
             let entry_object = object(entry)?;
             let parsed = TzapCrlManifestEntry {
                 crl_scope: required_string(entry_object, "crl_scope")?.to_owned(),
+                crl_url: required_string(entry_object, "crl_url")?.to_owned(),
                 issuer_certificate_sha256: required_string(
                     entry_object,
                     "issuer_certificate_sha256",
                 )?
                 .to_owned(),
+                crl_sha256: required_string(entry_object, "crl_sha256")?.to_owned(),
                 crl_number: required_string(entry_object, "crl_number")?.to_owned(),
-                der_sha256: required_string(entry_object, "der_sha256")?.to_owned(),
                 this_update_unix_seconds: required_i64(entry_object, "this_update_unix_seconds")?,
                 next_update_unix_seconds: required_i64(entry_object, "next_update_unix_seconds")?,
             };
+            if parsed.crl_scope != trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA {
+                return Err(TzapStatusClientError::InvalidField { field: "crl_scope" });
+            }
             trust::parse_issuer_sha256(&parsed.issuer_certificate_sha256).map_err(|_| {
                 TzapStatusClientError::InvalidField {
                     field: "issuer_certificate_sha256",
                 }
             })?;
-            trust::parse_crl_sha256(&parsed.der_sha256).map_err(|_| {
+            let expected_crl_url = trust::status_crl_pem_path(&parsed.issuer_certificate_sha256)
+                .map_err(|_| TzapStatusClientError::InvalidField {
+                    field: "issuer_certificate_sha256",
+                })?;
+            if parsed.crl_url != expected_crl_url {
+                return Err(TzapStatusClientError::InvalidField { field: "crl_url" });
+            }
+            trust::parse_crl_sha256(&parsed.crl_sha256).map_err(|_| {
                 TzapStatusClientError::InvalidField {
-                    field: "der_sha256",
+                    field: "crl_sha256",
                 }
             })?;
             trust::parse_serial_hex(&parsed.crl_number).map_err(|_| {
@@ -988,12 +1016,14 @@ mod tests {
 
     #[test]
     fn crl_manifest_parses_and_rejects_bad_fields() {
+        let issuer_sha256 = trust::format_issuer_sha256(&[0x0f; 32]);
         let manifest = json!({
             "crls": [{
-                "crl_scope": "issuer",
-                "issuer_certificate_sha256": trust::format_issuer_sha256(&[0x0f; 32]),
+                "crl_scope": trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA,
+                "crl_url": trust::status_crl_pem_path(&issuer_sha256).unwrap(),
+                "issuer_certificate_sha256": issuer_sha256,
                 "crl_number": "01",
-                "der_sha256": trust::format_crl_sha256(&[0x10; 32]),
+                "crl_sha256": trust::format_crl_sha256(&[0x10; 32]),
                 "this_update_unix_seconds": 900,
                 "next_update_unix_seconds": 1_200
             }]
@@ -1001,13 +1031,42 @@ mod tests {
         let entries =
             super::parse_crl_manifest(serde_json::to_string(&manifest).unwrap().as_bytes())
                 .unwrap();
-        assert_eq!(entries[0].crl_scope, "issuer");
+        assert_eq!(
+            entries[0].crl_scope,
+            trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA
+        );
 
         let mut bad = manifest;
         bad["crls"][0]["next_update_unix_seconds"] = json!(800);
         assert!(
             super::parse_crl_manifest(serde_json::to_string(&bad).unwrap().as_bytes()).is_err()
         );
+
+        let mut bad_scope = bad.clone();
+        bad_scope["crls"][0]["next_update_unix_seconds"] = json!(1_200);
+        bad_scope["crls"][0]["crl_scope"] = json!("issuer");
+        assert!(
+            super::parse_crl_manifest(serde_json::to_string(&bad_scope).unwrap().as_bytes())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn crl_download_decodes_pem_endpoint_to_der() {
+        let issuer_sha256 = trust::format_issuer_sha256(&[0x11; 32]);
+        let transport = FakeStatusTransport::new(vec![TzapAuthHttpResponse {
+            status_code: 200,
+            body: TEST_CRL_PEM.as_bytes().to_vec(),
+        }]);
+        let client = TzapStatusClient::new("https://sign.example/", &transport);
+
+        let crl_der = client.crl_der(&issuer_sha256).unwrap();
+
+        assert!(openssl::x509::X509Crl::from_der(&crl_der).is_ok());
+        assert!(transport.requests()[0].url.ends_with(&format!(
+            "/v1/status/crls/{}/pem",
+            trust::percent_encode_path_param(&issuer_sha256)
+        )));
     }
 
     fn valid_status(certificate_sha256: &str) -> serde_json::Value {
@@ -1034,6 +1093,8 @@ mod tests {
             body: serde_json::to_vec(&body).unwrap(),
         }
     }
+
+    const TEST_CRL_PEM: &str = "-----BEGIN X509 CRL-----\nMIIBajBUAgEBMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBlRlc3RDQRcNMjYw\nNjI2MDQwOTQ1WhcNMjYwNjI3MDQwOTQ1WqAPMA0wCwYDVR0UBAQCAhAAMA0GCSqG\nSIb3DQEBCwUAA4IBAQBvjtd1d23B5m454FBHAuBiy7Q+BnXBDEK5txSMSe30g9Zt\nm+1/WhHsqMp1biNSyQhVQYwLsJoWimzqcgR4CygJyFaVM3gT1QpN4yFxxs6tmEyi\nAgDD+ngO6GtY+ouzRpsnsrd5g9PTPbchGjjDjbwjCwcqcWY6n7cxMwJc0OBxj6BU\nYaz++TmBFD9a7p3HOL2SJWfSaT4JACRofsmGfiSQa6xBum91/NbVYDtDly8sp8si\n1d4lPYtpBr3r+PKMKEilx+vHOo0kUIOcKQkJx85revQeZhQXRJfPphMn+iJkp8QQ\n6lNu5AzDf/eH7pjDm8htQOlZil25T3BXhEMzc/ts\n-----END X509 CRL-----\n";
 
     struct FakeStatusTransport {
         responses: RefCell<Vec<TzapAuthHttpResponse>>,

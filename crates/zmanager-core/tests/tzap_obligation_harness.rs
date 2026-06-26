@@ -390,10 +390,11 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
 
     let crl_manifest_transport = FakeTransport::new(vec![json_response(json!({
         "crls": [{
-            "crl_scope": "issuer",
+            "crl_scope": trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA,
+            "crl_url": trust::status_crl_pem_path(&harness.chain.platform_sha256).unwrap(),
             "issuer_certificate_sha256": harness.chain.platform_sha256,
             "crl_number": "01",
-            "der_sha256": trust::format_crl_sha256(&[0x33; 32]),
+            "crl_sha256": trust::format_crl_sha256(&[0x33; 32]),
             "this_update_unix_seconds": FIXED_NOW as i64 - 60,
             "next_update_unix_seconds": FIXED_NOW as i64 + 60
         }]
@@ -401,7 +402,10 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
     let crl_entries = TzapStatusClient::new(SIGN_BASE_URL, &crl_manifest_transport)
         .crl_manifest()
         .unwrap();
-    assert_eq!(crl_entries[0].crl_scope, "issuer");
+    assert_eq!(
+        crl_entries[0].crl_scope,
+        trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA
+    );
 
     let planned_successor_pin = Box::leak(harness.chain.root_sha256.clone().into_boxed_str());
     let planned_successor_pins = TzapRootPinSet {

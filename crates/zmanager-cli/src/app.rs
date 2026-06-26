@@ -4,7 +4,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, IsTerminal as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _, Write as _};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -363,6 +364,7 @@ Hosted TZAP auth handoff helpers
 Usage:
   zm auth login [--print-url] [options]
   zm auth callback --state <state> --relay-body <file|->
+  zm auth callback --callback-url <url> [--auth-base-url <url>]
   zm auth status [options]
   zm auth forget [options]
   zm auth account [options]
@@ -384,6 +386,7 @@ Options:
       --provider <id>            Hosted provider id to launch
       --org-id <id>              Optional organization id for launch
       --callback-url <url>       Full callback URL, checked for leaked tokens
+      --handoff-code <code>      One-time hosted Auth handoff code
       --relay-body <file|->      Relay JSON from hosted Auth callback
       --json                     Emit machine-readable JSON
 
@@ -404,10 +407,15 @@ Options:
       --state-dir <dir>          Store local identity/session state in dir
       --account-key <key>        Local account inventory key; default is default
       --certificate-id <id>      Certificate id for renew/revoke
+      --service-base-url <url>   Enroll through a hosted TZAP sign API instead of the local fake profile
+      --trusted-root-cert <file> Trust a staging root PEM/DER certificate for hosted enrollment
+      --org-id <id>              Optional organization id for hosted enrollment
+      --requested-validity-seconds <n>
+                                  Requested hosted enrollment certificate lifetime
       --json                     Emit machine-readable JSON
 
 `cert list` reads local inventory. Enroll, renew, and revoke use the local fake
-TZAP service profile for deterministic harness runs.
+TZAP service profile by default for deterministic harness runs.
 ";
 
 const DEVICE_HELP: &str = "\
@@ -447,6 +455,8 @@ Usage:
 Options:
       --custom-trust-root <sha256:id>
                                   Trust a custom root fingerprint explicitly
+      --custom-trust-root-cert <file>
+                                  Trust a custom root PEM/DER certificate file
       --status-response <file|->  Apply a fresh status JSON response and
                                   return valid_now only when it permits it
       --time <unix-seconds>      Verification time; default is now
@@ -477,6 +487,8 @@ Options:
       --accept                   Explicitly accept an imported card
       --custom-trust-root <sha256:id>
                                   Trust a custom root fingerprint explicitly
+      --custom-trust-root-cert <file>
+                                  Trust a custom root PEM/DER certificate file
       --json                     Emit machine-readable JSON
 ";
 
@@ -1491,7 +1503,11 @@ const DEFAULT_TZAP_REDIRECT_URI: &str = "zmanager://auth/callback";
 const DEFAULT_TZAP_PROVIDER_ID: &str = "hosted";
 const AUTH_PENDING_FILE: &str = "auth-pending.json";
 const AUTH_SESSION_FILE: &str = "auth-session.json";
+const AUTH_SESSION_EXCHANGE_PATH: &str = "/auth/session/exchange";
+const HTTP_DEFAULT_PORT: u16 = 80;
 const MISSING_TZAP_SESSION: &str = "no local TZAP session";
+const DEFAULT_TZAP_CERT_VALIDITY_SECONDS: u64 = 90 * 24 * 60 * 60;
+const STAGING_ENROLLMENT_KEY_LABEL: &str = "Hosted TZAP enrollment signing key";
 
 #[derive(Debug, Clone)]
 struct TzapCliContext {
@@ -1670,10 +1686,6 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         endpoints.redirect_uri.clone(),
         current_unix_seconds(),
     );
-    if let Err(error) = save_pending_auth(&context.state_dir, &pending) {
-        print_error_line(&global, format_args!("auth login failed: {error}"));
-        return ExitCode::FAILURE;
-    }
     let mut config = zmanager_core::auth_client::TzapHostedAuthLaunchConfig::for_environment(
         endpoints.environment,
         endpoints.client_id,
@@ -1686,6 +1698,10 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         config.hosted_account_base_url = account_base_url;
     }
     config.selected_org_id = endpoints.org_id;
+    if let Err(error) = save_pending_auth(&context.state_dir, &pending, &config) {
+        print_error_line(&global, format_args!("auth login failed: {error}"));
+        return ExitCode::FAILURE;
+    }
     let url = match config.launch_url(&pending) {
         Ok(url) => url,
         Err(error) => {
@@ -1711,9 +1727,12 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
 fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut context = TzapCliContext::default();
     let mut state = None;
-    let mut redirect_uri = DEFAULT_TZAP_REDIRECT_URI.to_owned();
+    let mut redirect_uri = None;
     let mut callback_url = None;
+    let mut handoff_code = None;
     let mut relay_body_path = None;
+    let mut auth_base_url = None;
+    let mut client_id = None;
     let mut index = 0usize;
     while index < args.len() {
         if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
@@ -1729,10 +1748,17 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
             }
             "--state" => state = Some(take_value(args, &mut index, "--state").unwrap()),
             "--redirect-uri" => {
-                redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap()
+                redirect_uri = Some(take_value(args, &mut index, "--redirect-uri").unwrap())
             }
+            "--auth-base-url" => {
+                auth_base_url = Some(take_value(args, &mut index, "--auth-base-url").unwrap())
+            }
+            "--client-id" => client_id = Some(take_value(args, &mut index, "--client-id").unwrap()),
             "--callback-url" => {
                 callback_url = Some(take_value(args, &mut index, "--callback-url").unwrap())
+            }
+            "--handoff-code" => {
+                handoff_code = Some(take_value(args, &mut index, "--handoff-code").unwrap())
             }
             "--relay-body" => {
                 relay_body_path = Some(take_value(args, &mut index, "--relay-body").unwrap())
@@ -1746,12 +1772,6 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
             }
         }
     }
-    let Some(state) = state else {
-        return command_usage_error("auth", "missing --state", &global);
-    };
-    let Some(relay_body_path) = relay_body_path else {
-        return command_usage_error("auth", "missing --relay-body", &global);
-    };
     let pending = match load_pending_auth(&context.state_dir) {
         Ok(pending) => pending,
         Err(error) => {
@@ -1759,13 +1779,53 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
             return ExitCode::FAILURE;
         }
     };
+    let pending_metadata = load_pending_auth_metadata(&context.state_dir);
+    if state.is_none() {
+        state = callback_url
+            .as_deref()
+            .and_then(|url| callback_url_parameter(url, "state"));
+    }
+    if handoff_code.is_none() {
+        handoff_code = callback_url
+            .as_deref()
+            .and_then(|url| callback_url_parameter(url, "handoff_code"));
+    }
+    let Some(state) = state else {
+        return command_usage_error("auth", "missing --state or callback URL state", &global);
+    };
+    let redirect_uri = redirect_uri.unwrap_or_else(|| pending.redirect_uri.clone());
     let pkce_verifier = pending.pkce.verifier.clone();
-    let relay_body = match read_bytes_argument(&relay_body_path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            print_error_line(&global, format_args!("auth callback failed: {error}"));
-            return ExitCode::FAILURE;
+    let relay_body = if let Some(relay_body_path) = relay_body_path {
+        match read_bytes_argument(&relay_body_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                print_error_line(&global, format_args!("auth callback failed: {error}"));
+                return ExitCode::FAILURE;
+            }
         }
+    } else if let Some(handoff_code) = handoff_code {
+        let exchange_base_url = auth_base_url
+            .or(pending_metadata.auth_base_url)
+            .unwrap_or_else(|| zmanager_core::auth_client::LOCAL_HOSTED_AUTH_BASE_URL.to_owned());
+        let exchange_client_id = client_id
+            .or(pending_metadata.client_id)
+            .unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
+        match exchange_handoff_code(
+            &exchange_base_url,
+            &exchange_client_id,
+            &redirect_uri,
+            &state,
+            &pkce_verifier,
+            &handoff_code,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                print_stable_tzap_error("auth_callback", &error, &global);
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        return command_usage_error("auth", "missing --relay-body or handoff code", &global);
     };
     let mut tracker = zmanager_core::auth_client::TzapOAuthStateTracker::new();
     if let Err(error) = tracker.insert_pending(pending) {
@@ -1921,13 +1981,16 @@ fn cert_command(args: &[String], global: GlobalOptions) -> ExitCode {
 }
 
 fn cert_enroll_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
-    let context = match parse_tzap_context_args(args, &mut global, "cert") {
-        Ok(context) => context,
+    let options = match parse_cert_enroll_args(args, &mut global) {
+        Ok(options) => options,
         Err(code) => return code,
     };
+    if options.service_base_url.is_some() {
+        return run_hosted_cert_enroll(&options, &global);
+    }
     run_fake_cert_operation(
         "cert_enroll",
-        &context,
+        &options.context,
         &global,
         |store, session, options| {
             zmanager_core::local_fake_tzap::enroll_local_fake_certificate(store, session, options)
@@ -2181,6 +2244,7 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     }
     let mut input = None;
     let mut custom_roots = Vec::new();
+    let mut custom_root_cert_paths = Vec::new();
     let mut status_response_path = None;
     let mut verifier_time = current_unix_seconds() as i64;
     let mut index = 0usize;
@@ -2191,6 +2255,11 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--custom-trust-root" => {
                 custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+            }
+            "--custom-trust-root-cert" => {
+                custom_root_cert_paths.push(PathBuf::from(
+                    take_value(args, &mut index, "--custom-trust-root-cert").unwrap(),
+                ));
             }
             "--status-response" => {
                 status_response_path =
@@ -2233,12 +2302,20 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let custom_root_certificates_der =
+        match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
+            Ok(certificates) => certificates,
+            Err(error) => {
+                print_error_line(&global, format_args!("verify failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+        };
     let options = zmanager_core::document_verification::TzapOfflineVerificationOptions {
         verifier_time_unix_seconds: verifier_time,
         official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
         official_root_certificates_der: Vec::new(),
         custom_trust_root_sha256: custom_roots,
-        custom_trust_root_certificates_der: Vec::new(),
+        custom_trust_root_certificates_der: custom_root_certificates_der,
         certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
     };
     let result = verify_document_bytes_with_optional_status(
@@ -2438,6 +2515,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
     let mut input = None;
     let mut accepted = false;
     let mut custom_roots = Vec::new();
+    let mut custom_root_cert_paths = Vec::new();
     let mut index = 0usize;
     while index < args.len() {
         if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
@@ -2457,6 +2535,11 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
             }
             "--custom-trust-root" => {
                 custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+            }
+            "--custom-trust-root-cert" => {
+                custom_root_cert_paths.push(PathBuf::from(
+                    take_value(args, &mut index, "--custom-trust-root-cert").unwrap(),
+                ));
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2482,12 +2565,20 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
             return ExitCode::FAILURE;
         }
     };
+    let custom_root_certificates_der =
+        match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
+            Ok(certificates) => certificates,
+            Err(error) => {
+                print_error_line(&global, format_args!("contact import failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+        };
     let options = zmanager_core::contact_card::TzapContactCardImportOptions {
         verifier_time_unix_seconds: current_unix_seconds() as i64,
         official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
         official_root_certificates_der: Vec::new(),
         custom_trust_root_sha256: custom_roots,
-        custom_trust_root_certificates_der: Vec::new(),
+        custom_trust_root_certificates_der: custom_root_certificates_der,
         certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
     };
     let mut store =
@@ -2838,6 +2929,350 @@ fn parse_cert_id_operation_args(
     Ok((context, certificate_id))
 }
 
+#[derive(Debug)]
+struct CertEnrollOptions {
+    context: TzapCliContext,
+    service_base_url: Option<String>,
+    trusted_root_cert_paths: Vec<PathBuf>,
+    org_id: Option<String>,
+    requested_validity_seconds: u64,
+}
+
+fn parse_cert_enroll_args(
+    args: &[String],
+    global: &mut GlobalOptions,
+) -> Result<CertEnrollOptions, ExitCode> {
+    let mut options = CertEnrollOptions {
+        context: TzapCliContext::default(),
+        service_base_url: None,
+        trusted_root_cert_paths: Vec::new(),
+        org_id: None,
+        requested_validity_seconds: DEFAULT_TZAP_CERT_VALIDITY_SECONDS,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        match parse_global_option(args, &mut index, global) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => return Err(command_usage_error("cert", &error, global)),
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                options.context.state_dir = PathBuf::from(
+                    take_value(args, &mut index, "--state-dir")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--account-key" => {
+                options.context.account_key = take_value(args, &mut index, "--account-key")
+                    .map_err(|error| command_usage_error("cert", &error, global))?;
+            }
+            "--service-base-url" => {
+                options.service_base_url = Some(
+                    take_value(args, &mut index, "--service-base-url")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--trusted-root-cert" => {
+                options.trusted_root_cert_paths.push(PathBuf::from(
+                    take_value(args, &mut index, "--trusted-root-cert")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                ));
+            }
+            "--org-id" => {
+                options.org_id = Some(
+                    take_value(args, &mut index, "--org-id")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--requested-validity-seconds" => {
+                let value = take_value(args, &mut index, "--requested-validity-seconds")
+                    .map_err(|error| command_usage_error("cert", &error, global))?;
+                options.requested_validity_seconds = value.parse::<u64>().map_err(|_| {
+                    command_usage_error(
+                        "cert",
+                        "--requested-validity-seconds must be an integer",
+                        global,
+                    )
+                })?;
+            }
+            other => {
+                return Err(command_usage_error(
+                    "cert",
+                    &format!("unknown cert option: {other}"),
+                    global,
+                ));
+            }
+        }
+    }
+    if options.service_base_url.is_none() && !options.trusted_root_cert_paths.is_empty() {
+        return Err(command_usage_error(
+            "cert",
+            "--trusted-root-cert requires --service-base-url",
+            global,
+        ));
+    }
+    if options.service_base_url.is_none() && options.org_id.is_some() {
+        return Err(command_usage_error(
+            "cert",
+            "--org-id requires --service-base-url",
+            global,
+        ));
+    }
+    Ok(options)
+}
+
+fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -> ExitCode {
+    let Some(service_base_url) = options.service_base_url.as_deref() else {
+        unreachable!("hosted enrollment checked by caller")
+    };
+    if options.trusted_root_cert_paths.is_empty() {
+        return command_usage_error(
+            "cert",
+            "hosted enrollment requires at least one --trusted-root-cert",
+            global,
+        );
+    }
+    let session_store = FileTzapSessionStore::new(&options.context.state_dir);
+    let Some(session) = session_store.load_session(&options.context.account_key) else {
+        print_stable_tzap_error("cert_enroll", MISSING_TZAP_SESSION, global);
+        return ExitCode::FAILURE;
+    };
+    let mut trusted_root_sha256 = Vec::new();
+    let trusted_root_der = match load_custom_root_certificates(
+        &options.trusted_root_cert_paths,
+        &mut trusted_root_sha256,
+    ) {
+        Ok(roots) => roots,
+        Err(error) => {
+            print_error_line(global, format_args!("cert enroll failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut identity_store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
+        &options.context.state_dir,
+    );
+    let now_unix_seconds = current_unix_seconds();
+    let (signing_key, csr_der) = match create_and_store_staging_enrollment_key(
+        &mut identity_store,
+        options,
+        now_unix_seconds,
+    ) {
+        Ok(material) => material,
+        Err(error) => {
+            print_error_line(global, format_args!("cert enroll failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let request = zmanager_core::enrollment_client::TzapEnrollmentRequest {
+        account_key: options.context.account_key.clone(),
+        org_id: options
+            .org_id
+            .clone()
+            .or_else(|| session.selected_org_id.clone()),
+        requested_validity_seconds: options.requested_validity_seconds,
+        now_unix_seconds,
+    };
+    let transport = CliHttpJsonTransport;
+    let client = zmanager_core::enrollment_client::TzapEnrollmentClient::local_staging_server(
+        service_base_url,
+        &transport,
+    );
+    let validator = CliTrustedEnrollmentCertificateValidator {
+        trusted_root_sha256,
+        trusted_root_der,
+        options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
+    };
+    match zmanager_core::enrollment_client::enroll_device_certificate(
+        &client,
+        &validator,
+        &mut identity_store,
+        &session,
+        &request,
+        &signing_key,
+        &csr_der,
+    ) {
+        Ok(certificate) => {
+            if global.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "operation": "cert_enroll",
+                        "service_base_url": service_base_url,
+                        "certificate": certificate_summary_value(&certificate),
+                    })
+                );
+            } else {
+                print_success_line(global, format_args!("cert_enroll complete"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            let _ = remove_staging_enrollment_key(
+                &mut identity_store,
+                &options.context.account_key,
+                &signing_key.key_id,
+            );
+            print_stable_tzap_error("cert_enroll", &error.to_string(), global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn create_and_store_staging_enrollment_key(
+    store: &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
+    options: &CertEnrollOptions,
+    now_unix_seconds: u64,
+) -> Result<
+    (
+        zmanager_core::local_identity_store::TzapDeviceSigningKeyRecord,
+        Vec<u8>,
+    ),
+    String,
+> {
+    let material = zmanager_core::device_identity::generate_device_signing_key_and_csr(
+        &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let record = zmanager_core::local_identity_store::TzapDeviceSigningKeyRecord {
+        key_id: material.public_key_fingerprint.clone(),
+        public_key_fingerprint: material.public_key_fingerprint,
+        private_key_der: material.private_key_der,
+        created_at_unix_seconds: now_unix_seconds,
+        label: Some(STAGING_ENROLLMENT_KEY_LABEL.to_owned()),
+    };
+    let mut inventory = store
+        .load_inventory(&options.context.account_key)
+        .map_err(|error| error.to_string())?;
+    inventory.device_signing_keys.push(record.clone());
+    store
+        .save_inventory(&options.context.account_key, inventory)
+        .map_err(|error| error.to_string())?;
+    Ok((record, material.csr_der))
+}
+
+fn remove_staging_enrollment_key(
+    store: &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
+    account_key: &str,
+    key_id: &str,
+) -> Result<(), String> {
+    let mut inventory = store
+        .load_inventory(account_key)
+        .map_err(|error| error.to_string())?;
+    inventory
+        .device_signing_keys
+        .retain(|record| record.key_id != key_id);
+    store
+        .save_inventory(account_key, inventory)
+        .map_err(|error| error.to_string())
+}
+
+struct CliTrustedEnrollmentCertificateValidator {
+    trusted_root_sha256: Vec<String>,
+    trusted_root_der: Vec<Vec<u8>>,
+    options: zmanager_core::trust::TzapCertificateProfileOptions,
+}
+
+impl zmanager_core::enrollment_client::TzapEnrollmentCertificateValidator
+    for CliTrustedEnrollmentCertificateValidator
+{
+    fn validate_certificate_chain(
+        &self,
+        chain_der: &[Vec<u8>],
+    ) -> Result<
+        zmanager_core::trust::TzapCertificatePublicMetadata,
+        zmanager_core::enrollment_client::TzapEnrollmentError,
+    > {
+        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(
+            chain_der,
+            &self.options,
+        )
+        .map_err(|error| {
+            zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(
+                error.to_string(),
+            )
+        })?;
+        if !self
+            .trusted_root_sha256
+            .iter()
+            .any(|trusted| trusted == &validation.root_certificate_sha256)
+        {
+            return Err(
+                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
+                    "root certificate is not in the temporary trust store: {}",
+                    validation.root_certificate_sha256
+                )),
+            );
+        }
+        Ok(validation.public_metadata)
+    }
+
+    fn validate_and_complete_certificate_chain(
+        &self,
+        chain_der: &[Vec<u8>],
+    ) -> Result<
+        (
+            Vec<Vec<u8>>,
+            zmanager_core::trust::TzapCertificatePublicMetadata,
+        ),
+        zmanager_core::enrollment_client::TzapEnrollmentError,
+    > {
+        let mut last_error = match self.validate_completed_chain(chain_der) {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        };
+        for root_der in &self.trusted_root_der {
+            let mut completed_chain = chain_der.to_vec();
+            completed_chain.push(root_der.clone());
+            match self.validate_completed_chain(&completed_chain) {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    last_error = error;
+                }
+            }
+        }
+        Err(last_error)
+    }
+}
+
+impl CliTrustedEnrollmentCertificateValidator {
+    fn validate_completed_chain(
+        &self,
+        chain_der: &[Vec<u8>],
+    ) -> Result<
+        (
+            Vec<Vec<u8>>,
+            zmanager_core::trust::TzapCertificatePublicMetadata,
+        ),
+        zmanager_core::enrollment_client::TzapEnrollmentError,
+    > {
+        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(
+            chain_der,
+            &self.options,
+        )
+        .map_err(|error| {
+            zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(
+                error.to_string(),
+            )
+        })?;
+        if !self
+            .trusted_root_sha256
+            .iter()
+            .any(|trusted| trusted == &validation.root_certificate_sha256)
+        {
+            return Err(
+                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
+                    "root certificate is not in the temporary trust store: {}",
+                    validation.root_certificate_sha256
+                )),
+            );
+        }
+        Ok((chain_der.to_vec(), validation.public_metadata))
+    }
+}
+
 fn run_fake_cert_operation<F>(
     operation: &str,
     context: &TzapCliContext,
@@ -2951,6 +3386,25 @@ fn read_json_argument(path: &str) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
+fn load_custom_root_certificates(
+    paths: &[PathBuf],
+    custom_roots: &mut Vec<String>,
+) -> Result<Vec<Vec<u8>>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+            let der = zmanager_core::trust::certificate_pem_or_der_to_der(&bytes)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let fingerprint = zmanager_core::trust::certificate_sha256_identifier_for_der(&der);
+            if !custom_roots.iter().any(|root| root == &fingerprint) {
+                custom_roots.push(fingerprint);
+            }
+            Ok(der)
+        })
+        .collect()
+}
+
 fn read_json_file(path: &Path) -> Option<Value> {
     let bytes = fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -3001,6 +3455,7 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 fn save_pending_auth(
     state_dir: &Path,
     pending: &zmanager_core::auth_client::TzapPendingAuthState,
+    config: &zmanager_core::auth_client::TzapHostedAuthLaunchConfig,
 ) -> io::Result<()> {
     write_secret_json_file(
         &state_dir.join(AUTH_PENDING_FILE),
@@ -3010,8 +3465,30 @@ fn save_pending_auth(
             "redirect_uri": pending.redirect_uri,
             "pkce_verifier": pending.pkce.verifier,
             "created_at_unix_seconds": pending.created_at_unix_seconds,
+            "client_id": config.client_id,
+            "auth_base_url": config.hosted_auth_base_url,
         }),
     )
+}
+
+#[derive(Debug, Default)]
+struct PendingAuthMetadata {
+    client_id: Option<String>,
+    auth_base_url: Option<String>,
+}
+
+fn load_pending_auth_metadata(state_dir: &Path) -> PendingAuthMetadata {
+    let Some(value) = read_json_file(&state_dir.join(AUTH_PENDING_FILE)) else {
+        return PendingAuthMetadata::default();
+    };
+    PendingAuthMetadata {
+        client_id: json_optional_string_field(&value, "client_id")
+            .ok()
+            .flatten(),
+        auth_base_url: json_optional_string_field(&value, "auth_base_url")
+            .ok()
+            .flatten(),
+    }
 }
 
 fn load_pending_auth(
@@ -3029,6 +3506,338 @@ fn load_pending_auth(
         pkce,
         created_at_unix_seconds: json_u64_field(&value, "created_at_unix_seconds")?,
     })
+}
+
+fn callback_url_parameter(callback_url: &str, key: &str) -> Option<String> {
+    let (_, query) = callback_url.split_once('?')?;
+    let query = query.split_once('#').map_or(query, |(query, _)| query);
+    for parameter in query.split('&') {
+        let (parameter_key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
+        if percent_decode_url_component(parameter_key).ok().as_deref() == Some(key) {
+            return percent_decode_url_component(value).ok();
+        }
+    }
+    None
+}
+
+fn exchange_handoff_code(
+    auth_base_url: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    pkce_verifier: &str,
+    handoff_code: &str,
+) -> Result<Vec<u8>, String> {
+    let url = format!(
+        "{}{}",
+        auth_base_url.trim_end_matches('/'),
+        AUTH_SESSION_EXCHANGE_PATH
+    );
+    let exchange = http_post_json(
+        &url,
+        &json!({
+            "handoff_code": handoff_code,
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "code_verifier": pkce_verifier,
+            "required_audience": zmanager_core::auth_client::SESSION_AUDIENCE_SIGN_TZAP,
+        }),
+    )?;
+    let session_token = json_string_field(&exchange, "session_token")?;
+    let session_id = json_string_field(&exchange, "session_id")?;
+    let audience = json_string_field(&exchange, "audience")
+        .unwrap_or_else(|_| zmanager_core::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
+    let expires_at_unix_seconds = exchange
+        .get("expires_at_unix_seconds")
+        .and_then(Value::as_u64)
+        .map_or_else(
+            || {
+                json_string_field(&exchange, "expires_at")
+                    .and_then(|expires_at| rfc3339_utc_to_unix_seconds(&expires_at))
+            },
+            Ok,
+        )?;
+    let identity_assurance = json_string_field(&exchange, "identity_assurance")
+        .or_else(|_| json_string_field(&exchange, "identity_assurance_level"))
+        .unwrap_or_else(|_| {
+            zmanager_core::trust::TzapIdentityAssurance::OauthVerifiedEmail
+                .as_str()
+                .to_owned()
+        });
+    serde_json::to_vec(&json!({
+        "status": "ok",
+        "session": {
+            "audience": audience,
+            "access_token": session_token,
+            "expires_at_unix_seconds": expires_at_unix_seconds,
+            "identity_assurance": identity_assurance,
+            "selected_org_id": exchange.get("selected_org_id").cloned().unwrap_or(Value::Null),
+            "login_session_id": session_id,
+        }
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn http_post_json(url: &str, body: &Value) -> Result<Value, String> {
+    let response = http_json_request("POST", url, None, Some(body))?;
+    if !(200..=299).contains(&response.status_code) {
+        return Err(format!(
+            "hosted auth exchange failed with HTTP {}",
+            response.status_code
+        ));
+    }
+    serde_json::from_slice(&response.body).map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CliHttpJsonTransport;
+
+impl zmanager_core::auth_client::TzapAuthHttpTransport for CliHttpJsonTransport {
+    fn send(
+        &self,
+        request: &zmanager_core::auth_client::TzapAuthHttpRequest,
+    ) -> Result<
+        zmanager_core::auth_client::TzapAuthHttpResponse,
+        zmanager_core::auth_client::TzapAuthError,
+    > {
+        let method = match request.method {
+            zmanager_core::auth_client::TzapAuthHttpMethod::Get => "GET",
+            zmanager_core::auth_client::TzapAuthHttpMethod::Post => "POST",
+        };
+        http_json_request(
+            method,
+            &request.url,
+            request
+                .bearer_token
+                .as_ref()
+                .map(zmanager_core::auth_client::TzapBearerToken::expose),
+            request.body.as_ref(),
+        )
+        .map_err(|message| zmanager_core::auth_client::TzapAuthError::Transport { message })
+    }
+}
+
+fn http_json_request(
+    method: &str,
+    url: &str,
+    bearer_token: Option<&str>,
+    body: Option<&Value>,
+) -> Result<zmanager_core::auth_client::TzapAuthHttpResponse, String> {
+    let target = HttpUrl::parse(url)?;
+    let body = body
+        .map(serde_json::to_vec)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let mut stream = TcpStream::connect((target.host.as_str(), target.port)).map_err(|error| {
+        format!(
+            "could not connect to {}:{}: {error}",
+            target.host, target.port
+        )
+    })?;
+    write!(
+        stream,
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n",
+        target.path, target.host
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some(token) = bearer_token {
+        write!(stream, "Authorization: Bearer {token}\r\n").map_err(|error| error.to_string())?;
+    }
+    if let Some(body) = &body {
+        write!(
+            stream,
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    stream
+        .write_all(b"\r\n")
+        .map_err(|error| error.to_string())?;
+    if let Some(body) = body {
+        stream.write_all(&body).map_err(|error| error.to_string())?;
+    }
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| error.to_string())?;
+    let (status_code, response_body) = parse_http_response(&response)?;
+    Ok(zmanager_core::auth_client::TzapAuthHttpResponse {
+        status_code,
+        body: response_body,
+    })
+}
+
+#[derive(Debug)]
+struct HttpUrl {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+impl HttpUrl {
+    fn parse(url: &str) -> Result<Self, String> {
+        let without_scheme = url
+            .strip_prefix("http://")
+            .ok_or_else(|| "hosted auth exchange currently requires an http:// URL".to_owned())?;
+        let (authority, path) = without_scheme
+            .split_once('/')
+            .map_or((without_scheme, "/"), |(authority, path)| (authority, path));
+        if authority.is_empty() {
+            return Err("hosted auth exchange URL is missing a host".to_owned());
+        }
+        let (host, port) = if let Some((host, port)) = authority.rsplit_once(':') {
+            let port = port.parse::<u16>().map_err(|error| error.to_string())?;
+            (host, port)
+        } else {
+            (authority, HTTP_DEFAULT_PORT)
+        };
+        if host.is_empty() {
+            return Err("hosted auth exchange URL is missing a host".to_owned());
+        }
+        Ok(Self {
+            host: host.to_owned(),
+            port,
+            path: format!("/{path}"),
+        })
+    }
+}
+
+fn parse_http_response(response: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    let separator = b"\r\n\r\n";
+    let header_end = response
+        .windows(separator.len())
+        .position(|window| window == separator)
+        .ok_or_else(|| "hosted auth exchange response was malformed".to_owned())?;
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    let mut header_lines = headers.lines();
+    let status_line = header_lines
+        .next()
+        .ok_or_else(|| "hosted auth exchange response was missing a status line".to_owned())?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "hosted auth exchange response status was malformed".to_owned())?
+        .parse::<u16>()
+        .map_err(|error| error.to_string())?;
+    let chunked = header_lines.any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+        })
+    });
+    let body = response[header_end + separator.len()..].to_vec();
+    if chunked {
+        decode_chunked_body(&body).map(|decoded| (status_code, decoded))
+    } else {
+        Ok((status_code, body))
+    }
+}
+
+fn decode_chunked_body(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut index = 0usize;
+    let mut output = Vec::new();
+    loop {
+        let remaining = bytes
+            .get(index..)
+            .ok_or_else(|| "chunked response is truncated".to_owned())?;
+        let line_end = remaining
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| "chunked response is malformed".to_owned())?
+            + index;
+        let size_text = std::str::from_utf8(&bytes[index..line_end])
+            .map_err(|error| error.to_string())?
+            .split_once(';')
+            .map_or_else(
+                || std::str::from_utf8(&bytes[index..line_end]).unwrap_or(""),
+                |(size, _)| size,
+            );
+        let size =
+            usize::from_str_radix(size_text.trim(), 16).map_err(|error| error.to_string())?;
+        index = line_end + 2;
+        if size == 0 {
+            return Ok(output);
+        }
+        let end = index
+            .checked_add(size)
+            .ok_or_else(|| "chunked response is too large".to_owned())?;
+        let trailer_end = end
+            .checked_add(2)
+            .ok_or_else(|| "chunked response is too large".to_owned())?;
+        if bytes.get(end..trailer_end) != Some(b"\r\n") {
+            return Err("chunked response body is truncated".to_owned());
+        }
+        output.extend_from_slice(&bytes[index..end]);
+        index = trailer_end;
+    }
+}
+
+fn percent_decode_url_component(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .map_err(|error| error.to_string())?;
+                output.push(u8::from_str_radix(hex, 16).map_err(|error| error.to_string())?);
+                index += 3;
+            }
+            b'+' => {
+                output.push(b' ');
+                index += 1;
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(output).map_err(|error| error.to_string())
+}
+
+fn rfc3339_utc_to_unix_seconds(value: &str) -> Result<u64, String> {
+    let without_z = value
+        .strip_suffix('Z')
+        .ok_or_else(|| "expires_at must be a UTC RFC3339 timestamp".to_owned())?;
+    let (date, time) = without_z
+        .split_once('T')
+        .ok_or_else(|| "expires_at must include a date and time".to_owned())?;
+    let mut date_parts = date.split('-');
+    let year = parse_i64_part(date_parts.next(), "year")?;
+    let month = parse_i64_part(date_parts.next(), "month")?;
+    let day = parse_i64_part(date_parts.next(), "day")?;
+    let time = time.split_once('.').map_or(time, |(whole, _)| whole);
+    let mut time_parts = time.split(':');
+    let hour = parse_i64_part(time_parts.next(), "hour")?;
+    let minute = parse_i64_part(time_parts.next(), "minute")?;
+    let second = parse_i64_part(time_parts.next(), "second")?;
+    let days = days_from_civil(year, month, day);
+    let seconds = days
+        .checked_mul(86_400)
+        .and_then(|value| value.checked_add(hour * 3_600 + minute * 60 + second))
+        .ok_or_else(|| "expires_at is out of range".to_owned())?;
+    u64::try_from(seconds).map_err(|_| "expires_at is before the Unix epoch".to_owned())
+}
+
+fn parse_i64_part(value: Option<&str>, field: &str) -> Result<i64, String> {
+    value
+        .ok_or_else(|| format!("expires_at is missing {field}"))?
+        .parse::<i64>()
+        .map_err(|error| error.to_string())
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 fn session_to_json(

@@ -557,6 +557,7 @@ fn parse_renewal_challenge_response(
                 field: "challenge_payload",
             })?
             .clone(),
+        canonicalization: optional_string(object, "canonicalization")?,
     })
 }
 
