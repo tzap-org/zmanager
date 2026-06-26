@@ -1,13 +1,16 @@
 use crate::output::{self, OutputMode, StyleRole};
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, IsTerminal as _};
+use std::io::{self, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zmanager_core::auth_client::TzapSessionStore as _;
 use zmanager_core::jobs::{CancellationToken, JobContext, JobEvent, JobKind};
+use zmanager_core::local_identity_store::TzapLocalIdentityStore as _;
 use zmanager_core::safety::{
     OverwriteConflict, OverwriteDecision, OverwritePolicy, OverwriteResolver,
 };
@@ -37,6 +40,14 @@ Commands:
   test <archive>                 Test archive readability
   plan <paths...>                Show planned archive entries
   formats                        Show supported formats
+  auth <command>                 Hosted TZAP auth handoff helpers
+  me                             Show the local TZAP session summary
+  cert <command>                 Manage local TZAP certificate inventory
+  device retire                  Retire local TZAP device material
+  sign <input>                   Sign a TZAP document JSON payload
+  verify <input>                 Verify a TZAP document envelope
+  contact <command>              Manage TZAP contact cards
+  share <archive> <paths...>     Create a TZAP archive for contacts
   doctor                         Verify the Rust engine
   completions <shell>            Print shell completion scripts
   help [command]                 Show help for a command
@@ -346,6 +357,143 @@ Examples:
 Use --json in scripts and bug reports.
 ";
 
+const AUTH_HELP: &str = "\
+Hosted TZAP auth handoff helpers
+
+Usage:
+  zm auth login [--print-url] [options]
+  zm auth callback --state <state> --relay-body <file|->
+  zm auth status [options]
+  zm auth forget [options]
+  zm auth account [options]
+
+Examples:
+  zm auth login --print-url
+  zm auth callback --state \"$STATE\" --relay-body relay.json
+  zm auth status --json
+
+Options:
+      --state-dir <dir>          Store local auth/session state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --environment <local|dev|prod>
+                                  Select named hosted endpoints
+      --auth-base-url <url>      Override hosted Auth base URL
+      --account-base-url <url>   Override hosted Account base URL
+      --client-id <id>           Hosted Auth client id
+      --redirect-uri <uri>       Registered app callback URI
+      --provider <id>            Hosted provider id to launch
+      --org-id <id>              Optional organization id for launch
+      --callback-url <url>       Full callback URL, checked for leaked tokens
+      --relay-body <file|->      Relay JSON from hosted Auth callback
+      --json                     Emit machine-readable JSON
+
+The CLI only handles launch and registered handoff material. It does not collect
+provider credentials, OTPs, or OAuth secrets.
+";
+
+const CERT_HELP: &str = "\
+Manage local TZAP certificate inventory
+
+Usage:
+  zm cert list [options]
+  zm cert enroll [options]
+  zm cert renew [options]
+  zm cert revoke [options]
+
+Options:
+      --state-dir <dir>          Store local identity/session state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --certificate-id <id>      Certificate id for renew/revoke
+      --json                     Emit machine-readable JSON
+
+`cert list` reads local inventory. Enroll, renew, and revoke use the local fake
+TZAP service profile for deterministic harness runs.
+";
+
+const DEVICE_HELP: &str = "\
+Retire local TZAP device material
+
+Usage:
+  zm device retire [options]
+
+Options:
+      --state-dir <dir>          Store local identity/session state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --json                     Emit machine-readable JSON
+";
+
+const SIGN_HELP: &str = "\
+Sign a TZAP document JSON payload
+
+Usage:
+  zm sign <input.json> --certificate-id <id> --output <envelope.json> [options]
+
+Options:
+      --state-dir <dir>          Store local identity state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --certificate-id <id>      Local enrolled certificate id
+      --output <file>            Destination envelope JSON file
+      --claimed-signing-time <text>
+                                  Optional claimed signing time string
+      --json                     Emit machine-readable JSON
+";
+
+const VERIFY_HELP: &str = "\
+Verify a TZAP document envelope
+
+Usage:
+  zm verify <envelope.json> [options]
+
+Options:
+      --custom-trust-root <sha256:id>
+                                  Trust a custom root fingerprint explicitly
+      --status-response <file|->  Apply a fresh status JSON response and
+                                  return valid_now only when it permits it
+      --time <unix-seconds>      Verification time; default is now
+      --json                     Emit machine-readable JSON
+
+Offline verification reports `cryptographically_intact_offline`, not fully
+valid-now status. `--status-response` enables explicit online-status
+verification. Custom trust is reported as custom trust, never official TZAP.
+";
+
+const CONTACT_HELP: &str = "\
+Manage TZAP contact cards
+
+Usage:
+  zm contact export --recipient-key-id <id> --certificate-id <id> --display-name <name> --output <file>
+  zm contact import <card.json> --accept [options]
+  zm contact list [options]
+  zm contact remove <contact-id> [options]
+
+Options:
+      --state-dir <dir>          Store local identity state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --recipient-key-id <id>    Local recipient key id for export
+      --certificate-id <id>      Local signing certificate id for export
+      --display-name <name>      Contact card display name
+      --device-label <label>     Contact card device label
+      --output <file>            Destination contact-card JSON file
+      --accept                   Explicitly accept an imported card
+      --custom-trust-root <sha256:id>
+                                  Trust a custom root fingerprint explicitly
+      --json                     Emit machine-readable JSON
+";
+
+const SHARE_HELP: &str = "\
+Create a TZAP archive for accepted contacts
+
+Usage:
+  zm share <archive.tzap> <paths...> --contact <id> [options]
+
+Options:
+      --state-dir <dir>          Store local identity state in dir
+      --account-key <key>        Local account inventory key; default is default
+      --contact <id>             Accepted contact id; repeat for multiple recipients
+      --force                    Replace an existing output archive
+      --json                     Emit machine-readable JSON
+";
+
 const COMPLETIONS_HELP: &str = "\
 Print shell completion scripts
 
@@ -479,6 +627,14 @@ pub fn run_from_env() -> ExitCode {
         "doctor" | "healthcheck" => doctor_command(&raw_args[1..], global),
         "completions" | "completion" => completions_command(&raw_args[1..], global),
         "formats" => new_formats_command(&raw_args[1..], global),
+        "auth" => auth_command(&raw_args[1..], global),
+        "me" => me_command(&raw_args[1..], global),
+        "cert" => cert_command(&raw_args[1..], global),
+        "device" => device_command(&raw_args[1..], global),
+        "sign" => sign_command(&raw_args[1..], global),
+        "verify" => verify_command(&raw_args[1..], global),
+        "contact" => contact_command(&raw_args[1..], global),
+        "share" => share_command(&raw_args[1..], global),
         "create" | "c" => new_create_command(&raw_args[1..], global),
         "extract" | "x" => new_extract_command(&raw_args[1..], global),
         "list" | "ls" => new_list_command(&raw_args[1..], global),
@@ -1064,6 +1220,13 @@ fn command_help(command: &str) -> Option<&'static str> {
         "test" => Some(TEST_HELP),
         "plan" => Some(PLAN_HELP),
         "formats" => Some(FORMATS_HELP),
+        "auth" => Some(AUTH_HELP),
+        "cert" => Some(CERT_HELP),
+        "device" => Some(DEVICE_HELP),
+        "sign" => Some(SIGN_HELP),
+        "verify" => Some(VERIFY_HELP),
+        "contact" => Some(CONTACT_HELP),
+        "share" => Some(SHARE_HELP),
         "doctor" | "healthcheck" => Some(DOCTOR_HELP),
         "completions" | "completion" => Some(COMPLETIONS_HELP),
         "legacy" => Some(LEGACY_HELP),
@@ -1319,6 +1482,1709 @@ fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     };
     print!("{script}");
     ExitCode::SUCCESS
+}
+
+const DEFAULT_TZAP_STATE_DIR_ENV: &str = "ZM_TZAP_STATE_DIR";
+const DEFAULT_TZAP_STATE_HOME_CHILD: &str = ".zmanager/tzap";
+const DEFAULT_TZAP_CLIENT_ID: &str = "zmanager-cli";
+const DEFAULT_TZAP_REDIRECT_URI: &str = "zmanager://auth/callback";
+const DEFAULT_TZAP_PROVIDER_ID: &str = "hosted";
+const AUTH_PENDING_FILE: &str = "auth-pending.json";
+const AUTH_SESSION_FILE: &str = "auth-session.json";
+const MISSING_TZAP_SESSION: &str = "no local TZAP session";
+
+#[derive(Debug, Clone)]
+struct TzapCliContext {
+    state_dir: PathBuf,
+    account_key: String,
+}
+
+impl Default for TzapCliContext {
+    fn default() -> Self {
+        Self {
+            state_dir: default_tzap_state_dir(),
+            account_key: zmanager_core::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT
+                .to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AuthEndpointOptions {
+    environment: zmanager_core::auth_client::TzapHostedAuthEnvironment,
+    auth_base_url: Option<String>,
+    account_base_url: Option<String>,
+    client_id: String,
+    redirect_uri: String,
+    provider_id: String,
+    org_id: Option<String>,
+}
+
+impl Default for AuthEndpointOptions {
+    fn default() -> Self {
+        Self {
+            environment: zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
+            auth_base_url: None,
+            account_base_url: None,
+            client_id: DEFAULT_TZAP_CLIENT_ID.to_owned(),
+            redirect_uri: DEFAULT_TZAP_REDIRECT_URI.to_owned(),
+            provider_id: DEFAULT_TZAP_PROVIDER_ID.to_owned(),
+            org_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FileTzapSessionStore {
+    path: PathBuf,
+}
+
+impl FileTzapSessionStore {
+    fn new(state_dir: &Path) -> Self {
+        Self {
+            path: state_dir.join(AUTH_SESSION_FILE),
+        }
+    }
+}
+
+impl zmanager_core::auth_client::TzapSessionStore for FileTzapSessionStore {
+    fn save_session(
+        &mut self,
+        account_key: &str,
+        session: zmanager_core::auth_client::TzapSessionRecord,
+    ) {
+        let _ = fs::create_dir_all(self.path.parent().unwrap_or_else(|| Path::new(".")));
+        let mut root = read_json_file(&self.path).unwrap_or_else(|| json!({ "sessions": {} }));
+        if !root.is_object() {
+            root = json!({ "sessions": {} });
+        }
+        root["sessions"][account_key] = session_to_json(&session, true);
+        let _ = write_secret_json_file(&self.path, &root);
+    }
+
+    fn load_session(
+        &self,
+        account_key: &str,
+    ) -> Option<zmanager_core::auth_client::TzapSessionRecord> {
+        let root = read_json_file(&self.path)?;
+        session_from_json(root.get("sessions")?.get(account_key)?).ok()
+    }
+
+    fn clear_session(&mut self, account_key: &str) {
+        let Some(mut root) = read_json_file(&self.path) else {
+            return;
+        };
+        if let Some(sessions) = root.get_mut("sessions").and_then(Value::as_object_mut) {
+            sessions.remove(account_key);
+        }
+        let _ = write_secret_json_file(&self.path, &root);
+    }
+}
+
+fn auth_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    if wants_help(args) || args.is_empty() {
+        print_help_stdout(AUTH_HELP, &global);
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    match args[0].as_str() {
+        "login" => auth_login_command(&args[1..], global),
+        "callback" => auth_callback_command(&args[1..], global),
+        "status" => auth_status_command(&args[1..], global),
+        "forget" => auth_forget_command(&args[1..], global),
+        "account" => auth_account_command(&args[1..], global),
+        command => {
+            command_usage_error("auth", &format!("unknown auth command: {command}"), &global)
+        }
+    }
+}
+
+fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut endpoints = AuthEndpointOptions::default();
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--print-url" => index += 1,
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+            }
+            "--environment" => {
+                let value = take_value(args, &mut index, "--environment").unwrap();
+                endpoints.environment = match value.as_str() {
+                    "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
+                    "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
+                    "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
+                    _ => {
+                        return command_usage_error(
+                            "auth",
+                            "environment must be local, dev, or prod",
+                            &global,
+                        );
+                    }
+                };
+            }
+            "--auth-base-url" => {
+                endpoints.auth_base_url =
+                    Some(take_value(args, &mut index, "--auth-base-url").unwrap());
+            }
+            "--account-base-url" => {
+                endpoints.account_base_url =
+                    Some(take_value(args, &mut index, "--account-base-url").unwrap());
+            }
+            "--client-id" => {
+                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap()
+            }
+            "--redirect-uri" => {
+                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap();
+            }
+            "--provider" => {
+                endpoints.provider_id = take_value(args, &mut index, "--provider").unwrap()
+            }
+            "--org-id" => {
+                endpoints.org_id = Some(take_value(args, &mut index, "--org-id").unwrap())
+            }
+            other => {
+                return command_usage_error(
+                    "auth",
+                    &format!("unknown auth option: {other}"),
+                    &global,
+                );
+            }
+        }
+    }
+
+    let mut tracker = zmanager_core::auth_client::TzapOAuthStateTracker::new();
+    let pending = tracker.begin(
+        endpoints.provider_id.clone(),
+        endpoints.redirect_uri.clone(),
+        current_unix_seconds(),
+    );
+    if let Err(error) = save_pending_auth(&context.state_dir, &pending) {
+        print_error_line(&global, format_args!("auth login failed: {error}"));
+        return ExitCode::FAILURE;
+    }
+    let mut config = zmanager_core::auth_client::TzapHostedAuthLaunchConfig::for_environment(
+        endpoints.environment,
+        endpoints.client_id,
+        endpoints.redirect_uri,
+    );
+    if let Some(auth_base_url) = endpoints.auth_base_url {
+        config.hosted_auth_base_url = auth_base_url;
+    }
+    if let Some(account_base_url) = endpoints.account_base_url {
+        config.hosted_account_base_url = account_base_url;
+    }
+    config.selected_org_id = endpoints.org_id;
+    let url = match config.launch_url(&pending) {
+        Ok(url) => url,
+        Err(error) => {
+            print_error_line(&global, format_args!("auth login failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    if global.json {
+        println!(
+            "{{\"status\":\"pending\",\"launch_url\":\"{}\",\"state\":\"{}\",\"expires_at_unix_seconds\":{}}}",
+            json_escape(&url),
+            json_escape(&pending.state),
+            pending
+                .created_at_unix_seconds
+                .saturating_add(zmanager_core::auth_client::AUTH_HANDOFF_LIFETIME_SECONDS)
+        );
+    } else {
+        println!("{url}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut state = None;
+    let mut redirect_uri = DEFAULT_TZAP_REDIRECT_URI.to_owned();
+    let mut callback_url = None;
+    let mut relay_body_path = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+            }
+            "--state" => state = Some(take_value(args, &mut index, "--state").unwrap()),
+            "--redirect-uri" => {
+                redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap()
+            }
+            "--callback-url" => {
+                callback_url = Some(take_value(args, &mut index, "--callback-url").unwrap())
+            }
+            "--relay-body" => {
+                relay_body_path = Some(take_value(args, &mut index, "--relay-body").unwrap())
+            }
+            other => {
+                return command_usage_error(
+                    "auth",
+                    &format!("unknown auth option: {other}"),
+                    &global,
+                );
+            }
+        }
+    }
+    let Some(state) = state else {
+        return command_usage_error("auth", "missing --state", &global);
+    };
+    let Some(relay_body_path) = relay_body_path else {
+        return command_usage_error("auth", "missing --relay-body", &global);
+    };
+    let pending = match load_pending_auth(&context.state_dir) {
+        Ok(pending) => pending,
+        Err(error) => {
+            print_error_line(&global, format_args!("auth callback failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let pkce_verifier = pending.pkce.verifier.clone();
+    let relay_body = match read_bytes_argument(&relay_body_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            print_error_line(&global, format_args!("auth callback failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut tracker = zmanager_core::auth_client::TzapOAuthStateTracker::new();
+    if let Err(error) = tracker.insert_pending(pending) {
+        print_error_line(&global, format_args!("auth callback failed: {error}"));
+        return ExitCode::FAILURE;
+    }
+    let callback = zmanager_core::auth_client::TzapHostedAuthCallback {
+        state,
+        redirect_uri,
+        pkce_verifier,
+        callback_url,
+        relay_body,
+    };
+    let mut session_store = FileTzapSessionStore::new(&context.state_dir);
+    match zmanager_core::auth_client::complete_hosted_auth_handoff(
+        &mut tracker,
+        &mut session_store,
+        &context.account_key,
+        &callback,
+        current_unix_seconds(),
+    ) {
+        Ok(session) => {
+            let _ = fs::remove_file(context.state_dir.join(AUTH_PENDING_FILE));
+            print_session_summary(&session, &global);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("auth_callback", &error.to_string(), &global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn auth_status_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "auth") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    let store = FileTzapSessionStore::new(&context.state_dir);
+    match store.load_session(&context.account_key) {
+        Some(session) => {
+            print_session_summary(&session, &global);
+            ExitCode::SUCCESS
+        }
+        None => {
+            if global.json {
+                println!("{{\"authenticated\":false}}");
+            } else {
+                println!("not signed in");
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn auth_forget_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "auth") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    let mut store = FileTzapSessionStore::new(&context.state_dir);
+    store.clear_session(&context.account_key);
+    let _ = fs::remove_file(context.state_dir.join(AUTH_PENDING_FILE));
+    if global.json {
+        println!("{{\"forgotten\":true}}");
+    } else {
+        print_success_line(&global, format_args!("local auth material forgotten"));
+    }
+    ExitCode::SUCCESS
+}
+
+fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut endpoints = AuthEndpointOptions::default();
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--environment" => {
+                let value = take_value(args, &mut index, "--environment").unwrap();
+                endpoints.environment = match value.as_str() {
+                    "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
+                    "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
+                    "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
+                    _ => {
+                        return command_usage_error(
+                            "auth",
+                            "environment must be local, dev, or prod",
+                            &global,
+                        );
+                    }
+                };
+            }
+            "--account-base-url" => {
+                endpoints.account_base_url =
+                    Some(take_value(args, &mut index, "--account-base-url").unwrap());
+            }
+            "--client-id" => {
+                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap()
+            }
+            "--redirect-uri" => {
+                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap()
+            }
+            other => {
+                return command_usage_error(
+                    "auth",
+                    &format!("unknown auth option: {other}"),
+                    &global,
+                );
+            }
+        }
+    }
+    let mut config = zmanager_core::auth_client::TzapHostedAuthLaunchConfig::for_environment(
+        endpoints.environment,
+        endpoints.client_id,
+        endpoints.redirect_uri,
+    );
+    if let Some(account_base_url) = endpoints.account_base_url {
+        config.hosted_account_base_url = account_base_url;
+    }
+    let url = config.account_url();
+    if global.json {
+        println!("{{\"account_url\":\"{}\"}}", json_escape(&url));
+    } else {
+        println!("{url}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn me_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    auth_status_command(args, global)
+}
+
+fn cert_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    if wants_help(args) || args.is_empty() {
+        print_help_stdout(CERT_HELP, &global);
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    match args[0].as_str() {
+        "list" => cert_list_command(&args[1..], global),
+        "enroll" => cert_enroll_command(&args[1..], global),
+        "renew" => cert_renew_command(&args[1..], global),
+        "revoke" => cert_revoke_command(&args[1..], global),
+        command => {
+            command_usage_error("cert", &format!("unknown cert command: {command}"), &global)
+        }
+    }
+}
+
+fn cert_enroll_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "cert") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    run_fake_cert_operation(
+        "cert_enroll",
+        &context,
+        &global,
+        |store, session, options| {
+            zmanager_core::local_fake_tzap::enroll_local_fake_certificate(store, session, options)
+                .map(|certificate| {
+                    json!({
+                        "ok": true,
+                        "operation": "cert_enroll",
+                        "certificate": certificate_summary_value(&certificate),
+                    })
+                })
+        },
+    )
+}
+
+fn cert_renew_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let (context, certificate_id) = match parse_cert_id_operation_args(args, &mut global, "cert") {
+        Ok(parsed) => parsed,
+        Err(code) => return code,
+    };
+    run_fake_cert_operation(
+        "cert_renew",
+        &context,
+        &global,
+        |store, session, options| {
+            zmanager_core::local_fake_tzap::renew_local_fake_certificate(
+                store,
+                session,
+                options,
+                &certificate_id,
+            )
+            .map(|certificate| {
+                json!({
+                    "ok": true,
+                    "operation": "cert_renew",
+                    "certificate": certificate_summary_value(&certificate),
+                })
+            })
+        },
+    )
+}
+
+fn cert_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let (context, certificate_id) = match parse_cert_id_operation_args(args, &mut global, "cert") {
+        Ok(parsed) => parsed,
+        Err(code) => return code,
+    };
+    run_fake_cert_operation(
+        "cert_revoke",
+        &context,
+        &global,
+        |store, session, options| {
+            zmanager_core::local_fake_tzap::revoke_local_fake_certificate(
+                store,
+                session,
+                options,
+                &certificate_id,
+            )
+            .map(|completion| {
+                json!({
+                    "ok": true,
+                    "operation": "cert_revoke",
+                    "completion": retirement_completion_label(completion),
+                })
+            })
+        },
+    )
+}
+
+fn cert_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "cert") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    let store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    match store.load_inventory(&context.account_key) {
+        Ok(inventory) => {
+            if global.json {
+                print!("{{\"certificates\":[");
+                for (index, cert) in inventory.enrolled_certificates.iter().enumerate() {
+                    if index > 0 {
+                        print!(",");
+                    }
+                    print_certificate_json(cert);
+                }
+                println!("]}}");
+            } else if inventory.enrolled_certificates.is_empty() {
+                println!("no local certificates");
+            } else {
+                for cert in inventory.enrolled_certificates {
+                    println!(
+                        "{} {} {}",
+                        cert.certificate_id,
+                        cert.state.as_str(),
+                        cert.certificate_sha256
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(&global, format_args!("cert list failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn device_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    if wants_help(args) || args.is_empty() {
+        print_help_stdout(DEVICE_HELP, &global);
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    match args[0].as_str() {
+        "retire" => device_retire_command(&args[1..], global),
+        command => command_usage_error(
+            "device",
+            &format!("unknown device command: {command}"),
+            &global,
+        ),
+    }
+}
+
+fn device_retire_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "device") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    run_fake_cert_operation(
+        "device_retire",
+        &context,
+        &global,
+        |store, session, options| {
+            zmanager_core::local_fake_tzap::retire_local_fake_device(store, session, options).map(
+                |report| {
+                    json!({
+                        "ok": true,
+                        "operation": "device_retire",
+                        "completion": retirement_completion_label(report.completion),
+                        "attempted_sign_device_ids": report.attempted_sign_device_ids,
+                    })
+                },
+            )
+        },
+    )
+}
+
+fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    if wants_help(args) {
+        print_help_stdout(SIGN_HELP, &global);
+        return ExitCode::SUCCESS;
+    }
+    let mut context = TzapCliContext::default();
+    let mut input = None;
+    let mut output = None;
+    let mut certificate_id = None;
+    let mut claimed_signing_time = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+            }
+            "--certificate-id" => {
+                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap())
+            }
+            "--output" => {
+                output = Some(PathBuf::from(
+                    take_value(args, &mut index, "--output").unwrap(),
+                ))
+            }
+            "--claimed-signing-time" => {
+                claimed_signing_time =
+                    Some(take_value(args, &mut index, "--claimed-signing-time").unwrap())
+            }
+            value if value.starts_with('-') => {
+                return command_usage_error(
+                    "sign",
+                    &format!("unknown sign option: {value}"),
+                    &global,
+                );
+            }
+            value if input.is_none() => {
+                input = Some(value.to_owned());
+                index += 1;
+            }
+            _ => return command_usage_error("sign", "too many arguments", &global),
+        }
+    }
+    let Some(input) = input else {
+        return command_usage_error("sign", "missing input", &global);
+    };
+    let Some(certificate_id) = certificate_id else {
+        return command_usage_error("sign", "missing --certificate-id", &global);
+    };
+    let Some(output) = output else {
+        return command_usage_error("sign", "missing --output", &global);
+    };
+    let payload = match read_json_argument(&input) {
+        Ok(payload) => payload,
+        Err(error) => {
+            print_error_line(&global, format_args!("sign failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut request = zmanager_core::document_signing::TzapDocumentSigningRequest::new(
+        context.account_key,
+        certificate_id,
+        current_unix_seconds(),
+    );
+    request.claimed_signing_time = claimed_signing_time;
+    match zmanager_core::document_signing::sign_tzap_document_payload(&store, &request, payload) {
+        Ok(envelope) => {
+            if let Err(error) = write_json_file(&output, &envelope) {
+                print_error_line(&global, format_args!("sign failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+            if global.json {
+                println!(
+                    "{{\"signed\":true,\"output\":\"{}\"}}",
+                    json_escape(&output.display().to_string())
+                );
+            } else {
+                print_success_line(&global, format_args!("signed {}", output.display()));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("sign", &error.to_string(), &global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    if wants_help(args) {
+        print_help_stdout(VERIFY_HELP, &global);
+        return ExitCode::SUCCESS;
+    }
+    let mut input = None;
+    let mut custom_roots = Vec::new();
+    let mut status_response_path = None;
+    let mut verifier_time = current_unix_seconds() as i64;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--custom-trust-root" => {
+                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+            }
+            "--status-response" => {
+                status_response_path =
+                    Some(take_value(args, &mut index, "--status-response").unwrap());
+            }
+            "--time" => {
+                let value = take_value(args, &mut index, "--time").unwrap();
+                verifier_time = match value.parse::<i64>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return command_usage_error(
+                            "verify",
+                            "--time must be a unix timestamp",
+                            &global,
+                        );
+                    }
+                };
+            }
+            value if value.starts_with('-') => {
+                return command_usage_error(
+                    "verify",
+                    &format!("unknown verify option: {value}"),
+                    &global,
+                );
+            }
+            value if input.is_none() => {
+                input = Some(value.to_owned());
+                index += 1;
+            }
+            _ => return command_usage_error("verify", "too many arguments", &global),
+        }
+    }
+    let Some(input) = input else {
+        return command_usage_error("verify", "missing input", &global);
+    };
+    let bytes = match read_bytes_argument(&input) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            print_error_line(&global, format_args!("verify failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = zmanager_core::document_verification::TzapOfflineVerificationOptions {
+        verifier_time_unix_seconds: verifier_time,
+        official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
+        official_root_certificates_der: Vec::new(),
+        custom_trust_root_sha256: custom_roots,
+        custom_trust_root_certificates_der: Vec::new(),
+        certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
+    };
+    let result = verify_document_bytes_with_optional_status(
+        &bytes,
+        &options,
+        status_response_path.as_deref(),
+        &global,
+    );
+    print_verification_result(&result, &global);
+    if result.state == zmanager_core::trust::TzapVerificationState::Invalid {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn verify_document_bytes_with_optional_status(
+    bytes: &[u8],
+    options: &zmanager_core::document_verification::TzapOfflineVerificationOptions<'_>,
+    status_response_path: Option<&str>,
+    global: &GlobalOptions,
+) -> zmanager_core::document_verification::TzapDocumentVerificationResult {
+    let offline = zmanager_core::document_verification::verify_tzap_document_envelope_offline_json(
+        bytes, options,
+    );
+    let Some(status_response_path) = status_response_path else {
+        return offline;
+    };
+    if offline.state == zmanager_core::trust::TzapVerificationState::Invalid {
+        return offline;
+    }
+
+    let envelope = match zmanager_core::document_envelope::parse_tzap_document_envelope_json(bytes)
+    {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return zmanager_core::document_verification::TzapDocumentVerificationResult {
+                state: zmanager_core::trust::TzapVerificationState::Invalid,
+                trust_anchor_type: zmanager_core::trust::TzapTrustAnchorType::Untrusted,
+                reason: Some(error.to_string()),
+                root_certificate_sha256: None,
+                public_metadata: None,
+            };
+        }
+    };
+    let status_value = match read_json_argument(status_response_path) {
+        Ok(value) => value,
+        Err(error) => {
+            print_error_line(global, format_args!("verify status failed: {error}"));
+            return zmanager_core::document_verification::TzapDocumentVerificationResult {
+                state: zmanager_core::trust::TzapVerificationState::Invalid,
+                reason: Some("status response JSON is invalid".to_owned()),
+                ..offline
+            };
+        }
+    };
+    let status =
+        match zmanager_core::status_client::TzapStatusResponse::from_json_value(&status_value) {
+            Ok(status) => status,
+            Err(error) => {
+                print_error_line(global, format_args!("verify status failed: {error}"));
+                return zmanager_core::document_verification::TzapDocumentVerificationResult {
+                    state: zmanager_core::trust::TzapVerificationState::Invalid,
+                    reason: Some(error.to_string()),
+                    ..offline
+                };
+            }
+        };
+    zmanager_core::status_client::verify_tzap_document_envelope_valid_now(
+        &envelope, options, &status,
+    )
+}
+
+fn contact_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    if wants_help(args) || args.is_empty() {
+        print_help_stdout(CONTACT_HELP, &global);
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    match args[0].as_str() {
+        "list" => contact_list_command(&args[1..], global),
+        "remove" => contact_remove_command(&args[1..], global),
+        "import" => contact_import_command(&args[1..], global),
+        "export" => contact_export_command(&args[1..], global),
+        command => command_usage_error(
+            "contact",
+            &format!("unknown contact command: {command}"),
+            &global,
+        ),
+    }
+}
+
+fn contact_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let context = match parse_tzap_context_args(args, &mut global, "contact") {
+        Ok(context) => context,
+        Err(code) => return code,
+    };
+    let store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    match store.load_inventory(&context.account_key) {
+        Ok(inventory) => {
+            if global.json {
+                print!("{{\"contacts\":[");
+                for (index, contact) in inventory.contacts.iter().enumerate() {
+                    if index > 0 {
+                        print!(",");
+                    }
+                    print_contact_json(contact);
+                }
+                println!("]}}");
+            } else if inventory.contacts.is_empty() {
+                println!("no contacts");
+            } else {
+                for contact in inventory.contacts {
+                    println!("{} {}", contact.contact_id, contact.display_name);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(&global, format_args!("contact list failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn contact_remove_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut contact_id = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+            }
+            value if value.starts_with('-') => {
+                return command_usage_error(
+                    "contact",
+                    &format!("unknown contact option: {value}"),
+                    &global,
+                );
+            }
+            value if contact_id.is_none() => {
+                contact_id = Some(value.to_owned());
+                index += 1;
+            }
+            _ => return command_usage_error("contact", "too many arguments", &global),
+        }
+    }
+    let Some(contact_id) = contact_id else {
+        return command_usage_error("contact", "missing contact id", &global);
+    };
+    let mut store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    match store.load_inventory(&context.account_key) {
+        Ok(mut inventory) => {
+            let before = inventory.contacts.len();
+            inventory
+                .contacts
+                .retain(|contact| contact.contact_id != contact_id);
+            if let Err(error) = store.save_inventory(&context.account_key, inventory) {
+                print_error_line(&global, format_args!("contact remove failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+            let removed = before
+                > store
+                    .load_inventory(&context.account_key)
+                    .map_or(0, |inventory| inventory.contacts.len());
+            if global.json {
+                println!("{{\"removed\":{removed}}}");
+            } else if removed {
+                print_success_line(&global, format_args!("removed contact {contact_id}"));
+            } else {
+                println!("contact not found: {contact_id}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(&global, format_args!("contact remove failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut input = None;
+    let mut accepted = false;
+    let mut custom_roots = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+            }
+            "--accept" => {
+                accepted = true;
+                index += 1;
+            }
+            "--custom-trust-root" => {
+                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+            }
+            value if value.starts_with('-') => {
+                return command_usage_error(
+                    "contact",
+                    &format!("unknown contact option: {value}"),
+                    &global,
+                );
+            }
+            value if input.is_none() => {
+                input = Some(value.to_owned());
+                index += 1;
+            }
+            _ => return command_usage_error("contact", "too many arguments", &global),
+        }
+    }
+    let Some(input) = input else {
+        return command_usage_error("contact", "missing contact card", &global);
+    };
+    let card = match read_json_argument(&input) {
+        Ok(card) => card,
+        Err(error) => {
+            print_error_line(&global, format_args!("contact import failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = zmanager_core::contact_card::TzapContactCardImportOptions {
+        verifier_time_unix_seconds: current_unix_seconds() as i64,
+        official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
+        official_root_certificates_der: Vec::new(),
+        custom_trust_root_sha256: custom_roots,
+        custom_trust_root_certificates_der: Vec::new(),
+        certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
+    };
+    let mut store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    match zmanager_core::contact_card::import_tzap_contact_card(
+        &mut store,
+        &context.account_key,
+        &card,
+        &options,
+        accepted.then(current_unix_seconds),
+    ) {
+        Ok(contact) => {
+            if global.json {
+                print_contact_json_line(&contact);
+            } else {
+                print_success_line(
+                    &global,
+                    format_args!("imported contact {}", contact.display_name),
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("contact_import", &error.to_string(), &global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut recipient_key_id = None;
+    let mut certificate_id = None;
+    let mut display_name = None;
+    let mut device_label = "ZManager".to_owned();
+    let mut output = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+            }
+            "--recipient-key-id" => {
+                recipient_key_id = Some(take_value(args, &mut index, "--recipient-key-id").unwrap())
+            }
+            "--certificate-id" => {
+                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap())
+            }
+            "--display-name" => {
+                display_name = Some(take_value(args, &mut index, "--display-name").unwrap())
+            }
+            "--device-label" => {
+                device_label = take_value(args, &mut index, "--device-label").unwrap()
+            }
+            "--output" => {
+                output = Some(PathBuf::from(
+                    take_value(args, &mut index, "--output").unwrap(),
+                ))
+            }
+            value => {
+                return command_usage_error(
+                    "contact",
+                    &format!("unknown contact option: {value}"),
+                    &global,
+                );
+            }
+        }
+    }
+    let Some(recipient_key_id) = recipient_key_id else {
+        return command_usage_error("contact", "missing --recipient-key-id", &global);
+    };
+    let Some(certificate_id) = certificate_id else {
+        return command_usage_error("contact", "missing --certificate-id", &global);
+    };
+    let Some(display_name) = display_name else {
+        return command_usage_error("contact", "missing --display-name", &global);
+    };
+    let Some(output) = output else {
+        return command_usage_error("contact", "missing --output", &global);
+    };
+    let store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let request = zmanager_core::contact_card::TzapContactCardExportRequest {
+        account_key: context.account_key,
+        recipient_key_id,
+        certificate_id,
+        display_name,
+        device_label,
+        created_at_unix_seconds: current_unix_seconds(),
+        expires_at_unix_seconds: None,
+    };
+    match zmanager_core::contact_card::export_tzap_contact_card(&store, &request) {
+        Ok(card) => {
+            if let Err(error) = write_json_file(&output, &card) {
+                print_error_line(&global, format_args!("contact export failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+            if global.json {
+                println!(
+                    "{{\"exported\":true,\"output\":\"{}\"}}",
+                    json_escape(&output.display().to_string())
+                );
+            } else {
+                print_success_line(&global, format_args!("exported {}", output.display()));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("contact_export", &error.to_string(), &global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    if wants_help(args) {
+        print_help_stdout(SHARE_HELP, &global);
+        return ExitCode::SUCCESS;
+    }
+    let mut context = TzapCliContext::default();
+    let mut archive = None;
+    let mut sources = Vec::new();
+    let mut contact_ids = Vec::new();
+    let mut force = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+            }
+            "--contact" => contact_ids.push(take_value(args, &mut index, "--contact").unwrap()),
+            "--force" => {
+                force = true;
+                index += 1;
+            }
+            value if value.starts_with('-') => {
+                return command_usage_error(
+                    "share",
+                    &format!("unknown share option: {value}"),
+                    &global,
+                );
+            }
+            value if archive.is_none() => {
+                archive = Some(PathBuf::from(value));
+                index += 1;
+            }
+            value => {
+                sources.push(PathBuf::from(value));
+                index += 1;
+            }
+        }
+    }
+    let Some(archive) = archive else {
+        return command_usage_error("share", "missing archive", &global);
+    };
+    if sources.is_empty() {
+        return command_usage_error("share", "missing source path", &global);
+    }
+    let store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let recipients = match zmanager_core::contact_card::accepted_contact_recipients(
+        &store,
+        &context.account_key,
+        &contact_ids,
+        current_unix_seconds(),
+    ) {
+        Ok(recipients) => recipients,
+        Err(error) => {
+            print_stable_tzap_error("share", &error.to_string(), &global);
+            return ExitCode::FAILURE;
+        }
+    };
+    let recipient_warning_count = recipients
+        .iter()
+        .filter(|recipient| recipient.missing_status_caveat)
+        .count();
+    let recipient_public_keys = recipients
+        .into_iter()
+        .map(|recipient| recipient.recipient_public_key_der)
+        .collect();
+    let manifest = match plan_sources(&sources, false, false, false) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            print_error_line(&global, format_args!("share failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    if archive.exists() && !force {
+        print_error_line(
+            &global,
+            format_args!("share failed: destination exists: {}", archive.display()),
+        );
+        return ExitCode::FAILURE;
+    }
+    let token = CancellationToken::new();
+    let mut progress = ProgressReporter::from_global(Some(&global));
+    let options = zmanager_core::tzap_backend::TzapCreateOptions {
+        key_source: zmanager_core::tzap_backend::TzapKeySource::RecipientPublicKeys(
+            recipient_public_keys,
+        ),
+        level: 3,
+        preserve_metadata: true,
+        replace_existing: force,
+        volume_size: None,
+        recovery_percentage: TZAP_DEFAULT_RECOVERY_PERCENTAGE,
+        volume_loss_tolerance: TZAP_SINGLE_VOLUME_LOSS_TOLERANCE,
+        x509_signing: None,
+    };
+    let result = {
+        let mut sink = |event| progress.emit(event);
+        let mut job_context = JobContext::new(&token, &mut sink);
+        zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
+            &manifest,
+            &archive,
+            &options,
+            &mut job_context,
+        )
+    };
+    match result {
+        Ok(report) => {
+            if global.json {
+                println!(
+                    "{{\"archive\":\"{}\",\"format\":\"tzap\",\"entries\":{},\"bytes\":{},\"recipients\":{},\"recipient_status_caveats\":{}}}",
+                    json_escape(&archive.display().to_string()),
+                    report.written_entries,
+                    report.written_bytes,
+                    contact_ids.len(),
+                    recipient_warning_count
+                );
+            } else {
+                if recipient_warning_count > 0 {
+                    print_error_line(
+                        &global,
+                        format_args!(
+                            "{recipient_warning_count} recipient contact(s) have offline-only status caveats"
+                        ),
+                    );
+                }
+                print_success_line(
+                    &global,
+                    format_args!("created shared tzap {}", archive.display()),
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(&global, format_args!("share failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn parse_tzap_context_args(
+    args: &[String],
+    global: &mut GlobalOptions,
+    command: &str,
+) -> Result<TzapCliContext, ExitCode> {
+    let mut context = TzapCliContext::default();
+    let mut index = 0usize;
+    while index < args.len() {
+        match parse_global_option(args, &mut index, global) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => return Err(command_usage_error(command, &error, global)),
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir = PathBuf::from(
+                    take_value(args, &mut index, "--state-dir")
+                        .map_err(|error| command_usage_error(command, &error, global))?,
+                );
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key")
+                    .map_err(|error| command_usage_error(command, &error, global))?;
+            }
+            other => {
+                return Err(command_usage_error(
+                    command,
+                    &format!("unknown {command} option: {other}"),
+                    global,
+                ));
+            }
+        }
+    }
+    Ok(context)
+}
+
+fn parse_cert_id_operation_args(
+    args: &[String],
+    global: &mut GlobalOptions,
+    command: &str,
+) -> Result<(TzapCliContext, String), ExitCode> {
+    let mut context = TzapCliContext::default();
+    let mut certificate_id = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir = PathBuf::from(
+                    take_value(args, &mut index, "--state-dir")
+                        .map_err(|error| command_usage_error(command, &error, global))?,
+                );
+            }
+            "--account-key" => {
+                context.account_key = take_value(args, &mut index, "--account-key")
+                    .map_err(|error| command_usage_error(command, &error, global))?;
+            }
+            "--certificate-id" => {
+                certificate_id = Some(
+                    take_value(args, &mut index, "--certificate-id")
+                        .map_err(|error| command_usage_error(command, &error, global))?,
+                );
+            }
+            other => {
+                return Err(command_usage_error(
+                    command,
+                    &format!("unknown {command} option: {other}"),
+                    global,
+                ));
+            }
+        }
+    }
+    let Some(certificate_id) = certificate_id else {
+        return Err(command_usage_error(
+            command,
+            "missing --certificate-id",
+            global,
+        ));
+    };
+    Ok((context, certificate_id))
+}
+
+fn run_fake_cert_operation<F>(
+    operation: &str,
+    context: &TzapCliContext,
+    global: &GlobalOptions,
+    action: F,
+) -> ExitCode
+where
+    F: FnOnce(
+        &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
+        &zmanager_core::auth_client::TzapSessionRecord,
+        &zmanager_core::local_fake_tzap::TzapLocalFakeServiceOptions,
+    ) -> Result<
+        serde_json::Value,
+        zmanager_core::local_fake_tzap::TzapLocalFakeServiceError,
+    >,
+{
+    let session_store = FileTzapSessionStore::new(&context.state_dir);
+    let Some(session) = session_store.load_session(&context.account_key) else {
+        print_stable_tzap_error(operation, MISSING_TZAP_SESSION, global);
+        return ExitCode::FAILURE;
+    };
+    let mut identity_store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let options = zmanager_core::local_fake_tzap::TzapLocalFakeServiceOptions {
+        account_key: context.account_key.clone(),
+        now_unix_seconds: current_unix_seconds(),
+    };
+    match action(&mut identity_store, &session, &options) {
+        Ok(value) => {
+            if global.json {
+                println!("{value}");
+            } else {
+                print_success_line(global, format_args!("{operation} complete"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error(operation, &error.to_string(), global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_stable_tzap_error(operation: &str, message: &str, global: &GlobalOptions) {
+    if global.json {
+        println!(
+            "{{\"ok\":false,\"operation\":\"{}\",\"error\":\"{}\"}}",
+            json_escape(operation),
+            json_escape(message)
+        );
+    } else {
+        print_error_line(global, format_args!("{operation} failed: {message}"));
+    }
+}
+
+fn certificate_summary_value(
+    cert: &zmanager_core::local_identity_store::TzapEnrolledCertificateRecord,
+) -> serde_json::Value {
+    json!({
+        "certificate_id": cert.certificate_id,
+        "certificate_sha256": cert.certificate_sha256,
+        "state": cert.state.as_str(),
+        "not_before_unix_seconds": cert.not_before_unix_seconds,
+        "not_after_unix_seconds": cert.not_after_unix_seconds,
+        "public_signer_id": cert.public_metadata.public_signer_id,
+        "public_org_id": cert.public_metadata.public_org_id,
+        "public_device_id": cert.public_metadata.public_device_id,
+        "assurance_level": cert.public_metadata.assurance_level.as_str(),
+    })
+}
+
+fn retirement_completion_label(
+    completion: zmanager_core::certificate_lifecycle::TzapRetirementCompletion,
+) -> &'static str {
+    match completion {
+        zmanager_core::certificate_lifecycle::TzapRetirementCompletion::Complete => "complete",
+        zmanager_core::certificate_lifecycle::TzapRetirementCompletion::Incomplete => "incomplete",
+    }
+}
+
+fn default_tzap_state_dir() -> PathBuf {
+    if let Some(path) = env::var_os(DEFAULT_TZAP_STATE_DIR_ENV)
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
+    }
+    env::var_os("HOME").map_or_else(
+        || PathBuf::from(".").join(DEFAULT_TZAP_STATE_HOME_CHILD),
+        |home| PathBuf::from(home).join(DEFAULT_TZAP_STATE_HOME_CHILD),
+    )
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn read_bytes_argument(path: &str) -> io::Result<Vec<u8>> {
+    if path == "-" {
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::stdin(), &mut bytes)?;
+        Ok(bytes)
+    } else {
+        fs::read(path)
+    }
+}
+
+fn read_json_argument(path: &str) -> Result<Value, String> {
+    let bytes = read_bytes_argument(path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn read_json_file(path: &Path) -> Option<Value> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_json_file(path: &Path, value: &Value) -> io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    fs::write(path, bytes)
+}
+
+fn write_secret_json_file(path: &Path, value: &Value) -> io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    write_secret_file(path, &bytes)
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::write(path, bytes)
+}
+
+fn save_pending_auth(
+    state_dir: &Path,
+    pending: &zmanager_core::auth_client::TzapPendingAuthState,
+) -> io::Result<()> {
+    write_secret_json_file(
+        &state_dir.join(AUTH_PENDING_FILE),
+        &json!({
+            "state": pending.state,
+            "provider_id": pending.provider_id,
+            "redirect_uri": pending.redirect_uri,
+            "pkce_verifier": pending.pkce.verifier,
+            "created_at_unix_seconds": pending.created_at_unix_seconds,
+        }),
+    )
+}
+
+fn load_pending_auth(
+    state_dir: &Path,
+) -> Result<zmanager_core::auth_client::TzapPendingAuthState, String> {
+    let value = read_json_file(&state_dir.join(AUTH_PENDING_FILE))
+        .ok_or_else(|| "no pending hosted-auth handoff".to_owned())?;
+    let verifier = json_string_field(&value, "pkce_verifier")?;
+    let pkce = zmanager_core::auth_client::TzapPkcePair::from_verifier(&verifier)
+        .map_err(|error| error.to_string())?;
+    Ok(zmanager_core::auth_client::TzapPendingAuthState {
+        state: json_string_field(&value, "state")?,
+        provider_id: json_string_field(&value, "provider_id")?,
+        redirect_uri: json_string_field(&value, "redirect_uri")?,
+        pkce,
+        created_at_unix_seconds: json_u64_field(&value, "created_at_unix_seconds")?,
+    })
+}
+
+fn session_to_json(
+    session: &zmanager_core::auth_client::TzapSessionRecord,
+    include_token: bool,
+) -> Value {
+    let mut value = json!({
+        "audience": session.audience,
+        "expires_at_unix_seconds": session.expires_at_unix_seconds,
+        "identity_assurance": session.identity_assurance.as_str(),
+        "selected_org_id": session.selected_org_id,
+        "login_session_id": session.login_session_id,
+    });
+    if include_token {
+        value["access_token"] = json!(session.access_token.expose());
+    }
+    value
+}
+
+fn session_from_json(
+    value: &Value,
+) -> Result<zmanager_core::auth_client::TzapSessionRecord, String> {
+    let assurance = json_string_field(value, "identity_assurance")?;
+    let identity_assurance = zmanager_core::trust::TzapIdentityAssurance::from_str(&assurance)
+        .ok_or_else(|| "invalid identity assurance".to_owned())?;
+    Ok(zmanager_core::auth_client::TzapSessionRecord {
+        audience: json_string_field(value, "audience")?,
+        access_token: zmanager_core::auth_client::TzapBearerToken::new(json_string_field(
+            value,
+            "access_token",
+        )?)
+        .map_err(|error| error.to_string())?,
+        expires_at_unix_seconds: json_u64_field(value, "expires_at_unix_seconds")?,
+        identity_assurance,
+        selected_org_id: json_optional_string_field(value, "selected_org_id")?,
+        login_session_id: json_optional_string_field(value, "login_session_id")?,
+    })
+}
+
+fn json_string_field(value: &Value, field: &'static str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("missing or invalid field: {field}"))
+}
+
+fn json_optional_string_field(
+    value: &Value,
+    field: &'static str,
+) -> Result<Option<String>, String> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        _ => Err(format!("missing or invalid field: {field}")),
+    }
+}
+
+fn json_u64_field(value: &Value, field: &'static str) -> Result<u64, String> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing or invalid field: {field}"))
+}
+
+fn print_session_summary(
+    session: &zmanager_core::auth_client::TzapSessionRecord,
+    global: &GlobalOptions,
+) {
+    let expired = session.is_expired_at(current_unix_seconds());
+    if global.json {
+        println!(
+            "{{\"authenticated\":true,\"audience\":\"{}\",\"expires_at_unix_seconds\":{},\"expired\":{},\"identity_assurance\":\"{}\",\"selected_org_id\":{},\"login_session_id\":{}}}",
+            json_escape(&session.audience),
+            session.expires_at_unix_seconds,
+            expired,
+            json_escape(session.identity_assurance.as_str()),
+            optional_json_string(session.selected_org_id.as_deref()),
+            optional_json_string(session.login_session_id.as_deref())
+        );
+    } else {
+        let status = if expired { "expired" } else { "active" };
+        println!(
+            "{status} session for {} ({})",
+            session.audience,
+            session.identity_assurance.as_str()
+        );
+    }
+}
+
+fn optional_json_string(value: Option<&str>) -> String {
+    value.map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    )
+}
+
+fn print_certificate_json(
+    cert: &zmanager_core::local_identity_store::TzapEnrolledCertificateRecord,
+) {
+    print!(
+        "{{\"certificate_id\":\"{}\",\"certificate_sha256\":\"{}\",\"state\":\"{}\",\"not_before_unix_seconds\":{},\"not_after_unix_seconds\":{},\"public_signer_id\":\"{}\",\"public_org_id\":{},\"public_device_id\":\"{}\",\"assurance_level\":\"{}\"}}",
+        json_escape(&cert.certificate_id),
+        json_escape(&cert.certificate_sha256),
+        json_escape(cert.state.as_str()),
+        cert.not_before_unix_seconds,
+        cert.not_after_unix_seconds,
+        json_escape(&cert.public_metadata.public_signer_id),
+        optional_json_string(cert.public_metadata.public_org_id.as_deref()),
+        json_escape(&cert.public_metadata.public_device_id),
+        json_escape(cert.public_metadata.assurance_level.as_str())
+    );
+}
+
+fn print_verification_result(
+    result: &zmanager_core::document_verification::TzapDocumentVerificationResult,
+    global: &GlobalOptions,
+) {
+    if global.json {
+        println!(
+            "{{\"state\":\"{}\",\"trust_anchor_type\":\"{}\",\"reason\":{},\"root_certificate_sha256\":{}}}",
+            json_escape(result.state.as_str()),
+            json_escape(result.trust_anchor_type.as_str()),
+            optional_json_string(result.reason.as_deref()),
+            optional_json_string(result.root_certificate_sha256.as_deref())
+        );
+    } else {
+        println!(
+            "{} ({})",
+            result.state.as_str(),
+            result.trust_anchor_type.as_str()
+        );
+        if let Some(reason) = &result.reason {
+            println!("{reason}");
+        }
+    }
+}
+
+fn print_contact_json(contact: &zmanager_core::local_identity_store::TzapContactRecord) {
+    print!(
+        "{{\"contact_id\":\"{}\",\"display_name\":\"{}\",\"signing_certificate_sha256\":\"{}\",\"recipient_public_key_fingerprint\":\"{}\",\"trust_anchor_type\":\"{}\",\"verification_state\":\"{}\",\"missing_status_caveat\":{},\"accepted_at_unix_seconds\":{}}}",
+        json_escape(&contact.contact_id),
+        json_escape(&contact.display_name),
+        json_escape(&contact.signing_certificate_sha256),
+        json_escape(&contact.recipient_public_key_fingerprint),
+        contact.trust_anchor_type.as_str(),
+        contact.verification_state.as_str(),
+        contact.missing_status_caveat,
+        contact.accepted_at_unix_seconds
+    );
+}
+
+fn print_contact_json_line(contact: &zmanager_core::local_identity_store::TzapContactRecord) {
+    print!("{{\"contact\":");
+    print_contact_json(contact);
+    println!("}}");
 }
 
 fn new_create_command(args: &[String], global: GlobalOptions) -> ExitCode {

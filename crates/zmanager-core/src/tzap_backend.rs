@@ -7,11 +7,16 @@ use crate::safety::{
 };
 use crate::secrets::SecretString;
 use crate::x509_format::x509_name_to_string;
+use openssl::asn1::Asn1Time;
+use openssl::bn::BigNum;
+use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
+use openssl::nid::Nid;
 use openssl::pkcs12::Pkcs12;
-use openssl::pkey::PKey;
+use openssl::pkey::{PKey, Public};
 use openssl::sign::Verifier;
 use openssl::x509::X509;
+use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
 use rand::RngCore as _;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -114,6 +119,10 @@ pub enum TzapKeySource {
     Passphrase(SecretString),
     /// Wrap a random archive master key to one X.509 recipient certificate.
     RecipientCertificate(PathBuf),
+    /// Wrap a random archive master key to multiple X.509 recipient certificates.
+    RecipientCertificates(Vec<PathBuf>),
+    /// Wrap a random archive master key to multiple recipient public keys.
+    RecipientPublicKeys(Vec<Vec<u8>>),
     /// Create the archive without password-based encryption.
     NoPassword,
 }
@@ -519,14 +528,59 @@ pub fn create_tzap_from_manifest_with_context(
     }
 
     let (master_key, kdf_params) = create_key_material(&options.key_source)?;
-    let recipient_record = match &options.key_source {
+    let recipient_records = match &options.key_source {
         TzapKeySource::RecipientCertificate(recipient_certificate) => {
             validate_recipient_wrap_create_options(options)?;
-            Some(build_recipient_wrap_record(
+            Some(vec![build_recipient_wrap_record_from_certificate_path(
                 recipient_certificate,
                 &master_key,
                 &mut writer_options,
-            )?)
+            )?])
+        }
+        TzapKeySource::RecipientCertificates(recipient_certificates) => {
+            validate_recipient_wrap_create_options(options)?;
+            if recipient_certificates.is_empty() {
+                return Err(TzapError::KeyWrap(
+                    "at least one recipient certificate is required".to_owned(),
+                ));
+            }
+            let archive_identity = recipient_wrap_archive_identity_for_writer(&mut writer_options);
+            Some(
+                recipient_certificates
+                    .iter()
+                    .map(|path| {
+                        let certificate =
+                            load_single_x509_certificate_file("recipient certificate", path)?;
+                        build_recipient_wrap_record_from_certificate_der(
+                            certificate,
+                            &master_key,
+                            archive_identity.clone(),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
+        TzapKeySource::RecipientPublicKeys(recipient_public_keys) => {
+            validate_recipient_wrap_create_options(options)?;
+            if recipient_public_keys.is_empty() {
+                return Err(TzapError::KeyWrap(
+                    "at least one recipient public key is required".to_owned(),
+                ));
+            }
+            let archive_identity = recipient_wrap_archive_identity_for_writer(&mut writer_options);
+            Some(
+                recipient_public_keys
+                    .iter()
+                    .map(|public_key_der| {
+                        let certificate = synthetic_recipient_certificate_der(public_key_der)?;
+                        build_recipient_wrap_record_from_certificate_der(
+                            certificate,
+                            &master_key,
+                            archive_identity.clone(),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
         }
         TzapKeySource::Passphrase(_) | TzapKeySource::NoPassword => None,
     };
@@ -556,12 +610,12 @@ pub fn create_tzap_from_manifest_with_context(
         &mut authenticator
             as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
     });
-    let summary = if let Some(recipient_record) = recipient_record {
+    let summary = if let Some(recipient_records) = recipient_records {
         write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records(
             &file_sources,
             &master_key,
             writer_options,
-            vec![recipient_record],
+            recipient_records,
             root_auth,
             authenticator,
             &mut sink,
@@ -914,7 +968,7 @@ fn validate_recipient_wrap_create_options(options: &TzapCreateOptions) -> Result
     Ok(())
 }
 
-fn build_recipient_wrap_record(
+fn build_recipient_wrap_record_from_certificate_path(
     recipient_certificate_path: &Path,
     master_key: &MasterKey,
     options: &mut WriterOptions,
@@ -922,6 +976,18 @@ fn build_recipient_wrap_record(
     let recipient_certificate =
         load_single_x509_certificate_file("recipient certificate", recipient_certificate_path)?;
     let archive_identity = recipient_wrap_archive_identity_for_writer(options);
+    build_recipient_wrap_record_from_certificate_der(
+        recipient_certificate,
+        master_key,
+        archive_identity,
+    )
+}
+
+fn build_recipient_wrap_record_from_certificate_der(
+    recipient_certificate: Vec<u8>,
+    master_key: &MasterKey,
+    archive_identity: KeyWrapArchiveIdentity,
+) -> Result<RecipientRecordV1, TzapError> {
     let master_key_bytes = master_key.0;
     for suite in [
         KeyWrapSuite::X25519HkdfSha256ChaCha20Poly1305,
@@ -941,6 +1007,95 @@ fn build_recipient_wrap_record(
     Err(TzapError::Format(FormatError::WriterUnsupported(
         "recipient certificate is not supported by keywrap-v1 suites",
     )))
+}
+
+fn synthetic_recipient_certificate_der(public_key_spki_der: &[u8]) -> Result<Vec<u8>, TzapError> {
+    let public_key =
+        PKey::<Public>::public_key_from_der(public_key_spki_der).map_err(|source| {
+            TzapError::KeyWrap(format!("recipient public key is invalid: {source}"))
+        })?;
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(|source| {
+        TzapError::KeyWrap(format!("recipient certificate key failed: {source}"))
+    })?;
+    let issuer_key = PKey::from_ec_key(EcKey::generate(&group).map_err(|source| {
+        TzapError::KeyWrap(format!("recipient certificate key failed: {source}"))
+    })?)
+    .map_err(|source| TzapError::KeyWrap(format!("recipient certificate key failed: {source}")))?;
+    let mut name = openssl::x509::X509NameBuilder::new().map_err(|source| {
+        TzapError::KeyWrap(format!("recipient certificate name failed: {source}"))
+    })?;
+    name.append_entry_by_text("CN", "ZManager Contact Recipient")
+        .map_err(|source| {
+            TzapError::KeyWrap(format!("recipient certificate name failed: {source}"))
+        })?;
+    let name = name.build();
+    let mut builder = X509::builder()
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate failed: {source}")))?;
+    builder
+        .set_version(2)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let serial = BigNum::from_u32(1)
+        .and_then(|number| number.to_asn1_integer())
+        .map_err(|source| {
+            TzapError::KeyWrap(format!("recipient certificate serial failed: {source}"))
+        })?;
+    builder
+        .set_serial_number(&serial)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .set_subject_name(&name)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .set_issuer_name(&name)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .set_pubkey(&public_key)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let not_before =
+        Asn1Time::days_from_now(0).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let not_after =
+        Asn1Time::days_from_now(365).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .set_not_before(&not_before)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .set_not_after(&not_after)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .append_extension(
+            BasicConstraints::new()
+                .critical()
+                .build()
+                .map_err(|source| TzapError::KeyWrap(source.to_string()))?,
+        )
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .key_agreement()
+                .build()
+                .map_err(|source| TzapError::KeyWrap(source.to_string()))?,
+        )
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let subject_key_identifier = {
+        let context = builder.x509v3_context(None, None);
+        SubjectKeyIdentifier::new()
+            .build(&context)
+            .map_err(|source| TzapError::KeyWrap(source.to_string()))?
+    };
+    builder
+        .append_extension(subject_key_identifier)
+        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder
+        .sign(&issuer_key, MessageDigest::sha256())
+        .map_err(|source| {
+            TzapError::KeyWrap(format!("recipient certificate signing failed: {source}"))
+        })?;
+    builder
+        .build()
+        .to_der()
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate DER failed: {source}")))
 }
 
 fn load_single_x509_certificate_file(
@@ -2901,7 +3056,9 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
                 MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
             Ok((master_key, kdf_params))
         }
-        TzapKeySource::RecipientCertificate(_) => {
+        TzapKeySource::RecipientCertificate(_)
+        | TzapKeySource::RecipientCertificates(_)
+        | TzapKeySource::RecipientPublicKeys(_) => {
             Ok((generate_random_master_key()?, KdfParams::None))
         }
         TzapKeySource::NoPassword => Ok((placeholder_master_key()?, KdfParams::None)),
@@ -3427,6 +3584,72 @@ mod tests {
     }
 
     #[test]
+    fn multi_recipient_public_keys_can_open_same_archive() {
+        let temp = TestDir::new("tzap_multi_recipient_wrap_create");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("sealed.tzap");
+        let recipient_one_key_path = temp.path("recipient-one.key");
+        let recipient_two_key_path = temp.path("recipient-two.key");
+        let outsider_key_path = temp.path("outsider.key");
+        fs::write(&source, b"shared payload").unwrap();
+
+        let (_recipient_one_cert, recipient_one_key) =
+            test_p256_recipient_cert("ZManager Test Recipient One");
+        let (_recipient_two_cert, recipient_two_key) =
+            test_p256_recipient_cert("ZManager Test Recipient Two");
+        let (_outsider_cert, outsider_key) = test_p256_recipient_cert("ZManager Test Outsider");
+        fs::write(
+            &recipient_one_key_path,
+            recipient_one_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &recipient_two_key_path,
+            recipient_two_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &outsider_key_path,
+            outsider_key.private_key_to_pem_pkcs8().unwrap(),
+        )
+        .unwrap();
+
+        let manifest = single_file_manifest(&temp, source, 14);
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::RecipientPublicKeys(vec![
+                recipient_one_key.public_key_to_der().unwrap(),
+                recipient_two_key.public_key_to_der().unwrap(),
+            ]),
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        for recipient_key_path in [&recipient_one_key_path, &recipient_two_key_path] {
+            let listing = list_tzap_with_recipient_key(&archive, recipient_key_path).unwrap();
+            assert_eq!(listing.entries.len(), 1);
+            assert_eq!(listing.entries[0].path, "payload.txt");
+        }
+
+        let outsider_error = list_tzap_with_recipient_key(&archive, outsider_key_path).unwrap_err();
+        assert!(
+            outsider_error
+                .to_string()
+                .contains("no matching recipient private key")
+        );
+    }
+
+    #[test]
     fn create_split_tzap_uses_os_friendly_volume_names() {
         let temp = TestDir::new("tzap_split_volume_names");
         let source = temp.path("payload.bin");
@@ -3791,6 +4014,28 @@ mod tests {
             ..WriterOptions::default()
         };
         write_archive_with_kdf(files, &key, options, &kdf).unwrap()
+    }
+
+    fn single_file_manifest(temp: &TestDir, source: PathBuf, size: u64) -> ArchiveManifest {
+        ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: size,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        }
     }
 
     fn test_ca_cert(common_name: &str) -> (X509, PKey<Private>) {

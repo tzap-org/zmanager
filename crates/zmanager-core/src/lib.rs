@@ -3,20 +3,31 @@
 mod atomic_file;
 
 pub mod archive_browser;
+pub mod auth_client;
+pub mod certificate_lifecycle;
+pub mod contact_card;
 pub mod deb_backend;
+pub mod device_identity;
+pub mod document_envelope;
+pub mod document_signing;
+pub mod document_verification;
+pub mod enrollment_client;
 pub mod jcs;
-pub mod p256_signature;
 pub mod jobs;
 pub mod libarchive_backend;
+pub mod local_fake_tzap;
+pub mod local_identity_store;
 pub mod manifest;
+pub mod p256_signature;
 pub mod rar_backend;
 pub mod raw_stream_backend;
 pub mod safety;
 pub mod secrets;
 pub mod sevenz_backend;
+pub mod status_client;
 pub mod tar_zst_backend;
-pub mod tzap_backend;
 pub mod trust;
+pub mod tzap_backend;
 pub mod x509_format;
 pub mod zip_backend;
 

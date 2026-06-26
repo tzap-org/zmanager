@@ -292,6 +292,28 @@ char *zmanager_ffi_create_tzap_self_signed_identity(
   const char *common_name,
   const char *identity_password
 );
+// TZAP obligation bridge entry points. Each function accepts a UTF-8 JSON
+// request string and returns an owned UTF-8 JSON response string. Free every
+// non-null return value with zmanager_ffi_string_free.
+char *zmanager_ffi_tzap_auth_login_json(const char *request_json);
+char *zmanager_ffi_tzap_auth_callback_json(const char *request_json);
+char *zmanager_ffi_tzap_auth_status_json(const char *request_json);
+char *zmanager_ffi_tzap_auth_forget_json(const char *request_json);
+char *zmanager_ffi_tzap_auth_account_url_json(const char *request_json);
+char *zmanager_ffi_tzap_certificate_inventory_json(const char *request_json);
+char *zmanager_ffi_tzap_cert_enroll_json(const char *request_json);
+char *zmanager_ffi_tzap_cert_renew_json(const char *request_json);
+char *zmanager_ffi_tzap_cert_revoke_json(const char *request_json);
+char *zmanager_ffi_tzap_device_retire_json(const char *request_json);
+char *zmanager_ffi_tzap_document_sign_json(const char *request_json);
+char *zmanager_ffi_tzap_document_verify_json(const char *request_json);
+char *zmanager_ffi_tzap_recipient_key_generate_json(const char *request_json);
+char *zmanager_ffi_tzap_recipient_key_remove_json(const char *request_json);
+char *zmanager_ffi_tzap_contact_export_json(const char *request_json);
+char *zmanager_ffi_tzap_contact_import_json(const char *request_json);
+char *zmanager_ffi_tzap_contact_list_json(const char *request_json);
+char *zmanager_ffi_tzap_contact_remove_json(const char *request_json);
+char *zmanager_ffi_tzap_share_create_json(const char *request_json);
 char *zmanager_ffi_extract_archive_entry(
   const char *archive_path,
   const char *entry_path,

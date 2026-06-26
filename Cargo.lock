@@ -204,6 +204,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,7 +661,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1399,7 +1405,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1407,6 +1413,12 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "ryu-js"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd29631678d6fb0903b69223673e122c32e9ae559d0960a38d574695ebc0ea15"
 
 [[package]]
 name = "sec1"
@@ -1467,6 +1479,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1614,7 +1637,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2213,6 +2236,7 @@ dependencies = [
  "anstyle",
  "flate2",
  "rpassword",
+ "serde_json",
  "sha2 0.10.9",
  "tar",
  "zip",
@@ -2224,21 +2248,25 @@ dependencies = [
 name = "zmanager-core"
 version = "1.0.4"
 dependencies = [
+ "base64",
  "brotli",
  "bzip2",
  "filetime",
  "flate2",
  "lz4_flex",
  "lzma-rust2",
+ "num-bigint",
  "openssl",
  "rand",
  "serde_json",
+ "serde_json_canonicalizer",
  "sevenz-rust2",
  "sha2 0.10.9",
  "tar",
  "tzap-core",
  "tzap-plugin-keywrap",
  "tzap-plugin-signing",
+ "x509-parser",
  "zeroize",
  "zip",
  "zmanager-libarchive",
@@ -2250,6 +2278,7 @@ dependencies = [
 name = "zmanager-ffi"
 version = "1.0.4"
 dependencies = [
+ "base64",
  "openssl",
  "serde_json",
  "zmanager-core",

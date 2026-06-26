@@ -1,9 +1,8 @@
 //! RFC 8785 JSON Canonicalization Scheme helpers.
 
 use crate::trust;
-use sha2::{Digest, Sha256};
 use serde_json::Value;
-use std::cmp::Ordering;
+use sha2::{Digest, Sha256};
 
 /// Errors for canonical JSON transformation.
 #[derive(Debug)]
@@ -20,8 +19,7 @@ impl From<serde_json::Error> for JcsError {
 
 /// Canonicalizes RFC 8785 JSON bytes with deterministic key ordering.
 pub fn canonicalize_json_bytes(value: &Value) -> Result<Vec<u8>, JcsError> {
-    let canonical = canonicalize_json_value(value);
-    Ok(serde_json::to_vec(&canonical)?)
+    Ok(serde_json_canonicalizer::to_vec(value)?)
 }
 
 /// Computes `sha256:<64 lower-case hex>` over RFC 8785 canonical JSON bytes.
@@ -33,33 +31,10 @@ pub fn canonical_sha256_digest(value: &Value) -> Result<String, JcsError> {
     Ok(trust::format_sha256_identifier(&digest_array))
 }
 
-fn canonicalize_json_value(value: &Value) -> Value {
-    match value {
-        Value::Object(entries) => {
-            let mut sorted: Vec<(String, Value)> = entries
-                .iter()
-                .map(|(key, value)| (key.clone(), canonicalize_json_value(value)))
-                .collect();
-            sorted.sort_unstable_by(|(left, _), (right, _)| utf16_cmp(left, right));
-
-            let mut output = serde_json::Map::new();
-            for (key, value) in sorted {
-                output.insert(key, value);
-            }
-            Value::Object(output)
-        }
-        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json_value).collect()),
-    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
-    }
-}
-
-fn utf16_cmp(left: &str, right: &str) -> Ordering {
-    left.encode_utf16().cmp(right.encode_utf16())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_json_bytes, canonical_sha256_digest};
+    use super::{canonical_sha256_digest, canonicalize_json_bytes};
+    use crate::trust;
     use serde_json::json;
 
     #[test]
@@ -97,6 +72,37 @@ mod tests {
     }
 
     #[test]
+    fn jcs_canonicalization_sorts_non_bmp_keys_by_utf16_code_units() {
+        let payload = json!({
+            "\u{FFA5}": 1,
+            "\u{20BB7}": 2,
+        });
+
+        let canonical = canonicalize_json_bytes(&payload).unwrap();
+        assert_eq!(
+            String::from_utf8(canonical).unwrap(),
+            "{\"\u{20BB7}\":2,\"\u{FFA5}\":1}"
+        );
+    }
+
+    #[test]
+    fn jcs_canonicalization_uses_ecmascript_number_boundaries() {
+        let cases = [
+            (json!({"n": 1e21}), r#"{"n":1e+21}"#),
+            (json!({"n": 1e20}), r#"{"n":100000000000000000000}"#),
+            (json!({"n": 1e-6}), r#"{"n":0.000001}"#),
+            (json!({"n": 1e-7}), r#"{"n":1e-7}"#),
+            (json!({"n": 1.50}), r#"{"n":1.5}"#),
+            (json!({"n": -0.0}), r#"{"n":0}"#),
+        ];
+
+        for (payload, expected) in cases {
+            let canonical = canonicalize_json_bytes(&payload).unwrap();
+            assert_eq!(String::from_utf8(canonical).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn jcs_canonicalization_is_stable_across_calls() {
         let payload = json!({"b": 1, "a": 2});
 
@@ -115,6 +121,9 @@ mod tests {
             digest,
             "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
         );
-        assert_eq!(digest.len(), trust::SHA256_IDENTIFIER_PREFIX.len() + trust::SHA256_IDENTIFIER_HEX_LENGTH);
+        assert_eq!(
+            digest.len(),
+            trust::SHA256_IDENTIFIER_PREFIX.len() + trust::SHA256_IDENTIFIER_HEX_LENGTH
+        );
     }
 }
