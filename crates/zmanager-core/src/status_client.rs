@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use std::collections::HashSet;
 use std::fmt;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use x509_parser::prelude::FromDer as _;
 use x509_parser::revocation_list::CertificateRevocationList;
 
@@ -318,11 +319,36 @@ impl TzapStatusResponse {
             issuer_certificate_sha256: optional_string(object, "issuer_certificate_sha256")?,
             issuer_key_identifier: optional_string(object, "issuer_key_identifier")?,
             serial_number: optional_string(object, "serial_number")?,
-            not_before_unix_seconds: optional_i64(object, "not_before_unix_seconds")?,
-            not_after_unix_seconds: optional_i64(object, "not_after_unix_seconds")?,
-            this_update_unix_seconds: optional_i64(object, "this_update_unix_seconds")?,
-            next_update_unix_seconds: optional_i64(object, "next_update_unix_seconds")?,
-            revoked_at_unix_seconds: optional_i64(object, "revoked_at_unix_seconds")?,
+            not_before_unix_seconds: optional_unix_or_rfc3339(
+                object,
+                "not_before_unix_seconds",
+                "not_before",
+                "not_before_unix_seconds",
+            )?,
+            not_after_unix_seconds: optional_unix_or_rfc3339(
+                object,
+                "not_after_unix_seconds",
+                "not_after",
+                "not_after_unix_seconds",
+            )?,
+            this_update_unix_seconds: optional_unix_or_rfc3339(
+                object,
+                "this_update_unix_seconds",
+                "this_update",
+                "this_update_unix_seconds",
+            )?,
+            next_update_unix_seconds: optional_unix_or_rfc3339(
+                object,
+                "next_update_unix_seconds",
+                "next_update",
+                "next_update_unix_seconds",
+            )?,
+            revoked_at_unix_seconds: optional_unix_or_rfc3339(
+                object,
+                "revoked_at_unix_seconds",
+                "revoked_at",
+                "revoked_at_unix_seconds",
+            )?,
             revocation_reason: optional_string(object, "revocation_reason")?,
             query,
         };
@@ -697,8 +723,18 @@ fn parse_crl_manifest(bytes: &[u8]) -> Result<Vec<TzapCrlManifestEntry>, TzapSta
                 .to_owned(),
                 crl_sha256: required_string(entry_object, "crl_sha256")?.to_owned(),
                 crl_number: required_string(entry_object, "crl_number")?.to_owned(),
-                this_update_unix_seconds: required_i64(entry_object, "this_update_unix_seconds")?,
-                next_update_unix_seconds: required_i64(entry_object, "next_update_unix_seconds")?,
+                this_update_unix_seconds: required_unix_or_rfc3339(
+                    entry_object,
+                    "this_update_unix_seconds",
+                    "this_update",
+                    "this_update_unix_seconds",
+                )?,
+                next_update_unix_seconds: required_unix_or_rfc3339(
+                    entry_object,
+                    "next_update_unix_seconds",
+                    "next_update",
+                    "next_update_unix_seconds",
+                )?,
             };
             if parsed.crl_scope != trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA {
                 return Err(TzapStatusClientError::InvalidField { field: "crl_scope" });
@@ -782,16 +818,6 @@ fn optional_string(
         .transpose()
 }
 
-fn required_i64(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<i64, TzapStatusClientError> {
-    object
-        .get(field)
-        .and_then(Value::as_i64)
-        .ok_or(TzapStatusClientError::InvalidField { field })
-}
-
 fn optional_i64(
     object: &Map<String, Value>,
     field: &'static str,
@@ -802,6 +828,39 @@ fn optional_i64(
             value
                 .as_i64()
                 .ok_or(TzapStatusClientError::InvalidField { field })
+        })
+        .transpose()
+}
+
+fn required_unix_or_rfc3339(
+    object: &Map<String, Value>,
+    unix_field: &'static str,
+    rfc3339_field: &'static str,
+    error_field: &'static str,
+) -> Result<i64, TzapStatusClientError> {
+    optional_unix_or_rfc3339(object, unix_field, rfc3339_field, error_field)?
+        .ok_or(TzapStatusClientError::InvalidField { field: error_field })
+}
+
+fn optional_unix_or_rfc3339(
+    object: &Map<String, Value>,
+    unix_field: &'static str,
+    rfc3339_field: &'static str,
+    error_field: &'static str,
+) -> Result<Option<i64>, TzapStatusClientError> {
+    if object.contains_key(unix_field) {
+        return optional_i64(object, unix_field);
+    }
+    object
+        .get(rfc3339_field)
+        .map(|value| {
+            let text = value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or(TzapStatusClientError::InvalidField { field: error_field })?;
+            OffsetDateTime::parse(text, &Rfc3339)
+                .map(OffsetDateTime::unix_timestamp)
+                .map_err(|_| TzapStatusClientError::InvalidField { field: error_field })
         })
         .transpose()
 }
@@ -855,6 +914,40 @@ mod tests {
         assert_eq!(status.status, TzapCertificateStatus::Valid);
         assert!(status.is_fresh_valid_for_valid_now(1_000));
         assert!(transport.requests()[0].url.contains("sha256%3A"));
+    }
+
+    #[test]
+    fn status_response_accepts_server_iso_timestamps() {
+        let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
+        let mut value = valid_status(&certificate_sha256);
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("not_before_unix_seconds");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("not_after_unix_seconds");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("this_update_unix_seconds");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("next_update_unix_seconds");
+        value["not_before"] = json!("1970-01-01T00:01:40Z");
+        value["not_after"] = json!("1970-01-01T00:33:20Z");
+        value["this_update"] = json!("1970-01-01T00:15:00Z");
+        value["next_update"] = json!("1970-01-01T00:25:00Z");
+
+        let status = TzapStatusResponse::from_json_value(&value).unwrap();
+
+        assert_eq!(status.not_before_unix_seconds, Some(100));
+        assert_eq!(status.not_after_unix_seconds, Some(2_000));
+        assert_eq!(status.this_update_unix_seconds, Some(900));
+        assert_eq!(status.next_update_unix_seconds, Some(1_500));
+        assert!(status.is_fresh_valid_for_valid_now(1_000));
     }
 
     #[test]
@@ -1035,6 +1128,23 @@ mod tests {
             entries[0].crl_scope,
             trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA
         );
+
+        let iso_manifest = json!({
+            "crls": [{
+                "crl_scope": trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA,
+                "crl_url": trust::status_crl_pem_path(&issuer_sha256).unwrap(),
+                "issuer_certificate_sha256": issuer_sha256,
+                "crl_number": "01",
+                "crl_sha256": trust::format_crl_sha256(&[0x10; 32]),
+                "this_update": "1970-01-01T00:15:00Z",
+                "next_update": "1970-01-01T00:20:00Z"
+            }]
+        });
+        let iso_entries =
+            super::parse_crl_manifest(serde_json::to_string(&iso_manifest).unwrap().as_bytes())
+                .unwrap();
+        assert_eq!(iso_entries[0].this_update_unix_seconds, 900);
+        assert_eq!(iso_entries[0].next_update_unix_seconds, 1_200);
 
         let mut bad = manifest;
         bad["crls"][0]["next_update_unix_seconds"] = json!(800);

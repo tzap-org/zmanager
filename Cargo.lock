@@ -2263,6 +2263,7 @@ dependencies = [
  "sevenz-rust2",
  "sha2 0.10.9",
  "tar",
+ "time",
  "tzap-core",
  "tzap-plugin-keywrap",
  "tzap-plugin-signing",
