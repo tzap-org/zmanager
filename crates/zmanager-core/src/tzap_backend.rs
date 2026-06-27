@@ -1454,9 +1454,9 @@ pub fn list_tzap_with_recipient_key(
 
 fn list_opened_tzap_archive(opened: OpenedArchive) -> Result<TzapListing, TzapError> {
     let entries = opened
-        .list_index_entries()?
+        .list_files()?
         .into_iter()
-        .map(tzap_entry_from_index_entry)
+        .map(tzap_entry_from_archive_entry)
         .collect();
     Ok(TzapListing { entries })
 }
@@ -3097,13 +3097,22 @@ fn extraction_kind_from_tzap_entry(
     }
 }
 
-fn tzap_entry_from_index_entry(entry: ArchiveIndexEntry) -> TzapEntry {
+fn tzap_entry_from_archive_entry(entry: ArchiveEntry) -> TzapEntry {
     TzapEntry {
         path: entry.path,
-        kind: TzapEntryKind::File,
+        kind: tzap_entry_kind_from_member_kind(entry.kind),
         size: entry.file_data_size,
-        mode: 0,
-        mtime: 0,
+        mode: entry.mode,
+        mtime: entry.mtime,
+    }
+}
+
+fn tzap_entry_kind_from_member_kind(kind: TarEntryKind) -> TzapEntryKind {
+    match kind {
+        TarEntryKind::Regular => TzapEntryKind::File,
+        TarEntryKind::Directory => TzapEntryKind::Directory,
+        TarEntryKind::Symlink => TzapEntryKind::Symlink,
+        TarEntryKind::Hardlink => TzapEntryKind::Hardlink,
     }
 }
 
@@ -3367,7 +3376,7 @@ mod tests {
     use openssl::x509::{X509, X509NameBuilder, X509Ref};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tzap_core::{KdfParams, MasterKey, RegularFile, WriterOptions, write_archive_with_kdf};
 
     #[test]
@@ -3491,6 +3500,55 @@ mod tests {
         assert_eq!(summary.format.encryption_algorithm, "none");
         assert_eq!(summary.format.key_derivation, "none");
         assert!(!summary.format.password_required);
+    }
+
+    #[test]
+    fn list_tzap_with_optional_password_includes_mtime() {
+        let temp = TestDir::new("tzap_list_with_optional_password_includes_mtime");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("public.tzap");
+        fs::write(&source, b"payload").unwrap();
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 7,
+                modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 7,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let listing = list_tzap_with_optional_password(&archive, None).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.txt");
+        assert_ne!(listing.entries[0].mtime, 0);
     }
 
     #[test]
