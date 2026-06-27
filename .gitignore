@@ -23,6 +23,10 @@ __pycache__/
 
 # Local editor settings
 /.vscode/
+/.vs/
+
+# Logs
+*.log
 
 # Local AI/agent instructions and runtime state
 /AGENTS.md
