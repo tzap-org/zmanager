@@ -43,10 +43,10 @@ curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh |
 Install with WinGet:
 
 ```powershell
-winget install TzapOrg.ZManagerCLI
+winget install FrankZhu.ZManagerCLI
 ```
 
-Earlier preview manifests used `FrankZhu.ZManagerCLI`; new releases use the
+Future version manifests will use `TzapOrg.ZManagerCLI`; new releases use the
 organization-scoped package identity.
 
 ## Quick Start
