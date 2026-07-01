@@ -187,7 +187,7 @@ mod tests {
         let subject = csr.subject_name();
         let common_name = subject.entries_by_nid(Nid::COMMONNAME).next().unwrap();
         assert_eq!(
-            common_name.data().as_utf8().unwrap().to_string(),
+            common_name.data().to_string().unwrap(),
             DEVICE_CSR_COMMON_NAME
         );
 

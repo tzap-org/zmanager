@@ -1,7 +1,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-const BUNDLED_SOURCE_PATH: &str = "../../vendor/libarchive/libarchive-3.8.7";
+const BUNDLED_SOURCE_PATHS: [&str; 2] = [
+    "vendor/libarchive/libarchive-3.8.8",
+    "../../vendor/libarchive/libarchive-3.8.8",
+];
 const ENV_CMAKE_TOOLCHAIN_FILE: &str = "CMAKE_TOOLCHAIN_FILE";
 const ENV_VCPKG_DEFAULT_TRIPLET: &str = "VCPKG_DEFAULT_TRIPLET";
 const ENV_VCPKG_INSTALLATION_ROOT: &str = "VCPKG_INSTALLATION_ROOT";
@@ -50,7 +53,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed={ENV_VCPKG_ROOT}");
     println!("cargo:rerun-if-env-changed={ENV_VCPKG_DEFAULT_TRIPLET}");
     println!("cargo:rerun-if-env-changed={ENV_VCPKG_TARGET_TRIPLET}");
-    println!("cargo:rerun-if-changed={BUNDLED_SOURCE_PATH}");
 
     if env::var_os("ZMANAGER_LIBARCHIVE_SYSTEM").is_some() {
         link_system_libarchive();
@@ -71,16 +73,16 @@ fn link_system_libarchive() {
     }
 
     pkg_config::Config::new()
-        .atleast_version("3.8.7")
+        .atleast_version("3.8.8")
         .probe("libarchive")
-        .expect("system libarchive >= 3.8.7 was not found");
+        .expect("system libarchive >= 3.8.8 was not found");
 }
 
 fn build_bundled_libarchive() {
     let target = env::var("TARGET").expect("TARGET is set by Cargo");
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
-    let source = manifest_dir.join(BUNDLED_SOURCE_PATH);
+    let source = locate_bundled_libarchive_source(&manifest_dir);
 
     let mut config = cmake::Config::new(&source);
     configure_common_libarchive_options(&mut config);
@@ -92,6 +94,21 @@ fn build_bundled_libarchive() {
 
     link_bundled_archive_library(&target);
     link_bundled_archive_dependencies(&target);
+}
+
+fn locate_bundled_libarchive_source(manifest_dir: &Path) -> PathBuf {
+    for path in BUNDLED_SOURCE_PATHS {
+        let source = manifest_dir.join(path);
+        println!("cargo:rerun-if-changed={path}");
+        if source.is_dir() {
+            return source;
+        }
+    }
+
+    panic!(
+        "Could not find bundled libarchive source. Checked: {} and {}.",
+        BUNDLED_SOURCE_PATHS[0], BUNDLED_SOURCE_PATHS[1]
+    )
 }
 
 fn configure_common_libarchive_options(config: &mut cmake::Config) {

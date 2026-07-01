@@ -4352,9 +4352,8 @@ mod tests {
                 .next()
                 .unwrap()
                 .data()
-                .as_utf8()
-                .unwrap()
-                .to_string(),
+                .to_string()
+                .unwrap(),
             "Local Signing Identity"
         );
         assert_eq!(

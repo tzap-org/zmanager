@@ -1,4 +1,4 @@
-//! Narrow raw FFI declarations for the libarchive APIs used by ZManager.
+//! Narrow raw FFI declarations for the libarchive APIs used by `ZManager`.
 //!
 //! This is intentionally not a complete libarchive binding. Keep additions
 //! close to actual call sites in `zmanager-libarchive`.
@@ -27,7 +27,7 @@ pub type la_mode_t = u16;
 #[allow(non_camel_case_types)]
 pub type la_mode_t = libc::mode_t;
 
-pub const ARCHIVE_VERSION_NUMBER: c_int = 3_008_007;
+pub const ARCHIVE_VERSION_NUMBER: c_int = 3_008_008;
 
 pub const ARCHIVE_EOF: c_int = 1;
 pub const ARCHIVE_OK: c_int = 0;

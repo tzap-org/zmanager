@@ -1,9 +1,10 @@
 [package]
 name = "zmanager-unrar"
 version.workspace = true
+description = "Bindings for unrar operations used as the native RAR backend."
 edition.workspace = true
 repository.workspace = true
-license-file = "../../vendor/unrar/license.txt"
+license-file = "vendor/unrar/license.txt"
 build = "build.rs"
 
 [lib]

@@ -1126,9 +1126,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openssl"
-version = "0.10.80"
+version = "0.10.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
+checksum = "77823a27f0babb03091cb9ed9ef80af3b39dbc82f97e8fa530374b7dafd87a45"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -1160,9 +1160,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.116"
+version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
@@ -1727,8 +1727,8 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "tzap-core"
-version = "0.1.8"
-source = "git+https://github.com/tzap-org/tzap?tag=v0.1.8#fb5ee49391b9ea31fe1e8ba4ab5f8a3c7f6eba5d"
+version = "0.1.9"
+source = "git+https://github.com/tzap-org/tzap?tag=v0.1.9#286142566dfcd930c89d367f4ab7ba8d472e4f89"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1750,8 +1750,8 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-keywrap"
-version = "0.1.8"
-source = "git+https://github.com/tzap-org/tzap?tag=v0.1.8#fb5ee49391b9ea31fe1e8ba4ab5f8a3c7f6eba5d"
+version = "0.1.9"
+source = "git+https://github.com/tzap-org/tzap?tag=v0.1.9#286142566dfcd930c89d367f4ab7ba8d472e4f89"
 dependencies = [
  "hpke",
  "openssl",
@@ -1763,8 +1763,8 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.1.8"
-source = "git+https://github.com/tzap-org/tzap?tag=v0.1.8#fb5ee49391b9ea31fe1e8ba4ab5f8a3c7f6eba5d"
+version = "0.1.9"
+source = "git+https://github.com/tzap-org/tzap?tag=v0.1.9#286142566dfcd930c89d367f4ab7ba8d472e4f89"
 dependencies = [
  "ed25519-dalek",
  "openssl",
@@ -2230,7 +2230,7 @@ checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
 name = "zmanager-cli"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64",
  "brotli",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-ffi"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64",
  "openssl",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "libc",
  "zmanager-libarchive-sys",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive-sys"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "cmake",
  "libc",
@@ -2304,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "cc",
  "zeroize",

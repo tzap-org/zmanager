@@ -13,7 +13,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 base64 = "0.22.1"
 openssl = "0.10.80"
 serde_json = "1.0.149"
-zmanager-core = { path = "../zmanager-core", version = "1.0.4" }
+zmanager-core = { path = "../zmanager-core", version = "1.0.5" }
 
 [lints.rust]
 unsafe_code = "allow"

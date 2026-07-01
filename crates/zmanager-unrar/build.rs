@@ -55,6 +55,8 @@ const UNRAR_SOURCES: &[&str] = &[
 
 const WINDOWS_UNRAR_SOURCES: &[&str] = &["isnt.cpp", "motw.cpp"];
 
+const LOCAL_BUNDLED_SOURCE_PATHS: [&str; 2] = ["vendor/unrar", "../../vendor/unrar"];
+
 const WINDOWS_SYSTEM_LIBS: &[&str] = &["advapi32", "shell32", "shlwapi", "powrprof", "psapi"];
 
 const SYSTEM_CPU_FEATURE_NEEDLE: &str =
@@ -102,7 +104,15 @@ fn main() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
-    let unrar_dir = manifest_dir.join("../../vendor/unrar");
+    let mut unrar_dir = None;
+    for candidate in LOCAL_BUNDLED_SOURCE_PATHS {
+        let candidate_dir = manifest_dir.join(candidate);
+        if candidate_dir.is_dir() {
+            unrar_dir = Some(candidate_dir);
+            break;
+        }
+    }
+    let unrar_dir = unrar_dir.unwrap_or_else(|| manifest_dir.join("../../vendor/unrar"));
     let build_source_dir = out_dir.join("unrar-src");
     fs::create_dir_all(&build_source_dir).expect("create copied UnRAR source directory");
 

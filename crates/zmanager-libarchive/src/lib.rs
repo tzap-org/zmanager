@@ -1,6 +1,6 @@
-//! Safe, narrow read-side wrapper around libarchive for ZManager.
+//! Safe, narrow read-side wrapper around libarchive for `ZManager`.
 //!
-//! This crate deliberately exposes only the APIs that ZManager needs for
+//! This crate deliberately exposes only the APIs that `ZManager` needs for
 //! listing and extraction. It is not a general libarchive binding.
 
 mod locale;
@@ -19,7 +19,7 @@ const BLOCK_SIZE: usize = 10_240;
 /// Result alias for libarchive wrapper operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Error returned by the ZManager libarchive wrapper.
+/// Error returned by the `ZManager` libarchive wrapper.
 #[derive(Debug)]
 pub enum Error {
     /// A libarchive operation failed.
