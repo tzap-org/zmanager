@@ -1714,6 +1714,7 @@ pub unsafe extern "C" fn zmanager_ffi_tzap_public_metadata_summary(
                 &TzapX509TrustOptions {
                     trusted_ca_certificates: Vec::new(),
                     trusted_system_roots: true,
+                    include_official_tzap_root: true,
                 },
             ) {
                 Ok(root_auth) => json!({
@@ -3412,11 +3413,13 @@ unsafe fn tzap_x509_trust_options_from_ffi(
     trusted_ca_cert_count: usize,
     trusted_system_roots: bool,
 ) -> Result<TzapX509TrustOptions, ZManagerFfiStatus> {
+    let has_explicit_roots = trusted_system_roots || trusted_ca_cert_count > 0;
     let trusted_ca_certs =
         unsafe { optional_c_string_array_arg(trusted_ca_certs, trusted_ca_cert_count) }?;
     Ok(TzapX509TrustOptions {
         trusted_ca_certificates: trusted_ca_certs.into_iter().map(PathBuf::from).collect(),
         trusted_system_roots,
+        include_official_tzap_root: !has_explicit_roots,
     })
 }
 
