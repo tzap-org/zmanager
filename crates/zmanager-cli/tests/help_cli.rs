@@ -42,10 +42,20 @@ const PUBLIC_COMMANDS: &[&str] = &[
     "help",
 ];
 const LEGACY_COMMANDS: &[&str] = &[
+    "job-zip-create",
+    "job-source-fast",
     "zip-create",
+    "zip-create-stream",
+    "zip-list",
+    "zip-test",
     "zip-extract",
     "tar-zst-create",
+    "source-fast",
+    "tar-zst-extract",
     "7z-create",
+    "source-small",
+    "7z-list",
+    "7z-extract",
     "libarchive-list",
     "libarchive-extract",
 ];
@@ -261,9 +271,28 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
     assert_contains(&stdout, "--progress <auto|always|never>");
     assert_contains(&stdout, "--no-password-prompt");
     assert!(
-        !stdout.contains("zip-create") && !stdout.contains("Legacy development commands"),
+        !stdout.contains("zip-create")
+            && !stdout.contains("Legacy development commands")
+            && !stdout.contains("help legacy"),
         "top-level help should not expose development commands\n{stdout}"
     );
+}
+
+#[test]
+fn legacy_help_topic_and_command_aliases_are_rejected() {
+    let help = Command::new(zm_path())
+        .arg("help")
+        .arg("legacy")
+        .output()
+        .unwrap();
+    assert_usage_failure("zm help legacy", &help);
+    let stderr = String::from_utf8_lossy(&help.stderr);
+    assert_contains(&stderr, "error: unknown help topic: legacy");
+
+    for command in LEGACY_COMMANDS {
+        let output = Command::new(zm_path()).arg(command).output().unwrap();
+        assert_usage_failure(&format!("zm {command}"), &output);
+    }
 }
 
 #[test]

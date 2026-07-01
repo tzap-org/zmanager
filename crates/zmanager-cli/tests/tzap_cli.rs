@@ -90,6 +90,60 @@ fn auth_login_callback_status_and_forget_keep_session_secret_out_of_output() {
 }
 
 #[test]
+fn auth_callback_fails_when_session_cannot_be_persisted() {
+    let temp = TestDir::new("zm_tzap_auth_store_failure");
+    let state_dir = temp.path("state");
+
+    let login = zm()
+        .args([
+            "auth",
+            "login",
+            "--environment",
+            "local",
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_success("auth login", &login);
+    let pending: serde_json::Value =
+        serde_json::from_slice(&fs::read(state_dir.join("auth-pending.json")).unwrap()).unwrap();
+    let state = pending["state"].as_str().unwrap();
+    fs::create_dir_all(state_dir.join("auth-session.json")).unwrap();
+
+    let relay = temp.path("relay.json");
+    fs::write(
+        &relay,
+        br#"{"status":"ok","session":{"audience":"sign.tzap.org","access_token":"secret-token","expires_at_unix_seconds":9999999999,"identity_assurance":"oauth_verified_email","selected_org_id":null,"login_session_id":"login-session-1"}}"#,
+    )
+    .unwrap();
+
+    let callback = zm()
+        .args([
+            "auth",
+            "callback",
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "--state",
+            state,
+            "--relay-body",
+            relay.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_failure("auth callback with unwritable session path", &callback);
+    let stdout = String::from_utf8_lossy(&callback.stdout);
+    assert!(stdout.contains("\"ok\":false"));
+    assert!(stdout.contains("\"operation\":\"auth_callback\""));
+    assert!(stdout.contains("hosted auth storage failed"));
+    assert!(!stdout.contains("\"authenticated\":true"));
+    assert!(!stdout.contains("secret-token"));
+}
+
+#[test]
 fn cert_enroll_uses_local_fake_service_and_updates_inventory() {
     let temp = TestDir::new("zm_tzap_cert");
     let state_dir = temp.path("state");

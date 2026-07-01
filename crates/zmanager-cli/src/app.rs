@@ -82,32 +82,6 @@ Examples:
   zm formats
 
 Run 'zm help <command>' for command-specific examples and flags.
-Run 'zm help legacy' for old development commands.
-";
-
-const LEGACY_HELP: &str = "\
-Legacy development commands
-
-These commands remain accepted for development compatibility. New scripts and
-user documentation should use the public `zm` commands instead.
-
-Usage:
-  zmanager-cli job-zip-create <source> <destination> [store|deflate] [-]
-  zmanager-cli job-source-fast <source> <destination> [level]
-  zmanager-cli zip-create <source> <destination> [store|deflate] [-]
-  zmanager-cli zip-create-stream <source> [store|deflate]
-  zmanager-cli zip-list <archive>
-  zmanager-cli zip-test <archive> [-]
-  zmanager-cli zip-extract <archive> <destination> [-]
-  zmanager-cli tar-zst-create <source> <destination> [level]
-  zmanager-cli source-fast <source> <destination> [level]
-  zmanager-cli tar-zst-extract <archive> <destination>
-  zmanager-cli 7z-create <source> <destination> [solid|non-solid] [-]
-  zmanager-cli source-small <source> <destination> [solid|non-solid] [-]
-  zmanager-cli 7z-list <archive> [-]
-  zmanager-cli 7z-extract <archive> <destination> [-]
-  zmanager-cli libarchive-list <archive>
-  zmanager-cli libarchive-extract <archive> <destination>
 ";
 
 const CREATE_HELP: &str = "\
@@ -652,20 +626,6 @@ pub fn run_from_env() -> ExitCode {
         "list" | "ls" => new_list_command(&raw_args[1..], global),
         "test" => new_test_command(&raw_args[1..], global),
         "plan" => new_plan_command(&raw_args[1..], global),
-        "job-zip-create" => job_zip_create_command(raw_args.into_iter().skip(1)),
-        "job-source-fast" => job_tar_zst_create_command(raw_args.into_iter().skip(1)),
-        "zip-create" => zip_create_command(raw_args.into_iter().skip(1)),
-        "zip-create-stream" => zip_create_stream_command(raw_args.into_iter().skip(1)),
-        "zip-list" => zip_list_command(raw_args.into_iter().skip(1)),
-        "zip-test" => zip_test_command(raw_args.into_iter().skip(1)),
-        "zip-extract" => zip_extract_command(raw_args.into_iter().skip(1)),
-        "tar-zst-create" | "source-fast" => tar_zst_create_command(raw_args.into_iter().skip(1)),
-        "tar-zst-extract" => tar_zst_extract_command(raw_args.into_iter().skip(1)),
-        "7z-create" | "source-small" => seven_z_create_command(raw_args.into_iter().skip(1)),
-        "7z-list" => seven_z_list_command(raw_args.into_iter().skip(1)),
-        "7z-extract" => seven_z_extract_command(raw_args.into_iter().skip(1)),
-        "libarchive-list" => libarchive_list_command(raw_args.into_iter().skip(1)),
-        "libarchive-extract" => libarchive_extract_command(raw_args.into_iter().skip(1)),
         "--help" | "-h" => {
             if raw_args.len() > 1 {
                 return help_command(&raw_args[1..], &global);
@@ -1241,7 +1201,6 @@ fn command_help(command: &str) -> Option<&'static str> {
         "share" => Some(SHARE_HELP),
         "doctor" | "healthcheck" => Some(DOCTOR_HELP),
         "completions" | "completion" => Some(COMPLETIONS_HELP),
-        "legacy" => Some(LEGACY_HELP),
         _ => None,
     }
 }
@@ -1568,14 +1527,17 @@ impl zmanager_core::auth_client::TzapSessionStore for FileTzapSessionStore {
         &mut self,
         account_key: &str,
         session: zmanager_core::auth_client::TzapSessionRecord,
-    ) {
-        let _ = fs::create_dir_all(self.path.parent().unwrap_or_else(|| Path::new(".")));
+    ) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
         let mut root = read_json_file(&self.path).unwrap_or_else(|| json!({ "sessions": {} }));
         if !root.is_object() {
             root = json!({ "sessions": {} });
         }
         root["sessions"][account_key] = session_to_json(&session, true);
-        let _ = write_secret_json_file(&self.path, &root);
+        write_secret_json_file(&self.path, &root).map_err(|error| {
+            zmanager_core::auth_client::TzapAuthError::Storage {
+                message: format!("could not write {}: {error}", self.path.display()),
+            }
+        })
     }
 
     fn load_session(
@@ -1586,14 +1548,21 @@ impl zmanager_core::auth_client::TzapSessionStore for FileTzapSessionStore {
         session_from_json(root.get("sessions")?.get(account_key)?).ok()
     }
 
-    fn clear_session(&mut self, account_key: &str) {
+    fn clear_session(
+        &mut self,
+        account_key: &str,
+    ) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
         let Some(mut root) = read_json_file(&self.path) else {
-            return;
+            return Ok(());
         };
         if let Some(sessions) = root.get_mut("sessions").and_then(Value::as_object_mut) {
             sessions.remove(account_key);
         }
-        let _ = write_secret_json_file(&self.path, &root);
+        write_secret_json_file(&self.path, &root).map_err(|error| {
+            zmanager_core::auth_client::TzapAuthError::Storage {
+                message: format!("could not write {}: {error}", self.path.display()),
+            }
+        })
     }
 }
 
@@ -1887,7 +1856,10 @@ fn auth_forget_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         Err(code) => return code,
     };
     let mut store = FileTzapSessionStore::new(&context.state_dir);
-    store.clear_session(&context.account_key);
+    if let Err(error) = store.clear_session(&context.account_key) {
+        print_stable_tzap_error("auth_forget", &error.to_string(), &global);
+        return ExitCode::FAILURE;
+    }
     let _ = fs::remove_file(context.state_dir.join(AUTH_PENDING_FILE));
     if global.json {
         println!("{{\"forgotten\":true}}");
@@ -7597,46 +7569,6 @@ fn usage_error(message: &str, global: &GlobalOptions) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn parse_zstd_level(raw: Option<String>) -> Result<i32, ExitCode> {
-    match raw {
-        None => Ok(zmanager_core::tar_zst_backend::TarZstdCreateOptions::default().level),
-        Some(level) => level.parse::<i32>().map_err(|_| {
-            eprint!("{USAGE}");
-            ExitCode::from(2)
-        }),
-    }
-}
-
-fn parse_zip_compression(raw: Option<&str>) -> Option<zmanager_core::zip_backend::ZipCompression> {
-    match raw {
-        None | Some("deflate") => Some(zmanager_core::zip_backend::ZipCompression::Deflate),
-        Some("store") => Some(zmanager_core::zip_backend::ZipCompression::Store),
-        Some(_) => None,
-    }
-}
-
-fn parse_7z_solid(raw: Option<&str>) -> Option<bool> {
-    match raw {
-        None | Some("solid") => Some(true),
-        Some("non-solid" | "nonsolid") => Some(false),
-        Some(_) => None,
-    }
-}
-
-fn password_arg_or_prompt(
-    raw: Option<&str>,
-    prompt: &str,
-) -> Result<Option<SecretString>, ExitCode> {
-    match raw {
-        Some("-") => prompt_password(prompt).map(Some),
-        Some(_) => {
-            eprintln!("password arguments are disabled; use '-' to read from stdin");
-            Err(ExitCode::from(2))
-        }
-        None => Ok(None),
-    }
-}
-
 fn prompt_password(prompt: &str) -> Result<SecretString, ExitCode> {
     match rpassword::prompt_password(prompt) {
         Ok(password) => {
@@ -7724,351 +7656,6 @@ fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'
     } else {
         None
     }
-}
-
-#[allow(dead_code)]
-fn list_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    if is_zip_family_archive(&archive) {
-        run_zip_list(archive)
-    } else if is_7z_archive(&archive) {
-        run_7z_list(archive, None)
-    } else {
-        run_libarchive_list(archive)
-    }
-}
-
-#[allow(dead_code)]
-fn extract_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    if is_zip_family_archive(&archive) {
-        run_zip_extract(archive, destination, None)
-    } else if is_7z_archive(&archive) {
-        run_7z_extract(archive, destination, None)
-    } else if is_tar_zst_archive(&archive) {
-        run_tar_zst_extract(archive, destination)
-    } else {
-        run_libarchive_extract(archive, destination)
-    }
-}
-
-fn job_zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(compression) = parse_zip_compression(args.next().as_deref()) else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "ZIP password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let options = zmanager_core::zip_backend::ZipCreateOptions {
-        compression,
-        level: None,
-        preserve_metadata: true,
-        replace_existing: false,
-        password,
-        volume_size: None,
-    };
-    let token = zmanager_core::jobs::CancellationToken::new();
-    let mut sink = |event| println!("event\t{event:?}");
-    match zmanager_core::jobs::run_zip_create_job(source, destination, &options, &token, &mut sink)
-    {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("job zip create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn job_tar_zst_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let level = match parse_zstd_level(args.next()) {
-        Ok(level) => level,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let options = zmanager_core::tar_zst_backend::TarZstdCreateOptions {
-        level,
-        ..zmanager_core::tar_zst_backend::TarZstdCreateOptions::default()
-    };
-    let token = zmanager_core::jobs::CancellationToken::new();
-    let mut sink = |event| println!("event\t{event:?}");
-    match zmanager_core::jobs::run_tar_zst_create_job(
-        source,
-        destination,
-        &options,
-        &token,
-        &mut sink,
-    ) {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("job tar.zst create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn zip_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(compression) = parse_zip_compression(args.next().as_deref()) else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "ZIP password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let options = zmanager_core::zip_backend::ZipCreateOptions {
-        compression,
-        level: None,
-        preserve_metadata: true,
-        replace_existing: false,
-        password,
-        volume_size: None,
-    };
-    match zmanager_core::zip_backend::create_zip_from_path(source, destination, &options) {
-        Ok(report) => {
-            println!(
-                "created zip: {} entries, {} bytes, encrypted {}, {} warnings",
-                report.written_entries,
-                report.written_bytes,
-                report.encrypted,
-                report.warnings.len()
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("zip create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn zip_create_stream_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(compression) = parse_zip_compression(args.next().as_deref()) else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let options = zmanager_core::zip_backend::ZipCreateOptions {
-        compression,
-        level: None,
-        preserve_metadata: true,
-        replace_existing: false,
-        password: None,
-        volume_size: None,
-    };
-    let stdout = io::stdout();
-    let output = stdout.lock();
-    match zmanager_core::zip_backend::create_zip_stream_from_path(source, output, &options) {
-        Ok((_output, report)) => {
-            eprintln!(
-                "created streaming zip: {} entries, {} bytes, {} warnings",
-                report.written_entries,
-                report.written_bytes,
-                report.warnings.len()
-            );
-            for warning in report.warnings {
-                eprintln!("warning\t{warning}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("zip stream create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn zip_list_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_zip_list(archive)
-}
-
-fn run_zip_list(archive: impl AsRef<std::path::Path>) -> ExitCode {
-    match zmanager_core::zip_backend::list_zip(archive) {
-        Ok(listing) => {
-            println!("zip entries: {}", listing.entries.len());
-            for entry in listing.entries {
-                println!(
-                    "{:?}\t{}\t{} bytes\t{} compressed",
-                    entry.kind, entry.name, entry.size, entry.compressed_size
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("zip list failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn zip_test_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "ZIP password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_zip_test(archive, password.as_deref())
-}
-
-fn run_zip_test(archive: impl AsRef<std::path::Path>, password: Option<&str>) -> ExitCode {
-    match zmanager_core::zip_backend::test_zip_with_password(archive.as_ref(), password) {
-        Ok(report) => {
-            println!(
-                "zip test ok: {} entries, {} bytes",
-                report.tested_entries, report.tested_bytes
-            );
-            ExitCode::SUCCESS
-        }
-        Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired)
-            if password.is_none() =>
-        {
-            let password = match prompt_password("ZIP password: ") {
-                Ok(password) => password,
-                Err(code) => return code,
-            };
-            run_zip_test(archive, Some(password.expose_secret()))
-        }
-        Err(error) => {
-            eprintln!("zip test failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn zip_extract_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "ZIP password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_zip_extract(archive, destination, password.as_deref())
-}
-
-fn run_zip_extract(
-    archive: impl AsRef<std::path::Path>,
-    destination: impl AsRef<std::path::Path>,
-    password: Option<&str>,
-) -> ExitCode {
-    run_zip_extract_with_policy(
-        archive,
-        destination,
-        password,
-        zmanager_core::safety::ExtractionPolicy::default(),
-        false,
-        None,
-    )
 }
 
 fn run_zip_extract_with_policy(
@@ -8160,81 +7747,6 @@ fn run_zip_extract_with_policy(
             ExitCode::FAILURE
         }
     }
-}
-
-fn tar_zst_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let level = match parse_zstd_level(args.next()) {
-        Ok(level) => level,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    let options = zmanager_core::tar_zst_backend::TarZstdCreateOptions {
-        level,
-        ..zmanager_core::tar_zst_backend::TarZstdCreateOptions::default()
-    };
-    match zmanager_core::tar_zst_backend::create_tar_zst_from_path(source, destination, &options) {
-        Ok(report) => {
-            println!(
-                "created tar.zst: {} entries, {} bytes, level {}, threads {:?}, {} warnings",
-                report.written_entries,
-                report.written_bytes,
-                report.level,
-                report.threads,
-                report.warnings.len()
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("tar.zst create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn tar_zst_extract_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_tar_zst_extract(archive, destination)
-}
-
-fn run_tar_zst_extract(
-    archive: impl AsRef<std::path::Path>,
-    destination: impl AsRef<std::path::Path>,
-) -> ExitCode {
-    run_tar_zst_extract_with_policy(
-        archive,
-        destination,
-        zmanager_core::safety::ExtractionPolicy::default(),
-        None,
-    )
 }
 
 fn run_tar_zst_extract_with_policy(
@@ -8380,159 +7892,6 @@ fn run_tzap_extract_with_policy(
     }
 }
 
-fn seven_z_create_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(source) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(solid) = parse_7z_solid(args.next().as_deref()) else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "7z password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_7z_create(source, destination, solid, password)
-}
-
-fn run_7z_create(
-    source: impl AsRef<std::path::Path>,
-    destination: impl AsRef<std::path::Path>,
-    solid: bool,
-    password: Option<SecretString>,
-) -> ExitCode {
-    let options = zmanager_core::sevenz_backend::SevenZCreateOptions {
-        solid,
-        level: None,
-        preserve_metadata: true,
-        password,
-        encrypt_file_names: true,
-        replace_existing: false,
-        volume_size: None,
-        ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
-    };
-    match zmanager_core::sevenz_backend::create_7z_from_path(source, destination, &options) {
-        Ok(report) => {
-            println!(
-                "created 7z: {} entries, {} bytes, solid {}, threads {:?}, encrypted {}, {} warnings",
-                report.written_entries,
-                report.written_bytes,
-                report.solid,
-                report.threads,
-                report.encrypted,
-                report.warnings.len()
-            );
-            for warning in report.warnings {
-                println!("warning\t{warning}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("7z create failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn seven_z_list_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "7z password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_7z_list(archive, password.as_deref())
-}
-
-fn run_7z_list(archive: impl AsRef<std::path::Path>, password: Option<&str>) -> ExitCode {
-    match zmanager_core::sevenz_backend::list_7z(archive.as_ref(), password) {
-        Ok(listing) => {
-            println!(
-                "7z entries: {}, solid {}",
-                listing.entries.len(),
-                listing.solid
-            );
-            for entry in listing.entries {
-                println!(
-                    "{:?}\t{}\t{} bytes\t{} compressed",
-                    entry.kind, entry.name, entry.size, entry.compressed_size
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired) if password.is_none() => {
-            let password = match prompt_password("7z password: ") {
-                Ok(password) => password,
-                Err(code) => return code,
-            };
-            run_7z_list(archive, Some(password.expose_secret()))
-        }
-        Err(error) => {
-            eprintln!("7z list failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn seven_z_extract_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let raw_password = args.next();
-    let password = match password_arg_or_prompt(raw_password.as_deref(), "7z password: ") {
-        Ok(password) => password,
-        Err(code) => return code,
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_7z_extract(archive, destination, password.as_deref())
-}
-
-fn run_7z_extract(
-    archive: impl AsRef<std::path::Path>,
-    destination: impl AsRef<std::path::Path>,
-    password: Option<&str>,
-) -> ExitCode {
-    run_7z_extract_with_policy(
-        archive,
-        destination,
-        password,
-        zmanager_core::safety::ExtractionPolicy::default(),
-        false,
-        None,
-    )
-}
-
 fn run_7z_extract_with_policy(
     archive: impl AsRef<std::path::Path>,
     destination: impl AsRef<std::path::Path>,
@@ -8615,67 +7974,6 @@ fn run_7z_extract_with_policy(
             ExitCode::FAILURE
         }
     }
-}
-
-fn libarchive_list_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_libarchive_list(archive)
-}
-
-fn run_libarchive_list(archive: impl AsRef<std::path::Path>) -> ExitCode {
-    match zmanager_core::libarchive_backend::list_archive(archive) {
-        Ok(listing) => {
-            println!("libarchive entries: {}", listing.entries.len());
-            for entry in listing.entries {
-                println!("{:?}\t{}\t{} bytes", entry.kind, entry.path, entry.size);
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("libarchive list failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn libarchive_extract_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(archive) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-    let Some(destination) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    run_libarchive_extract(archive, destination)
-}
-
-fn run_libarchive_extract(
-    archive: impl AsRef<std::path::Path>,
-    destination: impl AsRef<std::path::Path>,
-) -> ExitCode {
-    run_libarchive_extract_with_policy(
-        archive,
-        destination,
-        zmanager_core::safety::ExtractionPolicy::default(),
-        None,
-        None,
-    )
 }
 
 fn run_rar_extract_with_policy(
@@ -8788,53 +8086,13 @@ fn run_libarchive_extract_with_policy(
     }
 }
 
-#[allow(dead_code)]
-fn plan_command(mut args: impl Iterator<Item = String>) -> ExitCode {
-    let Some(path) = args.next() else {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    if args.next().is_some() {
-        eprint!("{USAGE}");
-        return ExitCode::from(2);
-    }
-
-    match zmanager_core::manifest::plan_archive(
-        path,
-        &zmanager_core::manifest::PlanOptions::default(),
-    ) {
-        Ok(manifest) => {
-            println!("{}", manifest.summary());
-            for entry in manifest.entries {
-                println!("include\t{}\t{} bytes", entry.archive_path, entry.size);
-            }
-            for excluded in manifest.excluded_entries {
-                println!("exclude\t{}\t{}", excluded.archive_path, excluded.reason);
-            }
-            for warning in manifest.warnings {
-                println!(
-                    "warning\t{}\t{}",
-                    warning.source_path.display(),
-                    warning.message
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("plan failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ArchiveFormat, CreateRequest, ExtractRequest, GlobalOptions, InteractiveOverwriteResolver,
         ListRequest, TestRequest, normalize_prompted_password, parse_create_request,
-        parse_extract_request, parse_list_request, parse_test_request, password_arg_or_prompt,
-        publish_archive, tzap_default_volume_loss_tolerance, validate_create_options,
+        parse_extract_request, parse_list_request, parse_test_request, publish_archive,
+        tzap_default_volume_loss_tolerance, validate_create_options,
     };
     use std::fs;
     use std::io::Cursor;
@@ -8858,11 +8116,6 @@ mod tests {
             normalize_prompted_password("secret\r\n".to_owned(), 8),
             Some("secret".to_owned())
         );
-    }
-
-    #[test]
-    fn direct_password_arguments_are_rejected() {
-        assert!(password_arg_or_prompt(Some("secret"), "Password: ").is_err());
     }
 
     #[test]

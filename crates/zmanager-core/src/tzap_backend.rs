@@ -30,8 +30,8 @@ use tzap_core::format::{
     READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV_44, VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
-    ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
-    PublicNoKeyVerification, RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
+    ArchiveEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic, PublicNoKeyVerification,
+    RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
 };
 use tzap_core::wire::{
     CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,

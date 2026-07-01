@@ -26,13 +26,13 @@ time = { version = "0.3.47", features = ["parsing"] }
 x509-parser = "0.18.1"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8" }
-tzap-plugin-keywrap = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8" }
-tzap-plugin-signing = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8" }
+tzap-core = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8", version = "0.1.8" }
+tzap-plugin-keywrap = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8", version = "0.1.8" }
+tzap-plugin-signing = { git = "https://github.com/tzap-org/tzap", tag = "v0.1.8", version = "0.1.8" }
 zip = "8.6.0"
 zeroize = "1.8.2"
-zmanager-libarchive = { path = "../zmanager-libarchive" }
-zmanager-unrar = { path = "../zmanager-unrar" }
+zmanager-libarchive = { path = "../zmanager-libarchive", version = "1.0.4" }
+zmanager-unrar = { path = "../zmanager-unrar", version = "1.0.4" }
 zstd = { version = "0.13.3", features = ["zstdmt"] }
 
 [lints]

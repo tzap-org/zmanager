@@ -385,7 +385,7 @@ pub fn complete_hosted_auth_handoff(
     let relay = TzapAuthRelayCompletion::from_json_bytes(&callback.relay_body)?;
     let session = relay.into_session();
     session.require_audience(&pending_expected_audience(&pending))?;
-    session_store.save_session(account_key, session.clone());
+    session_store.save_session(account_key, session.clone())?;
     Ok(session)
 }
 
@@ -551,9 +551,13 @@ pub fn fetch_current_user(
 }
 
 pub trait TzapSessionStore {
-    fn save_session(&mut self, account_key: &str, session: TzapSessionRecord);
+    fn save_session(
+        &mut self,
+        account_key: &str,
+        session: TzapSessionRecord,
+    ) -> Result<(), TzapAuthError>;
     fn load_session(&self, account_key: &str) -> Option<TzapSessionRecord>;
-    fn clear_session(&mut self, account_key: &str);
+    fn clear_session(&mut self, account_key: &str) -> Result<(), TzapAuthError>;
 }
 
 #[derive(Default)]
@@ -569,16 +573,22 @@ impl InMemoryTzapSessionStore {
 }
 
 impl TzapSessionStore for InMemoryTzapSessionStore {
-    fn save_session(&mut self, account_key: &str, session: TzapSessionRecord) {
+    fn save_session(
+        &mut self,
+        account_key: &str,
+        session: TzapSessionRecord,
+    ) -> Result<(), TzapAuthError> {
         self.sessions.insert(account_key.to_owned(), session);
+        Ok(())
     }
 
     fn load_session(&self, account_key: &str) -> Option<TzapSessionRecord> {
         self.sessions.get(account_key).cloned()
     }
 
-    fn clear_session(&mut self, account_key: &str) {
+    fn clear_session(&mut self, account_key: &str) -> Result<(), TzapAuthError> {
         self.sessions.remove(account_key);
+        Ok(())
     }
 }
 
@@ -649,6 +659,9 @@ pub enum TzapAuthError {
         actual: String,
     },
     Transport {
+        message: String,
+    },
+    Storage {
         message: String,
     },
     HttpStatus {
@@ -738,6 +751,7 @@ impl fmt::Display for TzapAuthError {
             Self::Transport { message } => {
                 write!(f, "hosted auth HTTP transport failed: {message}")
             }
+            Self::Storage { message } => write!(f, "hosted auth storage failed: {message}"),
             Self::HttpStatus { status_code } => {
                 write!(
                     f,
@@ -1241,6 +1255,21 @@ mod tests {
     }
 
     #[test]
+    fn hosted_auth_handoff_reports_session_store_failure() {
+        let pending = pending_auth_state();
+        let mut tracker = TzapOAuthStateTracker::new();
+        tracker.insert_pending(pending.clone()).unwrap();
+        let mut store = FailingSessionStore;
+        let callback = hosted_auth_callback(&pending, relay_success_body());
+
+        let error =
+            complete_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101)
+                .unwrap_err();
+
+        assert!(matches!(error, TzapAuthError::Storage { message } if message == "store failed"));
+    }
+
+    #[test]
     fn hosted_auth_handoff_rejects_tokens_in_callback_url_and_provider_material() {
         let pending = pending_auth_state();
         let mut tracker = TzapOAuthStateTracker::new();
@@ -1400,9 +1429,9 @@ mod tests {
         ));
 
         let mut store = InMemoryTzapSessionStore::new();
-        store.save_session("default", session.clone());
+        store.save_session("default", session.clone()).unwrap();
         assert_eq!(store.load_session("default"), Some(session));
-        store.clear_session("default");
+        store.clear_session("default").unwrap();
         assert!(store.load_session("default").is_none());
     }
 
@@ -1518,6 +1547,28 @@ mod tests {
             assert_eq!(request.url, "https://sign.tzap.org/v1/me");
             self.last_request.replace(Some(request.clone()));
             Ok(self.response.clone())
+        }
+    }
+
+    struct FailingSessionStore;
+
+    impl TzapSessionStore for FailingSessionStore {
+        fn save_session(
+            &mut self,
+            _account_key: &str,
+            _session: TzapSessionRecord,
+        ) -> Result<(), TzapAuthError> {
+            Err(TzapAuthError::Storage {
+                message: "store failed".to_owned(),
+            })
+        }
+
+        fn load_session(&self, _account_key: &str) -> Option<TzapSessionRecord> {
+            None
+        }
+
+        fn clear_session(&mut self, _account_key: &str) -> Result<(), TzapAuthError> {
+            Ok(())
         }
     }
 }

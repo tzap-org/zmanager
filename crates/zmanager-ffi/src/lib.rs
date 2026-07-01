@@ -148,14 +148,17 @@ impl TzapSessionStore for FfiTzapSessionStore {
         &mut self,
         account_key: &str,
         session: zmanager_core::auth_client::TzapSessionRecord,
-    ) {
-        let _ = fs::create_dir_all(self.path.parent().unwrap_or_else(|| Path::new(".")));
+    ) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
         let mut root = read_json_file(&self.path).unwrap_or_else(|| json!({ "sessions": {} }));
         if !root.is_object() {
             root = json!({ "sessions": {} });
         }
         root["sessions"][account_key] = session_json(&session, true);
-        let _ = write_secret_json_file(&self.path, &root);
+        write_secret_json_file(&self.path, &root).map_err(|error| {
+            zmanager_core::auth_client::TzapAuthError::Storage {
+                message: format!("could not write {}: {error}", self.path.display()),
+            }
+        })
     }
 
     fn load_session(
@@ -166,14 +169,21 @@ impl TzapSessionStore for FfiTzapSessionStore {
         session_from_json(root.get("sessions")?.get(account_key)?).ok()
     }
 
-    fn clear_session(&mut self, account_key: &str) {
+    fn clear_session(
+        &mut self,
+        account_key: &str,
+    ) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
         let Some(mut root) = read_json_file(&self.path) else {
-            return;
+            return Ok(());
         };
         if let Some(sessions) = root.get_mut("sessions").and_then(Value::as_object_mut) {
             sessions.remove(account_key);
         }
-        let _ = write_secret_json_file(&self.path, &root);
+        write_secret_json_file(&self.path, &root).map_err(|error| {
+            zmanager_core::auth_client::TzapAuthError::Storage {
+                message: format!("could not write {}: {error}", self.path.display()),
+            }
+        })
     }
 }
 
@@ -1967,7 +1977,9 @@ pub unsafe extern "C" fn zmanager_ffi_tzap_auth_forget_json(
     let response = with_json_request(request_json, |request| {
         let context = FfiTzapContext::from_request(&request)?;
         let mut store = FfiTzapSessionStore::new(&context.state_dir);
-        store.clear_session(&context.account_key);
+        store
+            .clear_session(&context.account_key)
+            .map_err(|error| error.to_string())?;
         let _ = fs::remove_file(context.state_dir.join(AUTH_PENDING_FILE));
         Ok(json!({
             "ok": true,

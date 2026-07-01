@@ -111,7 +111,7 @@ fn hosted_auth_handoff_obligations_are_enforced() {
             .require_audience(SESSION_AUDIENCE_LOGIN_TZAP)
             .is_err()
     );
-    store.clear_session(ACCOUNT_KEY);
+    store.clear_session(ACCOUNT_KEY).unwrap();
     assert!(store.load_session(ACCOUNT_KEY).is_none());
 
     let wrong_pkce = callback_with(pending.clone(), ok_relay_body(), Some("wrong-verifier"));

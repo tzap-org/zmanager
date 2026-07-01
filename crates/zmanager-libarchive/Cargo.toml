@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 libc = "0.2.186"
-zmanager-libarchive-sys = { path = "../zmanager-libarchive-sys" }
+zmanager-libarchive-sys = { path = "../zmanager-libarchive-sys", version = "1.0.4" }
 
 [lints.rust]
 unsafe_code = "allow"
