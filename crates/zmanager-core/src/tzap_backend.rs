@@ -72,7 +72,7 @@ const X509_ROOT_AUTH_VERSION: u16 = 1;
 const X509_ROOT_AUTH_OPENSSL_SHA256_SCHEME: u16 = 1;
 const X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN: usize = 60;
 const OFFICIAL_TZAP_ROOT_CERT_SHA256: &str =
-    "sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1";
+    "sha256:d80d318f6cd6096dc791e314ec6f41434caa47feb75e85ad6f87d5bf72bbd53d";
 const OFFICIAL_TZAP_ROOT_CERT_PEM: &[u8] = include_bytes!("trust/tzap-production-root-ca-2026.pem");
 
 /// Returns whether a path names a TZAP archive or one of its numbered volumes.
@@ -3429,7 +3429,7 @@ mod tests {
         assert_eq!(roots.len(), 1);
         assert_eq!(
             crate::trust::certificate_sha256_identifier_for_der(&roots[0]),
-            "sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1"
+            "sha256:d80d318f6cd6096dc791e314ec6f41434caa47feb75e85ad6f87d5bf72bbd53d"
         );
         let root = X509::from_der(&roots[0]).unwrap();
         assert_eq!(
