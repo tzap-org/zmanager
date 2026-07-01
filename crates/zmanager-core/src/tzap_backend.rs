@@ -52,7 +52,8 @@ use tzap_plugin_keywrap::{
 };
 use tzap_plugin_signing::x509_chain::{
     X509_AUTHENTICATOR_ID, X509_SIGNER_IDENTITY_TYPE_DER_CERT, X509RootAuthReport,
-    X509RootAuthSigner, certificates_der_from_pem_or_der, signing_input, verify_root_auth_footer,
+    X509RootAuthSigner, certificate_der_from_pem_or_der, certificates_der_from_pem_or_der,
+    signing_input, verify_root_auth_footer,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
@@ -70,6 +71,9 @@ const X509_ROOT_AUTH_MAGIC: &[u8; 4] = b"TZXC";
 const X509_ROOT_AUTH_VERSION: u16 = 1;
 const X509_ROOT_AUTH_OPENSSL_SHA256_SCHEME: u16 = 1;
 const X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN: usize = 60;
+const OFFICIAL_TZAP_ROOT_CERT_SHA256: &str =
+    "sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1";
+const OFFICIAL_TZAP_ROOT_CERT_PEM: &[u8] = include_bytes!("trust/tzap-production-root-ca-2026.pem");
 
 /// Returns whether a path names a TZAP archive or one of its numbered volumes.
 #[must_use]
@@ -165,13 +169,17 @@ pub struct TzapX509TrustOptions {
     pub trusted_ca_certificates: Vec<PathBuf>,
     /// Allow OpenSSL's default system trust roots.
     pub trusted_system_roots: bool,
+    /// Include ZManager's embedded official TZAP root certificate.
+    pub include_official_tzap_root: bool,
 }
 
 impl TzapX509TrustOptions {
     /// Returns whether verification has any trust source to use.
     #[must_use]
     pub fn has_trust_source(&self) -> bool {
-        !self.trusted_ca_certificates.is_empty() || self.trusted_system_roots
+        self.include_official_tzap_root
+            || !self.trusted_ca_certificates.is_empty()
+            || self.trusted_system_roots
     }
 }
 
@@ -954,6 +962,21 @@ fn read_x509_input_file(path: &Path) -> Result<Vec<u8>, TzapError> {
     })
 }
 
+fn load_x509_trusted_roots(trust: &TzapX509TrustOptions) -> Result<Vec<Vec<u8>>, TzapError> {
+    let mut certificates = Vec::new();
+    if trust.include_official_tzap_root {
+        certificates.push(
+            certificate_der_from_pem_or_der(OFFICIAL_TZAP_ROOT_CERT_PEM).map_err(|source| {
+                TzapError::X509RootAuth(format!(
+                    "failed to parse embedded TZAP root certificate {OFFICIAL_TZAP_ROOT_CERT_SHA256}: {source}"
+                ))
+            })?,
+        );
+    }
+    certificates.extend(load_x509_certificate_files(&trust.trusted_ca_certificates)?);
+    Ok(certificates)
+}
+
 fn validate_recipient_wrap_create_options(options: &TzapCreateOptions) -> Result<(), TzapError> {
     if options.x509_signing.is_some() {
         return Err(TzapError::Format(FormatError::WriterUnsupported(
@@ -1319,7 +1342,7 @@ fn verify_opened_x509_root_auth(
     opened: &OpenedArchive,
     trust: &TzapX509TrustOptions,
 ) -> Result<TzapX509VerificationReport, TzapError> {
-    let trusted_roots_der = load_x509_certificate_files(&trust.trusted_ca_certificates)?;
+    let trusted_roots_der = load_x509_trusted_roots(trust)?;
     let mut report = None;
     let mut x509_error = None;
     let verification = opened
@@ -1685,10 +1708,12 @@ fn test_opened_tzap_archive(
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
     opened.verify()?;
-    let x509_root_auth = x509_trust
-        .filter(|trust| trust.has_trust_source())
-        .map(|trust| verify_opened_x509_root_auth(&opened, trust))
-        .transpose()?;
+    let x509_root_auth = match x509_trust.filter(|trust| trust.has_trust_source()) {
+        Some(trust) if should_verify_opened_x509_root_auth(&opened, trust) => {
+            Some(verify_opened_x509_root_auth(&opened, trust)?)
+        }
+        _ => None,
+    };
     let entries = opened.list_files()?;
     let mut tested_entries = 0usize;
     let mut tested_bytes = 0u64;
@@ -1707,6 +1732,18 @@ fn test_opened_tzap_archive(
         tested_bytes,
         x509_root_auth,
     })
+}
+
+fn should_verify_opened_x509_root_auth(
+    opened: &OpenedArchive,
+    trust: &TzapX509TrustOptions,
+) -> bool {
+    let explicit_trust = !trust.trusted_ca_certificates.is_empty() || trust.trusted_system_roots;
+    let has_x509_root_auth = opened
+        .root_auth_footer
+        .as_ref()
+        .is_some_and(|footer| footer.authenticator_id == X509_AUTHENTICATOR_ID);
+    explicit_trust || has_x509_root_auth
 }
 
 /// Verifies a TZAP X.509 `RootAuth` without the archive key.
@@ -1731,7 +1768,7 @@ pub fn verify_tzap_x509_public_no_key(
     let archive_path = archive.as_ref();
     let volume_bytes = read_tzap_input_volume_bytes(archive_path)?;
     let volume_refs = volume_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let trusted_roots_der = load_x509_certificate_files(&trust.trusted_ca_certificates)?;
+    let trusted_roots_der = load_x509_trusted_roots(trust)?;
     let mut report = None;
     let mut x509_error = None;
     let verification = public_no_key_verify_volumes_with(&volume_refs, |footer, archive_root| {
@@ -3355,8 +3392,8 @@ mod tests {
         TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
         create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
         extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
-        list_tzap_with_password, list_tzap_with_recipient_key, summarize_tzap_public_metadata,
-        test_tzap_with_password_filter_and_x509_trust,
+        list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots,
+        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
         test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
     };
     use crate::jobs::{CancellationToken, JobContext};
@@ -3378,6 +3415,28 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tzap_core::{KdfParams, MasterKey, RegularFile, WriterOptions, write_archive_with_kdf};
+
+    #[test]
+    fn x509_trust_options_can_include_embedded_official_root() {
+        let trust = TzapX509TrustOptions {
+            trusted_ca_certificates: Vec::new(),
+            trusted_system_roots: false,
+            include_official_tzap_root: true,
+        };
+
+        let roots = load_x509_trusted_roots(&trust).unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(
+            crate::trust::certificate_sha256_identifier_for_der(&roots[0]),
+            "sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1"
+        );
+        let root = X509::from_der(&roots[0]).unwrap();
+        assert_eq!(
+            crate::x509_format::x509_name_to_string(root.subject_name()),
+            "CN=TZAP Production Root CA 2026, O=TZAP, C=AU"
+        );
+    }
 
     #[test]
     fn recognizes_tzap_base_and_numbered_volumes() {
@@ -3829,6 +3888,7 @@ mod tests {
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
+            include_official_tzap_root: false,
         };
         let report = test_tzap_with_password_filter_and_x509_trust(
             &archive,
@@ -3939,6 +3999,7 @@ mod tests {
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
+            include_official_tzap_root: false,
         };
         let report = test_tzap_with_password_filter_and_x509_trust(
             &archive,
@@ -4038,6 +4099,7 @@ mod tests {
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
+            include_official_tzap_root: false,
         };
         let report = test_tzap_with_password_filter_and_x509_trust(
             &archive,

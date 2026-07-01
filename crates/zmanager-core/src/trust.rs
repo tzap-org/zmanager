@@ -263,9 +263,8 @@ impl TzapRootPinSet {
     }
 }
 
-/// Placeholder for rollout configuration; later steps populate this with release-root pins.
 pub const OFFICIAL_TZAP_ROOT_PINS: TzapRootPinSet = TzapRootPinSet {
-    current: &[],
+    current: &["sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1"],
     planned_successors: &[],
 };
 
@@ -1911,7 +1910,10 @@ mod tests {
             "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
 
-        assert!(OFFICIAL_TZAP_ROOT_PINS.current.is_empty());
+        assert_eq!(
+            OFFICIAL_TZAP_ROOT_PINS.current,
+            &["sha256:f57f5a7778d1c3fdb555c43c6c7d16cdb7f4f8160a4a70d6964b3a7b5016e4a1"]
+        );
         assert!(OFFICIAL_TZAP_ROOT_PINS.planned_successors.is_empty());
     }
 

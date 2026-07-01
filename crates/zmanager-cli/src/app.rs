@@ -240,8 +240,8 @@ Examples:
   zm -Tf project.zip
   zm test project.zip --include 'docs/**'
   printf '%s\\n' \"$ZM_PASSWORD\" | zm test secret.7z --password-stdin
-  printf '%s\\n' \"$ZM_PASSWORD\" | zm test signed.tzap --password-stdin --trusted-ca-cert ca.pem
-  zm test signed.tzap --public-no-key --trusted-ca-cert ca.pem
+  printf '%s\\n' \"$ZM_PASSWORD\" | zm test signed.tzap --password-stdin
+  zm test signed.tzap --public-no-key
   zm test sealed.tzap --recipient-key recipient.key
 
 Options:
@@ -5734,14 +5734,6 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             format_args!("test failed: X.509 trust options are supported only for TZAP archives"),
         );
     }
-    if request.public_no_key && !test_request_has_x509_trust(request) {
-        return usage_failure(
-            global,
-            format_args!(
-                "test failed: --public-no-key requires --trusted-ca-cert or --trusted-system-roots"
-            ),
-        );
-    }
     if request.public_no_key && request.password_stdin {
         return usage_failure(
             global,
@@ -5892,6 +5884,7 @@ fn test_request_x509_trust(
     zmanager_core::tzap_backend::TzapX509TrustOptions {
         trusted_ca_certificates: request.trusted_ca_certs.clone(),
         trusted_system_roots: request.trusted_system_roots,
+        include_official_tzap_root: !test_request_has_x509_trust(request),
     }
 }
 
@@ -5963,7 +5956,7 @@ fn run_tzap_test_new(
     request: &TestRequest,
     global: &GlobalOptions,
 ) -> ExitCode {
-    let x509_trust = test_request_has_x509_trust(request).then(|| test_request_x509_trust(request));
+    let x509_trust = is_tzap_archive(archive).then(|| test_request_x509_trust(request));
     let result = if let Some(recipient_key) = request.recipient_key.as_deref() {
         zmanager_core::tzap_backend::test_tzap_with_recipient_key_filter_and_x509_trust(
             archive,
