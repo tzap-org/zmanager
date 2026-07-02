@@ -513,7 +513,7 @@ fn list_tzap_entries(
             kind: tzap_entry_kind_from_index_entry_path(&entry.path),
             size: Some(entry.file_data_size),
             compressed_size: None,
-            modified: None,
+            modified: entry.mtime.map(|mtime| mtime.to_string()),
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -1010,7 +1010,7 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tar::{Builder, Header};
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
@@ -1054,7 +1054,7 @@ mod tests {
                 source_path: payload,
                 file_type: ManifestFileType::File,
                 size: 5,
-                modified: None,
+                modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
                 permissions: PermissionSnapshot {
                     readonly: false,
                     unix_mode: Some(0o644),
@@ -1069,7 +1069,7 @@ mod tests {
         let options = TzapCreateOptions {
             key_source: TzapKeySource::NoPassword,
             level: 1,
-            preserve_metadata: false,
+            preserve_metadata: true,
             replace_existing: false,
             volume_size: None,
             recovery_percentage: 0,
@@ -1094,7 +1094,7 @@ mod tests {
         assert_eq!(payload_entry.path, "payload.txt");
         assert_eq!(payload_entry.kind, super::BrowserEntryKind::File);
         assert_eq!(payload_entry.size, Some(5));
-        assert!(payload_entry.modified.is_none());
+        assert_eq!(payload_entry.modified, Some("1700000000".to_owned()));
         assert_eq!(listing.entries.len(), 1);
     }
 
