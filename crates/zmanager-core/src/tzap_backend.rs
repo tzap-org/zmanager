@@ -30,8 +30,8 @@ use tzap_core::format::{
     READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV_44, VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
-    ArchiveEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic, PublicNoKeyVerification,
-    RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
+    ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
+    PublicNoKeyVerification, RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
 };
 use tzap_core::wire::{
     CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
@@ -1462,6 +1462,19 @@ pub fn list_tzap_with_optional_password(
     list_opened_tzap_archive(opened)
 }
 
+/// Lists `.tzap` archive index entries with an optional passphrase.
+///
+/// This returns only index metadata from encrypted index records and skips full
+/// tar member decoding. Entry kinds from the full tar member metadata are not
+/// available from this path.
+pub(crate) fn list_tzap_index_entries_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+) -> Result<Vec<ArchiveIndexEntry>, TzapError> {
+    let opened = open_tzap_archive(archive, password)?;
+    opened.list_index_entries().map_err(TzapError::from)
+}
+
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.
 ///
 /// # Errors
@@ -1562,6 +1575,130 @@ pub fn extract_tzap_with_optional_password_and_context(
         None,
         Some(context),
     )
+}
+
+/// Extracts `.tzap` regular entries with index metadata and optional extraction
+/// context.
+///
+/// This skips decoding full tar member metadata up front and uses index entries
+/// when possible. Directory-only entries are created from index paths that end
+/// with `/`. Unsupported or missing entries are skipped with warnings.
+pub fn extract_tzap_with_optional_password_and_context_fast(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    context: &mut JobContext<'_>,
+) -> Result<TzapExtractReport, TzapError> {
+    let destination = destination.as_ref();
+    let destination_root =
+        crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    let opened = open_tzap_archive(archive, password)?;
+    let entries = opened.list_index_entries()?;
+    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut report = TzapExtractReport {
+        written_entries: 0,
+        skipped_entries: 0,
+        written_bytes: 0,
+        warnings: Vec::new(),
+    };
+
+    for entry in entries {
+        context.check_cancelled()?;
+        let safety_entry = ExtractionEntry {
+            archive_path: entry.path.clone(),
+            kind: tzap_index_entry_kind(&entry.path),
+            uncompressed_size: Some(entry.file_data_size),
+            compressed_size: None,
+        };
+        context.entry_started(&safety_entry.archive_path, Some(entry.file_data_size));
+
+        match planner.validate_entry(&safety_entry)? {
+            ExtractionDecision::Write {
+                destination_path,
+                replace_existing,
+                ..
+            } => match safety_entry.kind {
+                ExtractionEntryKind::File => {
+                    match stream_regular_member_to_destination(
+                        &opened,
+                        &safety_entry.archive_path,
+                        entry.file_data_size,
+                        &destination_path,
+                        replace_existing,
+                        Some(context),
+                    ) {
+                        Ok(Some(processed)) => {
+                            report.written_entries = report.written_entries.saturating_add(1);
+                            report.written_bytes = report.written_bytes.saturating_add(processed);
+                            context.entry_finished(&safety_entry.archive_path, processed);
+                        }
+                        Ok(None) => {
+                            report.skipped_entries = report.skipped_entries.saturating_add(1);
+                            let warning =
+                                format!("skipped missing entry {}", safety_entry.archive_path);
+                            report.warnings.push(warning.clone());
+                            context.warning(warning);
+                            context.entry_finished(&safety_entry.archive_path, 0);
+                        }
+                        Err(error) => {
+                            if let TzapError::Format(
+                                tzap_core::format::FormatError::ReaderUnsupported(_),
+                            ) = error
+                            {
+                                report.skipped_entries = report.skipped_entries.saturating_add(1);
+                                let warning = format!(
+                                    "skipped unsupported entry {}",
+                                    safety_entry.archive_path
+                                );
+                                report.warnings.push(warning.clone());
+                                context.warning(warning);
+                                context.entry_finished(&safety_entry.archive_path, 0);
+                            } else {
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+                ExtractionEntryKind::Directory => {
+                    fs::create_dir_all(&destination_path).map_err(|source| TzapError::Io {
+                        path: destination_path.clone(),
+                        source,
+                    })?;
+                    report.written_entries = report.written_entries.saturating_add(1);
+                    context.entry_finished(&safety_entry.archive_path, 0);
+                }
+                _ => {
+                    report.skipped_entries = report.skipped_entries.saturating_add(1);
+                    let warning =
+                        format!("skipped unsupported entry {}", safety_entry.archive_path);
+                    report.warnings.push(warning.clone());
+                    context.warning(warning);
+                    context.entry_finished(&safety_entry.archive_path, 0);
+                }
+            },
+            ExtractionDecision::Skip { reason, .. } => {
+                report.skipped_entries = report.skipped_entries.saturating_add(1);
+                let warning = format!("skipped {}: {}", safety_entry.archive_path, reason);
+                report.warnings.push(warning.clone());
+                context.warning(warning);
+                context.entry_finished(&safety_entry.archive_path, 0);
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+fn tzap_index_entry_kind(path: &str) -> ExtractionEntryKind {
+    if path.ends_with('/') {
+        ExtractionEntryKind::Directory
+    } else {
+        ExtractionEntryKind::File
+    }
 }
 
 /// Extracts `.tzap` entries with a passphrase and overwrite resolver.

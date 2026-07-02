@@ -1050,12 +1050,18 @@ pub fn run_tzap_extract_job_with_password_and_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
     let total_bytes = match password.filter(|password| !password.is_empty()) {
-        Some(password) => tzap_backend::list_tzap_with_password(archive_path.as_ref(), password)
-            .ok()
-            .map(|listing| listing.entries.iter().map(|entry| entry.size).sum()),
-        None => tzap_backend::list_tzap_with_optional_password(archive_path.as_ref(), None)
-            .ok()
-            .map(|listing| listing.entries.iter().map(|entry| entry.size).sum()),
+        Some(password) => tzap_backend::list_tzap_index_entries_with_optional_password(
+            archive_path.as_ref(),
+            Some(password),
+        )
+        .ok()
+        .map(|entries| entries.iter().map(|entry| entry.file_data_size).sum()),
+        None => tzap_backend::list_tzap_index_entries_with_optional_password(
+            archive_path.as_ref(),
+            None,
+        )
+        .ok()
+        .map(|entries| entries.iter().map(|entry| entry.file_data_size).sum()),
     };
     sink.emit(JobEvent::Started {
         kind: JobKind::TzapExtract,
@@ -1068,7 +1074,7 @@ pub fn run_tzap_extract_job_with_password_and_policy(
         return Err(TzapError::Cancelled);
     }
 
-    let result = tzap_backend::extract_tzap_with_optional_password_and_context(
+    let result = tzap_backend::extract_tzap_with_optional_password_and_context_fast(
         archive_path,
         destination,
         policy,

@@ -504,19 +504,27 @@ fn list_tzap_entries(
     path: &Path,
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
-    let listing = crate::tzap_backend::list_tzap_with_optional_password(path, password)?;
+    let listing =
+        crate::tzap_backend::list_tzap_index_entries_with_optional_password(path, password)?;
     let entries = listing
-        .entries
         .into_iter()
         .map(|entry| BrowserEntry {
-            path: entry.path,
-            kind: tzap_entry_kind(entry.kind),
-            size: Some(entry.size),
+            path: entry.path.clone(),
+            kind: tzap_entry_kind_from_index_entry_path(&entry.path),
+            size: Some(entry.file_data_size),
             compressed_size: None,
-            modified: Some(entry.mtime.to_string()),
+            modified: None,
         })
         .collect();
     Ok(BrowserListing { entries })
+}
+
+fn tzap_entry_kind_from_index_entry_path(path: &str) -> BrowserEntryKind {
+    if path.ends_with('/') {
+        BrowserEntryKind::Directory
+    } else {
+        BrowserEntryKind::File
+    }
 }
 
 fn extract_tzap_entry(
@@ -988,9 +996,14 @@ mod tests {
     use super::{
         BrowserListOptions, extract_entry, list_entries, list_entries_with_options, preview_entry,
     };
+    use crate::jobs::{CancellationToken, JobContext};
+    use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
     use crate::secrets::SecretString;
     use crate::sevenz_backend::{SevenZCreateOptions, create_7z_from_path};
     use crate::tar_zst_backend::{TarZstdCreateOptions, create_tar_zst_from_path};
+    use crate::tzap_backend::{
+        TzapCreateOptions, TzapKeySource, create_tzap_from_manifest_with_context,
+    };
     use crate::zip_backend::{ZipCreateOptions, create_zip_from_path};
     use bzip2::Compression;
     use bzip2::write::BzEncoder;
@@ -1025,6 +1038,64 @@ mod tests {
             "b"
         );
         assert!(!temp.path("out/project/a.txt").exists());
+    }
+
+    #[test]
+    fn lists_tzap_entry_from_index_metadata() {
+        let temp = TestDir::new("browser_tzap_index");
+        let payload = temp.path("payload.txt");
+        fs::write(&payload, b"hello").unwrap();
+        let archive = temp.path("archive.tzap");
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: payload,
+                file_type: ManifestFileType::File,
+                size: 5,
+                modified: None,
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 5,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: false,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let listing = list_entries(&archive).unwrap();
+        let payload_entry = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "payload.txt")
+            .expect("payload entry should be listed")
+            .clone();
+
+        assert_eq!(payload_entry.path, "payload.txt");
+        assert_eq!(payload_entry.kind, super::BrowserEntryKind::File);
+        assert_eq!(payload_entry.size, Some(5));
+        assert!(payload_entry.modified.is_none());
+        assert_eq!(listing.entries.len(), 1);
     }
 
     #[test]
