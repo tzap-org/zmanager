@@ -1542,6 +1542,38 @@ mod tests {
     }
 
     #[test]
+    fn tzap_create_job_emits_entry_finished_during_multi_file_progress() {
+        let temp = TestDir::new("tzap_create_job_emits_entry_finished_during_multi_file_progress");
+        let payload = large_tzap_progress_payload();
+        temp.write_file("project/one.bin", &payload);
+        temp.write_file("project/two.bin", &payload);
+        let mut events = Vec::new();
+
+        run_tzap_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.tzap"),
+            &test_tzap_create_options(),
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        let first_finished_index = events
+            .iter()
+            .position(|event| matches!(event, JobEvent::EntryFinished { .. }))
+            .expect("expected at least one entry-finished event");
+
+        assert!(
+            events
+                .iter()
+                .skip(first_finished_index + 1)
+                .any(|event| matches!(event, JobEvent::BytesProcessed { .. })),
+            "expected later byte progress after the first finished entry"
+        );
+    }
+
+    #[test]
     fn sevenz_create_job_emits_progress_before_completion_for_large_file() {
         let temp =
             TestDir::new("sevenz_create_job_emits_progress_before_completion_for_large_file");

@@ -18,7 +18,7 @@ use openssl::sign::Verifier;
 use openssl::x509::X509;
 use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
 use rand::RngCore as _;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
@@ -349,7 +349,7 @@ pub struct TzapPublicFormatSummary {
 pub struct TzapCreateReport {
     /// Number of regular file entries written.
     pub written_entries: usize,
-    /// Number of source bytes copied into regular file entries.
+    /// Number of archive volume bytes written.
     pub written_bytes: u64,
     /// Compression level used.
     pub level: i32,
@@ -618,6 +618,14 @@ pub fn create_tzap_from_manifest_with_context(
         &mut authenticator
             as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
     });
+    let file_sizes = file_sources
+        .iter()
+        .map(|file| (file.archive_path.clone(), file.size))
+        .collect::<BTreeMap<_, _>>();
+    let mut started_paths = BTreeSet::new();
+    let mut finished_paths = BTreeSet::new();
+    let mut processed_by_path = BTreeMap::<String, u64>::new();
+
     let summary = if let Some(recipient_records) = recipient_records {
         write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records(
             &file_sources,
@@ -630,7 +638,19 @@ pub fn create_tzap_from_manifest_with_context(
         )
     } else {
         let mut progress = |archive_path: &str, bytes: u64| {
+            if started_paths.insert(archive_path.to_owned()) {
+                context.entry_started(archive_path, file_sizes.get(archive_path).copied());
+            }
             context.bytes_processed(Some(archive_path), bytes);
+            let processed = processed_by_path
+                .entry(archive_path.to_owned())
+                .or_default();
+            *processed = processed.saturating_add(bytes);
+            if let Some(size) = file_sizes.get(archive_path).copied() {
+                if *processed >= size && finished_paths.insert(archive_path.to_owned()) {
+                    context.entry_finished(archive_path, size);
+                }
+            }
         };
         write_archive_sources_to_sink_with_progress(
             &file_sources,
@@ -653,7 +673,12 @@ pub fn create_tzap_from_manifest_with_context(
         )));
     }
     for file in &file_sources {
-        context.entry_finished(&file.archive_path, file.size);
+        if started_paths.insert(file.archive_path.clone()) {
+            context.entry_started(&file.archive_path, Some(file.size));
+        }
+        if finished_paths.insert(file.archive_path.clone()) {
+            context.entry_finished(&file.archive_path, file.size);
+        }
     }
 
     warnings.extend(
@@ -665,7 +690,7 @@ pub fn create_tzap_from_manifest_with_context(
 
     Ok(TzapCreateReport {
         written_entries: file_sources.len(),
-        written_bytes: file_sources.iter().map(|file| file.size).sum(),
+        written_bytes: summary.archive_bytes,
         level: options.level,
         volume_size: options.volume_size,
         volume_count,
@@ -3685,12 +3710,16 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        let report =
+            create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+                .unwrap();
 
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 1);
         assert_eq!(listing.entries[0].path, "payload.txt");
+        assert_eq!(report.written_entries, 1);
+        assert_eq!(report.written_bytes, fs::metadata(&archive).unwrap().len());
+        assert_ne!(report.written_bytes, manifest.total_bytes);
 
         let summary = summarize_tzap_public_metadata(&archive).unwrap();
         assert_eq!(summary.format.encryption_algorithm, "none");
