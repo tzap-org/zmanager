@@ -79,7 +79,7 @@ const TOP_LEVEL_FLAGS: &[&str] = &[
 ];
 
 const CREATE_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|tzap|7z>",
+    "--format <zip|tar.zst|tzap|aar|7z>",
     "--method <method>",
     "--level <level>",
     "-0 .. -9",
@@ -149,7 +149,7 @@ const TEST_FLAGS: &[&str] = &[
 ];
 
 const PLAN_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|tzap|7z>",
+    "--format <zip|tar.zst|tzap|aar|7z>",
     "-C, --directory <dir>",
     "-@",
     "--files-from <file|->",
@@ -164,7 +164,7 @@ const PLAN_FLAGS: &[&str] = &[
 const FILTER_GLOB_NOTE: &str = "Glob patterns match archive paths";
 
 const CREATE_HELP_NEEDLES: &[&str] = &[
-    "Create ZIP, TAR.ZST, TZAP, or 7z archives",
+    "Create ZIP, TAR.ZST, TZAP, AAR, or 7z archives",
     "zm create <archive> <paths...>",
     "--exclude <glob>",
     "--volume-size <size>",

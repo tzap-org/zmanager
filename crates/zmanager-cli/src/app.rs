@@ -85,7 +85,7 @@ Run 'zm help <command>' for command-specific examples and flags.
 ";
 
 const CREATE_HELP: &str = "\
-Create ZIP, TAR.ZST, TZAP, or 7z archives
+Create ZIP, TAR.ZST, TZAP, AAR, or 7z archives
 
 Usage:
   zm create <archive> <paths...> [options]
@@ -124,9 +124,10 @@ Selection:
   shell does not expand them first. Use dir/** for a whole tree; * can match /.
 
 Archive format and compression:
-      --format <zip|tar.zst|tzap|7z>
+      --format <zip|tar.zst|tzap|aar|7z>
                                   Override format inference from extension
-      --method <method>          Select method: zip store/deflate, tar.zst/tzap zstd, 7z lzma2
+      --method <method>          Select method: zip store/deflate, tar.zst/tzap zstd,
+                                  aar lzfse/lz4/zlib/lzma/raw, 7z lzma2
       --level <level>            Compression level; use 0..9 where supported
   -0 .. -9                       Compression presets; -0 stores ZIP entries
       --store                    Store ZIP entries without compression
@@ -274,7 +275,7 @@ Examples:
   zm plan project/ --json
 
 Options:
-      --format <zip|tar.zst|tzap|7z>
+      --format <zip|tar.zst|tzap|aar|7z>
                                   Plan for a specific archive format
   -C, --directory <dir>          Use dir as the base for following input paths
   -@                             Read input paths from stdin
@@ -304,12 +305,14 @@ Create:
   zip       .zip
   tar.zst   .tar.zst, .tzst
   tzap      .tzap
+  aar       .aar
   7z        .7z
 
 Extract/List/Test:
   zip       .zip, .zipx, .jar, .war, .ipa, .apk, .appx, .xpi
   tar.zst   .tar.zst, .tzst
   tzap      .tzap
+  aar       .aar (macOS/iOS)
   7z        .7z
   raw       .zst, .gz, .bz2, .xz, .lzma, .lz, .br, .lz4, .lzo, .Z, .lrz
   rar       .rar, .cbr; passworded list/extract uses bundled UnRAR with --password-stdin
@@ -504,6 +507,7 @@ const COMPLETION_POWERSHELL_SCRIPT: &str = include_str!("../../../completions/zm
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
 const FORMAT_TZAP: &str = "tzap";
+const FORMAT_APPLE_ARCHIVE: &str = "aar";
 const FORMAT_SEVEN_Z: &str = "7z";
 const FORMAT_RAR: &str = "rar";
 const FORMAT_DEB: &str = "deb";
@@ -523,6 +527,7 @@ const SIZE_UNIT_TIB: u64 = SIZE_UNIT_GIB * 1024;
 
 const TAR_ZST_FORMAT_ALIASES: &[&str] = &[FORMAT_TAR_ZST, "tzst", "zst"];
 const TZAP_FORMAT_ALIASES: &[&str] = &[FORMAT_TZAP];
+const APPLE_ARCHIVE_FORMAT_ALIASES: &[&str] = &[FORMAT_APPLE_ARCHIVE, "apple-archive"];
 
 const ZIP_CREATE_EXTENSIONS: &[&str] = &[".zip"];
 const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
@@ -530,6 +535,7 @@ const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
 ];
 const TAR_ZST_EXTENSIONS: &[&str] = &[".tar.zst", ".tzst"];
 const TZAP_EXTENSIONS: &[&str] = &[".tzap"];
+const APPLE_ARCHIVE_EXTENSIONS: &[&str] = &[".aar"];
 const SEVEN_Z_EXTENSIONS: &[&str] = &[".7z"];
 const RAR_EXTENSIONS: &[&str] = &[".rar", ".cbr"];
 const DEB_EXTENSIONS: &[&str] = &[".deb"];
@@ -555,6 +561,10 @@ const CREATE_FORMATS: &[FormatDescriptor] = &[
         extensions: TZAP_EXTENSIONS,
     },
     FormatDescriptor {
+        name: FORMAT_APPLE_ARCHIVE,
+        extensions: APPLE_ARCHIVE_EXTENSIONS,
+    },
+    FormatDescriptor {
         name: FORMAT_SEVEN_Z,
         extensions: SEVEN_Z_EXTENSIONS,
     },
@@ -572,6 +582,10 @@ const EXTRACT_FORMATS: &[FormatDescriptor] = &[
     FormatDescriptor {
         name: FORMAT_TZAP,
         extensions: TZAP_EXTENSIONS,
+    },
+    FormatDescriptor {
+        name: FORMAT_APPLE_ARCHIVE,
+        extensions: APPLE_ARCHIVE_EXTENSIONS,
     },
     FormatDescriptor {
         name: FORMAT_SEVEN_Z,
@@ -777,6 +791,8 @@ fn progress_job_label(kind: JobKind) -> &'static str {
         JobKind::TarZstdExtract => "tar.zst extract",
         JobKind::TzapCreate => "tzap create",
         JobKind::TzapExtract => "tzap extract",
+        JobKind::AppleArchiveCreate => "aar create",
+        JobKind::AppleArchiveExtract => "aar extract",
         JobKind::ArchiveExtract => "archive extract",
         JobKind::RawStreamExtract => "raw stream extract",
     }
@@ -865,6 +881,7 @@ enum ArchiveFormat {
     Zip,
     TarZst,
     Tzap,
+    AppleArchive,
     SevenZ,
 }
 
@@ -898,6 +915,7 @@ fn create_progress_kind(format: ArchiveFormat) -> JobKind {
         ArchiveFormat::Zip => JobKind::ZipCreate,
         ArchiveFormat::TarZst => JobKind::TarZstdCreate,
         ArchiveFormat::Tzap => JobKind::TzapCreate,
+        ArchiveFormat::AppleArchive => JobKind::AppleArchiveCreate,
         ArchiveFormat::SevenZ => JobKind::SevenZCreate,
     }
 }
@@ -4191,7 +4209,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     else {
         print_error_line(
             global,
-            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|7z>"),
+            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z>"),
         );
         return ExitCode::from(2);
     };
@@ -4257,6 +4275,15 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                     format_args!(
                         "create failed: tzap symlink preservation is not supported by the current backend; use --follow-symlinks"
                     ),
+                );
+                return ExitCode::from(2);
+            }
+            if format == ArchiveFormat::AppleArchive
+                && !zmanager_core::apple_archive_backend::apple_archive_supported()
+            {
+                print_error_line(
+                    global,
+                    format_args!("create failed: AAR archives are supported only on macOS and iOS"),
                 );
                 return ExitCode::from(2);
             }
@@ -4469,6 +4496,51 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 })
                 .map_err(|error| error.to_string())
         }
+        ArchiveFormat::AppleArchive => {
+            let compression = match apple_archive_compression(request) {
+                Ok(compression) => compression,
+                Err(error) => {
+                    print_error_line(global, format_args!("{error}"));
+                    return ExitCode::from(2);
+                }
+            };
+            let options = zmanager_core::apple_archive_backend::AppleArchiveCreateOptions {
+                compression,
+                preserve_metadata: !request.no_metadata,
+                replace_existing: backend_replace_existing,
+                ..zmanager_core::apple_archive_backend::AppleArchiveCreateOptions::default()
+            };
+            let result = {
+                let mut sink = |event| progress.emit(event);
+                let mut context = JobContext::new(&token, &mut sink);
+                zmanager_core::apple_archive_backend::create_apple_archive_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
+                )
+            };
+            result
+                .map(|report| CreateOutcome {
+                    summary: format!(
+                        "created aar: {} entries, {} bytes, compression {:?}, {} warnings",
+                        report.written_entries,
+                        report.written_bytes,
+                        options.compression,
+                        report.warnings.len()
+                    ),
+                    format: FORMAT_APPLE_ARCHIVE,
+                    backend: FORMAT_APPLE_ARCHIVE,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: None,
+                    solid: None,
+                    volume_size: None,
+                    volume_count: 1,
+                })
+                .map_err(|error| error.to_string())
+        }
         ArchiveFormat::SevenZ => {
             let options = zmanager_core::sevenz_backend::SevenZCreateOptions {
                 solid: request.solid,
@@ -4674,7 +4746,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
                 }
             }
             ArchiveFormat::SevenZ | ArchiveFormat::Tzap => {}
-            ArchiveFormat::TarZst => {
+            ArchiveFormat::TarZst | ArchiveFormat::AppleArchive => {
                 return Err(
                     "--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned(),
                 );
@@ -4686,6 +4758,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
         match (format, method) {
             (ArchiveFormat::Zip, "deflate" | "store")
             | (ArchiveFormat::TarZst | ArchiveFormat::Tzap, "zstd" | "zst")
+            | (ArchiveFormat::AppleArchive, "lzfse" | "lz4" | "zlib" | "lzma" | "raw")
             | (ArchiveFormat::SevenZ, "lzma2") => {}
             _ => {
                 return Err(format!(
@@ -4712,11 +4785,32 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
                     "cannot combine ZIP store compression with compression level {level}"
                 ));
             }
+            ArchiveFormat::AppleArchive => {
+                return Err("compression levels are not supported for AAR archives".to_owned());
+            }
             _ => {}
         }
     }
 
     Ok(())
+}
+
+fn apple_archive_compression(
+    request: &CreateRequest,
+) -> Result<zmanager_core::apple_archive_backend::AppleArchiveCompression, String> {
+    use zmanager_core::apple_archive_backend::AppleArchiveCompression;
+
+    match request.method.as_deref() {
+        None => Ok(AppleArchiveCompression::default()),
+        Some("lzfse") => Ok(AppleArchiveCompression::Lzfse),
+        Some("lz4") => Ok(AppleArchiveCompression::Lz4),
+        Some("zlib") => Ok(AppleArchiveCompression::Zlib),
+        Some("lzma") => Ok(AppleArchiveCompression::Lzma),
+        Some("raw") => Ok(AppleArchiveCompression::None),
+        Some(method) => Err(format!(
+            "unsupported method for selected archive format: {method}"
+        )),
+    }
 }
 
 fn zip_compression_options(
@@ -4775,10 +4869,10 @@ fn create_password(
     if !request.encrypt && !request.password_stdin {
         return Ok(None);
     }
-    if format == ArchiveFormat::TarZst {
+    if matches!(format, ArchiveFormat::TarZst | ArchiveFormat::AppleArchive) {
         print_error_line(
             global,
-            format_args!("encryption is not supported for tar.zst"),
+            format_args!("encryption is not supported for this archive format"),
         );
         return Err(ExitCode::from(2));
     }
@@ -4802,6 +4896,7 @@ fn create_password(
     let prompt = match format {
         ArchiveFormat::SevenZ => "7z password: ",
         ArchiveFormat::Tzap => "tzap password: ",
+        ArchiveFormat::AppleArchive => "archive password: ",
         ArchiveFormat::Zip => "ZIP password: ",
         ArchiveFormat::TarZst => "archive password: ",
     };
@@ -5028,6 +5123,16 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
         )
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
+    } else if is_apple_archive(&request.archive) {
+        if request.password_stdin {
+            return usage_failure(
+                global,
+                format_args!(
+                    "extract failed: AAR archives are not encrypted; remove --password-stdin"
+                ),
+            );
+        }
+        run_apple_archive_extract_with_policy(request.archive, destination, policy, Some(global))
     } else if is_tzap_archive(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
@@ -5352,6 +5457,41 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 ExitCode::FAILURE
             }
         }
+    } else if is_apple_archive(&request.archive) {
+        if request.password_stdin {
+            print_error_line(
+                global,
+                format_args!(
+                    "extract to stdout failed: AAR archives are not encrypted; remove --password-stdin"
+                ),
+            );
+            return ExitCode::from(2);
+        }
+        match zmanager_core::apple_archive_backend::copy_apple_archive_files_to_writer(
+            &request.archive,
+            |name| entry_selected(name, &request.include, &request.exclude),
+            &mut stdout,
+        ) {
+            Ok(report) => {
+                if global.verbose > 0 && !global.quiet {
+                    output::stderr_line(
+                        global.color,
+                        format_args!(
+                            "{} to stdout ok: {} entries, {} skipped, {} bytes",
+                            output::styled(StyleRole::Success, format_args!("extract")),
+                            report.written_entries,
+                            report.skipped_entries,
+                            report.written_bytes
+                        ),
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                print_error_line(global, format_args!("extract to stdout failed: {error}"));
+                ExitCode::FAILURE
+            }
+        }
     } else if let Some(format) =
         zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
     {
@@ -5565,6 +5705,13 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    if request.password_stdin && is_apple_archive(&request.archive) {
+        print_error_line(
+            global,
+            format_args!("list failed: AAR archives are not encrypted; remove --password-stdin"),
+        );
+        return ExitCode::from(2);
+    }
     let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
         Ok(password) => password,
         Err(code) => return code,
@@ -5764,6 +5911,13 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    if request.password_stdin && is_apple_archive(&request.archive) {
+        print_error_line(
+            global,
+            format_args!("test failed: AAR archives are not encrypted; remove --password-stdin"),
+        );
+        return ExitCode::from(2);
+    }
     let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
         Ok(password) => password,
         Err(code) => return code,
@@ -5808,6 +5962,14 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     }
     if is_tar_zst_archive(&request.archive) {
         return run_tar_zst_test_new(&request.archive, &request.include, &request.exclude, global);
+    }
+    if is_apple_archive(&request.archive) {
+        return run_apple_archive_test_new(
+            &request.archive,
+            &request.include,
+            &request.exclude,
+            global,
+        );
     }
     if is_7z_archive(&request.archive) {
         return run_7z_test_new(
@@ -5912,6 +6074,32 @@ fn run_tar_zst_test_new(
         }
         Err(error) => {
             print_error_line(global, format_args!("tar.zst test failed: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_apple_archive_test_new(
+    archive: &str,
+    includes: &[String],
+    excludes: &[String],
+    global: &GlobalOptions,
+) -> ExitCode {
+    match zmanager_core::apple_archive_backend::test_apple_archive_filter(archive, |name| {
+        entry_selected(name, includes, excludes)
+    }) {
+        Ok(report) => {
+            print_data_test_success(
+                FORMAT_APPLE_ARCHIVE,
+                report.tested_entries,
+                report.skipped_entries,
+                report.tested_bytes,
+                global,
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_error_line(global, format_args!("aar test failed: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -6534,6 +6722,7 @@ fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
         FORMAT_ZIP => Ok(ArchiveFormat::Zip),
         raw if TAR_ZST_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::TarZst),
         raw if TZAP_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::Tzap),
+        raw if APPLE_ARCHIVE_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::AppleArchive),
         FORMAT_SEVEN_Z => Ok(ArchiveFormat::SevenZ),
         _ => Err(format!("unsupported archive format: {raw}")),
     }
@@ -6549,6 +6738,8 @@ fn infer_create_format(path: &str) -> Option<ArchiveFormat> {
         Some(ArchiveFormat::TarZst)
     } else if is_tzap_archive(path) {
         Some(ArchiveFormat::Tzap)
+    } else if is_apple_archive(path) {
+        Some(ArchiveFormat::AppleArchive)
     } else if path_has_known_extension(path, SEVEN_Z_EXTENSIONS) {
         Some(ArchiveFormat::SevenZ)
     } else {
@@ -6806,6 +6997,7 @@ fn strip_known_archive_suffix(name: &str) -> Option<&str> {
         .iter()
         .chain(ZIP_FAMILY_EXTENSIONS)
         .chain(SEVEN_Z_EXTENSIONS)
+        .chain(APPLE_ARCHIVE_EXTENSIONS)
         .chain(RAR_EXTENSIONS)
         .chain(DEB_EXTENSIONS)
         .find_map(|suffix| strip_suffix_ignore_ascii_case(name, suffix))
@@ -6932,6 +7124,36 @@ fn list_entries_with_password(
                         .to_owned(),
                         name: entry.path,
                         size: entry.size,
+                        compressed_size: None,
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    } else if is_apple_archive(archive) {
+        zmanager_core::apple_archive_backend::list_apple_archive(archive)
+            .map(|listing| {
+                listing
+                    .entries
+                    .into_iter()
+                    .map(|entry| GenericEntry {
+                        kind: match entry.kind {
+                            zmanager_core::apple_archive_backend::AppleArchiveEntryKind::File => {
+                                "file"
+                            }
+                            zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Directory => {
+                                "directory"
+                            }
+                            zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Symlink => {
+                                "symlink"
+                            }
+                            zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Device
+                            | zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Special => {
+                                "special"
+                            }
+                        }
+                        .to_owned(),
+                        name: entry.path,
+                        size: entry.size.unwrap_or(0),
                         compressed_size: None,
                     })
                     .collect()
@@ -7615,6 +7837,10 @@ fn is_tzap_archive(path: &str) -> bool {
     path_has_known_extension(path, TZAP_EXTENSIONS) || is_tzap_volume_archive(path)
 }
 
+fn is_apple_archive(path: &str) -> bool {
+    path_has_known_extension(path, APPLE_ARCHIVE_EXTENSIONS)
+}
+
 fn is_tzap_volume_archive(path: &str) -> bool {
     let Some((base_path, volume_index)) = path.rsplit_once('.') else {
         return false;
@@ -7800,6 +8026,69 @@ fn run_tar_zst_extract_with_policy(
                 message: error.to_string(),
             });
             eprintln!("tar.zst extract failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_apple_archive_extract_with_policy(
+    archive: impl AsRef<std::path::Path>,
+    destination: impl AsRef<std::path::Path>,
+    policy: zmanager_core::safety::ExtractionPolicy,
+    global: Option<&GlobalOptions>,
+) -> ExitCode {
+    let archive_path = archive.as_ref().to_path_buf();
+    let destination_path = destination.as_ref().to_path_buf();
+    let mut progress = ProgressReporter::from_global(global);
+    progress.emit(JobEvent::Started {
+        kind: JobKind::AppleArchiveExtract,
+        total_bytes: None,
+    });
+    let token = CancellationToken::new();
+    let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
+        let stdin = io::stdin();
+        let stderr = io::stderr();
+        let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
+        zmanager_core::apple_archive_backend::extract_apple_archive_with_overwrite_resolver(
+            &archive_path,
+            &destination_path,
+            policy,
+            &mut overwrite_resolver,
+        )
+    } else {
+        let mut sink = |event| progress.emit(event);
+        let mut context = JobContext::new(&token, &mut sink);
+        zmanager_core::apple_archive_backend::extract_apple_archive_with_context(
+            &archive_path,
+            &destination_path,
+            policy,
+            &mut context,
+        )
+    };
+
+    match result {
+        Ok(report) => {
+            progress.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            let outcome = ExtractOutcome {
+                label: FORMAT_APPLE_ARCHIVE,
+                format: FORMAT_APPLE_ARCHIVE,
+                backend: FORMAT_APPLE_ARCHIVE,
+                written_entries: report.written_entries,
+                skipped_entries: report.skipped_entries,
+                written_bytes: report.written_bytes,
+                warnings: report.warnings,
+            };
+            print_extract_summary(&archive_path, &destination_path, &outcome, global);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            progress.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            eprintln!("aar extract failed: {error}");
             ExitCode::FAILURE
         }
     }

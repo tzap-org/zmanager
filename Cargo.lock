@@ -2229,6 +2229,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
+name = "zmanager-apple-archive"
+version = "1.0.5"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "zmanager-cli"
 version = "1.0.5"
 dependencies = [
@@ -2270,6 +2277,7 @@ dependencies = [
  "x509-parser",
  "zeroize",
  "zip",
+ "zmanager-apple-archive",
  "zmanager-libarchive",
  "zmanager-unrar",
  "zstd",

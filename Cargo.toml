@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/zmanager-cli",
+    "crates/zmanager-apple-archive",
     "crates/zmanager-core",
     "crates/zmanager-ffi",
     "crates/zmanager-libarchive",

@@ -197,6 +197,79 @@ fn zm_creates_lists_tests_and_extracts_zip_folder() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn zm_creates_lists_tests_and_extracts_apple_archive_folder() {
+    let temp = TestDir::new("zm_aar_folder");
+    fs::create_dir_all(temp.path("project/src")).unwrap();
+    fs::create_dir_all(temp.path("project/empty dir")).unwrap();
+    fs::write(temp.path("project/README.md"), "hello aar").unwrap();
+    fs::write(temp.path("project/src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(temp.path("project/space name.txt"), "safe odd name").unwrap();
+    let archive = temp.path("project.aar");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create aar", &create);
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list aar", &list);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("project/README.md"), "{list_stdout}");
+    assert!(list_stdout.contains("project/src/main.rs"), "{list_stdout}");
+    assert!(
+        list_stdout.contains("project/space name.txt"),
+        "{list_stdout}"
+    );
+    assert!(list_stdout.contains("project/empty dir"), "{list_stdout}");
+
+    let test = Command::new(zm_path())
+        .arg("test")
+        .arg(&archive)
+        .output()
+        .unwrap();
+    assert_success("zm test aar", &test);
+
+    let stdout = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("--include")
+        .arg("project/README.md")
+        .arg("--to-stdout")
+        .output()
+        .unwrap();
+    assert_success("zm extract aar to stdout", &stdout);
+    assert_eq!(stdout.stdout, b"hello aar");
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract aar", &extract);
+
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/README.md")).unwrap(),
+        "hello aar"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/space name.txt")).unwrap(),
+        "safe odd name"
+    );
+    assert!(temp.path("out/project/empty dir").is_dir());
+}
+
 #[test]
 fn zm_create_accepts_multiple_explicit_sources() {
     let temp = TestDir::new("zm_multiple_sources");

@@ -1,3 +1,6 @@
+use crate::apple_archive_backend::{
+    self, AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveError,
+};
 use crate::manifest::{PlanOptions, plan_archive, plan_archives};
 use crate::safety::ExtractionPolicy;
 use crate::sevenz_backend::{SevenZCreateOptions, SevenZCreateReport};
@@ -40,6 +43,10 @@ pub enum JobKind {
     TzapCreate,
     /// TZAP extraction.
     TzapExtract,
+    /// AppleArchive creation.
+    AppleArchiveCreate,
+    /// AppleArchive extraction.
+    AppleArchiveExtract,
     /// Broad libarchive-backed extraction.
     ArchiveExtract,
     /// Raw single-file stream extraction.
@@ -621,6 +628,51 @@ pub fn run_tar_zst_create_job_from_sources_with_plan_options(
     finish_tar_zst_create_result(result, sink)
 }
 
+/// Runs an AppleArchive create job for multiple source roots with explicit
+/// planning options and emits lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+///
+/// # Errors
+///
+/// Returns [`AppleArchiveError`] when planning, AppleArchive creation,
+/// filesystem I/O, or cancellation fails.
+pub fn run_apple_archive_create_job_from_sources_with_plan_options(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &AppleArchiveCreateOptions,
+    plan_options: &PlanOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<AppleArchiveCreateReport, AppleArchiveError> {
+    let manifest = match plan_archives(sources, plan_options) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let error = AppleArchiveError::Plan(error);
+            sink.emit(JobEvent::Started {
+                kind: JobKind::AppleArchiveCreate,
+                total_bytes: None,
+            });
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(error);
+        }
+    };
+    sink.emit(JobEvent::Started {
+        kind: JobKind::AppleArchiveCreate,
+        total_bytes: Some(manifest.total_bytes),
+    });
+    let mut context = JobContext::new(token, sink);
+    let result = apple_archive_backend::create_apple_archive_from_manifest_with_context(
+        &manifest,
+        destination,
+        options,
+        &mut context,
+    );
+    finish_apple_archive_create_result(result, sink)
+}
+
 /// Runs a 7z create job for multiple source roots with explicit planning
 /// options and emits lifecycle events.
 ///
@@ -791,6 +843,48 @@ pub fn run_tar_zst_extract_job_with_policy(
         &mut context,
     );
     finish_tar_zst_extract_result(result, sink)
+}
+
+/// Runs an AppleArchive extract job with an explicit extraction policy while
+/// emitting lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave already-extracted files in the
+/// destination directory.
+///
+/// # Errors
+///
+/// Returns [`AppleArchiveError`] when AppleArchive reading, extraction safety,
+/// filesystem I/O, or cancellation fails.
+pub fn run_apple_archive_extract_job_with_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError> {
+    let total_bytes = match apple_archive_backend::list_apple_archive(&archive_path) {
+        Ok(listing) => {
+            let total = listing
+                .entries
+                .iter()
+                .filter_map(|entry| entry.size)
+                .sum::<u64>();
+            Some(total)
+        }
+        Err(_) => None,
+    };
+    sink.emit(JobEvent::Started {
+        kind: JobKind::AppleArchiveExtract,
+        total_bytes,
+    });
+    let mut context = JobContext::new(token, sink);
+    let result = apple_archive_backend::extract_apple_archive_with_context(
+        archive_path,
+        destination,
+        policy,
+        &mut context,
+    );
+    finish_apple_archive_extract_result(result, sink)
 }
 
 /// Runs a 7z extract job with an optional password and explicit extraction
@@ -1138,6 +1232,33 @@ fn finish_tzap_create_result(
     }
 }
 
+fn finish_apple_archive_create_result(
+    result: Result<AppleArchiveCreateReport, AppleArchiveError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<AppleArchiveCreateReport, AppleArchiveError> {
+    match result {
+        Ok(report) => {
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(AppleArchiveError::Cancelled) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(AppleArchiveError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
 fn finish_tzap_extract_result(
     result: Result<tzap_backend::TzapExtractReport, TzapError>,
     sink: &mut dyn JobEventSink,
@@ -1155,6 +1276,38 @@ fn finish_tzap_extract_result(
                 message: "job cancelled".to_owned(),
             });
             Err(TzapError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_apple_archive_extract_result(
+    result: Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError> {
+    match result {
+        Ok(report) => {
+            for warning in &report.warnings {
+                sink.emit(JobEvent::Warning {
+                    message: warning.clone(),
+                });
+            }
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(AppleArchiveError::Cancelled) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(AppleArchiveError::Cancelled)
         }
         Err(error) => {
             sink.emit(JobEvent::Failed {

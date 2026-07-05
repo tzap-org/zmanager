@@ -32,6 +32,7 @@ tzap-plugin-keywrap = { git = "https://github.com/tzap-org/tzap", rev = "8da80be
 tzap-plugin-signing = { git = "https://github.com/tzap-org/tzap", rev = "8da80be710b1ac70949aa5d2f5653d253dc3fdd2", version = "0.1.9" }
 zip = "8.6.0"
 zeroize = "1.8.2"
+zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "1.0.5" }
 zmanager-libarchive = { path = "../zmanager-libarchive", version = "1.0.5" }
 zmanager-unrar = { path = "../zmanager-unrar", version = "1.0.5" }
 zstd = { version = "0.13.3", features = ["zstdmt"] }

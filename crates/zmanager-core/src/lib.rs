@@ -2,6 +2,7 @@
 
 mod atomic_file;
 
+pub mod apple_archive_backend;
 pub mod archive_browser;
 pub mod auth_client;
 pub mod certificate_lifecycle;

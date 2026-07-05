@@ -4192,6 +4192,8 @@ fn job_kind_name(kind: JobKind) -> &'static str {
         JobKind::TarZstdExtract => "tar_zst_extract",
         JobKind::TzapCreate => "tzap_create",
         JobKind::TzapExtract => "tzap_extract",
+        JobKind::AppleArchiveCreate => "aar_create",
+        JobKind::AppleArchiveExtract => "aar_extract",
         JobKind::ArchiveExtract => "archive_extract",
         JobKind::RawStreamExtract => "raw_stream_extract",
     }
