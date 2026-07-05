@@ -454,14 +454,24 @@ mod platform {
             output: &mut W,
             mut on_bytes: impl FnMut(u64) -> bool,
         ) -> Result<u64> {
-            self.process_entry_blobs(
+            let data_bytes = self.process_entry_blobs(
                 entry,
                 Some(&mut |bytes| {
                     output.write_all(bytes)?;
                     let keep_going = on_bytes(bytes.len() as u64);
                     Ok(keep_going)
                 }),
-            )
+            )?;
+            if let Some(expected_bytes) = entry.size().or(entry.data_size()) {
+                if data_bytes != expected_bytes {
+                    return Err(Error::SizeMismatch {
+                        path: entry.path().to_owned(),
+                        expected: expected_bytes,
+                        actual: data_bytes,
+                    });
+                }
+            }
+            Ok(data_bytes)
         }
 
         fn process_entry_blobs(
@@ -475,26 +485,44 @@ mod platform {
                 let mut remaining = blob.size;
                 while remaining > 0 {
                     let chunk_len = cmp::min(remaining, buffer.len() as u64) as usize;
-                    check_status(
-                        unsafe {
-                            AAArchiveStreamReadBlob(
-                                self.archive_stream.as_ptr(),
-                                blob.raw,
-                                buffer.as_mut_ptr().cast(),
-                                chunk_len,
-                            )
-                        },
-                        "read blob",
-                    )?;
+                    let read_bytes = unsafe {
+                        AAArchiveStreamReadBlob(
+                            self.archive_stream.as_ptr(),
+                            blob.raw,
+                            buffer.as_mut_ptr().cast(),
+                            chunk_len,
+                        )
+                    };
+                    if read_bytes < 0 {
+                        return Err(Error::Status {
+                            operation: "read blob",
+                            status: i64::from(read_bytes),
+                        });
+                    }
+                    let read_bytes = usize::try_from(read_bytes).map_err(|_| Error::SizeOutOfRange {
+                        field: "blob bytes read",
+                    })?;
+                    if read_bytes > chunk_len {
+                        return Err(Error::SizeOutOfRange {
+                            field: "read blob return value",
+                        });
+                    }
+                    if read_bytes == 0 {
+                        return Err(Error::SizeMismatch {
+                            path: entry.path.to_owned(),
+                            expected: blob.size,
+                            actual: blob.size - remaining,
+                        });
+                    }
                     if blob.key == BlobKey::Data {
                         if let Some(callback) = data_chunk.as_deref_mut() {
-                            if !callback(&buffer[..chunk_len])? {
+                            if !callback(&buffer[..read_bytes])? {
                                 return Err(Error::Cancelled);
                             }
                         }
-                        data_bytes += chunk_len as u64;
+                        data_bytes += read_bytes as u64;
                     }
-                    remaining -= chunk_len as u64;
+                    remaining -= read_bytes as u64;
                 }
             }
             Ok(data_bytes)
