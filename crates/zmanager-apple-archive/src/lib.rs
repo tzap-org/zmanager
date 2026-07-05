@@ -499,9 +499,10 @@ mod platform {
                             status: i64::from(read_bytes),
                         });
                     }
-                    let read_bytes = usize::try_from(read_bytes).map_err(|_| Error::SizeOutOfRange {
-                        field: "blob bytes read",
-                    })?;
+                    let read_bytes =
+                        usize::try_from(read_bytes).map_err(|_| Error::SizeOutOfRange {
+                            field: "blob bytes read",
+                        })?;
                     if read_bytes > chunk_len {
                         return Err(Error::SizeOutOfRange {
                             field: "read blob return value",
