@@ -4696,7 +4696,7 @@ mod tests {
         let plan = c_string(raw_plan);
         assert!(plan.contains("\"ok\":true"));
         assert!(plan.contains("\"excluded_entries\":1"));
-        assert!(plan.contains("\"excluded_bytes\":4"));
+        assert!(plan.contains("\"excluded_bytes\":0"));
 
         // SAFETY: `source` is a valid C string for the duration of the call.
         let raw_default_plan = unsafe { zmanager_ffi_plan_archive(source.as_ptr(), false) };

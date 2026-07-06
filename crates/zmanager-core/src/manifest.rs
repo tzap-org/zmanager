@@ -333,7 +333,7 @@ impl ManifestPlanner<'_> {
             && let Some(reason) =
                 self.exclusion_reason(source_path, &archive_path, file_type, gitignore_rules)
         {
-            let size = estimate_regular_file_bytes(source_path, &metadata, file_type);
+            let size = estimate_regular_file_bytes(&metadata, file_type);
             self.excluded_bytes = self.excluded_bytes.saturating_add(size);
             self.excluded_entries.push(ExcludedEntry {
                 archive_path,
@@ -801,34 +801,12 @@ fn clean_source_exclude_name(name: &str) -> bool {
     )
 }
 
-fn estimate_regular_file_bytes(
-    source_path: &Path,
-    metadata: &Metadata,
-    file_type: ManifestFileType,
-) -> u64 {
+fn estimate_regular_file_bytes(metadata: &Metadata, file_type: ManifestFileType) -> u64 {
     match file_type {
         ManifestFileType::File => metadata.len(),
-        ManifestFileType::Directory => estimate_directory_regular_file_bytes(source_path),
+        ManifestFileType::Directory => 0,
         ManifestFileType::Symlink | ManifestFileType::Other => 0,
     }
-}
-
-fn estimate_directory_regular_file_bytes(source_path: &Path) -> u64 {
-    let Ok(children) = fs::read_dir(source_path) else {
-        return 0;
-    };
-
-    children
-        .filter_map(Result::ok)
-        .map(|child| {
-            let path = child.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                return 0;
-            };
-            let file_type = manifest_file_type(&metadata);
-            estimate_regular_file_bytes(&path, &metadata, file_type)
-        })
-        .sum()
 }
 
 fn archive_file_name(path: &Path) -> Result<String, PlanError> {
@@ -1014,9 +992,16 @@ mod tests {
             vec!["project", "project/src", "project/src/main.rs"]
         );
         assert_eq!(manifest.excluded_count(), 5);
-        assert_eq!(manifest.excluded_bytes, 25);
+        assert_eq!(manifest.excluded_bytes, 5);
         assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/node_modules" && entry.reason.contains("clean source")
+            entry.archive_path == "project/node_modules"
+                && entry.reason.contains("clean source")
+                && entry.size == 0
+        }));
+        assert!(manifest.excluded_entries.iter().any(|entry| {
+            entry.archive_path == "project/.DS_Store"
+                && entry.reason.contains("default macOS")
+                && entry.size == 5
         }));
     }
 
