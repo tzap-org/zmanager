@@ -386,7 +386,7 @@ fn read_entry(entry: NonNull<sys::archive_entry>) -> Entry {
             sys::archive_entry_pathname,
         ),
         size: unsafe { sys::archive_entry_size(entry) },
-        mode,
+        mode: entry_mode(mode),
         file_type: file_type(unsafe { sys::archive_entry_filetype(entry) }),
         modified: modified_time(entry),
         symlink: entry_string(
@@ -435,6 +435,16 @@ fn file_type(value: sys::la_mode_t) -> FileType {
         sys::AE_IFSOCK => FileType::Socket,
         _ => FileType::Unknown,
     }
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+fn entry_mode(value: sys::la_mode_t) -> u32 {
+    u32::from(value)
+}
+
+#[cfg(not(any(windows, target_vendor = "apple")))]
+fn entry_mode(value: sys::la_mode_t) -> u32 {
+    value
 }
 
 fn modified_time(entry: *mut sys::archive_entry) -> Option<SystemTime> {
