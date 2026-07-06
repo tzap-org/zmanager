@@ -963,23 +963,39 @@ pub fn run_rar_extract_job_with_password_and_policy(
         });
     }
 
-    let total_bytes = match rar_backend::list_rar_with_password(&archive_path, password) {
-        Ok(listing) => Some(listing.entries.iter().map(|entry| entry.size).sum()),
-        Err(_) => None,
-    };
+    let listing = rar_backend::list_rar_with_password(&archive_path, password).ok();
+    let total_bytes = listing
+        .as_ref()
+        .map(|listing| listing.entries.iter().map(|entry| entry.size).sum());
     sink.emit(JobEvent::Started {
         kind: JobKind::RarExtract,
         total_bytes,
     });
 
     let mut context = JobContext::new(token, sink);
-    let result = rar_backend::extract_rar_with_password_and_context(
-        archive_path,
-        destination,
-        policy,
-        password,
-        &mut context,
-    );
+    let result = if let Some(listing) = listing {
+        let entries = listing
+            .entries
+            .into_iter()
+            .map(rar_backend::RarListEntry::into_unrar_entry)
+            .collect::<Vec<_>>();
+        rar_backend::extract_rar_entries_with_password_and_context(
+            archive_path,
+            destination,
+            policy,
+            password,
+            entries,
+            &mut context,
+        )
+    } else {
+        rar_backend::extract_rar_with_password_and_context(
+            archive_path,
+            destination,
+            policy,
+            password,
+            &mut context,
+        )
+    };
     finish_rar_extract_result(result, sink)
 }
 

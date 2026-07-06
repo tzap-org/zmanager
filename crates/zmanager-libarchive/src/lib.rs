@@ -386,7 +386,7 @@ fn read_entry(entry: NonNull<sys::archive_entry>) -> Entry {
             sys::archive_entry_pathname,
         ),
         size: unsafe { sys::archive_entry_size(entry) },
-        mode: u32::from(mode),
+        mode,
         file_type: file_type(unsafe { sys::archive_entry_filetype(entry) }),
         modified: modified_time(entry),
         symlink: entry_string(

@@ -8,7 +8,7 @@ use crate::safety::{
 };
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_apple_archive::{ArchiveReader, ArchiveWriter};
@@ -428,13 +428,6 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
     output: &mut W,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     let archive_path = archive_path.as_ref();
-    let selected_paths = selected_regular_file_paths(archive_path, &mut selected)?;
-    if selected_paths.len() != 1 {
-        return Err(AppleArchiveError::StdoutSelectionNotSingleFile {
-            selected_files: selected_paths.len(),
-        });
-    }
-    let selected_path = selected_paths[0].clone();
     let mut reader = ArchiveReader::open(archive_path)?;
     let mut report = AppleArchiveExtractReport {
         written_entries: 0,
@@ -442,23 +435,56 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
         written_bytes: 0,
         warnings: Vec::new(),
     };
+    let mut selected_files = 0_usize;
+    let mut staged_file = None;
 
     while let Some(entry) = reader.next_entry()? {
-        if entry.path() != selected_path {
+        if !selected(entry.path())
+            || !matches!(entry.kind(), zmanager_apple_archive::EntryKind::File)
+        {
             reader.skip_entry_data(&entry)?;
             report.skipped_entries += 1;
             continue;
         }
+
+        selected_files += 1;
+        if selected_files > 1 {
+            reader.skip_entry_data(&entry)?;
+            report.skipped_entries += 1;
+            continue;
+        }
+
         ensure_file_entry_has_data(&entry)?;
-        let copied = reader.read_entry_data(&entry, output, |_| true)?;
+        let mut staged = crate::atomic_file::TemporaryFile::create("apple-archive-stdout")
+            .map_err(|source| AppleArchiveError::Io {
+                path: std::env::temp_dir(),
+                source,
+            })?;
+        let copied = reader.read_entry_data(&entry, staged.file_mut(), |_| true)?;
         report.written_entries += 1;
         report.written_bytes += copied;
-        return Ok(report);
+        staged_file = Some(staged);
     }
 
-    Err(AppleArchiveError::EntryNotFound {
-        path: selected_path,
-    })
+    if selected_files != 1 {
+        return Err(AppleArchiveError::StdoutSelectionNotSingleFile { selected_files });
+    }
+
+    let mut staged =
+        staged_file.ok_or(AppleArchiveError::StdoutSelectionNotSingleFile { selected_files: 0 })?;
+    staged
+        .file_mut()
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| AppleArchiveError::Io {
+            path: staged.path().to_path_buf(),
+            source,
+        })?;
+    io::copy(staged.file_mut(), output)
+        .map_err(|source| AppleArchiveError::Io {
+            path: staged.path().to_path_buf(),
+            source,
+        })
+        .map(|_| report)
 }
 
 /// Reads selected AppleArchive entries to validate data streams.
@@ -829,24 +855,6 @@ fn append_manifest_entry(
     Ok(())
 }
 
-fn selected_regular_file_paths(
-    archive_path: &Path,
-    selected: &mut impl FnMut(&str) -> bool,
-) -> Result<Vec<String>, AppleArchiveError> {
-    let mut reader = ArchiveReader::open(archive_path)?;
-    let mut selected_paths = Vec::new();
-
-    while let Some(entry) = reader.next_entry()? {
-        if selected(entry.path()) && matches!(entry.kind(), zmanager_apple_archive::EntryKind::File)
-        {
-            selected_paths.push(entry.path().to_owned());
-        }
-        reader.skip_entry_data(&entry)?;
-    }
-
-    Ok(selected_paths)
-}
-
 fn ensure_file_entry_has_data(
     entry: &zmanager_apple_archive::Entry,
 ) -> Result<(), AppleArchiveError> {
@@ -992,14 +1000,19 @@ fn ensure_parent_dir(path: &Path) -> Result<(), AppleArchiveError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     use super::{
-        AppleArchiveCompression, AppleArchiveCreateOptions, apple_archive_supported,
-        create_apple_archive_from_path, extract_apple_archive, is_apple_archive_path,
-        list_apple_archive, test_apple_archive_filter,
+        AppleArchiveCompression, AppleArchiveCreateOptions, create_apple_archive_from_path,
+        extract_apple_archive, test_apple_archive_filter,
     };
+    use super::{apple_archive_supported, is_apple_archive_path, list_apple_archive};
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     use crate::safety::ExtractionPolicy;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     use std::fs;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     use std::path::{Path, PathBuf};
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1067,10 +1080,12 @@ mod tests {
         assert!(apple_archive_supported());
     }
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     struct TestDir {
         root: PathBuf,
     }
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     impl TestDir {
         fn new(name: &str) -> Self {
             let now = SystemTime::now()
@@ -1095,6 +1110,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);

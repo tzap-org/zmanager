@@ -577,53 +577,41 @@ fn write_raw_stream_to_file(
     on_progress: ProgressCallback<'_>,
     track_source_progress: bool,
 ) -> Result<u64, RawStreamError> {
-    if let Some(parent) = destination_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| RawStreamError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    let temp_path = temp_destination_path(destination_path);
-    let mut output = File::create(&temp_path).map_err(|source| RawStreamError::Io {
-        path: temp_path.clone(),
-        source,
-    })?;
-    let mut output = SizeLimitWriter::new(&mut output, max_expanded_bytes);
-    let written = match copy_raw_stream_to_writer_with_progress(
-        archive_path,
-        format,
-        &mut output,
-        on_progress,
-        track_source_progress,
-    ) {
-        Ok(written) => written,
-        Err(error) => {
-            let _ = fs::remove_file(&temp_path);
-            return Err(error);
-        }
-    };
-    output.flush().map_err(|source| RawStreamError::Io {
-        path: temp_path.clone(),
-        source,
-    })?;
-
-    if replace_existing {
-        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
+    let mut output =
+        crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
             RawStreamError::Io {
                 path: destination_path.to_path_buf(),
                 source,
             }
         })?;
-    }
-
-    fs::rename(&temp_path, destination_path).map_err(|source| {
-        let _ = fs::remove_file(&temp_path);
-        RawStreamError::Io {
+    let written = {
+        let file = output.file_mut().map_err(|source| RawStreamError::Io {
             path: destination_path.to_path_buf(),
             source,
-        }
-    })?;
+        })?;
+        let mut limited_output = SizeLimitWriter::new(file, max_expanded_bytes);
+        let written = copy_raw_stream_to_writer_with_progress(
+            archive_path,
+            format,
+            &mut limited_output,
+            on_progress,
+            track_source_progress,
+        )?;
+        limited_output
+            .flush()
+            .map_err(|source| RawStreamError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?;
+        written
+    };
+
+    output
+        .commit_with_replace(replace_existing)
+        .map_err(|source| RawStreamError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
 
     Ok(written)
 }
@@ -784,7 +772,8 @@ fn copy_lrzip_to_writer<W: Write>(
     output: &mut W,
     on_progress: ProgressCallback<'_>,
 ) -> Result<u64, RawStreamError> {
-    let temp_path = temp_external_output_path("lrzip");
+    let temp_dir = TemporaryDirectory::new("lrzip")?;
+    let temp_path = temp_dir.path().join("decoded");
     let process_output = Command::new("lrzip")
         .env("LRZIP", "NOCONFIG")
         .arg("-d")
@@ -835,8 +824,10 @@ fn copy_unix_compress_to_writer<W: Write>(
     output: &mut W,
     on_progress: ProgressCallback<'_>,
 ) -> Result<u64, RawStreamError> {
-    let temp_input =
-        temp_external_output_path("compress").with_extension(RAW_STREAM_TEMP_EXTENSION);
+    let temp_dir = TemporaryDirectory::new("compress")?;
+    let temp_input = temp_dir
+        .path()
+        .join(format!("input.{RAW_STREAM_TEMP_EXTENSION}"));
     let temp_output = temp_input.with_extension("");
     fs::copy(archive_path, &temp_input).map_err(|source| RawStreamError::Io {
         path: temp_input.clone(),
@@ -967,29 +958,49 @@ fn is_compressed_archive_container(name: &str) -> bool {
     .any(|suffix| ends_with_ignore_ascii_case(name, suffix))
 }
 
-fn temp_destination_path(destination_path: &Path) -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let file_name = destination_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("output");
-
-    destination_path.with_file_name(format!(
-        "{TEMP_OUTPUT_PREFIX}-{file_name}-{}-{now}{TEMP_OUTPUT_SUFFIX}",
-        std::process::id()
-    ))
+struct TemporaryDirectory {
+    path: PathBuf,
 }
 
-fn temp_external_output_path(label: &str) -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    std::env::temp_dir().join(format!(
-        "{TEMP_OUTPUT_PREFIX}-{label}-{}-{now}{TEMP_OUTPUT_SUFFIX}",
-        std::process::id()
-    ))
+impl TemporaryDirectory {
+    fn new(label: &str) -> Result<Self, RawStreamError> {
+        let parent = std::env::temp_dir();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+
+        for attempt in 0..100 {
+            let path = parent.join(format!(
+                "{TEMP_OUTPUT_PREFIX}-{label}-{}-{now}-{attempt}{TEMP_OUTPUT_SUFFIX}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(source) => {
+                    return Err(RawStreamError::Io { path, source });
+                }
+            }
+        }
+
+        Err(RawStreamError::Io {
+            path: parent,
+            source: io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("could not allocate temporary directory for {label}"),
+            ),
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
@@ -1011,8 +1022,8 @@ fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RawStreamFormat, detect_raw_stream_format, estimate_raw_stream_uncompressed_size,
-        extract_raw_stream, output_name_for_raw_stream,
+        RawStreamFormat, TemporaryDirectory, detect_raw_stream_format,
+        estimate_raw_stream_uncompressed_size, extract_raw_stream, output_name_for_raw_stream,
     };
     use crate::safety::{ExtractionLimits, ExtractionPolicy};
     use flate2::Compression;
@@ -1097,6 +1108,18 @@ mod tests {
             .expect("expected gzip uncompressed size hint");
 
         assert_eq!(estimated, payload.len() as u64);
+    }
+
+    #[test]
+    fn temporary_directories_do_not_reuse_existing_paths() {
+        let first = TemporaryDirectory::new("raw-stream-test").unwrap();
+        let first_path = first.path().to_path_buf();
+
+        let second = TemporaryDirectory::new("raw-stream-test").unwrap();
+
+        assert_ne!(second.path(), first_path);
+        assert!(first_path.is_dir());
+        assert!(second.path().is_dir());
     }
 
     struct TestDir {

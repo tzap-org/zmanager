@@ -111,6 +111,56 @@ impl AtomicOutputFile {
     }
 }
 
+pub(crate) struct TemporaryFile {
+    path: PathBuf,
+    file: File,
+}
+
+impl TemporaryFile {
+    pub(crate) fn create(label: &str) -> io::Result<Self> {
+        let parent = std::env::temp_dir();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+
+        for attempt in 0..MAX_TEMP_ATTEMPTS {
+            let path = parent.join(format!(
+                "{TEMP_PREFIX}-{label}-{}-{now}-{attempt}{TEMP_SUFFIX}",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => return Ok(Self { path, file }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("could not allocate temporary file for {label}"),
+        ))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 fn remove_file_destination_for_replace(path: &Path) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,

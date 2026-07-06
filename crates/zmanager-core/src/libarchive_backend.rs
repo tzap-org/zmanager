@@ -6,7 +6,7 @@ use crate::safety::{
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -341,13 +341,6 @@ pub fn copy_archive_files_to_writer<W: Write>(
     output: &mut W,
 ) -> Result<LibarchiveExtractReport, LibarchiveError> {
     let archive_path = archive_path.as_ref();
-    let selected_paths = selected_regular_file_paths(archive_path, password, &mut selected)?;
-    if selected_paths.len() != 1 {
-        return Err(LibarchiveError::StdoutSelectionNotSingleFile {
-            selected_files: selected_paths.len(),
-        });
-    }
-    let selected_path = selected_paths[0].clone();
     let mut archive = open_archive(archive_path, password)?;
     let mut report = LibarchiveExtractReport {
         written_entries: 0,
@@ -355,34 +348,58 @@ pub fn copy_archive_files_to_writer<W: Write>(
         written_bytes: 0,
         warnings: Vec::new(),
     };
-    let mut copied_selected = false;
+    let mut selected_files = 0_usize;
+    let mut staged_file = None;
 
     while let Some(entry) = archive.next_entry()? {
         let owned_entry = OwnedEntry::from_entry(&entry)?;
-        if copied_selected || owned_entry.path != selected_path {
-            archive.skip_data()?;
-            report.skipped_entries += 1;
-            continue;
-        }
-        if !matches!(owned_entry.extraction_kind, ExtractionEntryKind::File) {
+        if !selected(&owned_entry.path)
+            || !matches!(owned_entry.extraction_kind, ExtractionEntryKind::File)
+        {
             archive.skip_data()?;
             report.skipped_entries += 1;
             continue;
         }
 
-        let copied = copy_file_entry_to_writer(&mut archive, output, &owned_entry.path)?;
+        selected_files += 1;
+        if selected_files > 1 {
+            archive.skip_data()?;
+            report.skipped_entries += 1;
+            continue;
+        }
+
+        let mut staged =
+            crate::atomic_file::TemporaryFile::create("libarchive-stdout").map_err(|source| {
+                LibarchiveError::Io {
+                    path: std::env::temp_dir(),
+                    source,
+                }
+            })?;
+        let copied = copy_file_entry_to_writer(&mut archive, staged.file_mut(), &owned_entry.path)?;
         report.written_entries += 1;
         report.written_bytes += copied;
-        copied_selected = true;
+        staged_file = Some(staged);
     }
 
-    if copied_selected {
-        Ok(report)
-    } else {
-        Err(LibarchiveError::EntryNotFound {
-            path: selected_path,
-        })
+    if selected_files != 1 {
+        return Err(LibarchiveError::StdoutSelectionNotSingleFile { selected_files });
     }
+
+    let mut staged =
+        staged_file.ok_or(LibarchiveError::StdoutSelectionNotSingleFile { selected_files: 0 })?;
+    staged
+        .file_mut()
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| LibarchiveError::Io {
+            path: staged.path().to_path_buf(),
+            source,
+        })?;
+    io::copy(staged.file_mut(), output).map_err(|source| LibarchiveError::Io {
+        path: staged.path().to_path_buf(),
+        source,
+    })?;
+
+    Ok(report)
 }
 
 /// Reads selected archive entries to validate libarchive-backed data streams.
@@ -897,27 +914,6 @@ fn nonnegative_size(size: i64) -> Option<u64> {
     u64::try_from(size).ok()
 }
 
-fn selected_regular_file_paths(
-    archive_path: &Path,
-    password: Option<&str>,
-    selected: &mut impl FnMut(&str) -> bool,
-) -> Result<Vec<String>, LibarchiveError> {
-    let mut archive = open_archive(archive_path, password)?;
-    let mut selected_paths = Vec::new();
-
-    while let Some(entry) = archive.next_entry()? {
-        let owned_entry = OwnedEntry::from_entry(&entry)?;
-        if selected(&owned_entry.path)
-            && matches!(owned_entry.extraction_kind, ExtractionEntryKind::File)
-        {
-            selected_paths.push(owned_entry.path);
-        }
-        archive.skip_data()?;
-    }
-
-    Ok(selected_paths)
-}
-
 fn entry_kind(entry: &zmanager_libarchive::Entry) -> LibarchiveEntryKind {
     if entry.hardlink().is_some() {
         return LibarchiveEntryKind::Hardlink;
@@ -1168,8 +1164,9 @@ fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), Libarchi
 #[cfg(test)]
 mod tests {
     use super::{
-        LibarchiveEntryKind, discover_multi_volume_paths, extract_archive, is_split_zip_path,
-        list_archive, parse_numbered_7z_volume_name, parse_numbered_archive_volume_name,
+        LibarchiveEntryKind, LibarchiveError, copy_archive_files_to_writer,
+        discover_multi_volume_paths, extract_archive, is_split_zip_path, list_archive,
+        parse_numbered_7z_volume_name, parse_numbered_archive_volume_name,
     };
     use crate::safety::ExtractionPolicy;
     use std::fs;
@@ -1234,6 +1231,58 @@ mod tests {
             fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
             "hello brotli tar"
         );
+    }
+
+    #[test]
+    fn copy_to_writer_rejects_multiple_selected_files_without_partial_output() {
+        let temp = TestDir::new("copy_to_writer_rejects_multiple_selected_files");
+        let archive = temp.path("archive.tar.br");
+        write_tar_brotli_with_files(
+            &archive,
+            &[
+                ("payload/a.txt", b"first".as_slice()),
+                ("payload/b.txt", b"second".as_slice()),
+            ],
+        );
+        let mut output = Vec::new();
+
+        let error =
+            copy_archive_files_to_writer(&archive, None, |_| true, &mut output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            LibarchiveError::StdoutSelectionNotSingleFile { selected_files: 2 }
+        ));
+        assert!(
+            output.is_empty(),
+            "stdout output must not receive partial bytes when selection is ambiguous"
+        );
+    }
+
+    #[test]
+    fn copy_to_writer_streams_single_selected_file_after_validation() {
+        let temp = TestDir::new("copy_to_writer_streams_single_selected_file");
+        let archive = temp.path("archive.tar.br");
+        write_tar_brotli_with_files(
+            &archive,
+            &[
+                ("payload/a.txt", b"first".as_slice()),
+                ("payload/b.txt", b"second".as_slice()),
+            ],
+        );
+        let mut output = Vec::new();
+
+        let report = copy_archive_files_to_writer(
+            &archive,
+            None,
+            |path| path == "payload/b.txt",
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!(output, b"second");
+        assert_eq!(report.written_entries, 1);
+        assert_eq!(report.written_bytes, 6);
     }
 
     #[cfg(unix)]
@@ -1476,18 +1525,24 @@ mod tests {
     }
 
     fn write_tar_brotli_with_file(path: &Path, entry_path: &str, contents: &[u8]) {
+        write_tar_brotli_with_files(path, &[(entry_path, contents)]);
+    }
+
+    fn write_tar_brotli_with_files(path: &Path, entries: &[(&str, &[u8])]) {
         let mut tar_bytes = Vec::new();
         {
             let mut builder = tar::Builder::new(&mut tar_bytes);
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(tar::EntryType::Regular);
-            header.set_size(contents.len().try_into().unwrap());
-            header.set_mode(0o644);
-            header.set_mtime(0);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, entry_path, contents)
-                .unwrap();
+            for (entry_path, contents) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(contents.len().try_into().unwrap());
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, *entry_path, *contents)
+                    .unwrap();
+            }
             builder.finish().unwrap();
         }
 

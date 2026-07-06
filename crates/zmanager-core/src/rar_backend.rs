@@ -32,6 +32,20 @@ pub struct RarListEntry {
     pub solid: bool,
 }
 
+impl RarListEntry {
+    pub(crate) fn into_unrar_entry(self) -> zmanager_unrar::RarEntry {
+        zmanager_unrar::RarEntry {
+            path: self.path,
+            unpacked_size: self.size,
+            dictionary_size: self.dictionary_size,
+            kind: self.kind.into_unrar_kind(),
+            link_target: self.link_target,
+            encrypted: self.encrypted,
+            solid: self.solid,
+        }
+    }
+}
+
 /// Portable RAR listing entry type.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RarListEntryKind {
@@ -47,6 +61,19 @@ pub enum RarListEntryKind {
     FileCopy,
     /// Unsupported special entry.
     Special,
+}
+
+impl RarListEntryKind {
+    fn into_unrar_kind(self) -> RarEntryKind {
+        match self {
+            Self::File => RarEntryKind::File,
+            Self::Directory => RarEntryKind::Directory,
+            Self::Symlink => RarEntryKind::Symlink,
+            Self::Hardlink => RarEntryKind::Hardlink,
+            Self::FileCopy => RarEntryKind::FileCopy,
+            Self::Special => RarEntryKind::Special,
+        }
+    }
 }
 
 /// RAR listing report.
@@ -221,11 +248,51 @@ pub fn extract_rar_with_password_and_context(
     extract_rar_inner(archive, destination, policy, password, None, Some(context))
 }
 
+pub(crate) fn extract_rar_entries_with_password_and_context(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    entries: Vec<zmanager_unrar::RarEntry>,
+    context: &mut JobContext<'_>,
+) -> Result<RarExtractReport, RarBackendError> {
+    extract_rar_inner_with_entries(
+        archive,
+        destination,
+        policy,
+        password,
+        entries,
+        None,
+        Some(context),
+    )
+}
+
 fn extract_rar_inner(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     password: Option<&str>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
+) -> Result<RarExtractReport, RarBackendError> {
+    let entries = zmanager_unrar::list_archive(archive.as_ref(), password)?;
+    extract_rar_inner_with_entries(
+        archive,
+        destination,
+        policy,
+        password,
+        entries,
+        overwrite_resolver,
+        context.as_deref_mut(),
+    )
+}
+
+fn extract_rar_inner_with_entries(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    entries: Vec<zmanager_unrar::RarEntry>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<RarExtractReport, RarBackendError> {
@@ -239,7 +306,6 @@ fn extract_rar_inner(
             }
         })?;
 
-    let entries = zmanager_unrar::list_archive(archive, password)?;
     let PlannedRarExtraction {
         selections,
         deferred_links,
