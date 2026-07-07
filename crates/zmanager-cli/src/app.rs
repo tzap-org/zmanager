@@ -499,10 +499,10 @@ The release packages install completion files automatically where package
 managers support it. This command is for manual shell setup and troubleshooting.
 ";
 
-const COMPLETION_BASH_SCRIPT: &str = include_str!("../../../completions/zm.bash");
-const COMPLETION_ZSH_SCRIPT: &str = include_str!("../../../completions/_zm");
-const COMPLETION_FISH_SCRIPT: &str = include_str!("../../../completions/zm.fish");
-const COMPLETION_POWERSHELL_SCRIPT: &str = include_str!("../../../completions/zm.ps1");
+const COMPLETION_BASH_SCRIPT: &str = include_str!("../completions/zm.bash");
+const COMPLETION_ZSH_SCRIPT: &str = include_str!("../completions/_zm");
+const COMPLETION_FISH_SCRIPT: &str = include_str!("../completions/zm.fish");
+const COMPLETION_POWERSHELL_SCRIPT: &str = include_str!("../completions/zm.ps1");
 
 const FORMAT_ZIP: &str = "zip";
 const FORMAT_TAR_ZST: &str = "tar.zst";
