@@ -1,6 +1,7 @@
 [package]
 name = "zmanager-ffi"
 version.workspace = true
+description = "C ABI bindings for the ZManager archive engine."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

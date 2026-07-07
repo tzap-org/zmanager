@@ -1,6 +1,7 @@
 [package]
 name = "zmanager-cli"
 version.workspace = true
+description = "Command-line archive manager powered by zmanager-core."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
