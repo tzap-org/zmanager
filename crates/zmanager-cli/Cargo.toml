@@ -18,7 +18,7 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 rpassword = "7.5.2"
 serde_json = "1.0.140"
-zmanager-core = { path = "../zmanager-core", version = "1.0.5" }
+zmanager-core = { path = "../zmanager-core", version = "1.0.6" }
 
 [dev-dependencies]
 flate2 = "1.1.9"

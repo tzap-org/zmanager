@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 libc = "0.2.186"
-zmanager-libarchive-sys = "1.0.5"
+zmanager-libarchive-sys = "1.0.6"
 
 [lints.rust]
 unsafe_code = "allow"

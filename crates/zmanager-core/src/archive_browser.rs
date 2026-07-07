@@ -539,7 +539,7 @@ fn list_tzap_entries(
             kind: tzap_entry_kind_from_index_entry_path(&entry.path),
             size: Some(entry.file_data_size),
             compressed_size: None,
-            modified: entry.mtime.map(|mtime| mtime.to_string()),
+            modified: (entry.mtime != 0).then(|| entry.mtime.to_string()),
         })
         .collect();
     Ok(BrowserListing { entries })
