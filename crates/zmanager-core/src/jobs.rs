@@ -17,6 +17,7 @@ use crate::{
     sevenz_backend,
     sevenz_backend::SevenZError,
 };
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,6 +54,21 @@ pub enum JobKind {
     RawStreamExtract,
 }
 
+/// One observable phase of an archive job.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub enum JobPhase {
+    /// Read and compress source payloads to determine the archive layout.
+    PlanningPayload,
+    /// Build indexes and metadata after the payload layout is known.
+    PlanningMetadata,
+    /// Read, compress, protect, and write payload blocks.
+    EmittingPayload,
+    /// Protect and write indexes, recovery metadata, footers, and trailers.
+    EmittingMetadata,
+    /// Publish temporary output files at their final paths.
+    CommittingOutput,
+}
+
 /// Progress and lifecycle event emitted by archive jobs.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum JobEvent {
@@ -78,6 +94,26 @@ pub enum JobEvent {
         bytes: u64,
         /// Total bytes processed so far by this job context.
         total_bytes_processed: u64,
+    },
+    /// A job entered a new observable phase.
+    PhaseStarted {
+        /// Newly active phase.
+        phase: JobPhase,
+        /// Total source bytes for this phase when known.
+        total_bytes: Option<u64>,
+    },
+    /// Source bytes were processed within one observable phase.
+    PhaseBytesProcessed {
+        /// Active phase.
+        phase: JobPhase,
+        /// Archive path when associated with a specific entry.
+        path: Option<String>,
+        /// Incremental bytes processed by this event.
+        bytes: u64,
+        /// Total bytes processed so far within this phase.
+        total_bytes_processed: u64,
+        /// Total source bytes for this phase when known.
+        total_bytes: Option<u64>,
     },
     /// An archive entry finished processing.
     EntryFinished {
@@ -167,6 +203,7 @@ pub struct JobContext<'a> {
     token: &'a CancellationToken,
     sink: &'a mut dyn JobEventSink,
     total_bytes_processed: u64,
+    phase_bytes_processed: BTreeMap<JobPhase, u64>,
 }
 
 impl<'a> JobContext<'a> {
@@ -176,6 +213,7 @@ impl<'a> JobContext<'a> {
             token,
             sink,
             total_bytes_processed: 0,
+            phase_bytes_processed: BTreeMap::new(),
         }
     }
 
@@ -214,6 +252,34 @@ impl<'a> JobContext<'a> {
             path: path.map(ToOwned::to_owned),
             bytes,
             total_bytes_processed: self.total_bytes_processed,
+        });
+    }
+
+    /// Emits a phase-started event and resets that phase's byte counter.
+    pub fn phase_started(&mut self, phase: JobPhase, total_bytes: Option<u64>) {
+        self.phase_bytes_processed.insert(phase, 0);
+        self.emit(JobEvent::PhaseStarted { phase, total_bytes });
+    }
+
+    /// Emits phase-scoped byte progress and updates its cumulative counter.
+    pub fn phase_bytes_processed(
+        &mut self,
+        phase: JobPhase,
+        path: Option<&str>,
+        bytes: u64,
+        total_bytes: Option<u64>,
+    ) {
+        let total_bytes_processed = {
+            let processed = self.phase_bytes_processed.entry(phase).or_default();
+            *processed = processed.saturating_add(bytes);
+            *processed
+        };
+        self.emit(JobEvent::PhaseBytesProcessed {
+            phase,
+            path: path.map(ToOwned::to_owned),
+            bytes,
+            total_bytes_processed,
+            total_bytes,
         });
     }
 
@@ -1528,7 +1594,7 @@ fn finish_raw_stream_extract_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        CancellationToken, JobEvent, run_7z_create_job_from_sources_with_plan_options,
+        CancellationToken, JobEvent, JobPhase, run_7z_create_job_from_sources_with_plan_options,
         run_clean_source_tar_zst_create_job, run_clean_source_tar_zst_create_job_from_sources,
         run_raw_stream_extract_job_with_policy, run_tar_zst_create_job,
         run_tzap_create_job_from_sources_with_plan_options,
@@ -1691,7 +1757,7 @@ mod tests {
     }
 
     #[test]
-    fn tzap_create_job_emits_progress_before_completion_for_large_file() {
+    fn tzap_create_job_emits_phase_progress_through_output_commit() {
         let temp = TestDir::new("tzap_create_job_emits_progress_before_completion_for_large_file");
         let payload = large_tzap_progress_payload();
         temp.write_file("project/payload.bin", &payload);
@@ -1707,7 +1773,35 @@ mod tests {
         )
         .unwrap();
 
-        assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+        let phases = events
+            .iter()
+            .filter_map(|event| match event {
+                JobEvent::PhaseStarted { phase, .. } => Some(*phase),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![
+                JobPhase::PlanningPayload,
+                JobPhase::PlanningMetadata,
+                JobPhase::EmittingPayload,
+                JobPhase::EmittingMetadata,
+                JobPhase::CommittingOutput,
+            ]
+        );
+        for phase in [JobPhase::PlanningPayload, JobPhase::EmittingPayload] {
+            let final_phase_total = events.iter().rev().find_map(|event| match event {
+                JobEvent::PhaseBytesProcessed {
+                    phase: event_phase,
+                    total_bytes_processed,
+                    ..
+                } if *event_phase == phase => Some(*total_bytes_processed),
+                _ => None,
+            });
+            assert_eq!(final_phase_total, Some(payload.len() as u64));
+        }
+        assert!(matches!(events.last(), Some(JobEvent::Completed { .. })));
     }
 
     #[test]

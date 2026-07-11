@@ -1,5 +1,5 @@
 use crate::atomic_file::AtomicOutputFile;
-use crate::jobs::{JobCancelled, JobContext};
+use crate::jobs::{JobCancelled, JobContext, JobPhase};
 use crate::manifest::{ArchiveManifest, ManifestFileType, PlanError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
@@ -37,12 +37,13 @@ use tzap_core::wire::{
     CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
 };
 use tzap_core::{
-    ArchiveWriteError, ArchiveWriteSink, ExtractError, KdfParams, MasterKey, OpenedArchive,
-    ReaderOptions, RegularFileSource, RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind,
-    WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
+    ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink, ArchiveWriteSink, ExtractError,
+    KdfParams, MasterKey, OpenedArchive, ReaderOptions, RegularFileSource, RootAuthSigningRequest,
+    SafeExtractionOptions, TarEntryKind, WriterOptions, open_seekable_archive,
+    open_seekable_archive_volumes,
     open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
     public_no_key_verify_volumes_with,
-    write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records,
+    write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress,
     write_archive_sources_to_sink_with_progress,
 };
 use tzap_plugin_keywrap::{
@@ -626,46 +627,43 @@ pub fn create_tzap_from_manifest_with_context(
     let mut finished_paths = BTreeSet::new();
     let mut processed_by_path = BTreeMap::<String, u64>::new();
 
-    let summary = if let Some(recipient_records) = recipient_records {
-        write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records(
-            &file_sources,
-            &master_key,
-            writer_options,
-            recipient_records,
-            root_auth,
-            authenticator,
-            &mut sink,
-        )
-    } else {
-        let mut progress = |archive_path: &str, bytes: u64| {
-            if started_paths.insert(archive_path.to_owned()) {
-                context.entry_started(archive_path, file_sizes.get(archive_path).copied());
-            }
-            context.bytes_processed(Some(archive_path), bytes);
-            let processed = processed_by_path
-                .entry(archive_path.to_owned())
-                .or_default();
-            *processed = processed.saturating_add(bytes);
-            if let Some(size) = file_sizes.get(archive_path).copied() {
-                if *processed >= size && finished_paths.insert(archive_path.to_owned()) {
-                    context.entry_finished(archive_path, size);
-                }
-            }
+    let summary = {
+        let mut progress = TzapWriteJobProgress {
+            context,
+            total_source_bytes: manifest.total_bytes,
+            file_sizes: &file_sizes,
+            started_paths: &mut started_paths,
+            finished_paths: &mut finished_paths,
+            processed_by_path: &mut processed_by_path,
         };
-        write_archive_sources_to_sink_with_progress(
-            &file_sources,
-            &master_key,
-            writer_options,
-            None,
-            &kdf_params,
-            root_auth,
-            authenticator,
-            &mut sink,
-            &mut progress,
-        )
+        if let Some(recipient_records) = recipient_records {
+            write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress(
+                &file_sources,
+                &master_key,
+                writer_options,
+                recipient_records,
+                root_auth,
+                authenticator,
+                &mut sink,
+                &mut progress,
+            )
+        } else {
+            write_archive_sources_to_sink_with_progress(
+                &file_sources,
+                &master_key,
+                writer_options,
+                None,
+                &kdf_params,
+                root_auth,
+                authenticator,
+                &mut sink,
+                &mut progress,
+            )
+        }
     }
     .map_err(|source| tzap_write_error(destination, source))?;
 
+    context.phase_started(JobPhase::CommittingOutput, None);
     let volume_count = sink.commit()?;
     if summary.volume_count != volume_count {
         return Err(TzapError::Format(FormatError::WriterInvariant(
@@ -3352,6 +3350,61 @@ impl RegularFileSource for TzapRegularFileSource {
             ))
         })?;
         Ok(Box::new(file))
+    }
+}
+
+struct TzapWriteJobProgress<'context, 'job, 'state> {
+    context: &'context mut JobContext<'job>,
+    total_source_bytes: u64,
+    file_sizes: &'state BTreeMap<String, u64>,
+    started_paths: &'state mut BTreeSet<String>,
+    finished_paths: &'state mut BTreeSet<String>,
+    processed_by_path: &'state mut BTreeMap<String, u64>,
+}
+
+impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
+    fn phase_started(&mut self, phase: ArchiveWritePhase) {
+        let phase = job_phase_from_tzap(phase);
+        let total_bytes = matches!(phase, JobPhase::PlanningPayload | JobPhase::EmittingPayload)
+            .then_some(self.total_source_bytes);
+        self.context.phase_started(phase, total_bytes);
+    }
+
+    fn source_bytes_read(&mut self, phase: ArchiveWritePhase, archive_path: &str, bytes: u64) {
+        let phase = job_phase_from_tzap(phase);
+        self.context.phase_bytes_processed(
+            phase,
+            Some(archive_path),
+            bytes,
+            Some(self.total_source_bytes),
+        );
+        if phase != JobPhase::EmittingPayload {
+            return;
+        }
+        if self.started_paths.insert(archive_path.to_owned()) {
+            self.context
+                .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
+        }
+        self.context.bytes_processed(Some(archive_path), bytes);
+        let processed = self
+            .processed_by_path
+            .entry(archive_path.to_owned())
+            .or_default();
+        *processed = processed.saturating_add(bytes);
+        if let Some(size) = self.file_sizes.get(archive_path).copied() {
+            if *processed >= size && self.finished_paths.insert(archive_path.to_owned()) {
+                self.context.entry_finished(archive_path, size);
+            }
+        }
+    }
+}
+
+const fn job_phase_from_tzap(phase: ArchiveWritePhase) -> JobPhase {
+    match phase {
+        ArchiveWritePhase::PlanningPayload => JobPhase::PlanningPayload,
+        ArchiveWritePhase::PlanningMetadata => JobPhase::PlanningMetadata,
+        ArchiveWritePhase::EmittingPayload => JobPhase::EmittingPayload,
+        ArchiveWritePhase::EmittingMetadata => JobPhase::EmittingMetadata,
     }
 }
 

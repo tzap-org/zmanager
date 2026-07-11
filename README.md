@@ -161,6 +161,10 @@ and raw archive payloads from `--to-stdout` are never colorized.
 
 ## Build From Source
 
+GUI and other job-event consumers should follow the phase-aware
+[job progress contract](docs/JOB_PROGRESS.md), especially for multi-pass TZAP
+creation.
+
 ```sh
 git clone https://github.com/tzap-org/zmanager.git
 cd zmanager
