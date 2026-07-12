@@ -990,8 +990,13 @@ fn write_entry(
             Ok(0)
         }
         ExtractionEntryKind::File => {
-            let written_bytes =
-                write_file_entry(archive, destination_path, replace_existing, context)?;
+            let written_bytes = write_file_entry(
+                archive,
+                &entry.path,
+                destination_path,
+                replace_existing,
+                context,
+            )?;
             report.written_entries += 1;
             report.written_bytes += written_bytes;
             Ok(written_bytes)
@@ -1046,6 +1051,7 @@ fn write_entry(
 
 fn write_file_entry(
     archive: &mut ReadArchive,
+    archive_path: &str,
     destination_path: &Path,
     replace_existing: bool,
     mut context: Option<&mut JobContext<'_>>,
@@ -1082,7 +1088,7 @@ fn write_file_entry(
         let read = read as u64;
         written_bytes += read;
         if let Some(context) = context.as_deref_mut() {
-            context.bytes_processed(None, read);
+            context.bytes_processed(Some(archive_path), read);
         }
     }
 

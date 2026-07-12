@@ -17,11 +17,12 @@ use crate::{
     sevenz_backend,
     sevenz_backend::SevenZError,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Long-running job kind.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -90,6 +91,8 @@ pub enum JobEvent {
     BytesProcessed {
         /// Archive path when associated with a specific entry.
         path: Option<String>,
+        /// Most recently active archive paths, capped by the producer.
+        recent_paths: Vec<String>,
         /// Incremental bytes processed by this event.
         bytes: u64,
         /// Total bytes processed so far by this job context.
@@ -108,6 +111,8 @@ pub enum JobEvent {
         phase: JobPhase,
         /// Archive path when associated with a specific entry.
         path: Option<String>,
+        /// Most recently active archive paths, capped by the producer.
+        recent_paths: Vec<String>,
         /// Incremental bytes processed by this event.
         bytes: u64,
         /// Total bytes processed so far within this phase.
@@ -161,6 +166,96 @@ where
     }
 }
 
+pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const PROGRESS_MIN_BYTE_STEP: u64 = 4 * 1024 * 1024;
+pub(crate) const PROGRESS_RECENT_PATH_LIMIT: usize = 10;
+
+pub(crate) struct ProgressBatch {
+    pub(crate) path: Option<String>,
+    pub(crate) recent_paths: Vec<String>,
+    pub(crate) bytes: u64,
+}
+
+pub(crate) struct ProgressCoalescer {
+    total_bytes: Option<u64>,
+    pending_bytes: u64,
+    latest_path: Option<String>,
+    recent_paths: VecDeque<String>,
+    last_emitted: Instant,
+    emitted_once: bool,
+}
+
+impl ProgressCoalescer {
+    pub(crate) fn new(total_bytes: Option<u64>) -> Self {
+        Self {
+            total_bytes,
+            pending_bytes: 0,
+            latest_path: None,
+            recent_paths: VecDeque::new(),
+            last_emitted: Instant::now(),
+            emitted_once: false,
+        }
+    }
+
+    pub(crate) fn reset(&mut self, total_bytes: Option<u64>) {
+        self.total_bytes = total_bytes;
+        self.pending_bytes = 0;
+        self.latest_path = None;
+        self.recent_paths.clear();
+        self.last_emitted = Instant::now();
+        self.emitted_once = false;
+    }
+
+    pub(crate) fn record(&mut self, path: Option<&str>, bytes: u64) -> Option<ProgressBatch> {
+        if bytes == 0 {
+            return None;
+        }
+        self.pending_bytes = self.pending_bytes.saturating_add(bytes);
+        if let Some(path) = path {
+            if self.latest_path.as_deref() != Some(path) {
+                self.latest_path = Some(path.to_owned());
+            }
+            if !self
+                .recent_paths
+                .back()
+                .is_some_and(|recent| recent == path)
+            {
+                if let Some(position) = self.recent_paths.iter().position(|recent| recent == path) {
+                    self.recent_paths.remove(position);
+                }
+                self.recent_paths.push_back(path.to_owned());
+                if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
+                    self.recent_paths.pop_front();
+                }
+            }
+        }
+
+        let one_percent = self.total_bytes.unwrap_or_default().div_ceil(100);
+        let byte_step = PROGRESS_MIN_BYTE_STEP.max(one_percent);
+        if !self.emitted_once
+            || self.pending_bytes >= byte_step
+            || self.last_emitted.elapsed() >= PROGRESS_INTERVAL
+        {
+            self.flush()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn flush(&mut self) -> Option<ProgressBatch> {
+        if self.pending_bytes == 0 {
+            return None;
+        }
+        self.emitted_once = true;
+        self.last_emitted = Instant::now();
+        Some(ProgressBatch {
+            path: self.latest_path.take(),
+            recent_paths: self.recent_paths.drain(..).collect(),
+            bytes: std::mem::take(&mut self.pending_bytes),
+        })
+    }
+}
+
 /// Shared cooperative cancellation token.
 #[derive(Debug, Clone, Default)]
 pub struct CancellationToken {
@@ -203,16 +298,27 @@ pub struct JobContext<'a> {
     token: &'a CancellationToken,
     sink: &'a mut dyn JobEventSink,
     total_bytes_processed: u64,
+    progress: ProgressCoalescer,
     phase_bytes_processed: BTreeMap<JobPhase, u64>,
 }
 
 impl<'a> JobContext<'a> {
     /// Creates a context backed by a cancellation token and event sink.
     pub fn new(token: &'a CancellationToken, sink: &'a mut dyn JobEventSink) -> Self {
+        Self::new_with_progress_total(token, sink, None)
+    }
+
+    /// Creates a context with a known logical byte total for progress batching.
+    pub fn new_with_progress_total(
+        token: &'a CancellationToken,
+        sink: &'a mut dyn JobEventSink,
+        total_bytes: Option<u64>,
+    ) -> Self {
         Self {
             token,
             sink,
             total_bytes_processed: 0,
+            progress: ProgressCoalescer::new(total_bytes),
             phase_bytes_processed: BTreeMap::new(),
         }
     }
@@ -247,10 +353,24 @@ impl<'a> JobContext<'a> {
 
     /// Emits a bytes-processed event and updates cumulative progress.
     pub fn bytes_processed(&mut self, path: Option<&str>, bytes: u64) {
-        self.total_bytes_processed += bytes;
+        self.total_bytes_processed = self.total_bytes_processed.saturating_add(bytes);
+        if let Some(batch) = self.progress.record(path, bytes) {
+            self.emit_bytes_processed_batch(batch);
+        }
+    }
+
+    /// Flushes pending format-neutral byte progress.
+    pub fn flush_progress(&mut self) {
+        if let Some(batch) = self.progress.flush() {
+            self.emit_bytes_processed_batch(batch);
+        }
+    }
+
+    fn emit_bytes_processed_batch(&mut self, batch: ProgressBatch) {
         self.emit(JobEvent::BytesProcessed {
-            path: path.map(ToOwned::to_owned),
-            bytes,
+            path: batch.path,
+            recent_paths: batch.recent_paths,
+            bytes: batch.bytes,
             total_bytes_processed: self.total_bytes_processed,
         });
     }
@@ -269,6 +389,19 @@ impl<'a> JobContext<'a> {
         bytes: u64,
         total_bytes: Option<u64>,
     ) {
+        let recent_paths = path.into_iter().map(ToOwned::to_owned).collect();
+        self.phase_bytes_processed_with_recent_paths(phase, path, recent_paths, bytes, total_bytes);
+    }
+
+    /// Emits phase-scoped byte progress with a capped recent-path activity list.
+    pub fn phase_bytes_processed_with_recent_paths(
+        &mut self,
+        phase: JobPhase,
+        path: Option<&str>,
+        recent_paths: Vec<String>,
+        bytes: u64,
+        total_bytes: Option<u64>,
+    ) {
         let total_bytes_processed = {
             let processed = self.phase_bytes_processed.entry(phase).or_default();
             *processed = processed.saturating_add(bytes);
@@ -277,6 +410,7 @@ impl<'a> JobContext<'a> {
         self.emit(JobEvent::PhaseBytesProcessed {
             phase,
             path: path.map(ToOwned::to_owned),
+            recent_paths,
             bytes,
             total_bytes_processed,
             total_bytes,
@@ -338,13 +472,14 @@ pub fn run_zip_create_job(
         kind: JobKind::ZipCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = zip_backend::create_zip_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_zip_create_result(result, sink)
 }
 
@@ -411,13 +546,14 @@ pub fn run_zip_create_job_from_sources_with_plan_options(
         kind: JobKind::ZipCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = zip_backend::create_zip_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_zip_create_result(result, sink)
 }
 
@@ -499,7 +635,7 @@ pub fn run_zip_extract_job_with_password_and_policy(
         kind: JobKind::ZipExtract,
         total_bytes,
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = zip_backend::extract_zip_with_context_and_password(
         archive_path,
         destination,
@@ -507,6 +643,7 @@ pub fn run_zip_extract_job_with_password_and_policy(
         password,
         &mut context,
     );
+    context.flush_progress();
     finish_zip_extract_result(result, sink)
 }
 
@@ -639,13 +776,14 @@ fn run_tar_zst_create_job_with_plan_options(
         kind: JobKind::TarZstdCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = tar_zst_backend::create_tar_zst_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_tar_zst_create_result(result, sink)
 }
 
@@ -684,13 +822,14 @@ pub fn run_tar_zst_create_job_from_sources_with_plan_options(
         kind: JobKind::TarZstdCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = tar_zst_backend::create_tar_zst_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_tar_zst_create_result(result, sink)
 }
 
@@ -729,13 +868,14 @@ pub fn run_apple_archive_create_job_from_sources_with_plan_options(
         kind: JobKind::AppleArchiveCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = apple_archive_backend::create_apple_archive_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_apple_archive_create_result(result, sink)
 }
 
@@ -773,13 +913,14 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
         kind: JobKind::SevenZCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = sevenz_backend::create_7z_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_7z_create_result(result, sink)
 }
 
@@ -845,13 +986,14 @@ pub fn run_tzap_create_job_from_sources_with_plan_options(
         kind: JobKind::TzapCreate,
         total_bytes: Some(manifest.total_bytes),
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = tzap_backend::create_tzap_from_manifest_with_context(
         &manifest,
         destination,
         options,
         &mut context,
     );
+    context.flush_progress();
     finish_tzap_create_result(result, sink)
 }
 
@@ -901,13 +1043,14 @@ pub fn run_tar_zst_extract_job_with_policy(
         kind: JobKind::TarZstdExtract,
         total_bytes,
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = tar_zst_backend::extract_tar_zst_with_context(
         archive_path,
         destination,
         policy,
         &mut context,
     );
+    context.flush_progress();
     finish_tar_zst_extract_result(result, sink)
 }
 
@@ -943,13 +1086,14 @@ pub fn run_apple_archive_extract_job_with_policy(
         kind: JobKind::AppleArchiveExtract,
         total_bytes,
     });
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = apple_archive_backend::extract_apple_archive_with_context(
         archive_path,
         destination,
         policy,
         &mut context,
     );
+    context.flush_progress();
     finish_apple_archive_extract_result(result, sink)
 }
 
@@ -990,7 +1134,7 @@ pub fn run_7z_extract_job_with_password_and_policy(
         total_bytes,
     });
 
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = sevenz_backend::extract_7z_with_context(
         archive_path,
         destination,
@@ -998,6 +1142,7 @@ pub fn run_7z_extract_job_with_password_and_policy(
         policy,
         &mut context,
     );
+    context.flush_progress();
     finish_7z_extract_result(result, sink)
 }
 
@@ -1038,7 +1183,7 @@ pub fn run_rar_extract_job_with_password_and_policy(
         total_bytes,
     });
 
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = if let Some(listing) = listing {
         let entries = listing
             .entries
@@ -1062,6 +1207,7 @@ pub fn run_rar_extract_job_with_password_and_policy(
             &mut context,
         )
     };
+    context.flush_progress();
     finish_rar_extract_result(result, sink)
 }
 
@@ -1138,7 +1284,7 @@ pub fn run_libarchive_extract_job_with_password_and_policy(
         total_bytes,
     });
 
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = libarchive_backend::extract_archive_with_password_and_context(
         archive_path,
         destination,
@@ -1146,6 +1292,7 @@ pub fn run_libarchive_extract_job_with_password_and_policy(
         password,
         &mut context,
     );
+    context.flush_progress();
     finish_libarchive_extract_result(result, sink)
 }
 
@@ -1195,15 +1342,17 @@ pub fn run_raw_stream_extract_job_with_policy(
         });
     }
 
-    let mut context = JobContext::new(token, sink);
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let progress_path = archive_path.to_string_lossy().into_owned();
     let result = raw_stream_backend::extract_raw_stream_with_progress(
         archive_path,
         format,
         destination,
         policy,
-        Some(&mut |bytes| context.bytes_processed(None, bytes)),
+        Some(&mut |bytes| context.bytes_processed(Some(&progress_path), bytes)),
         track_source_progress,
     );
+    context.flush_progress();
     finish_raw_stream_extract_result(result, sink)
 }
 
@@ -1250,13 +1399,15 @@ pub fn run_tzap_extract_job_with_password_and_policy(
         return Err(TzapError::Cancelled);
     }
 
+    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = tzap_backend::extract_tzap_with_optional_password_and_context_fast(
         archive_path,
         destination,
         policy,
         password,
-        &mut JobContext::new(token, sink),
+        &mut context,
     );
+    context.flush_progress();
     finish_tzap_extract_result(result, sink)
 }
 
@@ -1594,10 +1745,10 @@ fn finish_raw_stream_extract_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        CancellationToken, JobEvent, JobPhase, run_7z_create_job_from_sources_with_plan_options,
-        run_clean_source_tar_zst_create_job, run_clean_source_tar_zst_create_job_from_sources,
-        run_raw_stream_extract_job_with_policy, run_tar_zst_create_job,
-        run_tzap_create_job_from_sources_with_plan_options,
+        CancellationToken, JobEvent, JobPhase, PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
+        run_7z_create_job_from_sources_with_plan_options, run_clean_source_tar_zst_create_job,
+        run_clean_source_tar_zst_create_job_from_sources, run_raw_stream_extract_job_with_policy,
+        run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
         run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
         run_zip_create_job_from_sources, run_zip_extract_job,
     };
@@ -1614,6 +1765,40 @@ mod tests {
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn progress_coalescer_uses_one_percent_floor_and_caps_recent_paths() {
+        let four_gib = 4 * 1024 * 1024 * 1024u64;
+        let one_percent = four_gib.div_ceil(100);
+        let mut progress = ProgressCoalescer::new(Some(four_gib));
+
+        let first = progress.record(Some("file-00"), 1).unwrap();
+        assert_eq!(first.path.as_deref(), Some("file-00"));
+        assert_eq!(first.recent_paths, ["file-00"]);
+        assert!(one_percent > PROGRESS_MIN_BYTE_STEP);
+        assert!(progress.record(Some("file-01"), one_percent - 1).is_none());
+        let one_percent_batch = progress.record(Some("file-02"), 1).unwrap();
+        assert_eq!(one_percent_batch.bytes, one_percent);
+
+        for index in 0..12 {
+            assert!(
+                progress
+                    .record(Some(&format!("recent-{index:02}")), 1)
+                    .is_none()
+            );
+        }
+        let recent = progress.flush().unwrap();
+        assert_eq!(recent.recent_paths.len(), 10);
+        assert_eq!(
+            recent.recent_paths.first().map(String::as_str),
+            Some("recent-02")
+        );
+        assert_eq!(
+            recent.recent_paths.last().map(String::as_str),
+            Some("recent-11")
+        );
+        assert_eq!(recent.path.as_deref(), Some("recent-11"));
+    }
 
     #[test]
     fn zip_create_job_emits_ordered_events() {
@@ -1640,11 +1825,16 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| matches!(event, JobEvent::EntryStarted { path, .. } if path == "project/file.txt")));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::BytesProcessed { bytes: 5, .. }))
-        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            JobEvent::BytesProcessed {
+                path: Some(path),
+                recent_paths,
+                bytes: 5,
+                ..
+            } if path == "project/file.txt"
+                && recent_paths == &["project/file.txt".to_owned()]
+        )));
         assert!(matches!(
             events.last(),
             Some(JobEvent::Completed {
@@ -1791,14 +1981,19 @@ mod tests {
             ]
         );
         for phase in [JobPhase::PlanningPayload, JobPhase::EmittingPayload] {
-            let final_phase_total = events.iter().rev().find_map(|event| match event {
-                JobEvent::PhaseBytesProcessed {
-                    phase: event_phase,
-                    total_bytes_processed,
-                    ..
-                } if *event_phase == phase => Some(*total_bytes_processed),
-                _ => None,
-            });
+            let phase_progress = events
+                .iter()
+                .filter_map(|event| match event {
+                    JobEvent::PhaseBytesProcessed {
+                        phase: event_phase,
+                        total_bytes_processed,
+                        ..
+                    } if *event_phase == phase => Some(*total_bytes_processed),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(phase_progress.len() <= 2);
+            let final_phase_total = phase_progress.last().copied();
             assert_eq!(final_phase_total, Some(payload.len() as u64));
         }
         assert!(matches!(events.last(), Some(JobEvent::Completed { .. })));
@@ -1834,6 +2029,46 @@ mod tests {
                 .any(|event| matches!(event, JobEvent::BytesProcessed { .. })),
             "expected later byte progress after the first finished entry"
         );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, JobEvent::PhaseBytesProcessed { path: None, .. }))
+        );
+    }
+
+    #[test]
+    fn tzap_phase_progress_caps_recent_paths_at_ten() {
+        let temp = TestDir::new("tzap_phase_progress_caps_recent_paths_at_ten");
+        for index in 0..12 {
+            temp.write_file(format!("project/file-{index:02}.txt"), b"payload");
+        }
+        let mut events = Vec::new();
+
+        run_tzap_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.tzap"),
+            &test_tzap_create_options(),
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        let phase_progress = events
+            .iter()
+            .filter_map(|event| match event {
+                JobEvent::PhaseBytesProcessed {
+                    path, recent_paths, ..
+                } => Some((path, recent_paths)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!phase_progress.is_empty());
+        for (path, recent_paths) in phase_progress {
+            assert!(!recent_paths.is_empty());
+            assert!(recent_paths.len() <= 10);
+            assert_eq!(path.as_ref(), recent_paths.last());
+        }
     }
 
     #[test]
@@ -1927,6 +2162,12 @@ mod tests {
         .unwrap();
 
         assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
+        assert!(events.iter().all(|event| match event {
+            JobEvent::BytesProcessed {
+                path, recent_paths, ..
+            } => path.is_some() && !recent_paths.is_empty(),
+            _ => true,
+        }));
         assert_eq!(
             fs::read(temp.path("out/project/payload.bin")).unwrap(),
             payload

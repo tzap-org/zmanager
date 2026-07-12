@@ -1,5 +1,5 @@
 use crate::atomic_file::AtomicOutputFile;
-use crate::jobs::{JobCancelled, JobContext, JobPhase};
+use crate::jobs::{JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer};
 use crate::manifest::{ArchiveManifest, ManifestFileType, PlanError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
@@ -635,8 +635,10 @@ pub fn create_tzap_from_manifest_with_context(
             started_paths: &mut started_paths,
             finished_paths: &mut finished_paths,
             processed_by_path: &mut processed_by_path,
+            active_phase: None,
+            phase_progress: ProgressCoalescer::new(None),
         };
-        if let Some(recipient_records) = recipient_records {
+        let result = if let Some(recipient_records) = recipient_records {
             write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress(
                 &file_sources,
                 &master_key,
@@ -659,7 +661,9 @@ pub fn create_tzap_from_manifest_with_context(
                 &mut sink,
                 &mut progress,
             )
-        }
+        };
+        progress.flush_pending();
+        result
     }
     .map_err(|source| tzap_write_error(destination, source))?;
 
@@ -3360,41 +3364,80 @@ struct TzapWriteJobProgress<'context, 'job, 'state> {
     started_paths: &'state mut BTreeSet<String>,
     finished_paths: &'state mut BTreeSet<String>,
     processed_by_path: &'state mut BTreeMap<String, u64>,
+    active_phase: Option<JobPhase>,
+    phase_progress: ProgressCoalescer,
+}
+
+impl TzapWriteJobProgress<'_, '_, '_> {
+    fn flush_pending(&mut self) {
+        if let (Some(phase), Some(batch)) = (self.active_phase, self.phase_progress.flush()) {
+            self.emit_phase_batch(phase, batch);
+        }
+    }
+
+    fn emit_phase_batch(&mut self, phase: JobPhase, batch: ProgressBatch) {
+        self.context.phase_bytes_processed_with_recent_paths(
+            phase,
+            batch.path.as_deref(),
+            batch.recent_paths,
+            batch.bytes,
+            phase_total_bytes(phase, self.total_source_bytes),
+        );
+    }
 }
 
 impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
     fn phase_started(&mut self, phase: ArchiveWritePhase) {
+        self.flush_pending();
         let phase = job_phase_from_tzap(phase);
-        let total_bytes = matches!(phase, JobPhase::PlanningPayload | JobPhase::EmittingPayload)
-            .then_some(self.total_source_bytes);
+        let total_bytes = phase_total_bytes(phase, self.total_source_bytes);
+        self.active_phase = Some(phase);
+        self.phase_progress.reset(total_bytes);
         self.context.phase_started(phase, total_bytes);
     }
 
     fn source_bytes_read(&mut self, phase: ArchiveWritePhase, archive_path: &str, bytes: u64) {
         let phase = job_phase_from_tzap(phase);
-        self.context.phase_bytes_processed(
-            phase,
-            Some(archive_path),
-            bytes,
-            Some(self.total_source_bytes),
-        );
-        if phase != JobPhase::EmittingPayload {
-            return;
-        }
-        if self.started_paths.insert(archive_path.to_owned()) {
-            self.context
-                .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
-        }
-        self.context.bytes_processed(Some(archive_path), bytes);
-        let processed = self
-            .processed_by_path
-            .entry(archive_path.to_owned())
-            .or_default();
-        *processed = processed.saturating_add(bytes);
-        if let Some(size) = self.file_sizes.get(archive_path).copied() {
-            if *processed >= size && self.finished_paths.insert(archive_path.to_owned()) {
-                self.context.entry_finished(archive_path, size);
+        debug_assert_eq!(self.active_phase, Some(phase));
+
+        if phase == JobPhase::EmittingPayload {
+            if !self.started_paths.contains(archive_path) {
+                self.started_paths.insert(archive_path.to_owned());
+                self.context
+                    .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
             }
+        }
+
+        if let Some(batch) = self.phase_progress.record(Some(archive_path), bytes) {
+            self.emit_phase_batch(phase, batch);
+        }
+
+        if phase == JobPhase::EmittingPayload {
+            self.context.bytes_processed(Some(archive_path), bytes);
+            let processed = if let Some(processed) = self.processed_by_path.get_mut(archive_path) {
+                processed
+            } else {
+                self.processed_by_path.insert(archive_path.to_owned(), 0);
+                self.processed_by_path
+                    .get_mut(archive_path)
+                    .expect("inserted TZAP progress path must exist")
+            };
+            *processed = processed.saturating_add(bytes);
+            if let Some(size) = self.file_sizes.get(archive_path).copied() {
+                if *processed >= size && !self.finished_paths.contains(archive_path) {
+                    self.finished_paths.insert(archive_path.to_owned());
+                    self.context.entry_finished(archive_path, size);
+                }
+            }
+        }
+    }
+}
+
+const fn phase_total_bytes(phase: JobPhase, total_source_bytes: u64) -> Option<u64> {
+    match phase {
+        JobPhase::PlanningPayload | JobPhase::EmittingPayload => Some(total_source_bytes),
+        JobPhase::PlanningMetadata | JobPhase::EmittingMetadata | JobPhase::CommittingOutput => {
+            None
         }
     }
 }

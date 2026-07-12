@@ -738,6 +738,8 @@ impl ProgressReporter {
             }
             JobEvent::EntryStarted { .. }
             | JobEvent::EntryFinished { .. }
+            | JobEvent::PhaseStarted { .. }
+            | JobEvent::PhaseBytesProcessed { .. }
             | JobEvent::Warning { .. } => {}
         }
     }
@@ -2793,13 +2795,16 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     };
     let result = {
         let mut sink = |event| progress.emit(event);
-        let mut job_context = JobContext::new(&token, &mut sink);
-        zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
+        let mut job_context =
+            JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
+        let result = zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
             &manifest,
             &archive,
             &options,
             &mut job_context,
-        )
+        );
+        job_context.flush_progress();
+        result
     };
     match result {
         Ok(report) => {
@@ -4364,13 +4369,19 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new(&token, &mut sink);
-                zmanager_core::zip_backend::create_zip_from_manifest_with_context(
+                let mut context = JobContext::new_with_progress_total(
+                    &token,
+                    &mut sink,
+                    Some(manifest.total_bytes),
+                );
+                let result = zmanager_core::zip_backend::create_zip_from_manifest_with_context(
                     &manifest,
                     create_destination,
                     &options,
                     &mut context,
-                )
+                );
+                context.flush_progress();
+                result
             };
             result
                 .map(|report| CreateOutcome {
@@ -4403,13 +4414,20 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new(&token, &mut sink);
-                zmanager_core::tar_zst_backend::create_tar_zst_from_manifest_with_context(
-                    &manifest,
-                    &temp,
-                    &options,
-                    &mut context,
-                )
+                let mut context = JobContext::new_with_progress_total(
+                    &token,
+                    &mut sink,
+                    Some(manifest.total_bytes),
+                );
+                let result =
+                    zmanager_core::tar_zst_backend::create_tar_zst_from_manifest_with_context(
+                        &manifest,
+                        &temp,
+                        &options,
+                        &mut context,
+                    );
+                context.flush_progress();
+                result
             };
             result
                 .map(|report| CreateOutcome {
@@ -4466,13 +4484,19 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new(&token, &mut sink);
-                zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
+                let mut context = JobContext::new_with_progress_total(
+                    &token,
+                    &mut sink,
+                    Some(manifest.total_bytes),
+                );
+                let result = zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
                     &manifest,
                     create_destination,
                     &options,
                     &mut context,
-                )
+                );
+                context.flush_progress();
+                result
             };
             result
                 .map(|report| CreateOutcome {
@@ -4512,13 +4536,19 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new(&token, &mut sink);
-                zmanager_core::apple_archive_backend::create_apple_archive_from_manifest_with_context(
+                let mut context = JobContext::new_with_progress_total(
+                    &token,
+                    &mut sink,
+                    Some(manifest.total_bytes),
+                );
+                let result = zmanager_core::apple_archive_backend::create_apple_archive_from_manifest_with_context(
                     &manifest,
                     &temp,
                     &options,
                     &mut context,
-                )
+                );
+                context.flush_progress();
+                result
             };
             result
                 .map(|report| CreateOutcome {
@@ -7907,13 +7937,15 @@ fn run_zip_extract_with_policy(
     } else {
         let mut sink = |event| progress.emit(event);
         let mut context = JobContext::new(&token, &mut sink);
-        zmanager_core::zip_backend::extract_zip_with_context_and_password(
+        let result = zmanager_core::zip_backend::extract_zip_with_context_and_password(
             &archive_path,
             &destination_path,
             policy.clone(),
             password,
             &mut context,
-        )
+        );
+        context.flush_progress();
+        result
     };
 
     match result {
@@ -7995,12 +8027,14 @@ fn run_tar_zst_extract_with_policy(
     } else {
         let mut sink = |event| progress.emit(event);
         let mut context = JobContext::new(&token, &mut sink);
-        zmanager_core::tar_zst_backend::extract_tar_zst_with_context(
+        let result = zmanager_core::tar_zst_backend::extract_tar_zst_with_context(
             &archive_path,
             &destination_path,
             policy,
             &mut context,
-        )
+        );
+        context.flush_progress();
+        result
     };
 
     match result {
@@ -8058,12 +8092,14 @@ fn run_apple_archive_extract_with_policy(
     } else {
         let mut sink = |event| progress.emit(event);
         let mut context = JobContext::new(&token, &mut sink);
-        zmanager_core::apple_archive_backend::extract_apple_archive_with_context(
+        let result = zmanager_core::apple_archive_backend::extract_apple_archive_with_context(
             &archive_path,
             &destination_path,
             policy,
             &mut context,
-        )
+        );
+        context.flush_progress();
+        result
     };
 
     match result {

@@ -26,7 +26,7 @@ use openssl::rsa::Rsa;
 use openssl::x509::extension::{BasicConstraints, KeyUsage};
 use openssl::x509::{X509, X509NameBuilder};
 use serde_json::{Value, json};
-use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind};
+use zmanager_core::jobs::{CancellationToken, JobEvent, JobEventSink, JobKind, JobPhase};
 use zmanager_core::local_identity_store::{
     FileTzapLocalIdentityStore, TzapContactRecord, TzapEnrolledCertificateRecord,
     TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
@@ -3972,13 +3972,36 @@ fn event_to_json_value(event: &JobEvent) -> Value {
         }),
         JobEvent::BytesProcessed {
             path,
+            recent_paths,
             bytes,
             total_bytes_processed,
         } => json!({
             "type": "bytes_processed",
             "path": path,
+            "recent_paths": recent_paths,
             "bytes": bytes,
             "total_bytes_processed": total_bytes_processed,
+        }),
+        JobEvent::PhaseStarted { phase, total_bytes } => json!({
+            "type": "phase_started",
+            "phase": job_phase_name(*phase),
+            "total_bytes": total_bytes,
+        }),
+        JobEvent::PhaseBytesProcessed {
+            phase,
+            path,
+            recent_paths,
+            bytes,
+            total_bytes_processed,
+            total_bytes,
+        } => json!({
+            "type": "phase_bytes_processed",
+            "phase": job_phase_name(*phase),
+            "path": path,
+            "recent_paths": recent_paths,
+            "bytes": bytes,
+            "total_bytes_processed": total_bytes_processed,
+            "total_bytes": total_bytes,
         }),
         JobEvent::EntryFinished { path, bytes } => json!({
             "type": "entry_finished",
@@ -4199,6 +4222,16 @@ fn job_kind_name(kind: JobKind) -> &'static str {
     }
 }
 
+fn job_phase_name(phase: JobPhase) -> &'static str {
+    match phase {
+        JobPhase::PlanningPayload => "planning_payload",
+        JobPhase::PlanningMetadata => "planning_metadata",
+        JobPhase::EmittingPayload => "emitting_payload",
+        JobPhase::EmittingMetadata => "emitting_metadata",
+        JobPhase::CommittingOutput => "committing_output",
+    }
+}
+
 fn is_zip_family_archive(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -4283,6 +4316,53 @@ mod tests {
     const TEST_7Z_VOLUME_SIZE: u64 = 1_048_576;
     const TEST_JOB_POLL_ATTEMPTS: usize = 1_000;
     const TEST_JOB_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+    #[test]
+    fn ffi_serializes_phase_progress_events() {
+        use zmanager_core::jobs::{JobEvent, JobPhase};
+
+        let generic = super::event_to_json_value(&JobEvent::BytesProcessed {
+            path: Some("payload/current.bin".to_owned()),
+            recent_paths: vec![
+                "payload/previous.bin".to_owned(),
+                "payload/current.bin".to_owned(),
+            ],
+            bytes: 512,
+            total_bytes_processed: 1024,
+        });
+        assert_eq!(generic["type"], "bytes_processed");
+        assert_eq!(generic["path"], "payload/current.bin");
+        assert_eq!(generic["recent_paths"][0], "payload/previous.bin");
+        assert_eq!(generic["recent_paths"][1], "payload/current.bin");
+
+        let started = super::event_to_json_value(&JobEvent::PhaseStarted {
+            phase: JobPhase::PlanningPayload,
+            total_bytes: Some(1024),
+        });
+        assert_eq!(started["type"], "phase_started");
+        assert_eq!(started["phase"], "planning_payload");
+        assert_eq!(started["total_bytes"], 1024);
+
+        let processed = super::event_to_json_value(&JobEvent::PhaseBytesProcessed {
+            phase: JobPhase::EmittingPayload,
+            path: Some("payload/file.bin".to_owned()),
+            recent_paths: vec![
+                "payload/previous.bin".to_owned(),
+                "payload/file.bin".to_owned(),
+            ],
+            bytes: 256,
+            total_bytes_processed: 768,
+            total_bytes: Some(1024),
+        });
+        assert_eq!(processed["type"], "phase_bytes_processed");
+        assert_eq!(processed["phase"], "emitting_payload");
+        assert_eq!(processed["path"], "payload/file.bin");
+        assert_eq!(processed["recent_paths"][0], "payload/previous.bin");
+        assert_eq!(processed["recent_paths"][1], "payload/file.bin");
+        assert_eq!(processed["bytes"], 256);
+        assert_eq!(processed["total_bytes_processed"], 768);
+        assert_eq!(processed["total_bytes"], 1024);
+    }
 
     #[test]
     fn ffi_tzap_routing_recognizes_numbered_volumes() {
