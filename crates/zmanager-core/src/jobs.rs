@@ -151,6 +151,92 @@ pub enum JobEvent {
     },
 }
 
+/// Terminal outcome of a core archive execution.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum JobOutcome {
+    /// The operation committed successfully.
+    Completed,
+    /// The operation failed.
+    Failed,
+    /// The operation observed cooperative cancellation before success.
+    Cancelled,
+}
+
+/// Runtime-neutral projection of the latest raw progress facts.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct JobProgressState {
+    pub processed_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub processed_entries: u64,
+    pub total_entries: Option<u64>,
+    pub current_path: Option<String>,
+    pub recent_paths: Vec<String>,
+    pub active_phase: Option<JobPhase>,
+    pub phase_processed_bytes: u64,
+    pub phase_total_bytes: Option<u64>,
+    pub warning_count: u64,
+    pub outcome: Option<JobOutcome>,
+}
+
+impl JobProgressState {
+    /// Applies one semantic event. The first terminal outcome is immutable.
+    pub fn apply(&mut self, event: &JobEvent) {
+        if self.outcome.is_some() {
+            return;
+        }
+        match event {
+            JobEvent::Started { total_bytes, .. } => self.total_bytes = *total_bytes,
+            JobEvent::EntryStarted { path, .. } => self.record_path(path),
+            JobEvent::BytesProcessed { path, recent_paths, total_bytes_processed, .. } => {
+                self.processed_bytes = self.processed_bytes.max(*total_bytes_processed);
+                self.record_paths(path.as_deref(), recent_paths);
+            }
+            JobEvent::PhaseStarted { phase, total_bytes } => {
+                self.active_phase = Some(*phase);
+                self.phase_processed_bytes = 0;
+                self.phase_total_bytes = *total_bytes;
+            }
+            JobEvent::PhaseBytesProcessed { phase, path, recent_paths, total_bytes_processed, total_bytes, .. } => {
+                if self.active_phase != Some(*phase) {
+                    self.active_phase = Some(*phase);
+                    self.phase_processed_bytes = 0;
+                }
+                self.phase_processed_bytes = self.phase_processed_bytes.max(*total_bytes_processed);
+                self.phase_total_bytes = *total_bytes;
+                self.record_paths(path.as_deref(), recent_paths);
+            }
+            JobEvent::EntryFinished { path, .. } => {
+                self.processed_entries = self.processed_entries.saturating_add(1);
+                self.record_path(path);
+            }
+            JobEvent::Warning { .. } => self.warning_count = self.warning_count.saturating_add(1),
+            JobEvent::Completed { entries, bytes } => {
+                self.processed_entries = self.processed_entries.max(*entries as u64);
+                self.processed_bytes = self.processed_bytes.max(*bytes);
+                self.outcome = Some(JobOutcome::Completed);
+            }
+            JobEvent::Failed { .. } => self.outcome = Some(JobOutcome::Failed),
+            JobEvent::Cancelled { .. } => self.outcome = Some(JobOutcome::Cancelled),
+        }
+    }
+
+    fn record_paths(&mut self, current: Option<&str>, recent: &[String]) {
+        for path in recent { self.record_path(path); }
+        if let Some(path) = current { self.record_path(path); }
+    }
+
+    fn record_path(&mut self, path: &str) {
+        if let Some(index) = self.recent_paths.iter().position(|item| item == path) {
+            self.recent_paths.remove(index);
+        }
+        self.recent_paths.push(path.to_owned());
+        if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
+            self.recent_paths.remove(0);
+        }
+        self.current_path = Some(path.to_owned());
+    }
+}
+
 /// Consumer of job events.
 pub trait JobEventSink {
     /// Receives one event.
@@ -1745,13 +1831,45 @@ fn finish_raw_stream_extract_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        CancellationToken, JobEvent, JobPhase, PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
+        CancellationToken, JobEvent, JobOutcome, JobPhase, JobProgressState,
+        PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
         run_7z_create_job_from_sources_with_plan_options, run_clean_source_tar_zst_create_job,
         run_clean_source_tar_zst_create_job_from_sources, run_raw_stream_extract_job_with_policy,
         run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
         run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
         run_zip_create_job_from_sources, run_zip_extract_job,
     };
+
+    #[test]
+    fn progress_projection_is_monotonic_bounded_and_terminal_is_immutable() {
+        let mut state = JobProgressState::default();
+        state.apply(&JobEvent::Started { kind: super::JobKind::ZipCreate, total_bytes: Some(10) });
+        for index in 0..20 {
+            state.apply(&JobEvent::BytesProcessed {
+                path: Some(format!("file-{index}")), recent_paths: vec![], bytes: 1,
+                total_bytes_processed: index + 1,
+            });
+        }
+        state.apply(&JobEvent::Completed { entries: 20, bytes: 20 });
+        let terminal = state.clone();
+        state.apply(&JobEvent::Failed { message: "late".into() });
+        assert_eq!(state, terminal);
+        assert_eq!(state.outcome, Some(JobOutcome::Completed));
+        assert_eq!(state.processed_bytes, 20);
+        assert_eq!(state.recent_paths.len(), super::PROGRESS_RECENT_PATH_LIMIT);
+        assert_eq!(state.current_path.as_deref(), Some("file-19"));
+    }
+
+    #[test]
+    fn progress_projection_resets_only_phase_local_facts() {
+        let mut state = JobProgressState::default();
+        state.apply(&JobEvent::BytesProcessed { path: None, recent_paths: vec![], bytes: 5, total_bytes_processed: 5 });
+        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::PlanningPayload, total_bytes: Some(8) });
+        state.apply(&JobEvent::PhaseBytesProcessed { phase: JobPhase::PlanningPayload, path: None, recent_paths: vec![], bytes: 4, total_bytes_processed: 4, total_bytes: Some(8) });
+        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::EmittingPayload, total_bytes: Some(8) });
+        assert_eq!(state.processed_bytes, 5);
+        assert_eq!(state.phase_processed_bytes, 0);
+    }
     use crate::archive_browser::list_entries;
     use crate::raw_stream_backend::RawStreamFormat;
     use crate::safety::ExtractionPolicy;
