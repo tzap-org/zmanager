@@ -3958,6 +3958,10 @@ fn owned_c_string(value: &str) -> *mut c_char {
     CString::new(value).map_or(ptr::null_mut(), CString::into_raw)
 }
 
+fn progress_path_identity_hex(identity: &[u8; 32]) -> String {
+    identity.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn event_to_json_value(event: &JobEvent) -> Value {
     match event {
         JobEvent::Started { kind, total_bytes } => json!({
@@ -3973,14 +3977,22 @@ fn event_to_json_value(event: &JobEvent) -> Value {
         JobEvent::BytesProcessed {
             path,
             recent_paths,
+            recent_path_identities,
             bytes,
             total_bytes_processed,
+            entries,
+            total_entries_processed,
+            recent_paths_truncated,
         } => json!({
             "type": "bytes_processed",
             "path": path,
             "recent_paths": recent_paths,
+            "recent_path_identities": recent_path_identities.iter().map(progress_path_identity_hex).collect::<Vec<_>>(),
             "bytes": bytes,
             "total_bytes_processed": total_bytes_processed,
+            "entries": entries,
+            "total_entries_processed": total_entries_processed,
+            "recent_paths_truncated": recent_paths_truncated,
         }),
         JobEvent::PhaseStarted { phase, total_bytes } => json!({
             "type": "phase_started",
@@ -3991,17 +4003,21 @@ fn event_to_json_value(event: &JobEvent) -> Value {
             phase,
             path,
             recent_paths,
+            recent_path_identities,
             bytes,
             total_bytes_processed,
             total_bytes,
+            recent_paths_truncated,
         } => json!({
             "type": "phase_bytes_processed",
             "phase": job_phase_name(*phase),
             "path": path,
             "recent_paths": recent_paths,
+            "recent_path_identities": recent_path_identities.iter().map(progress_path_identity_hex).collect::<Vec<_>>(),
             "bytes": bytes,
             "total_bytes_processed": total_bytes_processed,
             "total_bytes": total_bytes,
+            "recent_paths_truncated": recent_paths_truncated,
         }),
         JobEvent::EntryFinished { path, bytes } => json!({
             "type": "entry_finished",
@@ -4327,8 +4343,12 @@ mod tests {
                 "payload/previous.bin".to_owned(),
                 "payload/current.bin".to_owned(),
             ],
+            recent_path_identities: vec![[1; 32], [2; 32]],
             bytes: 512,
             total_bytes_processed: 1024,
+            entries: 1,
+            total_entries_processed: 2,
+            recent_paths_truncated: false,
         });
         assert_eq!(generic["type"], "bytes_processed");
         assert_eq!(generic["path"], "payload/current.bin");
@@ -4350,9 +4370,11 @@ mod tests {
                 "payload/previous.bin".to_owned(),
                 "payload/file.bin".to_owned(),
             ],
+            recent_path_identities: vec![[1; 32], [2; 32]],
             bytes: 256,
             total_bytes_processed: 768,
             total_bytes: Some(1024),
+            recent_paths_truncated: false,
         });
         assert_eq!(processed["type"], "phase_bytes_processed");
         assert_eq!(processed["phase"], "emitting_payload");

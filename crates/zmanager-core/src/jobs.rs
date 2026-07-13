@@ -17,12 +17,16 @@ use crate::{
     sevenz_backend,
     sevenz_backend::SevenZError,
 };
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// Bounded identity of an exact producer path whose display copy may be truncated.
+pub type ProgressPathIdentity = [u8; 32];
 
 /// Long-running job kind.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -93,6 +97,8 @@ pub enum JobEvent {
         path: Option<String>,
         /// Most recently active archive paths, capped by the producer.
         recent_paths: Vec<String>,
+        /// Bounded identities of the exact producer paths corresponding to `recent_paths`.
+        recent_path_identities: Vec<ProgressPathIdentity>,
         /// Incremental bytes processed by this event.
         bytes: u64,
         /// Total bytes processed so far by this job context.
@@ -119,6 +125,8 @@ pub enum JobEvent {
         path: Option<String>,
         /// Most recently active archive paths, capped by the producer.
         recent_paths: Vec<String>,
+        /// Bounded identities of the exact producer paths corresponding to `recent_paths`.
+        recent_path_identities: Vec<ProgressPathIdentity>,
         /// Incremental bytes processed by this event.
         bytes: u64,
         /// Total bytes processed so far within this phase.
@@ -184,6 +192,7 @@ pub struct JobProgressState {
     pub phase_total_bytes: Option<u64>,
     pub warning_count: u64,
     pub outcome: Option<JobOutcome>,
+    recent_path_identities: Vec<ProgressPathIdentity>,
 }
 
 impl JobProgressState {
@@ -198,13 +207,14 @@ impl JobProgressState {
             JobEvent::BytesProcessed {
                 path,
                 recent_paths,
+                recent_path_identities,
                 total_bytes_processed,
                 total_entries_processed,
                 ..
             } => {
                 self.processed_bytes = self.processed_bytes.max(*total_bytes_processed);
                 self.processed_entries = self.processed_entries.max(*total_entries_processed);
-                self.record_paths(path.as_deref(), recent_paths);
+                self.record_paths(path.as_deref(), recent_paths, recent_path_identities);
             }
             JobEvent::PhaseStarted { phase, total_bytes } => {
                 self.active_phase = Some(*phase);
@@ -215,6 +225,7 @@ impl JobProgressState {
                 phase,
                 path,
                 recent_paths,
+                recent_path_identities,
                 total_bytes_processed,
                 total_bytes,
                 ..
@@ -225,7 +236,7 @@ impl JobProgressState {
                 }
                 self.phase_processed_bytes = self.phase_processed_bytes.max(*total_bytes_processed);
                 self.phase_total_bytes = *total_bytes;
-                self.record_paths(path.as_deref(), recent_paths);
+                self.record_paths(path.as_deref(), recent_paths, recent_path_identities);
             }
             JobEvent::EntryFinished { path, .. } => {
                 self.processed_entries = self.processed_entries.saturating_add(1);
@@ -242,28 +253,57 @@ impl JobProgressState {
         }
     }
 
-    fn record_paths(&mut self, current: Option<&str>, recent: &[String]) {
-        for path in recent {
-            self.record_path(path);
+    fn record_paths(
+        &mut self,
+        current: Option<&str>,
+        recent: &[String],
+        identities: &[ProgressPathIdentity],
+    ) {
+        for (index, path) in recent.iter().enumerate() {
+            self.record_path_with_identity(
+                path,
+                identities
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| path_identity(path)),
+            );
         }
         if let Some(path) = current {
-            self.record_path(path);
+            let identity = recent
+                .iter()
+                .rposition(|candidate| candidate == path)
+                .and_then(|index| identities.get(index))
+                .copied()
+                .unwrap_or_else(|| path_identity(path));
+            self.record_path_with_identity(path, identity);
         }
     }
 
     fn record_path(&mut self, path: &str) {
-        let path = truncate_utf8(path, PROGRESS_RECENT_PATH_BYTES_LIMIT);
-        if let Some(index) = self.recent_paths.iter().position(|item| item == &path) {
+        self.record_path_with_identity(path, path_identity(path));
+    }
+
+    fn record_path_with_identity(&mut self, path: &str, identity: ProgressPathIdentity) {
+        let path = truncate_utf8(path, PROGRESS_PATH_DISPLAY_BYTES_LIMIT);
+        if let Some(index) = self
+            .recent_path_identities
+            .iter()
+            .position(|candidate| *candidate == identity)
+        {
             self.recent_paths.remove(index);
+            self.recent_path_identities.remove(index);
         }
         self.recent_paths.push(path.clone());
+        self.recent_path_identities.push(identity);
         if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
             self.recent_paths.remove(0);
+            self.recent_path_identities.remove(0);
         }
         while self.recent_paths.iter().map(String::len).sum::<usize>()
             > PROGRESS_RECENT_PATH_BYTES_LIMIT
         {
             self.recent_paths.remove(0);
+            self.recent_path_identities.remove(0);
         }
         self.current_path = Some(path);
     }
@@ -288,11 +328,14 @@ pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const PROGRESS_MIN_BYTE_STEP: u64 = 4 * 1024 * 1024;
 pub const PROGRESS_RECENT_PATH_LIMIT: usize = 10;
 pub const PROGRESS_RECENT_PATH_BYTES_LIMIT: usize = 4 * 1024;
+pub const PROGRESS_PATH_DISPLAY_BYTES_LIMIT: usize =
+    PROGRESS_RECENT_PATH_BYTES_LIMIT / PROGRESS_RECENT_PATH_LIMIT;
 pub(crate) const PROGRESS_ENTRY_STEP: u64 = 128;
 
 pub(crate) struct ProgressBatch {
     pub(crate) path: Option<String>,
     pub(crate) recent_paths: Vec<String>,
+    pub(crate) recent_path_identities: Vec<ProgressPathIdentity>,
     pub(crate) bytes: u64,
     pub(crate) entries: u64,
     pub(crate) recent_paths_truncated: bool,
@@ -303,7 +346,7 @@ pub(crate) struct ProgressCoalescer {
     pending_bytes: u64,
     pending_entries: u64,
     latest_path: Option<String>,
-    recent_paths: VecDeque<String>,
+    recent_paths: VecDeque<(ProgressPathIdentity, String)>,
     last_emitted: Instant,
     emitted_once: bool,
     recent_paths_truncated: bool,
@@ -368,28 +411,32 @@ impl ProgressCoalescer {
         self.pending_bytes = self.pending_bytes.saturating_add(bytes);
         self.pending_entries = self.pending_entries.saturating_add(entries);
         if let Some(path) = path {
-            self.recent_paths_truncated |= path.len() > PROGRESS_RECENT_PATH_BYTES_LIMIT;
-            let path = truncate_utf8(path, PROGRESS_RECENT_PATH_BYTES_LIMIT);
-            if self.latest_path.as_deref() != Some(path.as_str()) {
-                self.latest_path = Some(path.clone());
+            self.recent_paths_truncated |= path.len() > PROGRESS_PATH_DISPLAY_BYTES_LIMIT;
+            let identity = path_identity(path);
+            let display_path = truncate_utf8(path, PROGRESS_PATH_DISPLAY_BYTES_LIMIT);
+            if self.latest_path.as_deref() != Some(display_path.as_str()) {
+                self.latest_path = Some(display_path.clone());
             }
             if !self
                 .recent_paths
                 .back()
-                .is_some_and(|recent| recent == &path)
+                .is_some_and(|(recent_identity, _)| *recent_identity == identity)
             {
-                if let Some(position) = self.recent_paths.iter().position(|recent| recent == &path)
+                if let Some(position) = self
+                    .recent_paths
+                    .iter()
+                    .position(|(recent_identity, _)| *recent_identity == identity)
                 {
                     self.recent_paths.remove(position);
                 }
-                self.recent_paths.push_back(path);
+                self.recent_paths.push_back((identity, display_path));
                 if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
                     self.recent_paths.pop_front();
                 }
                 while self
                     .recent_paths
                     .iter()
-                    .map(|path| path.len())
+                    .map(|(_, path)| path.len())
                     .sum::<usize>()
                     > PROGRESS_RECENT_PATH_BYTES_LIMIT
                 {
@@ -424,7 +471,12 @@ impl ProgressCoalescer {
         self.last_emitted = now;
         Some(ProgressBatch {
             path: self.latest_path.take(),
-            recent_paths: self.recent_paths.drain(..).collect(),
+            recent_path_identities: self
+                .recent_paths
+                .iter()
+                .map(|(identity, _)| *identity)
+                .collect(),
+            recent_paths: self.recent_paths.drain(..).map(|(_, path)| path).collect(),
             bytes: std::mem::take(&mut self.pending_bytes),
             entries: std::mem::take(&mut self.pending_entries),
             recent_paths_truncated: std::mem::take(&mut self.recent_paths_truncated),
@@ -441,6 +493,10 @@ fn truncate_utf8(value: &str, limit: usize) -> String {
         end -= 1;
     }
     value[..end].to_owned()
+}
+
+fn path_identity(path: &str) -> ProgressPathIdentity {
+    Sha256::digest(path.as_bytes()).into()
 }
 
 /// Shared cooperative cancellation token.
@@ -562,16 +618,18 @@ impl<'a> JobContext<'a> {
         self.emit(JobEvent::BytesProcessed {
             path: batch.path,
             recent_paths: batch.recent_paths,
+            recent_path_identities: batch.recent_path_identities,
             bytes: batch.bytes,
             total_bytes_processed: self.total_bytes_processed,
             entries: batch.entries,
             total_entries_processed: self.total_entries_processed,
-            recent_paths_truncated: false,
+            recent_paths_truncated: batch.recent_paths_truncated,
         });
     }
 
     /// Emits a phase-started event and resets that phase's byte counter.
     pub fn phase_started(&mut self, phase: JobPhase, total_bytes: Option<u64>) {
+        self.flush_progress();
         self.phase_bytes_processed.insert(phase, 0);
         self.emit(JobEvent::PhaseStarted { phase, total_bytes });
     }
@@ -605,6 +663,31 @@ impl<'a> JobContext<'a> {
         total_bytes: Option<u64>,
         recent_paths_truncated: bool,
     ) {
+        let recent_path_identities = recent_paths
+            .iter()
+            .map(|path| path_identity(path))
+            .collect();
+        self.phase_bytes_processed_with_path_identities(
+            phase,
+            path,
+            recent_paths,
+            recent_path_identities,
+            bytes,
+            total_bytes,
+            recent_paths_truncated,
+        );
+    }
+
+    pub(crate) fn phase_bytes_processed_with_path_identities(
+        &mut self,
+        phase: JobPhase,
+        path: Option<&str>,
+        recent_paths: Vec<String>,
+        recent_path_identities: Vec<ProgressPathIdentity>,
+        bytes: u64,
+        total_bytes: Option<u64>,
+        recent_paths_truncated: bool,
+    ) {
         let total_bytes_processed = {
             let processed = self.phase_bytes_processed.entry(phase).or_default();
             *processed = processed.saturating_add(bytes);
@@ -614,6 +697,7 @@ impl<'a> JobContext<'a> {
             phase,
             path: path.map(ToOwned::to_owned),
             recent_paths,
+            recent_path_identities,
             bytes,
             total_bytes_processed,
             total_bytes,
@@ -1969,6 +2053,7 @@ mod tests {
             state.apply(&JobEvent::BytesProcessed {
                 path: Some(format!("file-{index}")),
                 recent_paths: vec![],
+                recent_path_identities: vec![],
                 bytes: 1,
                 total_bytes_processed: index + 1,
                 entries: 0,
@@ -1997,6 +2082,7 @@ mod tests {
         state.apply(&JobEvent::BytesProcessed {
             path: None,
             recent_paths: vec![],
+            recent_path_identities: vec![],
             bytes: 5,
             total_bytes_processed: 5,
             entries: 0,
@@ -2011,6 +2097,7 @@ mod tests {
             phase: JobPhase::PlanningPayload,
             path: None,
             recent_paths: vec![],
+            recent_path_identities: vec![],
             bytes: 4,
             total_bytes_processed: 4,
             total_bytes: Some(8),
@@ -2092,6 +2179,74 @@ mod tests {
                 .unwrap()
                 .is_char_boundary(batch.path.as_ref().unwrap().len())
         );
+    }
+
+    #[test]
+    fn progress_paths_deduplicate_by_exact_source_before_display_truncation() {
+        let mut progress = ProgressCoalescer::new_at(None, Instant::now());
+        let common = "x".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
+        let first = format!("{common}-first");
+        let second = format!("{common}-second");
+        let _ = progress
+            .record(Some("warmup"), 1)
+            .expect("first activity flushes");
+        assert!(progress.record(Some(&first), 1).is_none());
+        let batch = progress.flush().expect("pending activity flushes");
+        assert_eq!(batch.recent_paths.len(), 1);
+        assert!(progress.record(Some(&first), 1).is_none());
+        assert!(progress.record(Some(&second), 1).is_none());
+        let batch = progress.flush().expect("distinct long paths flush");
+        assert_eq!(batch.recent_paths.len(), 2);
+        assert_ne!(
+            batch.recent_path_identities[0],
+            batch.recent_path_identities[1]
+        );
+        assert!(batch.recent_paths_truncated);
+
+        let mut projection = JobProgressState::default();
+        projection.apply(&JobEvent::BytesProcessed {
+            path: batch.path,
+            recent_paths: batch.recent_paths,
+            recent_path_identities: batch.recent_path_identities,
+            bytes: batch.bytes,
+            total_bytes_processed: 3,
+            entries: 0,
+            total_entries_processed: 0,
+            recent_paths_truncated: true,
+        });
+        assert_eq!(projection.recent_paths.len(), 2);
+    }
+
+    #[test]
+    fn job_context_preserves_truncation_and_flushes_before_phase_start() {
+        let token = CancellationToken::new();
+        let mut events = Vec::new();
+        {
+            let mut sink = |event| events.push(event);
+            let mut context = super::JobContext::new(&token, &mut sink);
+            context.bytes_processed(
+                Some(&"界".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT)),
+                1,
+            );
+            context.bytes_processed(Some("pending"), 1);
+            context.phase_started(JobPhase::PlanningPayload, Some(2));
+        }
+        assert!(matches!(
+            events.first(),
+            Some(JobEvent::BytesProcessed {
+                recent_paths_truncated: true,
+                ..
+            })
+        ));
+        let pending = events
+            .iter()
+            .position(|event| matches!(event, JobEvent::BytesProcessed { path: Some(path), .. } if path == "pending"))
+            .expect("pending logical progress flushed");
+        let phase = events
+            .iter()
+            .position(|event| matches!(event, JobEvent::PhaseStarted { .. }))
+            .expect("phase started");
+        assert!(pending < phase);
     }
 
     #[test]

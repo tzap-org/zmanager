@@ -3376,10 +3376,11 @@ impl TzapWriteJobProgress<'_, '_, '_> {
     }
 
     fn emit_phase_batch(&mut self, phase: JobPhase, batch: ProgressBatch) {
-        self.context.phase_bytes_processed_with_recent_paths(
+        self.context.phase_bytes_processed_with_path_identities(
             phase,
             batch.path.as_deref(),
             batch.recent_paths,
+            batch.recent_path_identities,
             batch.bytes,
             phase_total_bytes(phase, self.total_source_bytes),
             batch.recent_paths_truncated,
