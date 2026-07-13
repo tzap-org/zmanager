@@ -2517,6 +2517,97 @@ mod tests {
     }
 
     #[test]
+    fn tzap_create_job_can_be_cancelled_during_payload_planning() {
+        assert_tzap_create_cancels_at(TzapCreateCancellationPoint::PlanningPayload);
+    }
+
+    #[test]
+    fn tzap_create_job_can_be_cancelled_during_payload_emission() {
+        assert_tzap_create_cancels_at(TzapCreateCancellationPoint::EmittingPayload);
+    }
+
+    #[test]
+    fn tzap_create_job_honours_cancellation_before_output_commit() {
+        assert_tzap_create_cancels_at(TzapCreateCancellationPoint::CommittingOutput);
+    }
+
+    #[derive(Clone, Copy)]
+    enum TzapCreateCancellationPoint {
+        PlanningPayload,
+        EmittingPayload,
+        CommittingOutput,
+    }
+
+    impl TzapCreateCancellationPoint {
+        fn matches(self, event: &JobEvent) -> bool {
+            match self {
+                Self::PlanningPayload => matches!(
+                    event,
+                    JobEvent::PhaseBytesProcessed {
+                        phase: JobPhase::PlanningPayload,
+                        ..
+                    }
+                ),
+                Self::EmittingPayload => matches!(event, JobEvent::BytesProcessed { .. }),
+                Self::CommittingOutput => matches!(
+                    event,
+                    JobEvent::PhaseStarted {
+                        phase: JobPhase::CommittingOutput,
+                        ..
+                    }
+                ),
+            }
+        }
+
+        const fn test_name(self) -> &'static str {
+            match self {
+                Self::PlanningPayload => "tzap_cancel_during_payload_planning",
+                Self::EmittingPayload => "tzap_cancel_during_payload_emission",
+                Self::CommittingOutput => "tzap_cancel_before_output_commit",
+            }
+        }
+    }
+
+    fn assert_tzap_create_cancels_at(cancellation_point: TzapCreateCancellationPoint) {
+        let temp = TestDir::new(cancellation_point.test_name());
+        temp.write_file("project/payload.bin", &large_tzap_progress_payload());
+        let destination = temp.path("archive.tzap");
+        let token = CancellationToken::new();
+        let token_for_sink = token.clone();
+        let mut events = Vec::new();
+
+        let result = run_tzap_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            &destination,
+            &test_tzap_create_options(),
+            &crate::manifest::PlanOptions::default(),
+            &token,
+            &mut |event| {
+                if cancellation_point.matches(&event) {
+                    token_for_sink.cancel();
+                }
+                events.push(event);
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::tzap_backend::TzapError::Cancelled)
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, JobEvent::Cancelled { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, JobEvent::Completed { .. }))
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
     fn tzap_phase_progress_caps_recent_paths_at_ten() {
         let temp = TestDir::new("tzap_phase_progress_caps_recent_paths_at_ten");
         for index in 0..12 {

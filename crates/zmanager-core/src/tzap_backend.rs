@@ -1,5 +1,7 @@
 use crate::atomic_file::AtomicOutputFile;
-use crate::jobs::{JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer};
+use crate::jobs::{
+    CancellationToken, JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer,
+};
 use crate::manifest::{ArchiveManifest, ManifestFileType, PlanError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
@@ -517,8 +519,7 @@ pub fn create_tzap_from_manifest_with_context(
     context: &mut JobContext<'_>,
 ) -> Result<TzapCreateReport, TzapError> {
     context.check_cancelled()?;
-    let (file_sources, mut warnings) =
-        collect_regular_file_sources(manifest, options, Some(context))?;
+    let (file_sources, mut warnings) = collect_regular_file_sources(manifest, options, context)?;
     context.check_cancelled()?;
 
     let mut writer_options = WriterOptions {
@@ -594,7 +595,11 @@ pub fn create_tzap_from_manifest_with_context(
         TzapKeySource::Passphrase(_) | TzapKeySource::NoPassword => None,
     };
     let destination = destination.as_ref();
-    let mut sink = TzapArchiveFileSink::new(destination, options.replace_existing)?;
+    let mut sink = TzapArchiveFileSink::new(
+        destination,
+        options.replace_existing,
+        context.cancellation_token(),
+    )?;
     let x509_signer = options
         .x509_signing
         .as_ref()
@@ -667,6 +672,7 @@ pub fn create_tzap_from_manifest_with_context(
     }
     .map_err(|source| tzap_write_error(destination, source))?;
 
+    context.check_cancelled()?;
     context.phase_started(JobPhase::CommittingOutput, None);
     let volume_count = sink.commit()?;
     if summary.volume_count != volume_count {
@@ -2534,16 +2540,14 @@ fn extract_tzap_file_from_opened_archive(
 fn collect_regular_file_sources(
     manifest: &ArchiveManifest,
     options: &TzapCreateOptions,
-    mut context: Option<&mut JobContext<'_>>,
+    context: &mut JobContext<'_>,
 ) -> Result<(Vec<TzapRegularFileSource>, Vec<String>), TzapError> {
     let mut files = Vec::new();
     let mut warnings = Vec::new();
 
     for entry in &manifest.entries {
-        if let Some(context) = context.as_deref_mut() {
-            context.check_cancelled()?;
-            context.entry_started(&entry.archive_path, Some(entry.size));
-        }
+        context.check_cancelled()?;
+        context.entry_started(&entry.archive_path, Some(entry.size));
 
         match entry.file_type {
             ManifestFileType::File => {
@@ -2564,12 +2568,11 @@ fn collect_regular_file_sources(
                     } else {
                         0
                     },
+                    cancellation_token: context.cancellation_token(),
                 });
             }
             ManifestFileType::Directory => {
-                if let Some(context) = context.as_deref_mut() {
-                    context.entry_finished(&entry.archive_path, 0);
-                }
+                context.entry_finished(&entry.archive_path, 0);
             }
             ManifestFileType::Symlink | ManifestFileType::Other => {
                 let warning = format!(
@@ -2577,10 +2580,8 @@ fn collect_regular_file_sources(
                     entry.archive_path
                 );
                 warnings.push(warning.clone());
-                if let Some(context) = context.as_deref_mut() {
-                    context.warning(warning);
-                    context.entry_finished(&entry.archive_path, 0);
-                }
+                context.warning(warning);
+                context.entry_finished(&entry.archive_path, 0);
             }
         }
     }
@@ -3324,6 +3325,7 @@ struct TzapRegularFileSource {
     size: u64,
     mode: u32,
     mtime: u64,
+    cancellation_token: CancellationToken,
 }
 
 impl RegularFileSource for TzapRegularFileSource {
@@ -3353,7 +3355,24 @@ impl RegularFileSource for TzapRegularFileSource {
                 ),
             ))
         })?;
-        Ok(Box::new(file))
+        Ok(Box::new(CancellationAwareReader {
+            inner: file,
+            token: self.cancellation_token.clone(),
+        }))
+    }
+}
+
+struct CancellationAwareReader<R> {
+    inner: R,
+    token: CancellationToken,
+}
+
+impl<R: io::Read> io::Read for CancellationAwareReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.token.is_cancelled() {
+            return Err(io::Error::other(JobCancelled));
+        }
+        self.inner.read(buffer)
     }
 }
 
@@ -3459,20 +3478,29 @@ struct TzapArchiveFileSink {
     existing_volume_paths: Vec<PathBuf>,
     volume_paths: Vec<PathBuf>,
     outputs: Vec<AtomicOutputFile>,
+    cancellation_token: CancellationToken,
 }
 
 impl TzapArchiveFileSink {
-    fn new(destination: &Path, replace_existing: bool) -> Result<Self, TzapError> {
+    fn new(
+        destination: &Path,
+        replace_existing: bool,
+        cancellation_token: CancellationToken,
+    ) -> Result<Self, TzapError> {
         Ok(Self {
             destination: destination.to_path_buf(),
             replace_existing,
             existing_volume_paths: existing_tzap_volume_paths(destination)?,
             volume_paths: Vec::new(),
             outputs: Vec::new(),
+            cancellation_token,
         })
     }
 
     fn commit(self) -> Result<usize, TzapError> {
+        if self.cancellation_token.is_cancelled() {
+            return Err(TzapError::Cancelled);
+        }
         let volume_count = self.volume_paths.len();
         if volume_count == 0 {
             return Err(TzapError::Format(FormatError::WriterInvariant(
@@ -3506,6 +3534,7 @@ impl TzapArchiveFileSink {
 
 impl ArchiveWriteSink for TzapArchiveFileSink {
     fn begin_archive(&mut self, volume_count: usize) -> Result<(), ArchiveWriteError> {
+        check_tzap_write_cancelled(&self.cancellation_token)?;
         if volume_count == 0 {
             return Err(ArchiveWriteError::Format(FormatError::WriterInvariant(
                 "no TZAP volumes emitted",
@@ -3540,6 +3569,7 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
     }
 
     fn write_volume(&mut self, volume_index: usize, bytes: &[u8]) -> Result<(), ArchiveWriteError> {
+        check_tzap_write_cancelled(&self.cancellation_token)?;
         let volume_path = self
             .volume_paths
             .get(volume_index)
@@ -3577,6 +3607,14 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
     }
 
     fn write_bootstrap_sidecar(&mut self, _bytes: &[u8]) -> Result<(), ArchiveWriteError> {
+        check_tzap_write_cancelled(&self.cancellation_token)
+    }
+}
+
+fn check_tzap_write_cancelled(token: &CancellationToken) -> Result<(), ArchiveWriteError> {
+    if token.is_cancelled() {
+        Err(ArchiveWriteError::Io(io::Error::other(JobCancelled)))
+    } else {
         Ok(())
     }
 }
