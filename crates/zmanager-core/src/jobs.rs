@@ -97,6 +97,12 @@ pub enum JobEvent {
         bytes: u64,
         /// Total bytes processed so far by this job context.
         total_bytes_processed: u64,
+        /// Incremental completed entries represented by this aggregate.
+        entries: u64,
+        /// Total completed entries so far in the job.
+        total_entries_processed: u64,
+        /// Whether any display path was truncated to satisfy the UTF-8 storage bound.
+        recent_paths_truncated: bool,
     },
     /// A job entered a new observable phase.
     PhaseStarted {
@@ -119,6 +125,8 @@ pub enum JobEvent {
         total_bytes_processed: u64,
         /// Total source bytes for this phase when known.
         total_bytes: Option<u64>,
+        /// Whether any display path was truncated to satisfy the UTF-8 storage bound.
+        recent_paths_truncated: bool,
     },
     /// An archive entry finished processing.
     EntryFinished {
@@ -187,8 +195,15 @@ impl JobProgressState {
         match event {
             JobEvent::Started { total_bytes, .. } => self.total_bytes = *total_bytes,
             JobEvent::EntryStarted { path, .. } => self.record_path(path),
-            JobEvent::BytesProcessed { path, recent_paths, total_bytes_processed, .. } => {
+            JobEvent::BytesProcessed {
+                path,
+                recent_paths,
+                total_bytes_processed,
+                total_entries_processed,
+                ..
+            } => {
                 self.processed_bytes = self.processed_bytes.max(*total_bytes_processed);
+                self.processed_entries = self.processed_entries.max(*total_entries_processed);
                 self.record_paths(path.as_deref(), recent_paths);
             }
             JobEvent::PhaseStarted { phase, total_bytes } => {
@@ -196,7 +211,14 @@ impl JobProgressState {
                 self.phase_processed_bytes = 0;
                 self.phase_total_bytes = *total_bytes;
             }
-            JobEvent::PhaseBytesProcessed { phase, path, recent_paths, total_bytes_processed, total_bytes, .. } => {
+            JobEvent::PhaseBytesProcessed {
+                phase,
+                path,
+                recent_paths,
+                total_bytes_processed,
+                total_bytes,
+                ..
+            } => {
                 if self.active_phase != Some(*phase) {
                     self.active_phase = Some(*phase);
                     self.phase_processed_bytes = 0;
@@ -221,19 +243,29 @@ impl JobProgressState {
     }
 
     fn record_paths(&mut self, current: Option<&str>, recent: &[String]) {
-        for path in recent { self.record_path(path); }
-        if let Some(path) = current { self.record_path(path); }
+        for path in recent {
+            self.record_path(path);
+        }
+        if let Some(path) = current {
+            self.record_path(path);
+        }
     }
 
     fn record_path(&mut self, path: &str) {
-        if let Some(index) = self.recent_paths.iter().position(|item| item == path) {
+        let path = truncate_utf8(path, PROGRESS_RECENT_PATH_BYTES_LIMIT);
+        if let Some(index) = self.recent_paths.iter().position(|item| item == &path) {
             self.recent_paths.remove(index);
         }
-        self.recent_paths.push(path.to_owned());
+        self.recent_paths.push(path.clone());
         if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
             self.recent_paths.remove(0);
         }
-        self.current_path = Some(path.to_owned());
+        while self.recent_paths.iter().map(String::len).sum::<usize>()
+            > PROGRESS_RECENT_PATH_BYTES_LIMIT
+        {
+            self.recent_paths.remove(0);
+        }
+        self.current_path = Some(path);
     }
 }
 
@@ -254,64 +286,115 @@ where
 
 pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const PROGRESS_MIN_BYTE_STEP: u64 = 4 * 1024 * 1024;
-pub(crate) const PROGRESS_RECENT_PATH_LIMIT: usize = 10;
+pub const PROGRESS_RECENT_PATH_LIMIT: usize = 10;
+pub const PROGRESS_RECENT_PATH_BYTES_LIMIT: usize = 4 * 1024;
+pub(crate) const PROGRESS_ENTRY_STEP: u64 = 128;
 
 pub(crate) struct ProgressBatch {
     pub(crate) path: Option<String>,
     pub(crate) recent_paths: Vec<String>,
     pub(crate) bytes: u64,
+    pub(crate) entries: u64,
+    pub(crate) recent_paths_truncated: bool,
 }
 
 pub(crate) struct ProgressCoalescer {
     total_bytes: Option<u64>,
     pending_bytes: u64,
+    pending_entries: u64,
     latest_path: Option<String>,
     recent_paths: VecDeque<String>,
     last_emitted: Instant,
     emitted_once: bool,
+    recent_paths_truncated: bool,
 }
 
 impl ProgressCoalescer {
     pub(crate) fn new(total_bytes: Option<u64>) -> Self {
+        Self::new_at(total_bytes, Instant::now())
+    }
+
+    fn new_at(total_bytes: Option<u64>, now: Instant) -> Self {
         Self {
             total_bytes,
             pending_bytes: 0,
+            pending_entries: 0,
             latest_path: None,
             recent_paths: VecDeque::new(),
-            last_emitted: Instant::now(),
+            last_emitted: now,
             emitted_once: false,
+            recent_paths_truncated: false,
         }
     }
 
     pub(crate) fn reset(&mut self, total_bytes: Option<u64>) {
+        self.reset_at(total_bytes, Instant::now());
+    }
+
+    fn reset_at(&mut self, total_bytes: Option<u64>, now: Instant) {
         self.total_bytes = total_bytes;
         self.pending_bytes = 0;
+        self.pending_entries = 0;
         self.latest_path = None;
         self.recent_paths.clear();
-        self.last_emitted = Instant::now();
+        self.last_emitted = now;
         self.emitted_once = false;
+        self.recent_paths_truncated = false;
     }
 
     pub(crate) fn record(&mut self, path: Option<&str>, bytes: u64) -> Option<ProgressBatch> {
-        if bytes == 0 {
+        self.record_activity(path, bytes, 0)
+    }
+
+    pub(crate) fn record_activity(
+        &mut self,
+        path: Option<&str>,
+        bytes: u64,
+        entries: u64,
+    ) -> Option<ProgressBatch> {
+        self.record_activity_at(path, bytes, entries, Instant::now())
+    }
+
+    fn record_activity_at(
+        &mut self,
+        path: Option<&str>,
+        bytes: u64,
+        entries: u64,
+        now: Instant,
+    ) -> Option<ProgressBatch> {
+        if bytes == 0 && entries == 0 {
             return None;
         }
         self.pending_bytes = self.pending_bytes.saturating_add(bytes);
+        self.pending_entries = self.pending_entries.saturating_add(entries);
         if let Some(path) = path {
-            if self.latest_path.as_deref() != Some(path) {
-                self.latest_path = Some(path.to_owned());
+            self.recent_paths_truncated |= path.len() > PROGRESS_RECENT_PATH_BYTES_LIMIT;
+            let path = truncate_utf8(path, PROGRESS_RECENT_PATH_BYTES_LIMIT);
+            if self.latest_path.as_deref() != Some(path.as_str()) {
+                self.latest_path = Some(path.clone());
             }
             if !self
                 .recent_paths
                 .back()
-                .is_some_and(|recent| recent == path)
+                .is_some_and(|recent| recent == &path)
             {
-                if let Some(position) = self.recent_paths.iter().position(|recent| recent == path) {
+                if let Some(position) = self.recent_paths.iter().position(|recent| recent == &path)
+                {
                     self.recent_paths.remove(position);
                 }
-                self.recent_paths.push_back(path.to_owned());
+                self.recent_paths.push_back(path);
                 if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
                     self.recent_paths.pop_front();
+                }
+                while self
+                    .recent_paths
+                    .iter()
+                    .map(|path| path.len())
+                    .sum::<usize>()
+                    > PROGRESS_RECENT_PATH_BYTES_LIMIT
+                {
+                    self.recent_paths.pop_front();
+                    self.recent_paths_truncated = true;
                 }
             }
         }
@@ -320,26 +403,44 @@ impl ProgressCoalescer {
         let byte_step = PROGRESS_MIN_BYTE_STEP.max(one_percent);
         if !self.emitted_once
             || self.pending_bytes >= byte_step
-            || self.last_emitted.elapsed() >= PROGRESS_INTERVAL
+            || self.pending_entries >= PROGRESS_ENTRY_STEP
+            || now.saturating_duration_since(self.last_emitted) >= PROGRESS_INTERVAL
         {
-            self.flush()
+            self.flush_at(now)
         } else {
             None
         }
     }
 
     pub(crate) fn flush(&mut self) -> Option<ProgressBatch> {
-        if self.pending_bytes == 0 {
+        self.flush_at(Instant::now())
+    }
+
+    fn flush_at(&mut self, now: Instant) -> Option<ProgressBatch> {
+        if self.pending_bytes == 0 && self.pending_entries == 0 {
             return None;
         }
         self.emitted_once = true;
-        self.last_emitted = Instant::now();
+        self.last_emitted = now;
         Some(ProgressBatch {
             path: self.latest_path.take(),
             recent_paths: self.recent_paths.drain(..).collect(),
             bytes: std::mem::take(&mut self.pending_bytes),
+            entries: std::mem::take(&mut self.pending_entries),
+            recent_paths_truncated: std::mem::take(&mut self.recent_paths_truncated),
         })
     }
+}
+
+fn truncate_utf8(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_owned();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 /// Shared cooperative cancellation token.
@@ -384,6 +485,7 @@ pub struct JobContext<'a> {
     token: &'a CancellationToken,
     sink: &'a mut dyn JobEventSink,
     total_bytes_processed: u64,
+    total_entries_processed: u64,
     progress: ProgressCoalescer,
     phase_bytes_processed: BTreeMap<JobPhase, u64>,
 }
@@ -404,6 +506,7 @@ impl<'a> JobContext<'a> {
             token,
             sink,
             total_bytes_processed: 0,
+            total_entries_processed: 0,
             progress: ProgressCoalescer::new(total_bytes),
             phase_bytes_processed: BTreeMap::new(),
         }
@@ -416,18 +519,21 @@ impl<'a> JobContext<'a> {
 
     /// Emits an entry-started event.
     pub fn entry_started(&mut self, path: impl Into<String>, bytes: Option<u64>) {
-        self.emit(JobEvent::EntryStarted {
-            path: path.into(),
-            bytes,
-        });
+        let _ = bytes;
+        let path = path.into();
+        if let Some(batch) = self.progress.record_activity(Some(&path), 0, 0) {
+            self.emit_bytes_processed_batch(batch);
+        }
     }
 
     /// Emits an entry-finished event.
     pub fn entry_finished(&mut self, path: impl Into<String>, bytes: u64) {
-        self.emit(JobEvent::EntryFinished {
-            path: path.into(),
-            bytes,
-        });
+        let _ = bytes;
+        self.total_entries_processed = self.total_entries_processed.saturating_add(1);
+        let path = path.into();
+        if let Some(batch) = self.progress.record_activity(Some(&path), 0, 1) {
+            self.emit_bytes_processed_batch(batch);
+        }
     }
 
     /// Emits a warning event.
@@ -458,6 +564,9 @@ impl<'a> JobContext<'a> {
             recent_paths: batch.recent_paths,
             bytes: batch.bytes,
             total_bytes_processed: self.total_bytes_processed,
+            entries: batch.entries,
+            total_entries_processed: self.total_entries_processed,
+            recent_paths_truncated: false,
         });
     }
 
@@ -476,7 +585,14 @@ impl<'a> JobContext<'a> {
         total_bytes: Option<u64>,
     ) {
         let recent_paths = path.into_iter().map(ToOwned::to_owned).collect();
-        self.phase_bytes_processed_with_recent_paths(phase, path, recent_paths, bytes, total_bytes);
+        self.phase_bytes_processed_with_recent_paths(
+            phase,
+            path,
+            recent_paths,
+            bytes,
+            total_bytes,
+            false,
+        );
     }
 
     /// Emits phase-scoped byte progress with a capped recent-path activity list.
@@ -487,6 +603,7 @@ impl<'a> JobContext<'a> {
         recent_paths: Vec<String>,
         bytes: u64,
         total_bytes: Option<u64>,
+        recent_paths_truncated: bool,
     ) {
         let total_bytes_processed = {
             let processed = self.phase_bytes_processed.entry(phase).or_default();
@@ -500,6 +617,7 @@ impl<'a> JobContext<'a> {
             bytes,
             total_bytes_processed,
             total_bytes,
+            recent_paths_truncated,
         });
     }
 
@@ -1843,16 +1961,29 @@ mod tests {
     #[test]
     fn progress_projection_is_monotonic_bounded_and_terminal_is_immutable() {
         let mut state = JobProgressState::default();
-        state.apply(&JobEvent::Started { kind: super::JobKind::ZipCreate, total_bytes: Some(10) });
+        state.apply(&JobEvent::Started {
+            kind: super::JobKind::ZipCreate,
+            total_bytes: Some(10),
+        });
         for index in 0..20 {
             state.apply(&JobEvent::BytesProcessed {
-                path: Some(format!("file-{index}")), recent_paths: vec![], bytes: 1,
+                path: Some(format!("file-{index}")),
+                recent_paths: vec![],
+                bytes: 1,
                 total_bytes_processed: index + 1,
+                entries: 0,
+                total_entries_processed: 0,
+                recent_paths_truncated: false,
             });
         }
-        state.apply(&JobEvent::Completed { entries: 20, bytes: 20 });
+        state.apply(&JobEvent::Completed {
+            entries: 20,
+            bytes: 20,
+        });
         let terminal = state.clone();
-        state.apply(&JobEvent::Failed { message: "late".into() });
+        state.apply(&JobEvent::Failed {
+            message: "late".into(),
+        });
         assert_eq!(state, terminal);
         assert_eq!(state.outcome, Some(JobOutcome::Completed));
         assert_eq!(state.processed_bytes, 20);
@@ -1863,10 +1994,32 @@ mod tests {
     #[test]
     fn progress_projection_resets_only_phase_local_facts() {
         let mut state = JobProgressState::default();
-        state.apply(&JobEvent::BytesProcessed { path: None, recent_paths: vec![], bytes: 5, total_bytes_processed: 5 });
-        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::PlanningPayload, total_bytes: Some(8) });
-        state.apply(&JobEvent::PhaseBytesProcessed { phase: JobPhase::PlanningPayload, path: None, recent_paths: vec![], bytes: 4, total_bytes_processed: 4, total_bytes: Some(8) });
-        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::EmittingPayload, total_bytes: Some(8) });
+        state.apply(&JobEvent::BytesProcessed {
+            path: None,
+            recent_paths: vec![],
+            bytes: 5,
+            total_bytes_processed: 5,
+            entries: 0,
+            total_entries_processed: 0,
+            recent_paths_truncated: false,
+        });
+        state.apply(&JobEvent::PhaseStarted {
+            phase: JobPhase::PlanningPayload,
+            total_bytes: Some(8),
+        });
+        state.apply(&JobEvent::PhaseBytesProcessed {
+            phase: JobPhase::PlanningPayload,
+            path: None,
+            recent_paths: vec![],
+            bytes: 4,
+            total_bytes_processed: 4,
+            total_bytes: Some(8),
+            recent_paths_truncated: false,
+        });
+        state.apply(&JobEvent::PhaseStarted {
+            phase: JobPhase::EmittingPayload,
+            total_bytes: Some(8),
+        });
         assert_eq!(state.processed_bytes, 5);
         assert_eq!(state.phase_processed_bytes, 0);
     }
@@ -1882,7 +2035,64 @@ mod tests {
     use std::fs;
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn progress_coalescer_flushes_entry_and_time_thresholds_without_sleeping() {
+        let start = Instant::now();
+        let mut entries = ProgressCoalescer::new_at(None, start);
+        assert!(
+            entries
+                .record_activity_at(Some("first"), 0, 1, start)
+                .is_some()
+        );
+        for index in 0..127 {
+            assert!(
+                entries
+                    .record_activity_at(Some("tiny"), 0, 1, start + Duration::from_millis(index))
+                    .is_none()
+            );
+        }
+        let batch = entries
+            .record_activity_at(Some("tiny"), 0, 1, start + Duration::from_millis(127))
+            .expect("128 entries flush");
+        assert_eq!(batch.entries, super::PROGRESS_ENTRY_STEP);
+
+        let mut timed = ProgressCoalescer::new_at(None, start);
+        assert!(
+            timed
+                .record_activity_at(Some("first"), 1, 0, start)
+                .is_some()
+        );
+        assert!(
+            timed
+                .record_activity_at(Some("pending"), 1, 0, start + Duration::from_millis(999))
+                .is_none()
+        );
+        assert!(
+            timed
+                .record_activity_at(Some("pending"), 1, 0, start + Duration::from_secs(1))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn progress_paths_are_utf8_safe_and_storage_bounded() {
+        let mut progress = ProgressCoalescer::new(None);
+        let long = "界".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
+        let batch = progress
+            .record(Some(&long), 1)
+            .expect("first activity flushes");
+        assert!(batch.recent_paths_truncated);
+        assert!(batch.path.as_ref().unwrap().len() <= super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
+        assert!(
+            batch
+                .path
+                .as_ref()
+                .unwrap()
+                .is_char_boundary(batch.path.as_ref().unwrap().len())
+        );
+    }
 
     #[test]
     fn progress_coalescer_uses_one_percent_floor_and_caps_recent_paths() {
@@ -1940,9 +2150,6 @@ mod tests {
                 ..
             })
         ));
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, JobEvent::EntryStarted { path, .. } if path == "project/file.txt")));
         assert!(events.iter().any(|event| matches!(
             event,
             JobEvent::BytesProcessed {
@@ -2137,8 +2344,8 @@ mod tests {
 
         let first_finished_index = events
             .iter()
-            .position(|event| matches!(event, JobEvent::EntryFinished { .. }))
-            .expect("expected at least one entry-finished event");
+            .position(|event| matches!(event, JobEvent::BytesProcessed { total_entries_processed, .. } if *total_entries_processed > 0))
+            .expect("expected at least one aggregate with a finished entry");
 
         assert!(
             events
@@ -2306,7 +2513,7 @@ mod tests {
             &ZipCreateOptions::default(),
             &token,
             &mut |event| {
-                if matches!(event, JobEvent::EntryStarted { .. }) {
+                if matches!(event, JobEvent::BytesProcessed { .. }) {
                     token_for_sink.cancel();
                 }
                 events.push(event);
@@ -2389,9 +2596,6 @@ mod tests {
                 ..
             })
         ));
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, JobEvent::EntryStarted { path, .. } if path == "project/file.txt")));
         assert!(
             events
                 .iter()
@@ -2428,12 +2632,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.written_entries, 3);
-        assert!(events
+        let paths = events
             .iter()
-            .any(|event| matches!(event, JobEvent::EntryStarted { path, .. } if path == "project/src/main.rs")));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event, JobEvent::EntryStarted { path, .. } if path.contains("node_modules"))));
+            .filter_map(|event| match event {
+                JobEvent::BytesProcessed { path, .. } => path.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"project/src/main.rs"));
+        assert!(!paths.iter().any(|path| path.contains("node_modules")));
     }
 
     #[test]

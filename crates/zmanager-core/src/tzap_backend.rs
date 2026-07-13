@@ -3382,6 +3382,7 @@ impl TzapWriteJobProgress<'_, '_, '_> {
             batch.recent_paths,
             batch.bytes,
             phase_total_bytes(phase, self.total_source_bytes),
+            batch.recent_paths_truncated,
         );
     }
 }
