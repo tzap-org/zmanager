@@ -1831,7 +1831,6 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=849232941a1565b005658b93502b8d83ee0cb004#849232941a1565b005658b93502b8d83ee0cb004"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1842,12 +1841,15 @@ dependencies = [
  "crc32c",
  "hkdf",
  "hmac 0.12.1",
+ "libc",
+ "linux-raw-sys",
  "sha2 0.10.9",
  "tar",
  "tempfile",
  "thiserror",
  "unicode-normalization",
  "uuid",
+ "xattr",
  "zeroize",
  "zstd",
  "zstd-safe",
@@ -1856,7 +1858,6 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-keywrap"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=849232941a1565b005658b93502b8d83ee0cb004#849232941a1565b005658b93502b8d83ee0cb004"
 dependencies = [
  "hpke",
  "openssl",
@@ -1869,7 +1870,6 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-signing"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=849232941a1565b005658b93502b8d83ee0cb004#849232941a1565b005658b93502b8d83ee0cb004"
 dependencies = [
  "ed25519-dalek",
  "openssl",

@@ -43,8 +43,8 @@ use tzap_core::{
     ArchiveWriteSink, ExtractError, KdfParams, MasterKey, MetadataDiagnostic,
     MetadataDiagnosticStatus, MetadataOperation, OpenedArchive, PortableFileMetadata,
     PortableModeOrigin, PortablePosixOwner, ReaderOptions, RegularFileSource,
-    RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind, WriterOptions,
-    open_seekable_archive, open_seekable_archive_volumes,
+    RestorePolicy as CoreRestorePolicy, RootAuthSigningRequest, SafeExtractionOptions,
+    TarEntryKind, WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
     open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
     public_no_key_verify_volumes_with,
     write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress,
@@ -422,6 +422,54 @@ pub struct TzapExtractReport {
     pub written_bytes: u64,
     /// Non-fatal warnings.
     pub warnings: Vec<String>,
+}
+
+/// Result of extracting one TZAP file to an exact destination.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapFileExtractReport {
+    /// Number of payload bytes written.
+    pub written_bytes: u64,
+    /// Structured metadata restoration diagnostics rendered for application clients.
+    pub metadata_diagnostics: Vec<String>,
+}
+
+/// Metadata restoration level requested for TZAP extraction.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum TzapRestorePolicy {
+    /// Restore payload bytes only.
+    Content,
+    /// Restore portable metadata such as ordinary mode bits and modification time.
+    #[default]
+    Portable,
+    /// Request authenticated metadata for the current operating system.
+    SameOs,
+    /// Explicitly authorize system-class metadata restoration.
+    System,
+}
+
+/// TZAP metadata restoration options.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct TzapRestoreOptions {
+    /// Requested restoration level.
+    pub policy: TzapRestorePolicy,
+    /// Permit unsupported requested metadata to be skipped with diagnostics.
+    pub allow_degraded: bool,
+}
+
+impl TzapRestoreOptions {
+    fn core_options(self, overwrite_existing: bool) -> SafeExtractionOptions {
+        SafeExtractionOptions {
+            overwrite_existing,
+            restore_policy: match self.policy {
+                TzapRestorePolicy::Content => CoreRestorePolicy::Content,
+                TzapRestorePolicy::Portable => CoreRestorePolicy::Portable,
+                TzapRestorePolicy::SameOs => CoreRestorePolicy::SameOs,
+                TzapRestorePolicy::System => CoreRestorePolicy::System,
+            },
+            allow_degraded: self.allow_degraded,
+            system_authorized: self.policy == TzapRestorePolicy::System,
+        }
+    }
 }
 
 /// `.tzap` test report.
@@ -1640,14 +1688,52 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+        archive,
+        destination,
+        policy,
+        password,
+        TzapRestoreOptions::default(),
+        context,
+    )
+}
+
+/// Extracts `.tzap` entries with explicit authenticated metadata restoration options.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// the requested restoration level is unsupported without degraded restoration,
+/// metadata cannot be restored, or filesystem writes fail.
+pub fn extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    restore_options: TzapRestoreOptions,
+    context: &mut JobContext<'_>,
+) -> Result<TzapExtractReport, TzapError> {
     let destination = destination.as_ref();
+    let opened = open_tzap_archive(archive, password)?;
+    let entries = opened.list_files()?;
+    opened.plan_metadata_restore(restore_options.core_options(false))?;
+    if matches!(
+        restore_options.policy,
+        TzapRestorePolicy::SameOs | TzapRestorePolicy::System
+    ) && !restore_options.allow_degraded
+        && entries
+            .iter()
+            .any(|entry| entry.kind != TarEntryKind::Regular)
+    {
+        return Err(TzapError::Format(FormatError::ReaderUnsupported(
+            "strict native metadata restore for non-regular entries is not supported by zmanager fast extraction; explicitly allow degraded restore",
+        )));
+    }
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io {
             path: destination.to_path_buf(),
             source,
         })?;
-    let opened = open_tzap_archive(archive, password)?;
-    let entries = opened.list_files()?;
     let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut report = TzapExtractReport {
         written_entries: 0,
@@ -1692,7 +1778,7 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
                         &opened,
                         &safety_entry.archive_path,
                         entry.file_data_size,
-                        TzapPortableEntryMetadata::from_archive_entry(&entry),
+                        restore_options,
                         &destination_path,
                         replace_existing,
                         Some(context),
@@ -1770,7 +1856,7 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
         }
     }
 
-    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata)?;
+    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata, restore_options)?;
 
     Ok(report)
 }
@@ -2532,8 +2618,39 @@ pub fn extract_tzap_file_to_destination_with_optional_password(
     destination_path: &Path,
     replace_existing: bool,
 ) -> Result<Option<u64>, TzapError> {
+    extract_tzap_file_to_destination_with_optional_password_and_restore_options(
+        archive,
+        password,
+        entry_path,
+        destination_path,
+        replace_existing,
+        TzapRestoreOptions::default(),
+    )
+    .map(|report| report.map(|report| report.written_bytes))
+}
+
+/// Extracts one regular `.tzap` member with explicit metadata restoration options.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, the requested
+/// restoration policy cannot be satisfied, or the destination cannot be committed.
+pub fn extract_tzap_file_to_destination_with_optional_password_and_restore_options(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    entry_path: &str,
+    destination_path: &Path,
+    replace_existing: bool,
+    restore_options: TzapRestoreOptions,
+) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
-    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing)
+    extract_tzap_file_from_opened_archive(
+        &opened,
+        entry_path,
+        destination_path,
+        replace_existing,
+        restore_options,
+    )
 }
 
 /// Extracts one regular recipient-wrapped `.tzap` member to an exact destination path.
@@ -2550,7 +2667,14 @@ pub fn extract_tzap_file_to_destination_with_recipient_key(
     replace_existing: bool,
 ) -> Result<Option<u64>, TzapError> {
     let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
-    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing)
+    extract_tzap_file_from_opened_archive(
+        &opened,
+        entry_path,
+        destination_path,
+        replace_existing,
+        TzapRestoreOptions::default(),
+    )
+    .map(|report| report.map(|report| report.written_bytes))
 }
 
 fn extract_tzap_file_from_opened_archive(
@@ -2558,25 +2682,26 @@ fn extract_tzap_file_from_opened_archive(
     entry_path: &str,
     destination_path: &Path,
     replace_existing: bool,
-) -> Result<Option<u64>, TzapError> {
+    restore_options: TzapRestoreOptions,
+) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let Some(index_entry) = opened.lookup_index_entry(entry_path)? else {
         return Ok(None);
     };
     let temp_root = TemporaryTzapExtractionRoot::new(destination_path)?;
-    let Some(_diagnostics) = opened.extract_file_to(
+    let Some(diagnostics) = opened.extract_file_to(
         entry_path,
         temp_root.path(),
-        SafeExtractionOptions {
-            overwrite_existing: false,
-            ..SafeExtractionOptions::default()
-        },
+        restore_options.core_options(false),
     )?
     else {
         return Ok(None);
     };
     let extracted_path = archive_member_path_under_root(temp_root.path(), entry_path)?;
     commit_extracted_file(&extracted_path, destination_path, replace_existing)?;
-    Ok(Some(index_entry.file_data_size))
+    Ok(Some(TzapFileExtractReport {
+        written_bytes: index_entry.file_data_size,
+        metadata_diagnostics: metadata_diagnostic_labels(&diagnostics),
+    }))
 }
 
 fn collect_regular_file_sources(
@@ -2707,7 +2832,7 @@ fn extract_tzap_inner(
                         &opened,
                         &entry.path,
                         entry.file_data_size,
-                        TzapPortableEntryMetadata::from_archive_entry(&entry),
+                        TzapRestoreOptions::default(),
                         &destination_path,
                         replace_existing,
                         context.as_deref_mut(),
@@ -2784,7 +2909,10 @@ fn extract_tzap_inner(
         }
     }
 
-    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata)?;
+    apply_deferred_tzap_directory_metadata(
+        &deferred_directory_metadata,
+        TzapRestoreOptions::default(),
+    )?;
 
     Ok(report)
 }
@@ -2814,7 +2942,7 @@ fn stream_regular_member_to_destination(
     opened: &OpenedArchive,
     entry_path: &str,
     entry_size: u64,
-    metadata: TzapPortableEntryMetadata,
+    restore_options: TzapRestoreOptions,
     destination_path: &Path,
     replace_existing: bool,
     context: Option<&mut JobContext<'_>>,
@@ -2843,7 +2971,15 @@ fn stream_regular_member_to_destination(
         return Ok(None);
     };
 
-    apply_tzap_regular_file_metadata(output_file, destination_path, metadata)?;
+    let metadata_diagnostics = opened
+        .restore_file_metadata_to_open_file(
+            entry_path,
+            output_file,
+            restore_options.core_options(false),
+        )?
+        .ok_or(TzapError::Format(FormatError::InvalidArchive(
+            "streamed archive entry disappeared before metadata restore",
+        )))?;
 
     output
         .commit_with_replace(replace_existing)
@@ -2851,77 +2987,36 @@ fn stream_regular_member_to_destination(
             path: destination_path.to_path_buf(),
             source,
         })?;
-    let mut metadata_diagnostics = Vec::new();
-    if metadata.mode & 0o6000 != 0 {
-        metadata_diagnostics.push(
-            "profile=portable-v1 class=setid-mode operation=restore status=skipped: setuid and setgid bits were removed by portable restore policy"
-                .to_owned(),
-        );
-    }
     Ok(Some(StreamedTzapMember {
         written_bytes: entry_size,
-        metadata_diagnostics,
+        metadata_diagnostics: metadata_diagnostic_labels(&metadata_diagnostics),
     }))
-}
-
-fn apply_tzap_regular_file_metadata(
-    file: &File,
-    path: &Path,
-    metadata: TzapPortableEntryMetadata,
-) -> Result<(), TzapError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mode = metadata.mode & 0o1777;
-        file.set_permissions(fs::Permissions::from_mode(mode))
-            .map_err(|source| TzapError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        let mut permissions = file
-            .metadata()
-            .map_err(|source| TzapError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?
-            .permissions();
-        permissions.set_readonly(metadata.mode & 0o222 == 0);
-        file.set_permissions(permissions)
-            .map_err(|source| TzapError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-    }
-
-    let mtime = archive_timestamp_file_time(metadata.mtime).map_err(|message| TzapError::Io {
-        path: path.to_path_buf(),
-        source: io::Error::new(io::ErrorKind::InvalidData, message),
-    })?;
-    filetime::set_file_handle_times(file, None, Some(mtime)).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
 }
 
 fn apply_deferred_tzap_directory_metadata(
     directories: &[(PathBuf, TzapPortableEntryMetadata)],
+    restore_options: TzapRestoreOptions,
 ) -> Result<(), TzapError> {
+    if restore_options.policy == TzapRestorePolicy::Content {
+        return Ok(());
+    }
+
     for (path, metadata) in directories.iter().rev() {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
 
-            fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode & 0o1777)).map_err(
-                |source| TzapError::Io {
+            let mode = if restore_options.policy == TzapRestorePolicy::System {
+                metadata.mode & 0o7777
+            } else {
+                metadata.mode & 0o1777
+            };
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
+                TzapError::Io {
                     path: path.clone(),
                     source,
-                },
-            )?;
+                }
+            })?;
         }
 
         #[cfg(not(unix))]
@@ -3936,6 +4031,7 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
         },
         posix_owner: portable_posix_owner(&metadata),
         attributes: portable_file_attributes(&metadata),
+        native: Default::default(),
     })
 }
 
@@ -4061,12 +4157,13 @@ fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), Tza
 #[cfg(test)]
 mod tests {
     use super::{
-        TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
-        create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
-        extract_tzap_with_optional_password_and_context_fast, extract_tzap_with_recipient_key,
-        is_tzap_archive_path, list_tzap_with_optional_password, list_tzap_with_password,
-        list_tzap_with_recipient_key, load_x509_trusted_roots, summarize_tzap_public_metadata,
-        test_tzap_with_password_filter_and_x509_trust,
+        TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy,
+        TzapX509SigningOptions, TzapX509TrustOptions, create_tzap_from_manifest_with_context,
+        extract_tzap_file_to_destination, extract_tzap_with_optional_password_and_context_fast,
+        extract_tzap_with_optional_password_and_context_fast_with_restore_options,
+        extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
+        list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots,
+        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
         test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
     };
     use crate::jobs::{CancellationToken, JobContext};
@@ -4366,6 +4463,46 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("setid-mode"))
         );
+
+        let content_token = CancellationToken::new();
+        let mut content_events = |_| {};
+        let mut content_context = JobContext::new(&content_token, &mut content_events);
+        extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+            &archive,
+            temp.path("content-out"),
+            ExtractionPolicy::default(),
+            None,
+            TzapRestoreOptions {
+                policy: TzapRestorePolicy::Content,
+                allow_degraded: false,
+            },
+            &mut content_context,
+        )
+        .unwrap();
+        let content_metadata = fs::metadata(temp.path("content-out/payload.txt")).unwrap();
+        assert_ne!(content_metadata.mode() & 0o7777, 0o751);
+        assert_ne!(content_metadata.mtime(), 1_700_000_000);
+
+        let system_token = CancellationToken::new();
+        let mut system_events = |_| {};
+        let mut system_context = JobContext::new(&system_token, &mut system_events);
+        extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+            &archive,
+            temp.path("system-out"),
+            ExtractionPolicy::default(),
+            None,
+            TzapRestoreOptions {
+                policy: TzapRestorePolicy::System,
+                allow_degraded: false,
+            },
+            &mut system_context,
+        )
+        .unwrap();
+        let source_metadata = fs::metadata(temp.path("payload.txt")).unwrap();
+        let system_metadata = fs::metadata(temp.path("system-out/payload.txt")).unwrap();
+        assert_eq!(system_metadata.mode() & 0o7777, 0o6751);
+        assert_eq!(system_metadata.uid(), source_metadata.uid());
+        assert_eq!(system_metadata.gid(), source_metadata.gid());
     }
 
     #[test]

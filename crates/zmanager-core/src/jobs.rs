@@ -1662,6 +1662,32 @@ pub fn run_tzap_extract_job_with_password_and_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
+    run_tzap_extract_job_with_password_and_policy_and_restore_options(
+        archive_path,
+        destination,
+        password,
+        policy,
+        tzap_backend::TzapRestoreOptions::default(),
+        token,
+        sink,
+    )
+}
+
+/// Runs a TZAP extract job with explicit archive safety and metadata restoration policies.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when TZAP reading, extraction safety, requested
+/// metadata restoration, filesystem I/O, or cancellation fails.
+pub fn run_tzap_extract_job_with_password_and_policy_and_restore_options(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    restore_options: tzap_backend::TzapRestoreOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<tzap_backend::TzapExtractReport, TzapError> {
     let total_bytes = match password.filter(|password| !password.is_empty()) {
         Some(password) => tzap_backend::list_tzap_index_entries_with_optional_password(
             archive_path.as_ref(),
@@ -1688,13 +1714,15 @@ pub fn run_tzap_extract_job_with_password_and_policy(
     }
 
     let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
-    let result = tzap_backend::extract_tzap_with_optional_password_and_context_fast(
-        archive_path,
-        destination,
-        policy,
-        password,
-        &mut context,
-    );
+    let result =
+        tzap_backend::extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+            archive_path,
+            destination,
+            policy,
+            password,
+            restore_options,
+            &mut context,
+        );
     context.flush_progress();
     finish_tzap_extract_result(result, sink)
 }

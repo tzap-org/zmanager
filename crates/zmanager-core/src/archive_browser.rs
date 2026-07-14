@@ -7,7 +7,9 @@ use crate::safety::{
 };
 use crate::sevenz_backend::{SevenZEntryKind, SevenZError};
 use crate::tar_zst_backend::TarZstdError;
-use crate::tzap_backend::{TzapEntryKind, TzapError, is_tzap_archive_path};
+use crate::tzap_backend::{
+    TzapEntryKind, TzapError, TzapRestoreOptions, TzapRestorePolicy, is_tzap_archive_path,
+};
 use crate::zip_backend::ZipBackendError;
 use std::fmt;
 use std::fs::{self, File};
@@ -74,6 +76,8 @@ pub struct EntryExtractReport {
     pub destination_path: PathBuf,
     /// Number of regular file bytes written.
     pub written_bytes: u64,
+    /// Metadata restoration diagnostics for this entry.
+    pub metadata_diagnostics: Vec<String>,
 }
 
 /// Preview extraction report.
@@ -96,6 +100,10 @@ pub struct BrowserExtractOptions<'a> {
     pub overwrite: OverwritePolicy,
     /// Leading archive path components to drop before writing.
     pub strip_components: usize,
+    /// TZAP metadata restoration level. Other formats ignore this option.
+    pub tzap_restore_policy: TzapRestorePolicy,
+    /// Permit unsupported requested TZAP metadata to be skipped with diagnostics.
+    pub tzap_allow_degraded: bool,
 }
 
 impl Default for BrowserExtractOptions<'_> {
@@ -104,6 +112,8 @@ impl Default for BrowserExtractOptions<'_> {
             password: None,
             overwrite: OverwritePolicy::Refuse,
             strip_components: 0,
+            tzap_restore_policy: TzapRestorePolicy::Portable,
+            tzap_allow_degraded: false,
         }
     }
 }
@@ -322,6 +332,10 @@ pub fn extract_entry_with_options(
             &destination_root,
             &policy,
             options.password,
+            TzapRestoreOptions {
+                policy: options.tzap_restore_policy,
+                allow_degraded: options.tzap_allow_degraded,
+            },
         )
     } else if apple_archive_backend::is_apple_archive_path(archive_path) {
         let report = apple_archive_backend::extract_apple_archive_entry(
@@ -333,6 +347,7 @@ pub fn extract_entry_with_options(
         Ok(EntryExtractReport {
             destination_path: destination.join(entry_path),
             written_bytes: report.written_bytes,
+            metadata_diagnostics: Vec::new(),
         })
     } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(archive_path) {
         extract_raw_stream_entry(archive_path, format, entry_path, &destination_root, &policy)
@@ -347,6 +362,7 @@ pub fn extract_entry_with_options(
         Ok(EntryExtractReport {
             destination_path: destination.join(entry_path),
             written_bytes: report.written_bytes,
+            metadata_diagnostics: Vec::new(),
         })
     }
 }
@@ -585,6 +601,7 @@ fn extract_tzap_entry(
     destination: &Path,
     policy: &ExtractionPolicy,
     password: Option<&str>,
+    restore_options: TzapRestoreOptions,
 ) -> Result<EntryExtractReport, ArchiveBrowserError> {
     let listing = crate::tzap_backend::list_tzap_with_optional_password(archive_path, password)?;
     let entry = listing
@@ -612,16 +629,18 @@ fn extract_tzap_entry(
             Ok(EntryExtractReport {
                 destination_path: write_plan.destination_path,
                 written_bytes,
+                metadata_diagnostics: Vec::new(),
             })
         }
         ExtractionEntryKind::File => {
-            let Some(written_bytes) =
-                crate::tzap_backend::extract_tzap_file_to_destination_with_optional_password(
+            let Some(report) =
+                crate::tzap_backend::extract_tzap_file_to_destination_with_optional_password_and_restore_options(
                     archive_path,
                     password,
                     entry_path,
                     &write_plan.destination_path,
                     write_plan.replace_existing,
+                    restore_options,
                 )?
             else {
                 return Err(ArchiveBrowserError::EntryNotFound {
@@ -630,7 +649,8 @@ fn extract_tzap_entry(
             };
             Ok(EntryExtractReport {
                 destination_path: write_plan.destination_path,
-                written_bytes,
+                written_bytes: report.written_bytes,
+                metadata_diagnostics: report.metadata_diagnostics,
             })
         }
         ExtractionEntryKind::Symlink { .. }
@@ -677,6 +697,7 @@ fn extract_zip_entry(
         return Ok(EntryExtractReport {
             destination_path: write_plan.destination_path,
             written_bytes,
+            metadata_diagnostics: Vec::new(),
         });
     }
 
@@ -737,6 +758,7 @@ fn extract_tar_zst_entry(
         return Ok(EntryExtractReport {
             destination_path: write_plan.destination_path,
             written_bytes,
+            metadata_diagnostics: Vec::new(),
         });
     }
 
@@ -776,6 +798,7 @@ fn extract_raw_stream_entry(
     Ok(EntryExtractReport {
         destination_path: write_plan.destination_path,
         written_bytes,
+        metadata_diagnostics: Vec::new(),
     })
 }
 
