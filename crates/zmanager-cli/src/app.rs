@@ -1055,12 +1055,15 @@ struct PlanRequest {
     null_paths: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct GenericEntry {
     kind: String,
     name: String,
     size: u64,
     compressed_size: Option<u64>,
+    mode: Option<u32>,
+    modified: Option<String>,
+    metadata_diagnostics: Vec<String>,
 }
 
 fn peel_leading_global_options(
@@ -1262,6 +1265,13 @@ fn print_success_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) 
 
 fn print_warning_stdout(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
     output::stdout_line(
+        global.color,
+        format_args!("{}", output::styled(StyleRole::Warning, message)),
+    );
+}
+
+fn print_warning_stderr(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
+    output::stderr_line(
         global.color,
         format_args!("{}", output::styled(StyleRole::Warning, message)),
     );
@@ -5753,6 +5763,16 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
     ) {
         Ok(mut entries) => {
             filter_entries(&mut entries, &request.include, &request.exclude);
+            if !global.quiet {
+                for entry in &entries {
+                    for diagnostic in &entry.metadata_diagnostics {
+                        print_warning_stderr(
+                            global,
+                            format_args!("metadata {}: {diagnostic}", entry.name),
+                        );
+                    }
+                }
+            }
             if global.json {
                 print_entries_json(&entries);
             } else if request.tree {
@@ -5768,7 +5788,7 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
                         "{}",
                         output::styled(
                             StyleRole::Heading,
-                            format_args!("TYPE\tSIZE\tCOMPRESSED\tPATH")
+                            format_args!("TYPE\tMODE\tSIZE\tCOMPRESSED\tMODIFIED\tPATH")
                         )
                     ),
                 );
@@ -5776,12 +5796,16 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
                     output::stdout_line(
                         global.color,
                         format_args!(
-                            "{}\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}\t{}",
                             output::styled(StyleRole::Label, format_args!("{}", entry.kind)),
+                            entry
+                                .mode
+                                .map_or_else(|| "-".to_owned(), |mode| format!("{mode:04o}")),
                             entry.size,
                             entry
                                 .compressed_size
                                 .map_or_else(|| "-".to_owned(), |size| size.to_string()),
+                            entry.modified.as_deref().unwrap_or("-"),
                             output::styled(StyleRole::Path, format_args!("{}", entry.name))
                         ),
                     );
@@ -7099,6 +7123,7 @@ fn list_entries_with_password(
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),
+                        ..GenericEntry::default()
                     })
                     .collect()
             })
@@ -7114,6 +7139,7 @@ fn list_entries_with_password(
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),
+                        ..GenericEntry::default()
                     })
                     .collect()
             })
@@ -7132,6 +7158,7 @@ fn list_entries_with_password(
             name,
             size,
             compressed_size,
+            ..GenericEntry::default()
         }])
     } else if is_tzap_archive(archive) {
         let listing = if let Some(recipient_key) = recipient_key {
@@ -7150,11 +7177,21 @@ fn list_entries_with_password(
                             zmanager_core::tzap_backend::TzapEntryKind::Directory => "directory",
                             zmanager_core::tzap_backend::TzapEntryKind::Symlink => "symlink",
                             zmanager_core::tzap_backend::TzapEntryKind::Hardlink => "hardlink",
+                            zmanager_core::tzap_backend::TzapEntryKind::CharacterDevice => {
+                                "character-device"
+                            }
+                            zmanager_core::tzap_backend::TzapEntryKind::BlockDevice => {
+                                "block-device"
+                            }
+                            zmanager_core::tzap_backend::TzapEntryKind::Fifo => "fifo",
                         }
                         .to_owned(),
                         name: entry.path,
                         size: entry.size,
                         compressed_size: None,
+                        mode: Some(entry.mode),
+                        modified: tzap_timestamp_string(entry.mtime, entry.mtime_nanoseconds),
+                        metadata_diagnostics: entry.metadata_diagnostics,
                     })
                     .collect()
             })
@@ -7185,6 +7222,7 @@ fn list_entries_with_password(
                         name: entry.path,
                         size: entry.size.unwrap_or(0),
                         compressed_size: None,
+                        ..GenericEntry::default()
                     })
                     .collect()
             })
@@ -7200,6 +7238,7 @@ fn list_entries_with_password(
                         name: entry.path,
                         size: entry.size,
                         compressed_size: None,
+                        ..GenericEntry::default()
                     })
                     .collect()
             })
@@ -7215,6 +7254,7 @@ fn list_entries_with_password(
                         name: entry.path,
                         size: u64::try_from(entry.size).unwrap_or(0),
                         compressed_size: None,
+                        ..GenericEntry::default()
                     })
                     .collect()
             })
@@ -7278,23 +7318,34 @@ fn print_entries_json(entries: &[GenericEntry]) {
         if index > 0 {
             print!(",");
         }
-        match entry.compressed_size {
-            Some(compressed_size) => print!(
-                "{{\"kind\":\"{}\",\"name\":\"{}\",\"size\":{},\"compressed_size\":{}}}",
-                json_escape(&entry.kind),
-                json_escape(&entry.name),
-                entry.size,
-                compressed_size
-            ),
-            None => print!(
-                "{{\"kind\":\"{}\",\"name\":\"{}\",\"size\":{},\"compressed_size\":null}}",
-                json_escape(&entry.kind),
-                json_escape(&entry.name),
-                entry.size
-            ),
-        }
+        let compressed_size = entry
+            .compressed_size
+            .map_or_else(|| "null".to_owned(), |value| value.to_string());
+        let mode = entry
+            .mode
+            .map_or_else(|| "null".to_owned(), |value| value.to_string());
+        let modified = serde_json::to_string(&entry.modified).unwrap_or_else(|_| "null".to_owned());
+        let metadata_diagnostics =
+            serde_json::to_string(&entry.metadata_diagnostics).unwrap_or_else(|_| "[]".to_owned());
+        print!(
+            "{{\"kind\":\"{}\",\"name\":\"{}\",\"size\":{},\"compressed_size\":{compressed_size},\"mode\":{mode},\"modified\":{modified},\"metadata_diagnostics\":{metadata_diagnostics}}}",
+            json_escape(&entry.kind),
+            json_escape(&entry.name),
+            entry.size,
+        );
     }
     println!("]}}");
+}
+
+fn tzap_timestamp_string(seconds: i64, nanoseconds: u32) -> Option<String> {
+    if seconds == 0 && nanoseconds == 0 {
+        return None;
+    }
+    if nanoseconds == 0 {
+        return Some(seconds.to_string());
+    }
+    let fraction = format!("{nanoseconds:09}");
+    Some(format!("{seconds}.{}", fraction.trim_end_matches('0')))
 }
 
 fn print_create_summary(archive: &Path, outcome: &CreateOutcome, global: &GlobalOptions) {

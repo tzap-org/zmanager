@@ -47,6 +47,10 @@ pub struct BrowserEntry {
     pub compressed_size: Option<u64>,
     /// Modification time formatted for display.
     pub modified: Option<String>,
+    /// Portable Unix mode bits when the archive exposes them.
+    pub mode: Option<u32>,
+    /// Authenticated metadata diagnostics reported by the backend.
+    pub metadata_diagnostics: Vec<String>,
 }
 
 /// Archive browser listing.
@@ -419,6 +423,8 @@ fn list_zip_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> 
             size: Some(file.size()),
             compressed_size: Some(file.compressed_size()),
             modified: file.last_modified().map(|modified| modified.to_string()),
+            mode: None,
+            metadata_diagnostics: Vec::new(),
         });
     }
 
@@ -462,6 +468,8 @@ fn list_tar_zst_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserErr
                 size: header.size().ok(),
                 compressed_size: None,
                 modified: header.mtime().ok().map(|mtime| mtime.to_string()),
+                mode: header.mode().ok(),
+                metadata_diagnostics: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, ArchiveBrowserError>>()?;
@@ -480,6 +488,8 @@ fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowser
             size: u64::try_from(entry.size).ok(),
             compressed_size: None,
             modified: entry.modified.and_then(system_time_string),
+            mode: (entry.mode != 0).then_some(entry.mode & 0o7777),
+            metadata_diagnostics: Vec::new(),
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -503,6 +513,8 @@ fn list_raw_stream_entry(
             size: None,
             compressed_size,
             modified: None,
+            mode: None,
+            metadata_diagnostics: Vec::new(),
         }],
     })
 }
@@ -521,6 +533,8 @@ fn list_7z_entries(
             size: Some(entry.size),
             compressed_size: Some(entry.compressed_size),
             modified: None,
+            mode: None,
+            metadata_diagnostics: Vec::new(),
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -530,16 +544,18 @@ fn list_tzap_entries(
     path: &Path,
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
-    let listing =
-        crate::tzap_backend::list_tzap_index_entries_with_optional_password(path, password)?;
+    let listing = crate::tzap_backend::list_tzap_with_optional_password(path, password)?;
     let entries = listing
+        .entries
         .into_iter()
         .map(|entry| BrowserEntry {
-            path: entry.path.clone(),
-            kind: tzap_entry_kind_from_index_entry_path(&entry.path),
-            size: Some(entry.file_data_size),
+            path: entry.path,
+            kind: tzap_entry_kind(entry.kind),
+            size: Some(entry.size),
             compressed_size: None,
-            modified: (entry.mtime != 0).then(|| entry.mtime.to_string()),
+            modified: tzap_modified_string(entry.mtime, entry.mtime_nanoseconds),
+            mode: Some(entry.mode),
+            metadata_diagnostics: entry.metadata_diagnostics,
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -556,17 +572,11 @@ fn list_apple_archive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrow
             size: entry.size,
             compressed_size: None,
             modified: entry.modified.and_then(system_time_string),
+            mode: None,
+            metadata_diagnostics: Vec::new(),
         })
         .collect();
     Ok(BrowserListing { entries })
-}
-
-fn tzap_entry_kind_from_index_entry_path(path: &str) -> BrowserEntryKind {
-    if path.ends_with('/') {
-        BrowserEntryKind::Directory
-    } else {
-        BrowserEntryKind::File
-    }
 }
 
 fn extract_tzap_entry(
@@ -966,6 +976,9 @@ fn tzap_entry_kind(kind: TzapEntryKind) -> BrowserEntryKind {
         TzapEntryKind::Directory => BrowserEntryKind::Directory,
         TzapEntryKind::Symlink => BrowserEntryKind::Symlink,
         TzapEntryKind::Hardlink => BrowserEntryKind::Hardlink,
+        TzapEntryKind::CharacterDevice | TzapEntryKind::BlockDevice | TzapEntryKind::Fifo => {
+            BrowserEntryKind::Special
+        }
     }
 }
 
@@ -991,7 +1004,24 @@ fn tzap_extraction_kind(
                 kind: tzap_entry_kind(kind),
             })
         }
+        TzapEntryKind::CharacterDevice | TzapEntryKind::BlockDevice | TzapEntryKind::Fifo => {
+            Err(ArchiveBrowserError::UnsupportedEntry {
+                path: path.to_owned(),
+                kind: BrowserEntryKind::Special,
+            })
+        }
     }
+}
+
+fn tzap_modified_string(seconds: i64, nanoseconds: u32) -> Option<String> {
+    if seconds == 0 && nanoseconds == 0 {
+        return None;
+    }
+    if nanoseconds == 0 {
+        return Some(seconds.to_string());
+    }
+    let fraction = format!("{nanoseconds:09}");
+    Some(format!("{seconds}.{}", fraction.trim_end_matches('0')))
 }
 
 fn system_time_string(time: SystemTime) -> Option<String> {
@@ -1092,8 +1122,8 @@ mod tests {
     }
 
     #[test]
-    fn lists_tzap_entry_from_index_metadata() {
-        let temp = TestDir::new("browser_tzap_index");
+    fn lists_tzap_entry_with_portable_metadata() {
+        let temp = TestDir::new("browser_tzap_metadata");
         let payload = temp.path("payload.txt");
         fs::write(&payload, b"hello").unwrap();
         let archive = temp.path("archive.tzap");
@@ -1146,6 +1176,8 @@ mod tests {
         assert_eq!(payload_entry.kind, super::BrowserEntryKind::File);
         assert_eq!(payload_entry.size, Some(5));
         assert_eq!(payload_entry.modified, Some("1700000000".to_owned()));
+        assert_eq!(payload_entry.mode, Some(0o644));
+        assert!(payload_entry.metadata_diagnostics.is_empty());
         assert_eq!(listing.entries.len(), 1);
     }
 

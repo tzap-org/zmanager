@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_libarchive::{FileType, ReadArchive};
 
+const LIBARCHIVE_MODE_MASK: u32 = 0o7777;
+
 const NUMBERED_VOLUME_EXTENSION_WIDTH: usize = 3;
 const NUMBERED_VOLUME_ARCHIVE_SUFFIXES: &[&str] = &[".7z", ".zip"];
 const TAR_BROTLI_SUFFIX: &str = ".tar.br";
@@ -475,6 +477,7 @@ fn extract_archive_inner(
         warnings: Vec::new(),
     };
     let mut found_selected_entry = selected_entry.is_none();
+    let mut deferred_directories = Vec::new();
 
     while let Some(entry) = archive.next_entry()? {
         if let Some(context) = context.as_deref_mut() {
@@ -525,6 +528,7 @@ fn extract_archive_inner(
                     link_target_path.as_deref(),
                     &mut report,
                     context.as_deref_mut(),
+                    &mut deferred_directories,
                 )?;
                 processed
             }
@@ -550,6 +554,8 @@ fn extract_archive_inner(
             path: path.to_owned(),
         });
     }
+
+    apply_deferred_directory_metadata(&deferred_directories)?;
 
     Ok(report)
 }
@@ -884,6 +890,13 @@ struct OwnedEntry {
     kind: LibarchiveEntryKind,
     extraction_kind: ExtractionEntryKind,
     size: i64,
+    metadata: LibarchiveEntryMetadata,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct LibarchiveEntryMetadata {
+    mode: Option<u32>,
+    modified: Option<SystemTime>,
 }
 
 impl OwnedEntry {
@@ -897,6 +910,10 @@ impl OwnedEntry {
             kind,
             extraction_kind,
             size: entry.size(),
+            metadata: LibarchiveEntryMetadata {
+                mode: archive_entry_mode(entry.mode(), kind),
+                modified: entry.mtime(),
+            },
         })
     }
 
@@ -912,6 +929,20 @@ fn is_root_entry_path(path: &str) -> bool {
 
 fn nonnegative_size(size: i64) -> Option<u64> {
     u64::try_from(size).ok()
+}
+
+fn archive_entry_mode(mode: u32, kind: LibarchiveEntryKind) -> Option<u32> {
+    let permissions = mode & LIBARCHIVE_MODE_MASK;
+    // Some formats without POSIX modes (notably 7z) are synthesized by
+    // libarchive as 0644 for every entry. Treat an unsearchable directory mode
+    // as absent rather than making the extracted tree inaccessible.
+    if permissions == 0
+        || (matches!(kind, LibarchiveEntryKind::Directory) && permissions & 0o111 == 0)
+    {
+        None
+    } else {
+        Some(permissions)
+    }
 }
 
 fn entry_kind(entry: &zmanager_libarchive::Entry) -> LibarchiveEntryKind {
@@ -969,6 +1000,7 @@ fn write_entry(
     link_target_path: Option<&Path>,
     report: &mut LibarchiveExtractReport,
     mut context: Option<&mut JobContext<'_>>,
+    deferred_directories: &mut Vec<(PathBuf, LibarchiveEntryMetadata)>,
 ) -> Result<u64, LibarchiveError> {
     if replace_existing && !matches!(entry.extraction_kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
@@ -986,6 +1018,7 @@ fn write_entry(
                 path: destination_path.to_path_buf(),
                 source,
             })?;
+            deferred_directories.push((destination_path.to_path_buf(), entry.metadata));
             report.written_entries += 1;
             Ok(0)
         }
@@ -995,6 +1028,7 @@ fn write_entry(
                 &entry.path,
                 destination_path,
                 replace_existing,
+                entry.metadata,
                 context,
             )?;
             report.written_entries += 1;
@@ -1054,6 +1088,7 @@ fn write_file_entry(
     archive_path: &str,
     destination_path: &Path,
     replace_existing: bool,
+    metadata: LibarchiveEntryMetadata,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<u64, LibarchiveError> {
     let mut output =
@@ -1098,8 +1133,43 @@ fn write_file_entry(
             path: destination_path.to_path_buf(),
             source,
         })?;
+    apply_metadata(destination_path, metadata)?;
 
     Ok(written_bytes)
+}
+
+fn apply_deferred_directory_metadata(
+    directories: &[(PathBuf, LibarchiveEntryMetadata)],
+) -> Result<(), LibarchiveError> {
+    for (path, metadata) in directories.iter().rev() {
+        apply_metadata(path, *metadata)?;
+    }
+    Ok(())
+}
+
+fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), LibarchiveError> {
+    #[cfg(unix)]
+    if let Some(mode) = metadata.mode {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
+            LibarchiveError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    }
+
+    if let Some(modified) = metadata.modified {
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(modified)).map_err(
+            |source| LibarchiveError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 fn copy_file_entry_to_writer<W: Write>(
@@ -1214,6 +1284,40 @@ mod tests {
             fs::read_to_string(temp.path("out/payload/file.txt")).unwrap(),
             "hello"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_tar_gz_permissions_and_modification_times() {
+        use std::os::unix::fs::MetadataExt;
+
+        const DIRECTORY_MTIME: u64 = 1_600_000_000;
+        const FILE_MTIME: u64 = 1_700_000_000;
+
+        let temp = TestDir::new("extracts_tar_gz_permissions_and_modification_times");
+        let archive = temp.path("archive.tar.gz");
+        write_tar_gz_with_metadata(
+            &archive,
+            "payload",
+            0o750,
+            DIRECTORY_MTIME,
+            "payload/run.sh",
+            0o751,
+            FILE_MTIME,
+            b"#!/bin/sh\n",
+        );
+
+        extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let directory_metadata = fs::metadata(temp.path("out/payload")).unwrap();
+        let file_metadata = fs::metadata(temp.path("out/payload/run.sh")).unwrap();
+        assert_eq!(directory_metadata.mode() & 0o7777, 0o750);
+        assert_eq!(file_metadata.mode() & 0o7777, 0o751);
+        assert_eq!(
+            directory_metadata.mtime(),
+            i64::try_from(DIRECTORY_MTIME).unwrap()
+        );
+        assert_eq!(file_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
     }
 
     #[test]
@@ -1532,6 +1636,46 @@ mod tests {
 
     fn write_tar_brotli_with_file(path: &Path, entry_path: &str, contents: &[u8]) {
         write_tar_brotli_with_files(path, &[(entry_path, contents)]);
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    fn write_tar_gz_with_metadata(
+        path: &Path,
+        directory_path: &str,
+        directory_mode: u32,
+        directory_mtime: u64,
+        file_path: &str,
+        file_mode: u32,
+        file_mtime: u64,
+        contents: &[u8],
+    ) {
+        let file = File::create(path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut directory_header = tar::Header::new_gnu();
+        directory_header.set_entry_type(tar::EntryType::Directory);
+        directory_header.set_size(0);
+        directory_header.set_mode(directory_mode);
+        directory_header.set_mtime(directory_mtime);
+        directory_header.set_cksum();
+        builder
+            .append_data(&mut directory_header, directory_path, std::io::empty())
+            .unwrap();
+
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_entry_type(tar::EntryType::Regular);
+        file_header.set_size(contents.len().try_into().unwrap());
+        file_header.set_mode(file_mode);
+        file_header.set_mtime(file_mtime);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, file_path, contents)
+            .unwrap();
+
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
     }
 
     fn write_tar_brotli_with_files(path: &Path, entries: &[(&str, &[u8])]) {

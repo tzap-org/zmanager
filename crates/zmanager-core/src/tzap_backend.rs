@@ -29,7 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tzap_core::format::{
     AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FORMAT_VERSION, FecAlgo, FormatError,
     KdfAlgo, READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM,
-    READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV_44, VOLUME_HEADER_LEN,
+    READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV, VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
     ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
@@ -39,10 +39,12 @@ use tzap_core::wire::{
     CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
 };
 use tzap_core::{
-    ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink, ArchiveWriteSink, ExtractError,
-    KdfParams, MasterKey, OpenedArchive, ReaderOptions, RegularFileSource, RootAuthSigningRequest,
-    SafeExtractionOptions, TarEntryKind, WriterOptions, open_seekable_archive,
-    open_seekable_archive_volumes,
+    ArchiveTimestamp, ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink,
+    ArchiveWriteSink, ExtractError, KdfParams, MasterKey, MetadataDiagnostic,
+    MetadataDiagnosticStatus, MetadataOperation, OpenedArchive, PortableFileMetadata,
+    PortableModeOrigin, PortablePosixOwner, ReaderOptions, RegularFileSource,
+    RootAuthSigningRequest, SafeExtractionOptions, TarEntryKind, WriterOptions,
+    open_seekable_archive, open_seekable_archive_volumes,
     open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
     public_no_key_verify_volumes_with,
     write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress,
@@ -382,8 +384,12 @@ pub struct TzapEntry {
     pub size: u64,
     /// Portable mode bits.
     pub mode: u32,
-    /// Modification time as Unix seconds.
-    pub mtime: u64,
+    /// Modification time as signed Unix seconds.
+    pub mtime: i64,
+    /// Nanosecond component of the modification time.
+    pub mtime_nanoseconds: u32,
+    /// Authenticated metadata diagnostics reported by `tzap`.
+    pub metadata_diagnostics: Vec<String>,
 }
 
 /// Public entry kind for `.tzap` listings.
@@ -397,6 +403,12 @@ pub enum TzapEntryKind {
     Symlink,
     /// Hard link.
     Hardlink,
+    /// POSIX character device.
+    CharacterDevice,
+    /// POSIX block device.
+    BlockDevice,
+    /// POSIX FIFO.
+    Fifo,
 }
 
 /// `.tzap` extraction report.
@@ -1185,7 +1197,7 @@ fn recipient_wrap_archive_identity_for_writer(
         archive_uuid,
         session_id,
         format_version: FORMAT_VERSION,
-        volume_format_rev: VOLUME_FORMAT_REV_44,
+        volume_format_rev: VOLUME_FORMAT_REV,
     }
 }
 
@@ -1610,12 +1622,17 @@ pub fn extract_tzap_with_optional_password_and_context(
     )
 }
 
-/// Extracts `.tzap` regular entries with index metadata and optional extraction
-/// context.
+/// Extracts `.tzap` entries with authenticated v45 metadata and optional
+/// extraction context.
 ///
-/// This skips decoding full tar member metadata up front and uses index entries
-/// when possible. Directory-only entries are created from index paths that end
-/// with `/`. Unsupported or missing entries are skipped with warnings.
+/// Regular-file payloads remain streamed, while portable mode and modification
+/// time metadata are restored after the payload is authenticated. Unsupported
+/// special entries are skipped with warnings.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// portable metadata cannot be restored, or filesystem writes fail.
 pub fn extract_tzap_with_optional_password_and_context_fast(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -1630,7 +1647,7 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
             source,
         })?;
     let opened = open_tzap_archive(archive, password)?;
-    let entries = opened.list_index_entries()?;
+    let entries = opened.list_files()?;
     let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut report = TzapExtractReport {
         written_entries: 0,
@@ -1638,12 +1655,27 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
         written_bytes: 0,
         warnings: Vec::new(),
     };
+    let mut deferred_directory_metadata = Vec::new();
 
     for entry in entries {
         context.check_cancelled()?;
+        append_metadata_diagnostics(
+            &entry.path,
+            &entry.diagnostics,
+            &mut report.warnings,
+            Some(context),
+        );
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
-            kind: tzap_index_entry_kind(&entry.path),
+            kind: match entry.kind {
+                TarEntryKind::Regular => ExtractionEntryKind::File,
+                TarEntryKind::Directory => ExtractionEntryKind::Directory,
+                TarEntryKind::Symlink
+                | TarEntryKind::Hardlink
+                | TarEntryKind::CharacterDevice
+                | TarEntryKind::BlockDevice
+                | TarEntryKind::Fifo => ExtractionEntryKind::Special,
+            },
             uncompressed_size: Some(entry.file_data_size),
             compressed_size: None,
         };
@@ -1660,14 +1692,25 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
                         &opened,
                         &safety_entry.archive_path,
                         entry.file_data_size,
+                        TzapPortableEntryMetadata::from_archive_entry(&entry),
                         &destination_path,
                         replace_existing,
                         Some(context),
                     ) {
                         Ok(Some(processed)) => {
                             report.written_entries = report.written_entries.saturating_add(1);
-                            report.written_bytes = report.written_bytes.saturating_add(processed);
-                            context.entry_finished(&safety_entry.archive_path, processed);
+                            report.written_bytes =
+                                report.written_bytes.saturating_add(processed.written_bytes);
+                            for diagnostic in processed.metadata_diagnostics {
+                                let warning =
+                                    format!("metadata {}: {diagnostic}", safety_entry.archive_path);
+                                report.warnings.push(warning.clone());
+                                context.warning(warning);
+                            }
+                            context.entry_finished(
+                                &safety_entry.archive_path,
+                                processed.written_bytes,
+                            );
                         }
                         Ok(None) => {
                             report.skipped_entries = report.skipped_entries.saturating_add(1);
@@ -1701,6 +1744,10 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
                         path: destination_path.clone(),
                         source,
                     })?;
+                    deferred_directory_metadata.push((
+                        destination_path,
+                        TzapPortableEntryMetadata::from_archive_entry(&entry),
+                    ));
                     report.written_entries = report.written_entries.saturating_add(1);
                     context.entry_finished(&safety_entry.archive_path, 0);
                 }
@@ -1723,15 +1770,9 @@ pub fn extract_tzap_with_optional_password_and_context_fast(
         }
     }
 
-    Ok(report)
-}
+    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata)?;
 
-fn tzap_index_entry_kind(path: &str) -> ExtractionEntryKind {
-    if path.ends_with('/') {
-        ExtractionEntryKind::Directory
-    } else {
-        ExtractionEntryKind::File
-    }
+    Ok(report)
 }
 
 /// Extracts `.tzap` entries with a passphrase and overwrite resolver.
@@ -2527,6 +2568,7 @@ fn extract_tzap_file_from_opened_archive(
         temp_root.path(),
         SafeExtractionOptions {
             overwrite_existing: false,
+            ..SafeExtractionOptions::default()
         },
     )?
     else {
@@ -2551,6 +2593,11 @@ fn collect_regular_file_sources(
 
         match entry.file_type {
             ManifestFileType::File => {
+                let portable_metadata = if options.preserve_metadata {
+                    portable_file_metadata(&entry.source_path)?
+                } else {
+                    PortableFileMetadata::default()
+                };
                 files.push(TzapRegularFileSource {
                     archive_path: entry.archive_path.clone(),
                     source_path: entry.source_path.clone(),
@@ -2563,11 +2610,12 @@ fn collect_regular_file_sources(
                     mtime: if options.preserve_metadata {
                         entry
                             .modified
-                            .and_then(system_time_to_unix_seconds)
-                            .unwrap_or(0)
+                            .and_then(system_time_to_archive_timestamp)
+                            .unwrap_or(ArchiveTimestamp::UNIX_EPOCH)
                     } else {
-                        0
+                        ArchiveTimestamp::UNIX_EPOCH
                     },
+                    portable_metadata,
                     cancellation_token: context.cancellation_token(),
                 });
             }
@@ -2620,11 +2668,18 @@ fn extract_tzap_inner(
         written_bytes: 0,
         warnings: Vec::new(),
     };
+    let mut deferred_directory_metadata = Vec::new();
 
     for entry in entries {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
+        append_metadata_diagnostics(
+            &entry.path,
+            &entry.diagnostics,
+            &mut report.warnings,
+            context.as_deref_mut(),
+        );
         let preloaded_member =
             if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
                 opened.extract_member(&entry.path)?
@@ -2652,6 +2707,7 @@ fn extract_tzap_inner(
                         &opened,
                         &entry.path,
                         entry.file_data_size,
+                        TzapPortableEntryMetadata::from_archive_entry(&entry),
                         &destination_path,
                         replace_existing,
                         context.as_deref_mut(),
@@ -2668,9 +2724,16 @@ fn extract_tzap_inner(
                         continue;
                     };
                     report.written_entries += 1;
-                    report.written_bytes += processed;
+                    report.written_bytes += processed.written_bytes;
+                    for diagnostic in processed.metadata_diagnostics {
+                        let warning = format!("metadata {}: {diagnostic}", entry.path);
+                        report.warnings.push(warning.clone());
+                        if let Some(context) = context.as_deref_mut() {
+                            context.warning(warning);
+                        }
+                    }
                     if let Some(context) = context.as_deref_mut() {
-                        context.entry_finished(&entry.path, processed);
+                        context.entry_finished(&entry.path, processed.written_bytes);
                     }
                     continue;
                 }
@@ -2697,6 +2760,12 @@ fn extract_tzap_inner(
                     link_target_path.as_deref(),
                     &mut report,
                 )?;
+                if member.kind == TarEntryKind::Directory {
+                    deferred_directory_metadata.push((
+                        destination_path,
+                        TzapPortableEntryMetadata::from_archive_entry(&entry),
+                    ));
+                }
                 if let Some(context) = context.as_deref_mut() {
                     context.bytes_processed(Some(&entry.path), processed);
                     context.entry_finished(&entry.path, processed);
@@ -2715,17 +2784,41 @@ fn extract_tzap_inner(
         }
     }
 
+    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata)?;
+
     Ok(report)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TzapPortableEntryMetadata {
+    mode: u32,
+    mtime: ArchiveTimestamp,
+}
+
+impl TzapPortableEntryMetadata {
+    fn from_archive_entry(entry: &ArchiveEntry) -> Self {
+        Self {
+            mode: entry.mode,
+            mtime: entry.mtime,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StreamedTzapMember {
+    written_bytes: u64,
+    metadata_diagnostics: Vec<String>,
 }
 
 fn stream_regular_member_to_destination(
     opened: &OpenedArchive,
     entry_path: &str,
     entry_size: u64,
+    metadata: TzapPortableEntryMetadata,
     destination_path: &Path,
     replace_existing: bool,
     context: Option<&mut JobContext<'_>>,
-) -> Result<Option<u64>, TzapError> {
+) -> Result<Option<StreamedTzapMember>, TzapError> {
     let mut output =
         AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io {
             path: destination_path.to_path_buf(),
@@ -2750,13 +2843,150 @@ fn stream_regular_member_to_destination(
         return Ok(None);
     };
 
+    apply_tzap_regular_file_metadata(output_file, destination_path, metadata)?;
+
     output
         .commit_with_replace(replace_existing)
         .map_err(|source| TzapError::Io {
             path: destination_path.to_path_buf(),
             source,
         })?;
-    Ok(Some(entry_size))
+    let mut metadata_diagnostics = Vec::new();
+    if metadata.mode & 0o6000 != 0 {
+        metadata_diagnostics.push(
+            "profile=portable-v1 class=setid-mode operation=restore status=skipped: setuid and setgid bits were removed by portable restore policy"
+                .to_owned(),
+        );
+    }
+    Ok(Some(StreamedTzapMember {
+        written_bytes: entry_size,
+        metadata_diagnostics,
+    }))
+}
+
+fn apply_tzap_regular_file_metadata(
+    file: &File,
+    path: &Path,
+    metadata: TzapPortableEntryMetadata,
+) -> Result<(), TzapError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = metadata.mode & 0o1777;
+        file.set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(|source| TzapError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut permissions = file
+            .metadata()
+            .map_err(|source| TzapError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .permissions();
+        permissions.set_readonly(metadata.mode & 0o222 == 0);
+        file.set_permissions(permissions)
+            .map_err(|source| TzapError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+    }
+
+    let mtime = archive_timestamp_file_time(metadata.mtime).map_err(|message| TzapError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidData, message),
+    })?;
+    filetime::set_file_handle_times(file, None, Some(mtime)).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn apply_deferred_tzap_directory_metadata(
+    directories: &[(PathBuf, TzapPortableEntryMetadata)],
+) -> Result<(), TzapError> {
+    for (path, metadata) in directories.iter().rev() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode & 0o1777)).map_err(
+                |source| TzapError::Io {
+                    path: path.clone(),
+                    source,
+                },
+            )?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut permissions = fs::metadata(path)
+                .map_err(|source| TzapError::Io {
+                    path: path.clone(),
+                    source,
+                })?
+                .permissions();
+            permissions.set_readonly(metadata.mode & 0o222 == 0);
+            fs::set_permissions(path, permissions).map_err(|source| TzapError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+
+        let mtime =
+            archive_timestamp_file_time(metadata.mtime).map_err(|message| TzapError::Io {
+                path: path.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidData, message),
+            })?;
+        filetime::set_file_mtime(path, mtime).map_err(|source| TzapError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn archive_timestamp_file_time(
+    timestamp: ArchiveTimestamp,
+) -> Result<filetime::FileTime, &'static str> {
+    if timestamp.nanoseconds >= 1_000_000_000 {
+        return Err("timestamp nanoseconds must be less than one billion");
+    }
+    if timestamp.seconds < 0 && timestamp.nanoseconds != 0 {
+        let seconds = timestamp
+            .seconds
+            .checked_sub(1)
+            .ok_or("timestamp is outside the filesystem time range")?;
+        return Ok(filetime::FileTime::from_unix_time(
+            seconds,
+            1_000_000_000 - timestamp.nanoseconds,
+        ));
+    }
+    Ok(filetime::FileTime::from_unix_time(
+        timestamp.seconds,
+        timestamp.nanoseconds,
+    ))
+}
+
+fn append_metadata_diagnostics(
+    entry_path: &str,
+    diagnostics: &[MetadataDiagnostic],
+    warnings: &mut Vec<String>,
+    mut context: Option<&mut JobContext<'_>>,
+) {
+    for diagnostic in metadata_diagnostic_labels(diagnostics) {
+        let warning = format!("metadata {entry_path}: {diagnostic}");
+        warnings.push(warning.clone());
+        if let Some(context) = context.as_deref_mut() {
+            context.warning(warning);
+        }
+    }
 }
 
 fn materialize_non_regular_member(
@@ -2822,6 +3052,13 @@ fn materialize_non_regular_member(
             write_hardlink(source_path, destination_path)?;
             report.written_entries += 1;
             return Ok(0);
+        }
+        TarEntryKind::CharacterDevice | TarEntryKind::BlockDevice | TarEntryKind::Fifo => {
+            report.skipped_entries += 1;
+            report.warnings.push(format!(
+                "skipped special entry {}: portable extraction does not materialize device nodes or FIFOs",
+                member.path
+            ));
         }
     }
     Ok(0)
@@ -3296,6 +3533,9 @@ fn extraction_kind_from_tzap_entry(
                 .map(PathBuf::from)
                 .unwrap_or_default(),
         },
+        TarEntryKind::CharacterDevice | TarEntryKind::BlockDevice | TarEntryKind::Fifo => {
+            ExtractionEntryKind::Special
+        }
     }
 }
 
@@ -3305,7 +3545,9 @@ fn tzap_entry_from_archive_entry(entry: ArchiveEntry) -> TzapEntry {
         kind: tzap_entry_kind_from_member_kind(entry.kind),
         size: entry.file_data_size,
         mode: entry.mode,
-        mtime: entry.mtime,
+        mtime: entry.mtime.seconds,
+        mtime_nanoseconds: entry.mtime.nanoseconds,
+        metadata_diagnostics: metadata_diagnostic_labels(&entry.diagnostics),
     }
 }
 
@@ -3315,6 +3557,9 @@ fn tzap_entry_kind_from_member_kind(kind: TarEntryKind) -> TzapEntryKind {
         TarEntryKind::Directory => TzapEntryKind::Directory,
         TarEntryKind::Symlink => TzapEntryKind::Symlink,
         TarEntryKind::Hardlink => TzapEntryKind::Hardlink,
+        TarEntryKind::CharacterDevice => TzapEntryKind::CharacterDevice,
+        TarEntryKind::BlockDevice => TzapEntryKind::BlockDevice,
+        TarEntryKind::Fifo => TzapEntryKind::Fifo,
     }
 }
 
@@ -3324,7 +3569,8 @@ struct TzapRegularFileSource {
     source_path: PathBuf,
     size: u64,
     mode: u32,
-    mtime: u64,
+    mtime: ArchiveTimestamp,
+    portable_metadata: PortableFileMetadata,
     cancellation_token: CancellationToken,
 }
 
@@ -3341,8 +3587,12 @@ impl RegularFileSource for TzapRegularFileSource {
         self.mode
     }
 
-    fn mtime(&self) -> u64 {
+    fn mtime(&self) -> ArchiveTimestamp {
         self.mtime
+    }
+
+    fn portable_metadata(&self) -> PortableFileMetadata {
+        self.portable_metadata.clone()
     }
 
     fn open(&self) -> Result<Box<dyn io::Read + '_>, ArchiveWriteError> {
@@ -3652,10 +3902,134 @@ fn tzap_write_error(path: &Path, error: ArchiveWriteError) -> TzapError {
     }
 }
 
-fn system_time_to_unix_seconds(time: SystemTime) -> Option<u64> {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
+fn system_time_to_archive_timestamp(time: SystemTime) -> Option<ArchiveTimestamp> {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => Some(ArchiveTimestamp::new(
+            i64::try_from(duration.as_secs()).ok()?,
+            duration.subsec_nanos(),
+        )),
+        Err(error) => {
+            let duration = error.duration();
+            if duration.as_secs() == 0 && duration.subsec_nanos() != 0 {
+                return None;
+            }
+            Some(ArchiveTimestamp::new(
+                i64::try_from(-i128::from(duration.as_secs())).ok()?,
+                duration.subsec_nanos(),
+            ))
+        }
+    }
+}
+
+fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError> {
+    let metadata = fs::metadata(path).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(PortableFileMetadata {
+        source_os: source_os_label().to_owned(),
+        source_filesystem: "unknown".to_owned(),
+        mode_origin: if cfg!(unix) {
+            PortableModeOrigin::Native
+        } else {
+            PortableModeOrigin::Projected
+        },
+        posix_owner: portable_posix_owner(&metadata),
+        attributes: portable_file_attributes(&metadata),
+    })
+}
+
+#[cfg(unix)]
+fn portable_posix_owner(metadata: &fs::Metadata) -> Option<PortablePosixOwner> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(PortablePosixOwner {
+        uid: u64::from(metadata.uid()),
+        gid: u64::from(metadata.gid()),
+        uname: None,
+        gname: None,
+    })
+}
+
+#[cfg(not(unix))]
+fn portable_posix_owner(_metadata: &fs::Metadata) -> Option<PortablePosixOwner> {
+    None
+}
+
+#[cfg(windows)]
+fn portable_file_attributes(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::windows::fs::MetadataExt;
+
+    let attributes = metadata.file_attributes();
+    let mut projection = 0u32;
+    projection |= u32::from(attributes & 0x0000_0001 != 0);
+    projection |= u32::from(attributes & 0x0000_0002 != 0) << 1;
+    projection |= u32::from(attributes & 0x0000_0004 != 0) << 2;
+    projection |= u32::from(attributes & 0x0000_0020 != 0) << 3;
+    Some(projection)
+}
+
+#[cfg(not(windows))]
+fn portable_file_attributes(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+fn source_os_label() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "freebsd") {
+        "freebsd"
+    } else if cfg!(target_os = "netbsd") {
+        "netbsd"
+    } else if cfg!(target_os = "openbsd") {
+        "openbsd"
+    } else if cfg!(target_os = "solaris") {
+        "solaris"
+    } else if cfg!(target_family = "unix") {
+        "unix"
+    } else {
+        "other"
+    }
+}
+
+fn metadata_diagnostic_labels(diagnostics: &[MetadataDiagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "profile={} class={} operation={} status={}: {}",
+                diagnostic.profile,
+                diagnostic.metadata_class,
+                metadata_operation_label(&diagnostic.operation),
+                metadata_diagnostic_status_label(&diagnostic.status),
+                diagnostic.message
+            )
+        })
+        .collect()
+}
+
+fn metadata_operation_label(operation: &MetadataOperation) -> &'static str {
+    match operation {
+        MetadataOperation::Capture => "capture",
+        MetadataOperation::Parse => "parse",
+        MetadataOperation::Verify => "verify",
+        MetadataOperation::Plan => "plan",
+        MetadataOperation::Restore => "restore",
+    }
+}
+
+fn metadata_diagnostic_status_label(status: &MetadataDiagnosticStatus) -> &'static str {
+    match status {
+        MetadataDiagnosticStatus::Partial => "partial",
+        MetadataDiagnosticStatus::Unsupported => "unsupported",
+        MetadataDiagnosticStatus::Skipped => "skipped",
+        MetadataDiagnosticStatus::Materialized => "materialized",
+        MetadataDiagnosticStatus::Failed => "failed",
+    }
 }
 
 #[cfg(unix)]
@@ -3689,9 +4063,10 @@ mod tests {
     use super::{
         TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
         create_tzap_from_manifest_with_context, extract_tzap_file_to_destination,
-        extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
-        list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots,
-        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
+        extract_tzap_with_optional_password_and_context_fast, extract_tzap_with_recipient_key,
+        is_tzap_archive_path, list_tzap_with_optional_password, list_tzap_with_password,
+        list_tzap_with_recipient_key, load_x509_trusted_roots, summarize_tzap_public_metadata,
+        test_tzap_with_password_filter_and_x509_trust,
         test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
     };
     use crate::jobs::{CancellationToken, JobContext};
@@ -3864,7 +4239,7 @@ mod tests {
     }
 
     #[test]
-    fn list_tzap_with_optional_password_includes_mtime() {
+    fn list_tzap_with_optional_password_includes_precise_portable_metadata() {
         let temp = TestDir::new("tzap_list_with_optional_password_includes_mtime");
         let source = temp.path("payload.txt");
         let archive = temp.path("public.tzap");
@@ -3877,7 +4252,7 @@ mod tests {
                 source_path: source,
                 file_type: ManifestFileType::File,
                 size: 7,
-                modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789)),
                 permissions: PermissionSnapshot {
                     readonly: false,
                     unix_mode: Some(0o644),
@@ -3909,7 +4284,88 @@ mod tests {
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 1);
         assert_eq!(listing.entries[0].path, "payload.txt");
-        assert_ne!(listing.entries[0].mtime, 0);
+        assert_eq!(listing.entries[0].mode, 0o644);
+        assert_eq!(listing.entries[0].mtime, 1_700_000_000);
+        assert_eq!(listing.entries[0].mtime_nanoseconds, 123_456_789);
+        assert!(listing.entries[0].metadata_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn converts_negative_archive_timestamp_to_filesystem_time() {
+        let time =
+            super::archive_timestamp_file_time(super::ArchiveTimestamp::new(-1, 500_000_000))
+                .unwrap();
+
+        assert_eq!(time.seconds(), -2);
+        assert_eq!(time.nanoseconds(), 500_000_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fast_extract_restores_portable_mode_and_precise_mtime() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("tzap_fast_extract_restores_metadata");
+        let source = temp.path("payload.txt");
+        let archive = temp.path("public.tzap");
+        fs::write(&source, b"payload").unwrap();
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: source,
+                file_type: ManifestFileType::File,
+                size: 7,
+                modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 234_567_890)),
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o6751),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 7,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let extract_token = CancellationToken::new();
+        let mut extract_events = |_| {};
+        let mut extract_context = JobContext::new(&extract_token, &mut extract_events);
+        let report = extract_tzap_with_optional_password_and_context_fast(
+            &archive,
+            temp.path("out"),
+            ExtractionPolicy::default(),
+            None,
+            &mut extract_context,
+        )
+        .unwrap();
+
+        let metadata = fs::metadata(temp.path("out/payload.txt")).unwrap();
+        assert_eq!(metadata.mode() & 0o7777, 0o751);
+        assert_eq!(metadata.mtime(), 1_700_000_000);
+        assert_eq!(metadata.mtime_nsec(), 234_567_890);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("setid-mode"))
+        );
     }
 
     #[test]

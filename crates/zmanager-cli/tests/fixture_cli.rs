@@ -901,6 +901,22 @@ fn zm_create_tzap_round_trips_with_password_stdin() {
     assert_success("zm list tzap --password-stdin --json", &list);
     let list_stdout = String::from_utf8_lossy(&list.stdout);
     assert!(list_stdout.contains("\"name\":\"project/nested/file.txt\""));
+    let list_json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let listed_entry = &list_json["entries"][0];
+    assert!(listed_entry["mode"].is_u64());
+    assert!(listed_entry["modified"].is_string());
+    assert!(listed_entry["metadata_diagnostics"].is_array());
+
+    let mut long_list = Command::new(zm_path());
+    long_list
+        .arg("list")
+        .arg(&archive)
+        .arg("--password-stdin")
+        .arg("--long");
+    let long_list = run_with_stdin(long_list, "correct horse\n");
+    assert_success("zm list tzap --password-stdin --long", &long_list);
+    let long_stdout = String::from_utf8_lossy(&long_list.stdout);
+    assert!(long_stdout.contains("TYPE\tMODE\tSIZE\tCOMPRESSED\tMODIFIED\tPATH"));
 
     let mut test = Command::new(zm_path());
     test.arg("test")
