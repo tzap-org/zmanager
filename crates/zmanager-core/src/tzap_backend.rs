@@ -4349,7 +4349,9 @@ mod tests {
                 source_path: source,
                 file_type: ManifestFileType::File,
                 size: 7,
-                modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789)),
+                // Windows `SystemTime` has 100-nanosecond precision, so use a
+                // timestamp that every supported platform can represent.
+                modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700)),
                 permissions: PermissionSnapshot {
                     readonly: false,
                     unix_mode: Some(0o644),
@@ -4383,7 +4385,7 @@ mod tests {
         assert_eq!(listing.entries[0].path, "payload.txt");
         assert_eq!(listing.entries[0].mode, 0o644);
         assert_eq!(listing.entries[0].mtime, 1_700_000_000);
-        assert_eq!(listing.entries[0].mtime_nanoseconds, 123_456_789);
+        assert_eq!(listing.entries[0].mtime_nanoseconds, 123_456_700);
         assert!(listing.entries[0].metadata_diagnostics.is_empty());
     }
 
@@ -4393,8 +4395,7 @@ mod tests {
             super::archive_timestamp_file_time(super::ArchiveTimestamp::new(-1, 500_000_000))
                 .unwrap();
 
-        assert_eq!(time.seconds(), -2);
-        assert_eq!(time.nanoseconds(), 500_000_000);
+        assert_eq!(time, filetime::FileTime::from_unix_time(-2, 500_000_000));
     }
 
     #[cfg(unix)]
