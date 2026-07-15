@@ -38,7 +38,8 @@ use zmanager_core::secrets::SecretString;
 use zmanager_core::sevenz_backend::SevenZCreateOptions;
 use zmanager_core::tar_zst_backend::TarZstdCreateOptions;
 use zmanager_core::tzap_backend::{
-    TzapCreateOptions, TzapKeySource, TzapX509SigningOptions, TzapX509TrustOptions,
+    TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy,
+    TzapX509SigningOptions, TzapX509TrustOptions,
 };
 use zmanager_core::x509_format::{hex_lower, x509_name_to_string};
 use zmanager_core::zip_backend::{ZipCompression, ZipCreateOptions};
@@ -81,6 +82,10 @@ const ARCHIVE_FORMAT_TZAP: i32 = 3;
 const OVERWRITE_MODE_REFUSE: u32 = 0;
 const OVERWRITE_MODE_REPLACE: u32 = 1;
 const OVERWRITE_MODE_RENAME: u32 = 2;
+const TZAP_RESTORE_POLICY_CONTENT: u32 = 0;
+const TZAP_RESTORE_POLICY_PORTABLE: u32 = 1;
+const TZAP_RESTORE_POLICY_SAME_OS: u32 = 2;
+const TZAP_RESTORE_POLICY_SYSTEM: u32 = 3;
 const SELF_SIGNED_IDENTITY_RSA_BITS: u32 = 3072;
 const SELF_SIGNED_IDENTITY_VALID_DAYS: u32 = 3_650;
 const SELF_SIGNED_IDENTITY_SERIAL_BITS: i32 = 159;
@@ -1167,6 +1172,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive(
             ptr::null(),
             OVERWRITE_MODE_REFUSE,
             0,
+            TzapRestoreOptions::default(),
             out_job,
         )
     }
@@ -1202,6 +1208,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_options(
             password,
             overwrite_mode_from_replace_existing(replace_existing),
             0,
+            TzapRestoreOptions::default(),
             out_job,
         )
     }
@@ -1235,6 +1242,50 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_policy(
             password,
             overwrite_mode,
             strip_components,
+            TzapRestoreOptions::default(),
+            out_job,
+        )
+    }
+}
+
+/// Starts an archive extraction job with explicit TZAP metadata restoration
+/// behavior in addition to the general extraction policy.
+///
+/// Non-TZAP formats ignore `tzap_restore_policy` and `tzap_allow_degraded`.
+/// `tzap_restore_policy` is one of `ZMANAGER_FFI_TZAP_RESTORE_*`.
+///
+/// # Safety
+///
+/// `archive_path`, `destination`, and `password` follow the same pointer rules
+/// as [`zmanager_ffi_start_extract_archive_with_options`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_tzap_options(
+    archive_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    overwrite_mode: u32,
+    strip_components: usize,
+    tzap_restore_policy: u32,
+    tzap_allow_degraded: bool,
+    out_job: *mut *mut ZManagerFfiJob,
+) -> ZManagerFfiStatus {
+    let Some(policy) = tzap_restore_policy_from_mode(tzap_restore_policy) else {
+        return ZManagerFfiStatus::InvalidArgument;
+    };
+
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        start_extract_archive_job(
+            archive_path,
+            destination,
+            password,
+            overwrite_mode,
+            strip_components,
+            TzapRestoreOptions {
+                policy,
+                allow_degraded: tzap_allow_degraded,
+            },
             out_job,
         )
     }
@@ -1246,6 +1297,7 @@ unsafe fn start_extract_archive_job(
     password: *const c_char,
     overwrite_mode: u32,
     strip_components: usize,
+    tzap_restore_options: TzapRestoreOptions,
     out_job: *mut *mut ZManagerFfiJob,
 ) -> ZManagerFfiStatus {
     if archive_path.is_null() || destination.is_null() || out_job.is_null() {
@@ -1311,11 +1363,12 @@ unsafe fn start_extract_archive_job(
                 sink,
             );
         } else if is_tzap_archive(&archive_path) {
-            let _ = zmanager_core::jobs::run_tzap_extract_job_with_password_and_policy(
+            let _ = zmanager_core::jobs::run_tzap_extract_job_with_password_and_policy_and_restore_options(
                 archive_path,
                 destination,
                 password,
                 policy,
+                tzap_restore_options,
                 &thread_token,
                 sink,
             );
@@ -2625,6 +2678,7 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry(
             ptr::null(),
             OVERWRITE_MODE_REFUSE,
             0,
+            TzapRestoreOptions::default(),
         )
     }
 }
@@ -2657,6 +2711,7 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_options(
             password,
             overwrite_mode_from_replace_existing(replace_existing),
             0,
+            TzapRestoreOptions::default(),
         )
     }
 }
@@ -2690,6 +2745,49 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_policy(
             password,
             overwrite_mode,
             strip_components,
+            TzapRestoreOptions::default(),
+        )
+    }
+}
+
+/// Extracts one archive entry with explicit TZAP metadata restoration behavior.
+///
+/// Non-TZAP formats ignore `tzap_restore_policy` and `tzap_allow_degraded`.
+/// `tzap_restore_policy` is one of `ZMANAGER_FFI_TZAP_RESTORE_*`.
+///
+/// # Safety
+///
+/// `archive_path`, `entry_path`, `destination`, and `password` follow the same
+/// pointer rules as [`zmanager_ffi_extract_archive_entry_with_options`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_tzap_options(
+    archive_path: *const c_char,
+    entry_path: *const c_char,
+    destination: *const c_char,
+    password: *const c_char,
+    overwrite_mode: u32,
+    strip_components: usize,
+    tzap_restore_policy: u32,
+    tzap_allow_degraded: bool,
+) -> *mut c_char {
+    let Some(policy) = tzap_restore_policy_from_mode(tzap_restore_policy) else {
+        return owned_c_string(&ffi_error_json("invalid TZAP restore policy"));
+    };
+
+    // SAFETY: this public C entry point has the same pointer contract as the
+    // shared implementation.
+    unsafe {
+        extract_archive_entry(
+            archive_path,
+            entry_path,
+            destination,
+            password,
+            overwrite_mode,
+            strip_components,
+            TzapRestoreOptions {
+                policy,
+                allow_degraded: tzap_allow_degraded,
+            },
         )
     }
 }
@@ -2701,6 +2799,7 @@ unsafe fn extract_archive_entry(
     password: *const c_char,
     overwrite_mode: u32,
     strip_components: usize,
+    tzap_restore_options: TzapRestoreOptions,
 ) -> *mut c_char {
     if archive_path.is_null() || entry_path.is_null() || destination.is_null() {
         return owned_c_string("{\"ok\":false,\"message\":\"null argument\"}");
@@ -2731,12 +2830,15 @@ unsafe fn extract_archive_entry(
             password: password.as_deref(),
             overwrite,
             strip_components,
+            tzap_restore_policy: tzap_restore_options.policy,
+            tzap_allow_degraded: tzap_restore_options.allow_degraded,
         },
     ) {
         Ok(report) => json!({
             "ok": true,
             "destination_path": report.destination_path.to_string_lossy(),
             "written_bytes": report.written_bytes,
+            "metadata_diagnostics": report.metadata_diagnostics,
         })
         .to_string(),
         Err(error) => ffi_error_json(&error.to_string()),
@@ -4220,6 +4322,16 @@ fn overwrite_mode_from_replace_existing(replace_existing: bool) -> u32 {
     }
 }
 
+fn tzap_restore_policy_from_mode(mode: u32) -> Option<TzapRestorePolicy> {
+    match mode {
+        TZAP_RESTORE_POLICY_CONTENT => Some(TzapRestorePolicy::Content),
+        TZAP_RESTORE_POLICY_PORTABLE => Some(TzapRestorePolicy::Portable),
+        TZAP_RESTORE_POLICY_SAME_OS => Some(TzapRestorePolicy::SameOs),
+        TZAP_RESTORE_POLICY_SYSTEM => Some(TzapRestorePolicy::System),
+        _ => None,
+    }
+}
+
 fn job_kind_name(kind: JobKind) -> &'static str {
     match kind {
         JobKind::ZipCreate => "zip_create",
@@ -4297,9 +4409,11 @@ fn is_rar_archive(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ZManagerFfiJob, ZManagerFfiStatus, zmanager_ffi_create_tzap_self_signed_identity,
-        zmanager_ffi_extract_archive_entry, zmanager_ffi_extract_archive_entry_with_options,
-        zmanager_ffi_extract_archive_entry_with_policy, zmanager_ffi_job_free,
+        ZManagerFfiJob, ZManagerFfiStatus, tzap_restore_policy_from_mode,
+        zmanager_ffi_create_tzap_self_signed_identity, zmanager_ffi_extract_archive_entry,
+        zmanager_ffi_extract_archive_entry_with_options,
+        zmanager_ffi_extract_archive_entry_with_policy,
+        zmanager_ffi_extract_archive_entry_with_tzap_options, zmanager_ffi_job_free,
         zmanager_ffi_job_is_finished, zmanager_ffi_list_archive,
         zmanager_ffi_list_archive_with_options, zmanager_ffi_plan_archive,
         zmanager_ffi_plan_clean_source, zmanager_ffi_poll_events,
@@ -4310,7 +4424,8 @@ mod tests {
         zmanager_ffi_start_clean_source_create, zmanager_ffi_start_clean_source_create_many,
         zmanager_ffi_start_clean_source_create_many_with_options,
         zmanager_ffi_start_extract_archive, zmanager_ffi_start_extract_archive_with_options,
-        zmanager_ffi_start_extract_archive_with_policy, zmanager_ffi_start_zip_create,
+        zmanager_ffi_start_extract_archive_with_policy,
+        zmanager_ffi_start_extract_archive_with_tzap_options, zmanager_ffi_start_zip_create,
         zmanager_ffi_start_zip_create_encrypted, zmanager_ffi_start_zip_create_many,
         zmanager_ffi_start_zip_create_many_with_options, zmanager_ffi_string_free,
         zmanager_ffi_tzap_public_metadata_summary,
@@ -4384,6 +4499,68 @@ mod tests {
         assert_eq!(processed["bytes"], 256);
         assert_eq!(processed["total_bytes_processed"], 768);
         assert_eq!(processed["total_bytes"], 1024);
+    }
+
+    #[test]
+    fn ffi_tzap_restore_policy_modes_map_to_core_policies() {
+        use zmanager_core::tzap_backend::TzapRestorePolicy;
+
+        assert_eq!(
+            tzap_restore_policy_from_mode(super::TZAP_RESTORE_POLICY_CONTENT),
+            Some(TzapRestorePolicy::Content)
+        );
+        assert_eq!(
+            tzap_restore_policy_from_mode(super::TZAP_RESTORE_POLICY_PORTABLE),
+            Some(TzapRestorePolicy::Portable)
+        );
+        assert_eq!(
+            tzap_restore_policy_from_mode(super::TZAP_RESTORE_POLICY_SAME_OS),
+            Some(TzapRestorePolicy::SameOs)
+        );
+        assert_eq!(
+            tzap_restore_policy_from_mode(super::TZAP_RESTORE_POLICY_SYSTEM),
+            Some(TzapRestorePolicy::System)
+        );
+        assert_eq!(tzap_restore_policy_from_mode(u32::MAX), None);
+    }
+
+    #[test]
+    fn c_abi_tzap_restore_options_reject_unknown_policy() {
+        let archive = CString::new("archive.tzap").unwrap();
+        let destination = CString::new("out").unwrap();
+        let entry = CString::new("file.txt").unwrap();
+        let mut job: *mut ZManagerFfiJob = ptr::null_mut();
+
+        // SAFETY: all strings and the out pointer remain valid for each call.
+        let status = unsafe {
+            zmanager_ffi_start_extract_archive_with_tzap_options(
+                archive.as_ptr(),
+                destination.as_ptr(),
+                ptr::null(),
+                super::OVERWRITE_MODE_REFUSE,
+                0,
+                u32::MAX,
+                false,
+                &raw mut job,
+            )
+        };
+        assert_eq!(status, ZManagerFfiStatus::InvalidArgument);
+        assert!(job.is_null());
+
+        // SAFETY: all C strings remain valid for the duration of the call.
+        let response = c_string(unsafe {
+            zmanager_ffi_extract_archive_entry_with_tzap_options(
+                archive.as_ptr(),
+                entry.as_ptr(),
+                destination.as_ptr(),
+                ptr::null(),
+                super::OVERWRITE_MODE_REFUSE,
+                0,
+                u32::MAX,
+                false,
+            )
+        });
+        assert!(response.contains("invalid TZAP restore policy"));
     }
 
     #[test]

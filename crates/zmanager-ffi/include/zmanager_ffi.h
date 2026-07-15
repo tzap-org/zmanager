@@ -27,6 +27,11 @@ typedef struct ZManagerFfiJob ZManagerFfiJob;
 #define ZMANAGER_FFI_OVERWRITE_REPLACE 1
 #define ZMANAGER_FFI_OVERWRITE_RENAME 2
 
+#define ZMANAGER_FFI_TZAP_RESTORE_CONTENT 0
+#define ZMANAGER_FFI_TZAP_RESTORE_PORTABLE 1
+#define ZMANAGER_FFI_TZAP_RESTORE_SAME_OS 2
+#define ZMANAGER_FFI_TZAP_RESTORE_SYSTEM 3
+
 bool zmanager_ffi_healthcheck(void);
 
 ZManagerFfiStatus zmanager_ffi_start_zip_create(
@@ -250,6 +255,16 @@ ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_policy(
   size_t strip_components,
   ZManagerFfiJob **out_job
 );
+ZManagerFfiStatus zmanager_ffi_start_extract_archive_with_tzap_options(
+  const char *archive_path,
+  const char *destination,
+  const char *password,
+  uint32_t overwrite_mode,
+  size_t strip_components,
+  uint32_t tzap_restore_policy,
+  bool tzap_allow_degraded,
+  ZManagerFfiJob **out_job
+);
 
 char *zmanager_ffi_plan_clean_source(const char *source);
 char *zmanager_ffi_plan_archive(const char *source, bool clean_source);
@@ -333,6 +348,16 @@ char *zmanager_ffi_extract_archive_entry_with_policy(
   const char *password,
   uint32_t overwrite_mode,
   size_t strip_components
+);
+char *zmanager_ffi_extract_archive_entry_with_tzap_options(
+  const char *archive_path,
+  const char *entry_path,
+  const char *destination,
+  const char *password,
+  uint32_t overwrite_mode,
+  size_t strip_components,
+  uint32_t tzap_restore_policy,
+  bool tzap_allow_degraded
 );
 char *zmanager_ffi_preview_archive_entry(
   const char *archive_path,
