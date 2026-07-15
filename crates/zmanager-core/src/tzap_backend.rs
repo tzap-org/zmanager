@@ -5,7 +5,7 @@ use crate::jobs::{
 use crate::manifest::{ArchiveManifest, ManifestFileType, PlanError};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
+    ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy, OverwriteResolver,
 };
 use crate::secrets::SecretString;
 use crate::x509_format::x509_name_to_string;
@@ -1623,7 +1623,38 @@ pub fn extract_tzap_with_optional_password(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<TzapExtractReport, TzapError> {
-    extract_tzap_inner(archive, destination, policy, password, None, None, None)
+    extract_tzap_with_optional_password_and_restore_options(
+        archive,
+        destination,
+        policy,
+        password,
+        TzapRestoreOptions::default(),
+    )
+}
+
+/// Extracts `.tzap` entries with an optional passphrase and explicit metadata restoration.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// requested metadata cannot be restored, or filesystem writes fail.
+pub fn extract_tzap_with_optional_password_and_restore_options(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    restore_options: TzapRestoreOptions,
+) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_inner(
+        archive,
+        destination,
+        policy,
+        password,
+        None,
+        restore_options,
+        None,
+        None,
+    )
 }
 
 /// Extracts recipient-wrapped `.tzap` entries with a private key.
@@ -1638,12 +1669,35 @@ pub fn extract_tzap_with_recipient_key(
     policy: ExtractionPolicy,
     recipient_private_key: impl AsRef<Path>,
 ) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_recipient_key_and_restore_options(
+        archive,
+        destination,
+        policy,
+        recipient_private_key,
+        TzapRestoreOptions::default(),
+    )
+}
+
+/// Extracts recipient-wrapped `.tzap` entries with explicit metadata restoration.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// requested metadata cannot be restored, or filesystem writes fail.
+pub fn extract_tzap_with_recipient_key_and_restore_options(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    recipient_private_key: impl AsRef<Path>,
+    restore_options: TzapRestoreOptions,
+) -> Result<TzapExtractReport, TzapError> {
     extract_tzap_inner(
         archive,
         destination,
         policy,
         None,
         Some(recipient_private_key.as_ref()),
+        restore_options,
         None,
         None,
     )
@@ -1668,6 +1722,7 @@ pub fn extract_tzap_with_optional_password_and_context(
         policy,
         password,
         None,
+        TzapRestoreOptions::default(),
         None,
         Some(context),
     )
@@ -1899,12 +1954,38 @@ pub fn extract_tzap_with_overwrite_resolver_and_optional_password(
     password: Option<&str>,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_overwrite_resolver_and_optional_password_and_restore_options(
+        archive,
+        destination,
+        policy,
+        password,
+        TzapRestoreOptions::default(),
+        overwrite_resolver,
+    )
+}
+
+/// Extracts `.tzap` entries with an optional passphrase, overwrite resolver,
+/// and explicit metadata restoration.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// requested metadata cannot be restored, or filesystem writes fail.
+pub fn extract_tzap_with_overwrite_resolver_and_optional_password_and_restore_options(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    restore_options: TzapRestoreOptions,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<TzapExtractReport, TzapError> {
     extract_tzap_inner(
         archive,
         destination,
         policy,
         password,
         None,
+        restore_options,
         Some(overwrite_resolver),
         None,
     )
@@ -1923,12 +2004,38 @@ pub fn extract_tzap_with_overwrite_resolver_and_recipient_key(
     recipient_private_key: impl AsRef<Path>,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<TzapExtractReport, TzapError> {
+    extract_tzap_with_overwrite_resolver_and_recipient_key_and_restore_options(
+        archive,
+        destination,
+        policy,
+        recipient_private_key,
+        TzapRestoreOptions::default(),
+        overwrite_resolver,
+    )
+}
+
+/// Extracts recipient-wrapped `.tzap` entries with an overwrite resolver and
+/// explicit metadata restoration.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened, an entry is unsafe,
+/// requested metadata cannot be restored, or filesystem writes fail.
+pub fn extract_tzap_with_overwrite_resolver_and_recipient_key_and_restore_options(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    recipient_private_key: impl AsRef<Path>,
+    restore_options: TzapRestoreOptions,
+    overwrite_resolver: &mut dyn OverwriteResolver,
+) -> Result<TzapExtractReport, TzapError> {
     extract_tzap_inner(
         archive,
         destination,
         policy,
         None,
         Some(recipient_private_key.as_ref()),
+        restore_options,
         Some(overwrite_resolver),
         None,
     )
@@ -2771,6 +2878,7 @@ fn extract_tzap_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     recipient_private_key: Option<&Path>,
+    restore_options: TzapRestoreOptions,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<TzapExtractReport, TzapError> {
@@ -2782,6 +2890,23 @@ fn extract_tzap_inner(
         })?;
     let opened = open_tzap_archive_with_key_options(archive, password, recipient_private_key)?;
     let entries = opened.list_files()?;
+    if overwrite_resolver.is_none()
+        && policy.strip_components == 0
+        && matches!(
+            policy.overwrite,
+            OverwritePolicy::Refuse | OverwritePolicy::Replace
+        )
+    {
+        return extract_opened_tzap_with_core_restore(
+            &opened,
+            &destination_root,
+            policy,
+            &entries,
+            restore_options,
+            context,
+        );
+    }
+    opened.plan_metadata_restore(restore_options.core_options(false))?;
     let mut planner = match overwrite_resolver {
         Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
             &destination_root,
@@ -2835,7 +2960,7 @@ fn extract_tzap_inner(
                         &opened,
                         &entry.path,
                         entry.file_data_size,
-                        TzapRestoreOptions::default(),
+                        restore_options,
                         &destination_path,
                         replace_existing,
                         context.as_deref_mut(),
@@ -2912,10 +3037,89 @@ fn extract_tzap_inner(
         }
     }
 
-    apply_deferred_tzap_directory_metadata(
-        &deferred_directory_metadata,
-        TzapRestoreOptions::default(),
+    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata, restore_options)?;
+
+    Ok(report)
+}
+
+fn extract_opened_tzap_with_core_restore(
+    opened: &OpenedArchive,
+    destination_root: &Path,
+    policy: ExtractionPolicy,
+    entries: &[ArchiveEntry],
+    restore_options: TzapRestoreOptions,
+    mut context: Option<&mut JobContext<'_>>,
+) -> Result<TzapExtractReport, TzapError> {
+    let replace_existing = policy.overwrite == OverwritePolicy::Replace;
+    let mut planner = ExtractionSafetyPlanner::new(destination_root, policy);
+    let mut selected = Vec::new();
+    let mut report = TzapExtractReport {
+        written_entries: 0,
+        skipped_entries: 0,
+        written_bytes: 0,
+        warnings: Vec::new(),
+    };
+
+    for entry in entries {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+            context.entry_started(&entry.path, Some(entry.file_data_size));
+        }
+        let preloaded_member =
+            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+                opened.extract_member(&entry.path)?
+            } else {
+                None
+            };
+        let safety_entry = ExtractionEntry {
+            archive_path: entry.path.clone(),
+            kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
+            uncompressed_size: Some(entry.file_data_size),
+            compressed_size: None,
+        };
+        match planner.validate_entry(&safety_entry)? {
+            ExtractionDecision::Write { .. } => selected.push(entry.path.clone()),
+            ExtractionDecision::Skip { reason, .. } => {
+                report.skipped_entries = report.skipped_entries.saturating_add(1);
+                let warning = format!("skipped {}: {reason}", entry.path);
+                report.warnings.push(warning.clone());
+                if let Some(context) = context.as_deref_mut() {
+                    context.warning(warning);
+                    context.entry_finished(&entry.path, 0);
+                }
+            }
+        }
+    }
+
+    if selected.is_empty() {
+        return Ok(report);
+    }
+
+    let restored = opened.extract_selected_files_to(
+        &selected,
+        destination_root,
+        restore_options.core_options(replace_existing),
+        1,
     )?;
+    let sizes = entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry.file_data_size))
+        .collect::<BTreeMap<_, _>>();
+    for (path, diagnostics) in restored {
+        let written_bytes = sizes.get(path.as_str()).copied().unwrap_or(0);
+        report.written_entries = report.written_entries.saturating_add(1);
+        report.written_bytes = report.written_bytes.saturating_add(written_bytes);
+        append_metadata_diagnostics(
+            &path,
+            &diagnostics,
+            &mut report.warnings,
+            context.as_deref_mut(),
+        );
+        if let Some(context) = context.as_deref_mut() {
+            context.bytes_processed(Some(&path), written_bytes);
+            context.entry_finished(&path, written_bytes);
+        }
+    }
 
     Ok(report)
 }

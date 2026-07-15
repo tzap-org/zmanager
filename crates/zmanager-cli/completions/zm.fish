@@ -101,6 +101,8 @@ complete -c zm -n "__fish_seen_subcommand_from extract" -l to-stdout -d "Write s
 complete -c zm -n "__fish_seen_subcommand_from extract" -l extract-nested -d "Expand known package payloads"
 complete -c zm -n "__fish_seen_subcommand_from extract" -l password-stdin -d "Read one password line from stdin"
 complete -c zm -n "__fish_seen_subcommand_from extract" -l recipient-key -r -d "Open TZAP RecipientWrap archives with a private key"
+complete -c zm -n "__fish_seen_subcommand_from extract" -l restore -xa "content portable same-os system" -d "TZAP metadata restore policy"
+complete -c zm -n "__fish_seen_subcommand_from extract" -l allow-degraded -d "Permit unsupported requested TZAP metadata to be skipped"
 
 complete -c zm -n "__fish_seen_subcommand_from list" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from list" -s f -l file -r -d "Archive file path"

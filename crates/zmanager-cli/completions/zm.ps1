@@ -18,6 +18,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $colorValues = @("auto", "always", "never")
     $progressValues = @("auto", "always", "never")
     $overwriteValues = @("never", "always", "ask", "rename")
+    $restoreValues = @("content", "portable", "same-os", "system")
     $volumeSizeValues = @("64k", "100m", "500m", "1g", "2g", "4g")
     $authCommands = @("login", "callback", "status", "forget", "account")
     $certCommands = @("list", "enroll", "renew", "revoke")
@@ -45,7 +46,8 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $extractOptions = @(
         "-h", "--help", "-C", "-d", "--directory", "--here", "--overwrite",
         "-i", "--include", "--exclude", "--strip-components", "--to-stdout",
-        "--extract-nested", "--password-stdin", "--recipient-key"
+        "--extract-nested", "--password-stdin", "--recipient-key", "--restore",
+        "--allow-degraded"
     )
     $listOptions = @(
         "-h", "--help", "-f", "--file", "-l", "--long", "--name-only",
@@ -189,6 +191,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         }
         "--overwrite" {
             Complete-ZmValues -Values $overwriteValues -Prefix $wordToComplete
+            return
+        }
+        "--restore" {
+            Complete-ZmValues -Values $restoreValues -Prefix $wordToComplete
             return
         }
         "--volume-size" {

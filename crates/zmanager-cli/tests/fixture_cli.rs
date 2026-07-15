@@ -1007,6 +1007,65 @@ fn zm_create_tzap_without_password_uses_unencrypted_mode() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn zm_extract_tzap_honors_metadata_restore_policy() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = TestDir::new("zm_tzap_restore_policy");
+    let source = temp.path("executable.sh");
+    fs::write(&source, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).unwrap();
+    let archive = temp.path("metadata.tzap");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert_success("zm create metadata tzap", &create);
+
+    let portable = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("portable"))
+        .arg("--restore")
+        .arg("portable")
+        .output()
+        .unwrap();
+    assert_success("zm extract tzap portable metadata", &portable);
+    assert_eq!(
+        fs::metadata(temp.path("portable/executable.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o751
+    );
+
+    let content = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("content"))
+        .arg("--restore")
+        .arg("content")
+        .arg("--allow-degraded")
+        .output()
+        .unwrap();
+    assert_success("zm extract tzap content only", &content);
+    assert_ne!(
+        fs::metadata(temp.path("content/executable.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o751
+    );
+}
+
 #[test]
 fn zm_create_tzap_accepts_bare_relative_archive_path() {
     let temp = TestDir::new("zm_tzap_bare_relative_output");

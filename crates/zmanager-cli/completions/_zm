@@ -120,6 +120,8 @@ extract_options=(
   '--extract-nested[Expand known package payloads]'
   '--password-stdin[Read one password line from stdin]'
   '--recipient-key[Open TZAP RecipientWrap archives with a private key]:key:_files'
+  '--restore[TZAP metadata restore policy]:policy:(content portable same-os system)'
+  '--allow-degraded[Permit unsupported requested TZAP metadata to be skipped]'
 )
 
 list_options=(

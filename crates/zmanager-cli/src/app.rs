@@ -191,6 +191,10 @@ Selection and output:
       --extract-nested           Expand known package payloads; currently .deb
       --password-stdin           Read one password line from stdin
       --recipient-key <file>     Open TZAP RecipientWrap archives with a private key
+      --restore <content|portable|same-os|system>
+                                  TZAP metadata restore policy; default is portable
+      --allow-degraded           Permit unsupported requested TZAP metadata to be
+                                  skipped with diagnostics
   Glob patterns match archive paths. Quote patterns so the shell does not
   expand them first. Use dir/** for a whole tree; * can match /.
 
@@ -1030,6 +1034,8 @@ struct ExtractRequest {
     extract_nested: bool,
     password_stdin: bool,
     recipient_key: Option<PathBuf>,
+    tzap_restore_policy: zmanager_core::tzap_backend::TzapRestorePolicy,
+    tzap_allow_degraded: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5066,6 +5072,14 @@ fn parse_extract_request(
             "--recipient-key" => {
                 request.recipient_key = Some(PathBuf::from(take_value(args, &mut index, arg)?));
             }
+            "--restore" => {
+                let value = take_value(args, &mut index, arg)?;
+                request.tzap_restore_policy = parse_tzap_restore_policy(&value)?;
+            }
+            "--allow-degraded" => {
+                request.tzap_allow_degraded = true;
+                index += 1;
+            }
             _ if arg.starts_with('-') => return Err(format!("unknown extract option: {arg}")),
             _ => {
                 positional.push(arg.clone());
@@ -5207,6 +5221,10 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             policy,
             password.as_deref(),
             request.recipient_key.as_deref(),
+            zmanager_core::tzap_backend::TzapRestoreOptions {
+                policy: request.tzap_restore_policy,
+                allow_degraded: request.tzap_allow_degraded,
+            },
             Some(global),
         )
     } else {
@@ -5642,6 +5660,20 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 ExitCode::FAILURE
             }
         }
+    }
+}
+
+fn parse_tzap_restore_policy(
+    value: &str,
+) -> Result<zmanager_core::tzap_backend::TzapRestorePolicy, String> {
+    match value {
+        "content" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::Content),
+        "portable" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::Portable),
+        "same-os" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::SameOs),
+        "system" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::System),
+        _ => Err(format!(
+            "unsupported TZAP restore policy: {value}; expected content, portable, same-os, or system"
+        )),
     }
 }
 
@@ -8210,6 +8242,7 @@ fn run_tzap_extract_with_policy(
     policy: zmanager_core::safety::ExtractionPolicy,
     password: Option<&str>,
     recipient_key: Option<&Path>,
+    restore_options: zmanager_core::tzap_backend::TzapRestoreOptions,
     global: Option<&GlobalOptions>,
 ) -> ExitCode {
     let archive_path = archive.as_ref().to_path_buf();
@@ -8224,35 +8257,39 @@ fn run_tzap_extract_with_policy(
         let stderr = io::stderr();
         let mut overwrite_resolver = InteractiveOverwriteResolver::new(stdin.lock(), stderr.lock());
         if let Some(recipient_key) = recipient_key {
-            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_recipient_key(
+            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_recipient_key_and_restore_options(
                 &archive_path,
                 &destination_path,
                 policy,
                 recipient_key,
+                restore_options,
                 &mut overwrite_resolver,
             )
         } else {
-            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_optional_password(
+            zmanager_core::tzap_backend::extract_tzap_with_overwrite_resolver_and_optional_password_and_restore_options(
                 &archive_path,
                 &destination_path,
                 policy,
                 password,
+                restore_options,
                 &mut overwrite_resolver,
             )
         }
     } else if let Some(recipient_key) = recipient_key {
-        zmanager_core::tzap_backend::extract_tzap_with_recipient_key(
+        zmanager_core::tzap_backend::extract_tzap_with_recipient_key_and_restore_options(
             &archive_path,
             &destination_path,
             policy,
             recipient_key,
+            restore_options,
         )
     } else {
-        zmanager_core::tzap_backend::extract_tzap_with_optional_password(
+        zmanager_core::tzap_backend::extract_tzap_with_optional_password_and_restore_options(
             &archive_path,
             &destination_path,
             policy,
             password,
+            restore_options,
         )
     };
 
@@ -8619,6 +8656,39 @@ mod tests {
         let test_args = strings(["sealed.tzap", "--recipient-key", "recipient.key"]);
         parse_test_request(&test_args, &mut global, &mut test).unwrap();
         assert_eq!(test.recipient_key, Some(PathBuf::from("recipient.key")));
+    }
+
+    #[test]
+    fn extract_parser_accepts_tzap_metadata_restore_options() {
+        let mut request = ExtractRequest::default();
+        let mut global = GlobalOptions::default();
+        let args = strings([
+            "archive.tzap",
+            "-C",
+            "out",
+            "--restore",
+            "same-os",
+            "--allow-degraded",
+        ]);
+
+        parse_extract_request(&args, &mut global, &mut request).unwrap();
+
+        assert_eq!(
+            request.tzap_restore_policy,
+            zmanager_core::tzap_backend::TzapRestorePolicy::SameOs
+        );
+        assert!(request.tzap_allow_degraded);
+    }
+
+    #[test]
+    fn extract_parser_rejects_unknown_tzap_restore_policy() {
+        let mut request = ExtractRequest::default();
+        let mut global = GlobalOptions::default();
+        let args = strings(["archive.tzap", "--restore", "everything"]);
+
+        let error = parse_extract_request(&args, &mut global, &mut request).unwrap_err();
+
+        assert!(error.contains("content, portable, same-os, or system"));
     }
 
     #[test]

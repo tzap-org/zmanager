@@ -126,6 +126,8 @@ const EXTRACT_FLAGS: &[&str] = &[
     "--extract-nested",
     "--password-stdin",
     "--recipient-key <file>",
+    "--restore <content|portable|same-os|system>",
+    "--allow-degraded",
 ];
 
 const LIST_FLAGS: &[&str] = &[
@@ -461,6 +463,8 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         "password-stdin",
         "recipient-cert",
         "recipient-key",
+        "restore",
+        "allow-degraded",
         "public-no-key",
         "volume-size",
         "signing-cert",

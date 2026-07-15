@@ -237,6 +237,13 @@ Expand known package payloads; currently
 Read one password line from stdin.
 .It Fl -recipient-key Ar file
 Open TZAP RecipientWrap archives with a private key.
+.It Fl -restore Cm content Ns | Ns Cm portable Ns | Ns Cm same-os Ns | Ns Cm system
+Select the TZAP metadata restoration policy.
+The default is
+.Cm portable .
+.It Fl -allow-degraded
+Permit unsupported metadata requested by the TZAP restoration policy to be
+skipped with diagnostics.
 .El
 .Sh LIST OPTIONS
 .Bl -tag -width "--recipient-key"

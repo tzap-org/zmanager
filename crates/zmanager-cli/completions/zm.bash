@@ -20,7 +20,7 @@ _zm()
     local contact_commands="export import list remove"
     local global_opts="-h --help -V --version -q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt -c --create -x --extract -t --list -T --test -f --file"
     local create_opts="-h --help -r --recursive -C --directory -@ --files-from --null --clean --no-ignore --hidden --no-hidden -i --include --exclude --exclude-from --format --method --level -0 -1 -2 -3 -4 -5 -6 -7 -8 -9 --store --solid --no-solid --volume-size --recipient-cert --signing-cert --signing-private-key --signing-chain -j --junk-paths -y --preserve-symlinks --follow-symlinks --preserve-metadata -X --no-metadata -f --file --force --dry-run -T --test-after --encrypt --password-stdin"
-    local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin --recipient-key"
+    local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin --recipient-key --restore --allow-degraded"
     local list_opts="-h --help -f --file -l --long --name-only --tree -i --include --exclude --password-stdin --recipient-key --json"
     local test_opts="-h --help -f --file -i --include --exclude --password-stdin --recipient-key --public-no-key --trusted-ca-cert --trusted-system-roots --json"
     local plan_opts="-h --help --format -C --directory -@ --files-from --null --clean --no-ignore -i --include --exclude --exclude-from --json"
@@ -79,6 +79,10 @@ _zm()
             ;;
         --overwrite)
             COMPREPLY=($(compgen -W "$overwrite_values" -- "$cur"))
+            return
+            ;;
+        --restore)
+            COMPREPLY=($(compgen -W "content portable same-os system" -- "$cur"))
             return
             ;;
         --volume-size)
