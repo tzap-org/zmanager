@@ -1831,6 +1831,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.10"
+source = "git+https://github.com/tzap-org/tzap.git?rev=90f758f33aff4eb26eac5aa254e9637c5d394014#90f758f33aff4eb26eac5aa254e9637c5d394014"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1858,6 +1859,7 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-keywrap"
 version = "0.1.10"
+source = "git+https://github.com/tzap-org/tzap.git?rev=90f758f33aff4eb26eac5aa254e9637c5d394014#90f758f33aff4eb26eac5aa254e9637c5d394014"
 dependencies = [
  "hpke",
  "openssl",
@@ -1870,6 +1872,7 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-signing"
 version = "0.1.10"
+source = "git+https://github.com/tzap-org/tzap.git?rev=90f758f33aff4eb26eac5aa254e9637c5d394014#90f758f33aff4eb26eac5aa254e9637c5d394014"
 dependencies = [
  "ed25519-dalek",
  "openssl",
