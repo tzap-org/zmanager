@@ -1008,6 +1008,33 @@ fn zm_create_tzap_without_password_uses_unencrypted_mode() {
 }
 
 #[test]
+fn zm_create_tzap_accepts_bare_relative_archive_path() {
+    let temp = TestDir::new("zm_tzap_bare_relative_output");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "relative output\n").unwrap();
+
+    let create = Command::new(zm_path())
+        .current_dir(&temp.root)
+        .arg("create")
+        .arg("project.tzap")
+        .arg("project")
+        .output()
+        .unwrap();
+    assert_success("zm create with bare relative tzap output", &create);
+    assert!(temp.path("project.tzap").is_file());
+
+    let list = Command::new(zm_path())
+        .current_dir(&temp.root)
+        .arg("list")
+        .arg("project.tzap")
+        .arg("--name-only")
+        .output()
+        .unwrap();
+    assert_success("zm list bare relative tzap output", &list);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("project/file.txt"));
+}
+
+#[test]
 fn zm_create_7z_level_round_trips_with_backend() {
     let temp = TestDir::new("zm_7z_level");
     fs::create_dir_all(temp.path("project")).unwrap();

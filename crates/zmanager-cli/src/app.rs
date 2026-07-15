@@ -82,6 +82,7 @@ Examples:
   zm formats
 
 Run 'zm help <command>' for command-specific examples and flags.
+Run 'zm completions --help' to enable shell tab completion.
 ";
 
 const CREATE_HELP: &str = "\
@@ -371,6 +372,18 @@ The CLI only handles launch and registered handoff material. It does not collect
 provider credentials, OTPs, or OAuth secrets.
 ";
 
+const ME_HELP: &str = "\
+Show the local TZAP session summary
+
+Usage:
+  zm me [options]
+
+Options:
+      --state-dir <dir>          Read local auth/session state from dir
+      --account-key <key>        Local account inventory key; default is default
+      --json                     Emit machine-readable JSON
+";
+
 const CERT_HELP: &str = "\
 Manage local TZAP certificate inventory
 
@@ -495,8 +508,13 @@ Examples:
   zm completions fish > ~/.config/fish/completions/zm.fish
   zm completions powershell > zm.ps1
 
-The release packages install completion files automatically where package
-managers support it. This command is for manual shell setup and troubleshooting.
+`source <(zm completions bash)` enables completion in the current Bash session;
+add it to ~/.bashrc to enable it in future sessions. Completion scripts suggest
+commands, options, values, and paths when Tab is pressed. History-based inline
+autosuggestions are a separate shell feature.
+
+Release packages install completion files automatically where package managers
+support it. Source and snapshot installs may require the manual setup above.
 ";
 
 const COMPLETION_BASH_SCRIPT: &str = include_str!("../completions/zm.bash");
@@ -1216,6 +1234,7 @@ fn command_help(command: &str) -> Option<&'static str> {
         "plan" => Some(PLAN_HELP),
         "formats" => Some(FORMATS_HELP),
         "auth" => Some(AUTH_HELP),
+        "me" => Some(ME_HELP),
         "cert" => Some(CERT_HELP),
         "device" => Some(DEVICE_HELP),
         "sign" => Some(SIGN_HELP),
@@ -1959,6 +1978,10 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
 }
 
 fn me_command(args: &[String], global: GlobalOptions) -> ExitCode {
+    if wants_help(args) {
+        print_help_stdout(ME_HELP, &global);
+        return ExitCode::SUCCESS;
+    }
     auth_status_command(args, global)
 }
 

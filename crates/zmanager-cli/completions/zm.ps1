@@ -11,14 +11,18 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         $wordToComplete = ""
     }
 
-    $commands = @("create", "extract", "list", "test", "plan", "formats", "doctor", "completions", "help")
-    $helpTopics = @("create", "extract", "list", "test", "plan", "formats", "doctor", "completions")
+    $commands = @("create", "extract", "list", "test", "plan", "formats", "auth", "me", "cert", "device", "sign", "verify", "contact", "share", "doctor", "completions", "help")
+    $helpTopics = @("create", "extract", "list", "test", "plan", "formats", "auth", "me", "cert", "device", "sign", "verify", "contact", "share", "doctor", "completions")
     $shellValues = @("bash", "zsh", "fish", "powershell")
-    $formatValues = @("zip", "tar.zst", "tzap", "7z")
+    $formatValues = @("zip", "tar.zst", "tzap", "aar", "7z")
     $colorValues = @("auto", "always", "never")
     $progressValues = @("auto", "always", "never")
     $overwriteValues = @("never", "always", "ask", "rename")
     $volumeSizeValues = @("64k", "100m", "500m", "1g", "2g", "4g")
+    $authCommands = @("login", "callback", "status", "forget", "account")
+    $certCommands = @("list", "enroll", "renew", "revoke")
+    $deviceCommands = @("retire")
+    $contactCommands = @("export", "import", "list", "remove")
 
     $globalOptions = @(
         "-h", "--help", "-V", "--version", "-q", "--quiet", "-v", "--verbose",
@@ -63,6 +67,14 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         list = $listOptions
         test = $testOptions
         plan = $planOptions
+        auth = @("-h", "--help", "--print-url", "--state-dir", "--account-key", "--environment", "--auth-base-url", "--account-base-url", "--client-id", "--redirect-uri", "--provider", "--org-id", "--state", "--callback-url", "--handoff-code", "--relay-body", "--json")
+        me = @("-h", "--help", "--state-dir", "--account-key", "--json")
+        cert = @("-h", "--help", "--state-dir", "--account-key", "--certificate-id", "--service-base-url", "--trusted-root-cert", "--org-id", "--requested-validity-seconds", "--json")
+        device = @("-h", "--help", "--state-dir", "--account-key", "--json")
+        sign = @("-h", "--help", "--state-dir", "--account-key", "--certificate-id", "--output", "--claimed-signing-time", "--json")
+        verify = @("-h", "--help", "--custom-trust-root", "--custom-trust-root-cert", "--status-response", "--time", "--json")
+        contact = @("-h", "--help", "--state-dir", "--account-key", "--recipient-key-id", "--certificate-id", "--display-name", "--device-label", "--output", "--accept", "--custom-trust-root", "--custom-trust-root-cert", "--json")
+        share = @("-h", "--help", "--state-dir", "--account-key", "--contact", "--force", "--json")
         formats = @("-h", "--help", "--json")
         doctor = @("-h", "--help", "--json")
         completions = @("-h", "--help")
@@ -183,6 +195,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
             Complete-ZmValues -Values $volumeSizeValues -Prefix $wordToComplete
             return
         }
+        "--environment" {
+            Complete-ZmValues -Values @("local", "dev", "prod") -Prefix $wordToComplete
+            return
+        }
         "-C" {
             Complete-ZmFiles -Prefix $wordToComplete
             return
@@ -261,6 +277,18 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         }
         "completions" {
             Complete-ZmValues -Values $shellValues -Prefix $wordToComplete
+        }
+        "auth" {
+            Complete-ZmValues -Values $authCommands -Prefix $wordToComplete
+        }
+        "cert" {
+            Complete-ZmValues -Values $certCommands -Prefix $wordToComplete
+        }
+        "device" {
+            Complete-ZmValues -Values $deviceCommands -Prefix $wordToComplete
+        }
+        "contact" {
+            Complete-ZmValues -Values $contactCommands -Prefix $wordToComplete
         }
         "formats" {}
         "doctor" {}

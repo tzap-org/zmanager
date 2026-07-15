@@ -235,6 +235,8 @@ const COMPLETIONS_HELP_NEEDLES: &[&str] = &[
     "source <(zm completions bash)",
     "zm completions zsh > ~/.zfunc/_zm",
     "zm completions powershell > zm.ps1",
+    "current Bash session",
+    "History-based inline",
 ];
 
 const COMMAND_HELP_CASES: &[(&str, &[&str])] = &[
@@ -265,8 +267,12 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
     assert_contains(&stdout, "create");
     assert_contains(&stdout, "extract");
     assert_contains(&stdout, "formats");
+    assert_contains(&stdout, "auth");
+    assert_contains(&stdout, "contact");
+    assert_contains(&stdout, "share");
     assert_contains(&stdout, "completions");
     assert_contains(&stdout, "Run 'zm help <command>'");
+    assert_contains(&stdout, "Run 'zm completions --help'");
     assert_contains(&stdout, "--color <auto|always|never>");
     assert_contains(&stdout, "--progress <auto|always|never>");
     assert_contains(&stdout, "--no-password-prompt");
@@ -390,6 +396,25 @@ fn every_public_command_has_targeted_help() {
 }
 
 #[test]
+fn me_has_targeted_help_through_both_navigation_paths() {
+    let direct = Command::new(zm_path())
+        .args(["me", "--help"])
+        .output()
+        .unwrap();
+    assert_success("zm me --help", &direct);
+    let stdout = String::from_utf8_lossy(&direct.stdout);
+    assert_contains(&stdout, "Show the local TZAP session summary");
+    assert_contains(&stdout, "zm me [options]");
+
+    let help = Command::new(zm_path())
+        .args(["help", "me"])
+        .output()
+        .unwrap();
+    assert_success("zm help me", &help);
+    assert_eq!(direct.stdout, help.stdout);
+}
+
+#[test]
 fn help_covers_public_flag_inventory() {
     assert_help_contains(&["--help"], TOP_LEVEL_FLAGS);
     assert_help_contains(&["create", "--help"], CREATE_FLAGS);
@@ -413,6 +438,15 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         assert_not_contains(COMPLETION_FISH, legacy);
         assert_not_contains(COMPLETION_POWERSHELL, legacy);
         assert_not_contains(COMPLETION_ZSH, legacy);
+    }
+
+    for command in [
+        "auth", "me", "cert", "device", "sign", "verify", "contact", "share",
+    ] {
+        assert_contains(COMPLETION_BASH, command);
+        assert_contains(COMPLETION_FISH, command);
+        assert_contains(COMPLETION_POWERSHELL, command);
+        assert_contains(COMPLETION_ZSH, command);
     }
 
     for required_flag in [
@@ -471,16 +505,16 @@ fn static_completion_files_capture_navigation_contract() {
 
     assert_contains(
         COMPLETION_BASH,
-        "local help_topics=\"create extract list test plan formats doctor completions\"",
+        "local help_topics=\"create extract list test plan formats auth me cert device sign verify contact share doctor completions\"",
     );
     assert_contains(
         COMPLETION_FISH,
-        "set -l zm_help_topics create extract list test plan formats doctor completions",
+        "set -l zm_help_topics create extract list test plan formats auth me cert device sign verify contact share doctor completions",
     );
     assert_contains(COMPLETION_ZSH, "help_topics=(");
     assert_contains(
         COMPLETION_POWERSHELL,
-        "$helpTopics = @(\"create\", \"extract\", \"list\", \"test\", \"plan\", \"formats\", \"doctor\", \"completions\")",
+        "$helpTopics = @(\"create\", \"extract\", \"list\", \"test\", \"plan\", \"formats\", \"auth\", \"me\", \"cert\", \"device\", \"sign\", \"verify\", \"contact\", \"share\", \"doctor\", \"completions\")",
     );
 }
 
@@ -520,6 +554,10 @@ run_case top zm h
 run_case help_topics zm help ""
 run_case list_options zm list --
 run_case create_options zm create --
+run_case auth_commands zm auth ""
+run_case cert_commands zm cert ""
+run_case contact_commands zm contact ""
+run_case auth_options zm auth status --
 run_case completion_shells zm completions ""
 run_case list_files zm list ""
 "#,
@@ -536,17 +574,25 @@ run_case list_files zm list ""
     assert_contains(&stdout, "top: help\n");
     assert_contains(
         &stdout,
-        "help_topics: create extract list test plan formats doctor completions\n",
+        "help_topics: create extract list test plan formats auth me cert device sign verify contact share doctor completions\n",
     );
     assert_contains(&stdout, "list_options: --help");
     assert_contains(&stdout, "--tree");
     assert_contains(&stdout, "create_options: --help");
     assert_contains(&stdout, "--exclude-from");
+    assert_contains(
+        &stdout,
+        "auth_commands: login callback status forget account\n",
+    );
+    assert_contains(&stdout, "cert_commands: list enroll renew revoke\n");
+    assert_contains(&stdout, "contact_commands: export import list remove\n");
+    assert_contains(&stdout, "auth_options: --help");
+    assert_contains(&stdout, "--environment");
     assert_contains(&stdout, "completion_shells: bash zsh fish powershell\n");
     assert_contains(&stdout, "list_files: archive.zip\n");
     assert_not_contains(
         &stdout,
-        "help_topics: create extract list test plan formats doctor completions help",
+        "help_topics: create extract list test plan formats auth me cert device sign verify contact share doctor completions help",
     );
 }
 

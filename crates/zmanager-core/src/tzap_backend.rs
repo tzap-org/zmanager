@@ -884,7 +884,10 @@ fn remove_file_destination_for_replace(path: &Path) -> Result<(), TzapError> {
 }
 
 fn existing_tzap_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, TzapError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let Some(destination_file_name) = destination.file_name().and_then(|name| name.to_str()) else {
         return Ok(Vec::new());
     };

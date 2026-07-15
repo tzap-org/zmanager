@@ -1,7 +1,11 @@
 # fish completion for zm
 
-set -l zm_commands create extract list test plan formats doctor completions help
-set -l zm_help_topics create extract list test plan formats doctor completions
+set -l zm_commands create extract list test plan formats auth me cert device sign verify contact share doctor completions help
+set -l zm_help_topics create extract list test plan formats auth me cert device sign verify contact share doctor completions
+set -l zm_auth_commands login callback status forget account
+set -l zm_cert_commands list enroll renew revoke
+set -l zm_device_commands retire
+set -l zm_contact_commands export import list remove
 set -l zm_completion_shells bash zsh fish powershell
 
 complete -c zm -f
@@ -28,6 +32,14 @@ complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a list -d "Lis
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a test -d "Test archive readability"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a plan -d "Show planned archive entries"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a formats -d "Show supported formats"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a auth -d "Hosted TZAP auth handoff helpers"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a me -d "Show the local TZAP session summary"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a cert -d "Manage local TZAP certificate inventory"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a device -d "Retire local TZAP device material"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a sign -d "Sign a TZAP document JSON payload"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a verify -d "Verify a TZAP document envelope"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a contact -d "Manage TZAP contact cards"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a share -d "Create a TZAP archive for contacts"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a doctor -d "Verify the archive engine"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a completions -d "Print shell completion scripts"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a help -d "Show help for a command"
@@ -45,7 +57,7 @@ complete -c zm -n "__fish_seen_subcommand_from create" -l no-hidden -d "Exclude 
 complete -c zm -n "__fish_seen_subcommand_from create" -s i -l include -r -d "Include archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from create" -l exclude -r -d "Exclude archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from create" -l exclude-from -r -d "Read exclude globs from file"
-complete -c zm -n "__fish_seen_subcommand_from create" -l format -xa "zip tar.zst tzap 7z" -d "Override archive format"
+complete -c zm -n "__fish_seen_subcommand_from create" -l format -xa "zip tar.zst tzap aar 7z" -d "Override archive format"
 complete -c zm -n "__fish_seen_subcommand_from create" -l method -r -d "Select compression method"
 complete -c zm -n "__fish_seen_subcommand_from create" -l level -r -d "Compression level"
 complete -c zm -n "__fish_seen_subcommand_from create" -s 0 -d "Store ZIP entries"
@@ -113,7 +125,7 @@ complete -c zm -n "__fish_seen_subcommand_from test" -l trusted-system-roots -d 
 complete -c zm -n "__fish_seen_subcommand_from test" -l json -d "Emit machine-readable JSON"
 
 complete -c zm -n "__fish_seen_subcommand_from plan" -s h -l help -d "Show help"
-complete -c zm -n "__fish_seen_subcommand_from plan" -l format -xa "zip tar.zst tzap 7z" -d "Plan for a specific archive format"
+complete -c zm -n "__fish_seen_subcommand_from plan" -l format -xa "zip tar.zst tzap aar 7z" -d "Plan for a specific archive format"
 complete -c zm -n "__fish_seen_subcommand_from plan" -s C -l directory -r -d "Use directory as input base"
 complete -c zm -n "__fish_seen_subcommand_from plan" -s @ -d "Read input paths from stdin"
 complete -c zm -n "__fish_seen_subcommand_from plan" -l files-from -r -d "Read input paths from file"
@@ -124,6 +136,37 @@ complete -c zm -n "__fish_seen_subcommand_from plan" -s i -l include -r -d "Incl
 complete -c zm -n "__fish_seen_subcommand_from plan" -l exclude -r -d "Exclude archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from plan" -l exclude-from -r -d "Read exclude globs from file"
 complete -c zm -n "__fish_seen_subcommand_from plan" -l json -d "Emit machine-readable JSON"
+
+complete -c zm -n "__fish_seen_subcommand_from auth; and not __fish_seen_subcommand_from $zm_auth_commands" -a "$zm_auth_commands" -d "Auth command"
+complete -c zm -n "__fish_seen_subcommand_from cert; and not __fish_seen_subcommand_from $zm_cert_commands" -a "$zm_cert_commands" -d "Certificate command"
+complete -c zm -n "__fish_seen_subcommand_from device; and not __fish_seen_subcommand_from $zm_device_commands" -a "$zm_device_commands" -d "Device command"
+complete -c zm -n "__fish_seen_subcommand_from contact; and not __fish_seen_subcommand_from $zm_contact_commands" -a "$zm_contact_commands" -d "Contact command"
+
+complete -c zm -n "__fish_seen_subcommand_from auth" -l environment -xa "local dev prod" -d "Select hosted endpoints"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l print-url -d "Print the hosted login URL"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l auth-base-url -r -d "Override hosted Auth base URL"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l account-base-url -r -d "Override hosted Account base URL"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l client-id -r -d "Hosted Auth client id"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l redirect-uri -r -d "Registered callback URI"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l provider -r -d "Hosted provider id"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l org-id -r -d "Organization id"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l state -r -d "Auth callback state"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l callback-url -r -d "Full callback URL"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l handoff-code -r -d "One-time handoff code"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l relay-body -r -d "Relay JSON file"
+
+complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share" -l state-dir -r -d "Store local state in directory"
+complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share" -l account-key -r -d "Local account inventory key"
+complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign verify contact share" -l json -d "Emit machine-readable JSON"
+complete -c zm -n "__fish_seen_subcommand_from cert sign contact" -l certificate-id -r -d "Certificate id"
+complete -c zm -n "__fish_seen_subcommand_from cert" -l service-base-url -r -d "Hosted TZAP sign API URL"
+complete -c zm -n "__fish_seen_subcommand_from cert" -l trusted-root-cert -r -d "Trusted staging root certificate"
+complete -c zm -n "__fish_seen_subcommand_from cert" -l requested-validity-seconds -r -d "Requested certificate lifetime"
+complete -c zm -n "__fish_seen_subcommand_from sign contact" -l output -r -d "Destination JSON file"
+complete -c zm -n "__fish_seen_subcommand_from verify contact" -l custom-trust-root -r -d "Custom root fingerprint"
+complete -c zm -n "__fish_seen_subcommand_from verify contact" -l custom-trust-root-cert -r -d "Custom root certificate"
+complete -c zm -n "__fish_seen_subcommand_from share" -l contact -r -d "Accepted contact id"
+complete -c zm -n "__fish_seen_subcommand_from share" -l force -d "Replace existing output archive"
 
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -l json -d "Emit JSON"

@@ -1,6 +1,7 @@
 #compdef zm
 
 local -a commands help_topics global_options create_options extract_options list_options test_options plan_options
+local -a auth_options identity_options cert_options sign_options verify_options contact_options share_options
 
 commands=(
   'create:Create an archive'
@@ -9,6 +10,14 @@ commands=(
   'test:Test archive readability'
   'plan:Show planned archive entries'
   'formats:Show supported formats'
+  'auth:Hosted TZAP auth handoff helpers'
+  'me:Show the local TZAP session summary'
+  'cert:Manage local TZAP certificate inventory'
+  'device:Retire local TZAP device material'
+  'sign:Sign a TZAP document JSON payload'
+  'verify:Verify a TZAP document envelope'
+  'contact:Manage TZAP contact cards'
+  'share:Create a TZAP archive for contacts'
   'doctor:Verify the archive engine'
   'completions:Print shell completion scripts'
   'help:Show help for a command'
@@ -21,6 +30,14 @@ help_topics=(
   'test:Test archive readability'
   'plan:Show planned archive entries'
   'formats:Show supported formats'
+  'auth:Hosted TZAP auth handoff helpers'
+  'me:Show the local TZAP session summary'
+  'cert:Manage local TZAP certificate inventory'
+  'device:Retire local TZAP device material'
+  'sign:Sign a TZAP document JSON payload'
+  'verify:Verify a TZAP document envelope'
+  'contact:Manage TZAP contact cards'
+  'share:Create a TZAP archive for contacts'
   'doctor:Verify the archive engine'
   'completions:Print shell completion scripts'
 )
@@ -57,7 +74,7 @@ create_options=(
   '(-i --include)'{-i,--include}'[Include archive paths matching glob]:glob'
   '--exclude[Exclude archive paths matching glob]:glob'
   '--exclude-from[Read exclude globs from file]:file:_files'
-  '--format[Override archive format]:format:(zip tar.zst tzap 7z)'
+  '--format[Override archive format]:format:(zip tar.zst tzap aar 7z)'
   '--method[Select compression method]:method'
   '--level[Compression level]:level'
   '-0[Store ZIP entries]'
@@ -133,7 +150,7 @@ test_options=(
 
 plan_options=(
   '(-h --help)'{-h,--help}'[Show help]'
-  '--format[Plan for a specific archive format]:format:(zip tar.zst tzap 7z)'
+  '--format[Plan for a specific archive format]:format:(zip tar.zst tzap aar 7z)'
   '(-C --directory)'{-C,--directory}'[Use directory as input base]:directory:_directories'
   '-@[Read input paths from stdin]'
   '--files-from[Read input paths from a file]:file:_files'
@@ -144,6 +161,72 @@ plan_options=(
   '--exclude[Exclude archive paths matching glob]:glob'
   '--exclude-from[Read exclude globs from file]:file:_files'
   '--json[Emit machine-readable JSON]'
+)
+
+identity_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '--state-dir[Store local identity state in a directory]:directory:_directories'
+  '--account-key[Select local account inventory]:key'
+  '--json[Emit machine-readable JSON]'
+)
+
+auth_options=(
+  $identity_options
+  '--print-url[Print the hosted login URL]'
+  '--environment[Select hosted endpoints]:environment:(local dev prod)'
+  '--auth-base-url[Override hosted Auth base URL]:url'
+  '--account-base-url[Override hosted Account base URL]:url'
+  '--client-id[Hosted Auth client id]:id'
+  '--redirect-uri[Registered callback URI]:uri'
+  '--provider[Hosted provider id]:id'
+  '--org-id[Organization id]:id'
+  '--state[Auth callback state]:state'
+  '--callback-url[Full callback URL]:url'
+  '--handoff-code[One-time handoff code]:code'
+  '--relay-body[Relay JSON file]:file:_files'
+)
+
+cert_options=(
+  $identity_options
+  '--certificate-id[Certificate id]:id'
+  '--service-base-url[Hosted TZAP sign API URL]:url'
+  '--trusted-root-cert[Trusted staging root certificate]:certificate:_files'
+  '--org-id[Organization id]:id'
+  '--requested-validity-seconds[Requested certificate lifetime]:seconds'
+)
+
+sign_options=(
+  $identity_options
+  '--certificate-id[Local enrolled certificate id]:id'
+  '--output[Destination envelope JSON file]:file:_files'
+  '--claimed-signing-time[Claimed signing time]:time'
+)
+
+verify_options=(
+  '(-h --help)'{-h,--help}'[Show help]'
+  '--custom-trust-root[Trust a custom root fingerprint]:fingerprint'
+  '--custom-trust-root-cert[Trust a custom root certificate]:certificate:_files'
+  '--status-response[Apply a status JSON response]:file:_files'
+  '--time[Verification time]:unix seconds'
+  '--json[Emit machine-readable JSON]'
+)
+
+contact_options=(
+  $identity_options
+  '--recipient-key-id[Local recipient key id]:id'
+  '--certificate-id[Local signing certificate id]:id'
+  '--display-name[Contact display name]:name'
+  '--device-label[Contact device label]:label'
+  '--output[Destination contact-card JSON file]:file:_files'
+  '--accept[Accept an imported card]'
+  '--custom-trust-root[Trust a custom root fingerprint]:fingerprint'
+  '--custom-trust-root-cert[Trust a custom root certificate]:certificate:_files'
+)
+
+share_options=(
+  $identity_options
+  '--contact[Accepted contact id]:id'
+  '--force[Replace an existing output archive]'
 )
 
 _zm_command() {
@@ -161,6 +244,14 @@ _zm_command() {
         list) _arguments $list_options '*:archive:_files' ;;
         test) _arguments $test_options '*:archive:_files' ;;
         plan) _arguments $plan_options '*:path:_files' ;;
+        auth) _arguments $auth_options '1:auth command:(login callback status forget account)' '*:argument:_files' ;;
+        me) _arguments $identity_options ;;
+        cert) _arguments $cert_options '1:certificate command:(list enroll renew revoke)' ;;
+        device) _arguments $identity_options '1:device command:(retire)' ;;
+        sign) _arguments $sign_options '1:input JSON:_files' ;;
+        verify) _arguments $verify_options '1:envelope JSON:_files' ;;
+        contact) _arguments $contact_options '1:contact command:(export import list remove)' '*:argument:_files' ;;
+        share) _arguments $share_options '1:archive:_files' '*:path:_files' ;;
         formats|doctor) _arguments '(-h --help)'{-h,--help}'[Show help]' '--json[Emit JSON]' ;;
         completions) _arguments '(-h --help)'{-h,--help}'[Show help]' '1:shell:(bash zsh fish powershell)' ;;
         help) _describe -t commands 'zm command' help_topics ;;
