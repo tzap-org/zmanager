@@ -1867,7 +1867,6 @@ mod tests {
     #[test]
 
     fn preserves_metadata_during_creation_and_extraction() {
-
         let temp = TestDir::new("preserves_metadata_zip");
 
         temp.write_file("project/script.sh", b"echo hello");
@@ -1875,13 +1874,10 @@ mod tests {
         let path = temp.path("project/script.sh");
 
         #[cfg(unix)]
-
         {
-
             use std::os::unix::fs::PermissionsExt;
 
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-
         }
 
         let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
@@ -1891,21 +1887,14 @@ mod tests {
         let archive = temp.path("archive.zip");
 
         create_zip_from_path(
-
             temp.path("project"),
-
             &archive,
-
             &ZipCreateOptions {
-
                 preserve_metadata: true,
 
                 ..ZipCreateOptions::default()
-
             },
-
         )
-
         .unwrap();
 
         extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
@@ -1915,22 +1904,16 @@ mod tests {
         let metadata = fs::metadata(&out_path).unwrap();
 
         #[cfg(unix)]
-
         {
-
             use std::os::unix::fs::PermissionsExt;
 
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
-
         }
 
         // ZIP only has 2-second resolution (MS-DOS time), so we can't assert exact unix time easily
 
         // We just ensure it doesn't panic.
-
     }
-
-    
 
     #[test]
 

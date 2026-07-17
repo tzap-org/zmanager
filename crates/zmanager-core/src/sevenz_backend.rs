@@ -1430,7 +1430,13 @@ fn plan_extraction(
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-) -> Result<(HashMap<String, ExtractionDecision>, HashMap<String, Option<u32>>), SevenZError> {
+) -> Result<
+    (
+        HashMap<String, ExtractionDecision>,
+        HashMap<String, Option<u32>>,
+    ),
+    SevenZError,
+> {
     let mut planner = match overwrite_resolver {
         Some(resolver) => {
             ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
@@ -1632,7 +1638,6 @@ mod tests {
     #[test]
 
     fn preserves_metadata_during_creation_and_extraction() {
-
         let temp = TestDir::new("preserves_metadata_sevenz");
 
         temp.write_file("project/script.sh", b"echo hello");
@@ -1641,13 +1646,10 @@ mod tests {
         let path = temp.path("project/script.sh");
 
         #[cfg(unix)]
-
         {
-
             use std::os::unix::fs::PermissionsExt;
 
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-
         }
 
         let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
@@ -1657,9 +1659,7 @@ mod tests {
         let archive = temp.path("archive.7z");
 
         create_7z_from_path(
-
             temp.path("project"),
-
             &archive,
             &SevenZCreateOptions {
                 preserve_metadata: true,
@@ -1667,7 +1667,13 @@ mod tests {
             },
         )
         .unwrap();
-        extract_7z(&archive, temp.path("out"), None, ExtractionPolicy::default()).unwrap();
+        extract_7z(
+            &archive,
+            temp.path("out"),
+            None,
+            ExtractionPolicy::default(),
+        )
+        .unwrap();
 
         let out_path = temp.path("out/project/script.sh");
 
@@ -1675,18 +1681,12 @@ mod tests {
         let metadata = fs::metadata(&out_path).unwrap();
 
         #[cfg(unix)]
-
         {
-
             use std::os::unix::fs::PermissionsExt;
 
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
-
         }
-
     }
-
-    
 
     #[test]
 
