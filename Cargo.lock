@@ -1831,7 +1831,7 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 [[package]]
 name = "tzap-core"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=ef4fb9a084d42a1406d47207b0641f7266458b2f#ef4fb9a084d42a1406d47207b0641f7266458b2f"
+source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1850,6 +1850,7 @@ dependencies = [
  "thiserror",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
  "xattr",
  "zeroize",
  "zstd",
@@ -1859,7 +1860,7 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-keywrap"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=ef4fb9a084d42a1406d47207b0641f7266458b2f#ef4fb9a084d42a1406d47207b0641f7266458b2f"
+source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
 dependencies = [
  "hpke",
  "openssl",
@@ -1872,7 +1873,7 @@ dependencies = [
 [[package]]
 name = "tzap-plugin-signing"
 version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=ef4fb9a084d42a1406d47207b0641f7266458b2f#ef4fb9a084d42a1406d47207b0641f7266458b2f"
+source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
 dependencies = [
  "ed25519-dalek",
  "openssl",
