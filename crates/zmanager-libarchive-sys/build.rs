@@ -167,6 +167,33 @@ fn configure_target_options(config: &mut cmake::Config, target: &str) {
             .define("ENABLE_LZMA", "OFF")
             .define("ENABLE_ZSTD", "OFF")
             .define("ENABLE_LZ4", "OFF");
+    } else if target.contains("apple-darwin") {
+        config
+            .define("ENABLE_ACL", "ON")
+            .define("ENABLE_XATTR", "ON")
+            .define("ENABLE_ICONV", "ON")
+            .define("ENABLE_LIBXML2", "ON")
+            .define("ENABLE_EXPAT", "ON")
+            .define("ENABLE_WIN32_XMLLITE", "OFF");
+
+        let lz4_include = find_include_dir("DEP_LZ4_INCLUDE", "DEP_LZ4_ROOT");
+        let lz4_lib = find_static_library("DEP_LZ4_ROOT", "liblz4.a");
+
+        let lzma_include = find_include_dir("DEP_LZMA_INCLUDE", "DEP_LZMA_ROOT");
+        let lzma_lib = find_static_library("DEP_LZMA_ROOT", "liblzma.a");
+
+        let zstd_include = find_include_dir("DEP_ZSTD_INCLUDE", "DEP_ZSTD_ROOT");
+        let zstd_lib = find_static_library("DEP_ZSTD_ROOT", "libzstd.a");
+
+        config
+            .define("LZ4_INCLUDE_DIR", &lz4_include)
+            .define("LZ4_LIBRARY", &lz4_lib)
+            .define("LIBLZMA_INCLUDE_DIR", &lzma_include)
+            .define("LIBLZMA_INCLUDE_DIRS", &lzma_include)
+            .define("LIBLZMA_LIBRARY", &lzma_lib)
+            .define("LIBLZMA_LIBRARIES", &lzma_lib)
+            .define("ZSTD_INCLUDE_DIR", &zstd_include)
+            .define("ZSTD_LIBRARY", &zstd_lib);
     } else {
         config
             .define("ENABLE_ACL", "ON")
@@ -260,12 +287,28 @@ fn link_bundled_archive_library(target: &str) {
 
 fn link_bundled_archive_dependencies(target: &str) {
     if target.contains("apple-darwin") {
-        print_link_search("/opt/homebrew/lib");
-        print_link_search("/usr/local/lib");
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
-        link_common_unix_libraries();
+        // Link system compression libraries dynamically
+        println!("cargo:rustc-link-lib=z");
+        println!("cargo:rustc-link-lib=bz2");
         println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=xml2");
+
+        // Link static dependencies from sys crates
+        let lz4_out_dir = env::var("DEP_LZ4_ROOT").expect("DEP_LZ4_ROOT not found");
+        println!("cargo:rustc-link-search=native={}", lz4_out_dir);
+        println!("cargo:rustc-link-search=native={}/lib", lz4_out_dir);
+        println!("cargo:rustc-link-lib=static=lz4");
+
+        let lzma_out_dir = env::var("DEP_LZMA_ROOT").expect("DEP_LZMA_ROOT not found");
+        println!("cargo:rustc-link-search=native={}", lzma_out_dir);
+        println!("cargo:rustc-link-search=native={}/lib", lzma_out_dir);
+        println!("cargo:rustc-link-lib=static=lzma");
+
+        let zstd_out_dir = env::var("DEP_ZSTD_ROOT").expect("DEP_ZSTD_ROOT not found");
+        println!("cargo:rustc-link-search=native={}", zstd_out_dir);
+        println!("cargo:rustc-link-search=native={}/lib", zstd_out_dir);
+        println!("cargo:rustc-link-lib=static=zstd");
     } else if target.contains("linux") && target.contains("musl") {
         println!("cargo:rustc-link-lib=pthread");
     } else if target.contains("linux") {
@@ -392,4 +435,35 @@ fn print_link_search(path: impl AsRef<Path>) {
     if path.exists() {
         println!("cargo:rustc-link-search=native={}", path.display());
     }
+}
+
+fn find_static_library(root_var: &str, lib_name: &str) -> PathBuf {
+    let root = env::var(root_var).unwrap_or_else(|_| panic!("{} not found", root_var));
+    let root_path = Path::new(&root);
+    let candidates = [
+        root_path.join(lib_name),
+        root_path.join("lib").join(lib_name),
+    ];
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    panic!("Could not find static library {} under {}: searched {:?}", lib_name, root, candidates);
+}
+
+fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
+    if let Ok(inc) = env::var(var_name) {
+        let p = PathBuf::from(inc);
+        if p.exists() {
+            return p;
+        }
+    }
+    if let Ok(root) = env::var(root_var_name) {
+        let p = Path::new(&root).join("include");
+        if p.exists() {
+            return p;
+        }
+    }
+    panic!("Could not find include directory for {}", var_name);
 }

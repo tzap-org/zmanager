@@ -8,11 +8,6 @@ class Zmanager < Formula
   uses_from_macos "zlib"
 
   on_macos do
-    depends_on "libb2"
-    depends_on "lz4"
-    depends_on "xz"
-    depends_on "zstd"
-
     if Hardware::CPU.arm?
       url "__RELEASE_BASE_URL__/zm-aarch64-apple-darwin.tar.gz"
       sha256 "__SHA_AARCH64_APPLE_DARWIN__"
