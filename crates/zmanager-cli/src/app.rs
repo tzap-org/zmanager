@@ -4270,7 +4270,9 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     else {
         print_error_line(
             global,
-            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z|tgz>"),
+            format_args!(
+                "could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z|tgz>"
+            ),
         );
         return ExitCode::from(2);
     };

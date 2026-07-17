@@ -449,7 +449,10 @@ fn find_static_library(root_var: &str, lib_name: &str) -> PathBuf {
             return candidate.clone();
         }
     }
-    panic!("Could not find static library {} under {}: searched {:?}", lib_name, root, candidates);
+    panic!(
+        "Could not find static library {} under {}: searched {:?}",
+        lib_name, root, candidates
+    );
 }
 
 fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {

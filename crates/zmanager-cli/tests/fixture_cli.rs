@@ -922,7 +922,6 @@ fn zm_create_tgz_alias_round_trips_with_inferred_format() {
     );
 }
 
-
 #[test]
 fn zm_create_tzst_alias_round_trips_with_inferred_format() {
     let temp = TestDir::new("zm_tzst_alias");
