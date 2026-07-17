@@ -86,7 +86,7 @@ Run 'zm completions --help' to enable shell tab completion.
 ";
 
 const CREATE_HELP: &str = "\
-Create ZIP, TAR.ZST, TZAP, AAR, or 7z archives
+Create ZIP, TAR.ZST, TZAP, AAR, 7Z, or TGZ archives
 
 Usage:
   zm create <archive> <paths...> [options]
@@ -312,6 +312,7 @@ Create:
   tzap      .tzap
   aar       .aar
   7z        .7z
+  tgz       .tgz, .tar.gz
 
 Extract/List/Test:
   zip       .zip, .zipx, .jar, .war, .ipa, .apk, .appx, .xpi
@@ -319,12 +320,14 @@ Extract/List/Test:
   tzap      .tzap
   aar       .aar (macOS/iOS)
   7z        .7z
+  tgz       .tgz, .tar.gz
   raw       .zst, .gz, .bz2, .xz, .lzma, .lz, .br, .lz4, .lzo, .Z, .lrz
   rar       .rar, .cbr; passworded list/extract uses bundled UnRAR with --password-stdin
-  fallback  libarchive-supported archive formats
+  fallback  libarchive fallback for .tar, .cpio, .ar, .cab, .iso, .xar, .deb, .rpm, .lzh, .lha,
+            and compressed TAR variants (.tar.gz, .tar.bz2, .tar.xz, etc.)
 
 raw single-file streams decompress to one file. TAR-wrapped streams such as
-project.tar.zst extract as archives.
+project.tar.zst or project.tar.gz extract as archives.
 ";
 
 const DOCTOR_HELP: &str = "\
@@ -4267,7 +4270,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     else {
         print_error_line(
             global,
-            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z>"),
+            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z|tgz>"),
         );
         return ExitCode::from(2);
     };

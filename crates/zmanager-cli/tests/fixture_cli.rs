@@ -846,6 +846,84 @@ fn zm_create_tar_zst_level_round_trips_and_bsdtar_extracts_when_available() {
 }
 
 #[test]
+fn zm_create_tgz_level_round_trips_and_bsdtar_extracts_when_available() {
+    let temp = TestDir::new("zm_tgz_level");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "gzip level\n").unwrap();
+    let archive = temp.path("project.tar.gz");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .arg("--level")
+        .arg("1")
+        .output()
+        .unwrap();
+    assert_success("zm create tgz --level 1", &create);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out-zm"))
+        .output()
+        .unwrap();
+    assert_success("zm extract tgz level archive", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out-zm/project/file.txt")).unwrap(),
+        "gzip level\n"
+    );
+
+    let Some(bsdtar) = find_on_path("bsdtar") else {
+        return;
+    };
+    fs::create_dir_all(temp.path("out-bsdtar")).unwrap();
+    let bsdtar_extract = Command::new(bsdtar)
+        .arg("-xf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out-bsdtar"))
+        .output()
+        .unwrap();
+    assert_success("bsdtar -xf zm tgz level archive", &bsdtar_extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out-bsdtar/project/file.txt")).unwrap(),
+        "gzip level\n"
+    );
+}
+
+#[test]
+fn zm_create_tgz_alias_round_trips_with_inferred_format() {
+    let temp = TestDir::new("zm_tgz_alias");
+    fs::create_dir_all(temp.path("project")).unwrap();
+    fs::write(temp.path("project/file.txt"), "tgz alias\n").unwrap();
+    let archive = temp.path("project.tgz");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm create tgz", &create);
+
+    let extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&archive)
+        .arg("-C")
+        .arg(temp.path("out"))
+        .output()
+        .unwrap();
+    assert_success("zm extract tgz alias archive", &extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out/project/file.txt")).unwrap(),
+        "tgz alias\n"
+    );
+}
+
+
+#[test]
 fn zm_create_tzst_alias_round_trips_with_inferred_format() {
     let temp = TestDir::new("zm_tzst_alias");
     fs::create_dir_all(temp.path("project")).unwrap();
@@ -2001,6 +2079,27 @@ fn zm_create_no_metadata_archives_remain_readable_across_formats() {
     assert_success("zm extract -X 7z", &sevenz_extract);
     assert_eq!(
         fs::read_to_string(temp.path("out-7z/project/file.txt")).unwrap(),
+        "metadata\n"
+    );
+
+    let tgz_archive = temp.path("project.tar.gz");
+    let tgz_create = Command::new(zm_path())
+        .arg("-Xcf")
+        .arg(&tgz_archive)
+        .arg(temp.path("project"))
+        .output()
+        .unwrap();
+    assert_success("zm -Xcf tgz", &tgz_create);
+    let tgz_extract = Command::new(zm_path())
+        .arg("extract")
+        .arg(&tgz_archive)
+        .arg("-C")
+        .arg(temp.path("out-tgz"))
+        .output()
+        .unwrap();
+    assert_success("zm extract -X tgz", &tgz_extract);
+    assert_eq!(
+        fs::read_to_string(temp.path("out-tgz/project/file.txt")).unwrap(),
         "metadata\n"
     );
 }

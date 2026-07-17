@@ -57,7 +57,7 @@ complete -c zm -n "__fish_seen_subcommand_from create" -l no-hidden -d "Exclude 
 complete -c zm -n "__fish_seen_subcommand_from create" -s i -l include -r -d "Include archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from create" -l exclude -r -d "Exclude archive paths matching glob"
 complete -c zm -n "__fish_seen_subcommand_from create" -l exclude-from -r -d "Read exclude globs from file"
-complete -c zm -n "__fish_seen_subcommand_from create" -l format -xa "zip tar.zst tzap aar 7z" -d "Override archive format"
+complete -c zm -n "__fish_seen_subcommand_from create" -l format -xa "zip tar.zst tzap aar 7z tgz" -d "Override archive format"
 complete -c zm -n "__fish_seen_subcommand_from create" -l method -r -d "Select compression method"
 complete -c zm -n "__fish_seen_subcommand_from create" -l level -r -d "Compression level"
 complete -c zm -n "__fish_seen_subcommand_from create" -s 0 -d "Store ZIP entries"
@@ -127,7 +127,7 @@ complete -c zm -n "__fish_seen_subcommand_from test" -l trusted-system-roots -d 
 complete -c zm -n "__fish_seen_subcommand_from test" -l json -d "Emit machine-readable JSON"
 
 complete -c zm -n "__fish_seen_subcommand_from plan" -s h -l help -d "Show help"
-complete -c zm -n "__fish_seen_subcommand_from plan" -l format -xa "zip tar.zst tzap aar 7z" -d "Plan for a specific archive format"
+complete -c zm -n "__fish_seen_subcommand_from plan" -l format -xa "zip tar.zst tzap aar 7z tgz" -d "Plan for a specific archive format"
 complete -c zm -n "__fish_seen_subcommand_from plan" -s C -l directory -r -d "Use directory as input base"
 complete -c zm -n "__fish_seen_subcommand_from plan" -s @ -d "Read input paths from stdin"
 complete -c zm -n "__fish_seen_subcommand_from plan" -l files-from -r -d "Read input paths from file"

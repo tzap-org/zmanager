@@ -166,7 +166,7 @@ const PLAN_FLAGS: &[&str] = &[
 const FILTER_GLOB_NOTE: &str = "Glob patterns match archive paths";
 
 const CREATE_HELP_NEEDLES: &[&str] = &[
-    "Create ZIP, TAR.ZST, TZAP, AAR, or 7z archives",
+    "Create ZIP, TAR.ZST, TZAP, AAR, 7Z, or TGZ archives",
     "zm create <archive> <paths...>",
     "--exclude <glob>",
     "--volume-size <size>",
@@ -220,6 +220,7 @@ const FORMATS_HELP_NEEDLES: &[&str] = &[
     "zm formats --json",
     ".tar.zst, .tzst",
     ".tzap",
+    ".tgz, .tar.gz",
 ];
 
 const DOCTOR_HELP_NEEDLES: &[&str] = &[

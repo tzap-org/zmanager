@@ -142,7 +142,7 @@ Exclude archive paths matching
 .It Fl -exclude-from Ar file
 Read exclude globs from
 .Ar file .
-.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm 7z
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm aar Ns | Ns Cm 7z Ns | Ns Cm tgz
 Override format inference from the archive extension.
 .It Fl -method Ar method
 Select compression method.
@@ -289,7 +289,7 @@ Emit machine-readable JSON.
 .El
 .Sh PLAN OPTIONS
 .Bl -tag -width "--exclude-from"
-.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm 7z
+.It Fl -format Cm zip Ns | Ns Cm tar.zst Ns | Ns Cm tzap Ns | Ns Cm aar Ns | Ns Cm 7z Ns | Ns Cm tgz
 Plan for a specific archive format.
 .It Fl C , Fl -directory Ar dir
 Use
@@ -352,6 +352,15 @@ Create and extract
 .Pa .tar.zst
 and
 .Pa .tzst .
+.It Cm aar
+Create and extract
+.Pa .aar
+(macOS and iOS only).
+.It Cm tgz
+Create and extract
+.Pa .tgz
+and
+.Pa .tar.gz .
 .It Cm tzap
 Create, extract, list, and test passphrase-protected, recipient-wrapped, or unencrypted
 .Pa .tzap

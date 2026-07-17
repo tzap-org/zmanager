@@ -336,7 +336,7 @@ mod tests {
     use super::{TarGzCreateOptions, create_tar_gz_from_path};
     use crate::libarchive_backend::extract_archive;
     use crate::safety::ExtractionPolicy;
-    use std::fs;
+    use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -365,6 +365,126 @@ mod tests {
             fs::read_to_string(temp.path("out/project/src/main.rs")).unwrap(),
             "fn main() {}\n"
         );
+    }
+
+    #[test]
+    fn respects_preserve_metadata_true() {
+        let temp = TestDir::new("respects_preserve_metadata_true");
+        let file_path = temp.path("project/file.txt");
+        temp.write_file("project/file.txt", b"content");
+
+        // Set a specific mod time
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12345678);
+        filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mtime)).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let archive = temp.path("archive.tar.gz");
+
+        create_tar_gz_from_path(
+            temp.path("project"),
+            &archive,
+            &TarGzCreateOptions {
+                preserve_metadata: true,
+                ..TarGzCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        // Inspect the headers directly
+        let file = File::open(&archive).unwrap();
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut tar_archive = tar::Archive::new(decoder);
+        let mut entries = tar_archive.entries().unwrap();
+
+        let mut found_file = false;
+        while let Some(entry_res) = entries.next() {
+            let entry = entry_res.unwrap();
+            let path = entry.path().unwrap();
+            if path.ends_with("file.txt") {
+                found_file = true;
+                let header = entry.header();
+                assert_eq!(header.mtime().unwrap(), 12345678);
+                #[cfg(unix)]
+                {
+                    assert_eq!(header.mode().unwrap() & 0o777, 0o755);
+                }
+            }
+        }
+        assert!(found_file);
+    }
+
+    #[test]
+    fn respects_preserve_metadata_false() {
+        let temp = TestDir::new("respects_preserve_metadata_false");
+        let file_path = temp.path("project/file.txt");
+        temp.write_file("project/file.txt", b"content");
+
+        // Set a specific mod time
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12345678);
+        filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mtime)).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let archive = temp.path("archive.tar.gz");
+
+        create_tar_gz_from_path(
+            temp.path("project"),
+            &archive,
+            &TarGzCreateOptions {
+                preserve_metadata: false,
+                ..TarGzCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        // Inspect the headers directly
+        let file = File::open(&archive).unwrap();
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut tar_archive = tar::Archive::new(decoder);
+        let mut entries = tar_archive.entries().unwrap();
+
+        let mut found_file = false;
+        while let Some(entry_res) = entries.next() {
+            let entry = entry_res.unwrap();
+            let path = entry.path().unwrap();
+            if path.ends_with("file.txt") {
+                found_file = true;
+                let header = entry.header();
+                // mtime is cleared to 0 (unix epoch)
+                assert_eq!(header.mtime().unwrap(), 0);
+                // mode defaults to 0o644 for files
+                assert_eq!(header.mode().unwrap() & 0o777, 0o644);
+            }
+        }
+        assert!(found_file);
+    }
+
+    #[test]
+    fn respects_custom_compression_level() {
+        let temp = TestDir::new("respects_custom_compression_level");
+        temp.write_file("project/file.txt", b"content");
+        let archive = temp.path("archive.tar.gz");
+
+        let report = create_tar_gz_from_path(
+            temp.path("project"),
+            &archive,
+            &TarGzCreateOptions {
+                level: 3,
+                ..TarGzCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.level, 3);
     }
 
     struct TestDir {
