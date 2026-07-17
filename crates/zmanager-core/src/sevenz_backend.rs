@@ -1568,6 +1568,66 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+
+    fn preserves_metadata_during_creation_and_extraction() {
+
+        let temp = TestDir::new("preserves_metadata_sevenz");
+
+        temp.write_file("project/script.sh", b"echo hello");
+
+        #[allow(unused_variables)]
+        let path = temp.path("project/script.sh");
+
+        #[cfg(unix)]
+
+        {
+
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        }
+
+        let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
+
+        filetime::set_file_mtime(&path, mtime).unwrap();
+
+        let archive = temp.path("archive.7z");
+
+        create_7z_from_path(
+
+            temp.path("project"),
+
+            &archive,
+            &SevenZCreateOptions {
+                preserve_metadata: true,
+                ..SevenZCreateOptions::default()
+            },
+        )
+        .unwrap();
+        extract_7z(&archive, temp.path("out"), None, ExtractionPolicy::default()).unwrap();
+
+        let out_path = temp.path("out/project/script.sh");
+
+        #[allow(unused_variables)]
+        let metadata = fs::metadata(&out_path).unwrap();
+
+        #[cfg(unix)]
+
+        {
+
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+
+        }
+
+    }
+
+    
+
+    #[test]
+
     fn default_7z_create_options_request_parallel_lzma2_when_available() {
         let options = SevenZCreateOptions::default();
 

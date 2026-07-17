@@ -909,6 +909,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1830,8 +1836,9 @@ checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "tzap-core"
-version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "055c2f27ef9c7df7fd5e06332c01203a540087bcdfcc4141c3b17d526419e43f"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -1840,6 +1847,7 @@ dependencies = [
  "cap-std",
  "chacha20poly1305",
  "crc32c",
+ "hex",
  "hkdf",
  "hmac 0.12.1",
  "libc",
@@ -1859,8 +1867,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-keywrap"
-version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a578dc718d520f643c84de0433e1979f659edb4ff5dbbad893b3c75fc2cff08"
 dependencies = [
  "hpke",
  "openssl",
@@ -1872,8 +1881,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.1.10"
-source = "git+https://github.com/tzap-org/tzap.git?rev=de8c0ab5319f1767d6f809d3971476238418a132#de8c0ab5319f1767d6f809d3971476238418a132"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfb045f53da11a1b68957326f6bc10fd49bd26d80b2f3c30c1a64ad748c0c628"
 dependencies = [
  "ed25519-dalek",
  "openssl",

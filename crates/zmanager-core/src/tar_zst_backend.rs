@@ -1026,6 +1026,69 @@ mod tests {
     }
 
     #[test]
+
+    fn preserves_metadata_during_creation_and_extraction() {
+
+        let temp = TestDir::new("preserves_metadata_tar_zst");
+
+        temp.write_file("project/script.sh", b"echo hello");
+
+        #[allow(unused_variables)]
+        let path = temp.path("project/script.sh");
+
+        #[cfg(unix)]
+
+        {
+
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        }
+
+        let archive = temp.path("archive.tar.zst");
+
+        create_tar_zst_from_path(
+
+            temp.path("project"),
+
+            &archive,
+
+            &TarZstdCreateOptions {
+
+                preserve_metadata: true,
+
+                ..TarZstdCreateOptions::default()
+
+            },
+
+        )
+
+        .unwrap();
+
+        extract_tar_zst(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let out_path = temp.path("out/project/script.sh");
+
+        #[allow(unused_variables)]
+        let metadata = fs::metadata(&out_path).unwrap();
+
+        #[cfg(unix)]
+
+        {
+
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+
+        }
+
+    }
+
+    
+
+    #[test]
+
     fn accepts_custom_compression_level_and_thread_count() {
         let temp = TestDir::new("accepts_custom_compression_level_and_thread_count");
         temp.write_file("project/file.txt", b"content");
