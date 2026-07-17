@@ -2,7 +2,7 @@
 
 use crate::trust;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::{RngCore, rngs::OsRng};
+use rand::RngCore;
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
@@ -1056,7 +1056,7 @@ fn hex_digit(value: u8) -> char {
 
 fn random_base64url(byte_count: usize) -> String {
     let mut bytes = vec![0_u8; byte_count];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

@@ -1738,4 +1738,42 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+
+    #[test]
+    fn test_zstd_linkage_version_match() {
+        // Query version number of zstd from Rust's zstd-sys dependency via safe wrapper
+        let rust_zstd_ver = zstd::zstd_safe::version_number();
+        let rust_major = rust_zstd_ver / 10000;
+        let rust_minor = (rust_zstd_ver % 10000) / 100;
+        let rust_patch = rust_zstd_ver % 100;
+        let rust_version_str = format!("{rust_major}.{rust_minor}.{rust_patch}");
+
+        // Query version details from libarchive
+        let details = zmanager_libarchive::version_details();
+
+        // Parse libzstd version from details (e.g. "libzstd/1.5.7")
+        if let Some(pos) = details.find("libzstd/") {
+            let start = pos + "libzstd/".len();
+            let end = details[start..]
+                .find(' ')
+                .map(|p| start + p)
+                .unwrap_or(details.len());
+            let libarchive_zstd_version = &details[start..end];
+
+            println!("Rust zstd version: {rust_version_str}");
+            println!("Libarchive linked zstd version: {libarchive_zstd_version}");
+
+            // Verify they match or that the Rust version is at least as new as the one libarchive is using.
+            // On macOS, they must match exactly because we link them to the same static library.
+            // On other platforms, they should be compatible.
+            assert_eq!(
+                rust_version_str, libarchive_zstd_version,
+                "Linkage mismatch: Rust zstd version ({rust_version_str}) does not match libarchive's linked zstd version ({libarchive_zstd_version})."
+            );
+        } else {
+            // If zstd is disabled, that's allowed on musl, but let's warn/check on other platforms.
+            #[cfg(not(all(target_os = "linux", target_env = "musl")))]
+            panic!("libarchive was compiled without zstd support, but we expect it!");
+        }
+    }
 }

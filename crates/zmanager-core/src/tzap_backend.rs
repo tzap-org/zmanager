@@ -1254,7 +1254,7 @@ fn recipient_wrap_archive_identity_for_writer(
 
 fn random_16_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes
 }
 
@@ -3780,7 +3780,7 @@ impl Drop for TemporaryTzapExtractionRoot {
 
 fn create_kdf_params() -> KdfParams {
     let mut salt = vec![0u8; DEFAULT_ARGON2_SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     KdfParams::Argon2id {
         t_cost: DEFAULT_ARGON2_T_COST.min(READER_MAX_ARGON2ID_T_COST),
         m_cost_kib: DEFAULT_ARGON2_M_COST_KIB.min(READER_MAX_ARGON2ID_M_COST_KIB),
@@ -3808,7 +3808,7 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
 
 fn generate_random_master_key() -> Result<MasterKey, TzapError> {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     MasterKey::from_raw_key(&bytes).map_err(Into::into)
 }
 
