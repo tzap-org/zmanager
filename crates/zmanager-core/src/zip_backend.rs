@@ -23,6 +23,7 @@ const ZIP_EOCD_MIN_SIZE: usize = 22;
 const ZIP_EOCD_MAX_COMMENT_SIZE: u64 = 65_535;
 const MIN_ZIP_VOLUME_SIZE_BYTES: u64 = 65_536;
 const ZIP_SPLIT_SIDE_CAR_EXTENSION_WIDTH: usize = 2;
+const ZIP_MODE_MASK: u32 = 0o7777;
 
 /// ZIP compression methods exposed in v1.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -1362,6 +1363,7 @@ fn extract_zip_inner(
         written_bytes: 0,
         warnings: Vec::new(),
     };
+    let mut deferred_directories: Vec<(PathBuf, Option<u32>)> = Vec::new();
 
     for index in 0..archive.len() {
         if let Some(context) = context.as_deref_mut() {
@@ -1371,6 +1373,7 @@ fn extract_zip_inner(
             .by_index_with_options(index, ZipReadOptions::new().password(password))
             .map_err(map_zip_error)?;
         let entry_size = file.size();
+        let unix_mode = file.unix_mode();
         let kind = extraction_entry_kind(&mut file)?;
         let entry = ExtractionEntry {
             archive_path: file.name().to_owned(),
@@ -1397,6 +1400,8 @@ fn extract_zip_inner(
                 link_target_path.as_deref(),
                 &mut report,
                 context.as_deref_mut(),
+                unix_mode,
+                &mut deferred_directories,
             )?,
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
@@ -1412,6 +1417,8 @@ fn extract_zip_inner(
             context.entry_finished(&entry.archive_path, processed);
         }
     }
+
+    apply_deferred_zip_directory_metadata(&deferred_directories)?;
 
     Ok(report)
 }
@@ -1609,6 +1616,8 @@ fn write_zip_entry<R: Read>(
     link_target_path: Option<&Path>,
     report: &mut ZipExtractReport,
     context: Option<&mut JobContext<'_>>,
+    unix_mode: Option<u32>,
+    deferred_directories: &mut Vec<(PathBuf, Option<u32>)>,
 ) -> Result<u64, ZipBackendError> {
     if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
@@ -1625,6 +1634,7 @@ fn write_zip_entry<R: Read>(
                 path: destination_path.to_path_buf(),
                 source,
             })?;
+            deferred_directories.push((destination_path.to_path_buf(), unix_mode));
             report.written_entries += 1;
             Ok(0)
         }
@@ -1654,6 +1664,7 @@ fn write_zip_entry<R: Read>(
                     path: destination_path.to_path_buf(),
                     source,
                 })?;
+            apply_zip_unix_mode(destination_path, unix_mode)?;
             report.written_entries += 1;
             report.written_bytes += copied;
             Ok(copied)
@@ -1693,6 +1704,35 @@ fn write_zip_entry<R: Read>(
             Ok(0)
         }
     }
+}
+
+#[cfg(unix)]
+fn apply_zip_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), ZipBackendError> {
+    if let Some(mode) = unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & ZIP_MODE_MASK)).map_err(
+            |source| ZipBackendError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_zip_unix_mode(_path: &Path, _unix_mode: Option<u32>) -> Result<(), ZipBackendError> {
+    Ok(())
+}
+
+fn apply_deferred_zip_directory_metadata(
+    directories: &[(PathBuf, Option<u32>)],
+) -> Result<(), ZipBackendError> {
+    for (path, unix_mode) in directories.iter().rev() {
+        apply_zip_unix_mode(path, *unix_mode)?;
+    }
+    Ok(())
 }
 
 fn copy_with_progress<R: Read, W: Write>(

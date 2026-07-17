@@ -26,6 +26,10 @@ const DEFAULT_SEVENZ_COMPRESSION_LEVEL: u32 = 6;
 const DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES: u64 = 16 * 1_024 * 1_024;
 const MAX_SEVENZ_LZMA2_THREADS: u32 = 256;
 const SEVENZ_VOLUME_EXTENSION_WIDTH: usize = 3;
+const SEVENZ_MODE_MASK: u32 = 0o7777;
+/// Bit 31 in 7z `windows_attributes` signals that Unix permission bits are
+/// present in the upper half-word (bits 16–27).
+const SEVENZ_UNIX_ATTRIBUTES_FLAG: u32 = 0x8000_0000;
 
 type SevenZProgressCallback<'a> = Rc<RefCell<dyn FnMut(Option<&str>, u64) + 'a>>;
 
@@ -1040,7 +1044,7 @@ fn extract_7z_inner(
     let password = archive_password(password);
     let source = open_7z_reader(archive_path)?;
     let mut reader = ArchiveReader::new(source, password)?;
-    let decisions = plan_extraction(
+    let (decisions, modes) = plan_extraction(
         reader.archive().files.as_slice(),
         &destination_root,
         policy,
@@ -1053,12 +1057,15 @@ fn extract_7z_inner(
         warnings: Vec::new(),
     };
     let mut callback_error = None;
+    let mut deferred_directories: Vec<(PathBuf, Option<u32>)> = Vec::new();
 
     let result = reader.for_each_entries(|entry, entry_reader| {
         match extract_entry(
             entry,
             entry_reader,
             &decisions,
+            &modes,
+            &mut deferred_directories,
             &mut report,
             context.as_deref_mut(),
         ) {
@@ -1074,6 +1081,7 @@ fn extract_7z_inner(
         return Err(error);
     }
     result?;
+    apply_deferred_sevenz_directory_metadata(&deferred_directories)?;
 
     Ok(report)
 }
@@ -1349,7 +1357,15 @@ fn write_solid_manifest<W: Write + Seek>(
 
 fn sevenz_archive_entry(entry: &ManifestEntry, preserve_metadata: bool) -> ArchiveEntry {
     if preserve_metadata {
-        return ArchiveEntry::from_path(&entry.source_path, entry.archive_path.clone());
+        let mut archive_entry =
+            ArchiveEntry::from_path(&entry.source_path, entry.archive_path.clone());
+        #[cfg(unix)]
+        if let Some(mode) = entry.permissions.unix_mode {
+            archive_entry.has_windows_attributes = true;
+            archive_entry.windows_attributes |=
+                SEVENZ_UNIX_ATTRIBUTES_FLAG | ((mode & SEVENZ_MODE_MASK) << 16);
+        }
+        return archive_entry;
     }
 
     match entry.file_type {
@@ -1370,12 +1386,51 @@ fn entry_kind(entry: &ArchiveEntry) -> SevenZEntryKind {
     }
 }
 
+fn sevenz_unix_mode(entry: &ArchiveEntry) -> Option<u32> {
+    if entry.has_windows_attributes
+        && (entry.windows_attributes() & SEVENZ_UNIX_ATTRIBUTES_FLAG) != 0
+    {
+        Some((entry.windows_attributes() >> 16) & SEVENZ_MODE_MASK)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn apply_sevenz_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), SevenZError> {
+    if let Some(mode) = unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & SEVENZ_MODE_MASK)).map_err(
+            |source| SevenZError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_sevenz_unix_mode(_path: &Path, _unix_mode: Option<u32>) -> Result<(), SevenZError> {
+    Ok(())
+}
+
+fn apply_deferred_sevenz_directory_metadata(
+    directories: &[(PathBuf, Option<u32>)],
+) -> Result<(), SevenZError> {
+    for (path, unix_mode) in directories.iter().rev() {
+        apply_sevenz_unix_mode(path, *unix_mode)?;
+    }
+    Ok(())
+}
+
 fn plan_extraction(
     entries: &[ArchiveEntry],
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-) -> Result<HashMap<String, ExtractionDecision>, SevenZError> {
+) -> Result<(HashMap<String, ExtractionDecision>, HashMap<String, Option<u32>>), SevenZError> {
     let mut planner = match overwrite_resolver {
         Some(resolver) => {
             ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
@@ -1383,6 +1438,7 @@ fn plan_extraction(
         None => ExtractionSafetyPlanner::new(destination, policy),
     };
     let mut decisions = HashMap::with_capacity(entries.len());
+    let mut modes = HashMap::with_capacity(entries.len());
 
     for entry in entries {
         if entry.is_anti_item() {
@@ -1402,15 +1458,18 @@ fn plan_extraction(
         };
         let decision = planner.validate_entry(&safety_entry)?;
         decisions.insert(entry.name().to_owned(), decision);
+        modes.insert(entry.name().to_owned(), sevenz_unix_mode(entry));
     }
 
-    Ok(decisions)
+    Ok((decisions, modes))
 }
 
 fn extract_entry(
     entry: &ArchiveEntry,
     reader: &mut dyn Read,
     decisions: &HashMap<String, ExtractionDecision>,
+    modes: &HashMap<String, Option<u32>>,
+    deferred_directories: &mut Vec<(PathBuf, Option<u32>)>,
     report: &mut SevenZExtractReport,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<(), SevenZError> {
@@ -1436,6 +1495,7 @@ fn extract_entry(
     let decision = decisions
         .get(entry.name())
         .ok_or_else(|| missing_extraction_decision(entry.name()))?;
+    let unix_mode = modes.get(entry.name()).copied().flatten();
     match decision {
         ExtractionDecision::Write {
             destination_path,
@@ -1455,6 +1515,7 @@ fn extract_entry(
                     path: destination_path.clone(),
                     source,
                 })?;
+                deferred_directories.push((destination_path.clone(), unix_mode));
                 report.written_entries += 1;
             } else {
                 let written_bytes = write_file_entry(
@@ -1464,6 +1525,7 @@ fn extract_entry(
                     Some(&path),
                     context.as_deref_mut(),
                 )?;
+                apply_sevenz_unix_mode(destination_path, unix_mode)?;
                 report.written_entries += 1;
                 report.written_bytes += written_bytes;
                 processed_bytes = written_bytes;
