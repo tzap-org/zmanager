@@ -125,7 +125,7 @@ Selection:
   shell does not expand them first. Use dir/** for a whole tree; * can match /.
 
 Archive format and compression:
-      --format <zip|tar.zst|tzap|aar|7z>
+      --format <zip|tar.zst|tzap|aar|7z|tgz>
                                   Override format inference from extension
       --method <method>          Select method: zip store/deflate, tar.zst/tzap zstd,
                                   aar lzfse/lz4/zlib/lzma/raw, 7z lzma2
@@ -280,7 +280,7 @@ Examples:
   zm plan project/ --json
 
 Options:
-      --format <zip|tar.zst|tzap|aar|7z>
+      --format <zip|tar.zst|tzap|aar|7z|tgz>
                                   Plan for a specific archive format
   -C, --directory <dir>          Use dir as the base for following input paths
   -@                             Read input paths from stdin
@@ -531,6 +531,7 @@ const FORMAT_TAR_ZST: &str = "tar.zst";
 const FORMAT_TZAP: &str = "tzap";
 const FORMAT_APPLE_ARCHIVE: &str = "aar";
 const FORMAT_SEVEN_Z: &str = "7z";
+const FORMAT_TGZ: &str = "tgz";
 const FORMAT_RAR: &str = "rar";
 const FORMAT_DEB: &str = "deb";
 const FORMAT_RAW_STREAM: &str = "raw-stream";
@@ -550,6 +551,7 @@ const SIZE_UNIT_TIB: u64 = SIZE_UNIT_GIB * 1024;
 const TAR_ZST_FORMAT_ALIASES: &[&str] = &[FORMAT_TAR_ZST, "tzst", "zst"];
 const TZAP_FORMAT_ALIASES: &[&str] = &[FORMAT_TZAP];
 const APPLE_ARCHIVE_FORMAT_ALIASES: &[&str] = &[FORMAT_APPLE_ARCHIVE, "apple-archive"];
+const TGZ_FORMAT_ALIASES: &[&str] = &[FORMAT_TGZ, "tar.gz", "gz"];
 
 const ZIP_CREATE_EXTENSIONS: &[&str] = &[".zip"];
 const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
@@ -558,6 +560,7 @@ const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
 const TAR_ZST_EXTENSIONS: &[&str] = &[".tar.zst", ".tzst"];
 const TZAP_EXTENSIONS: &[&str] = &[".tzap"];
 const APPLE_ARCHIVE_EXTENSIONS: &[&str] = &[".aar"];
+const TGZ_EXTENSIONS: &[&str] = &[".tgz", ".tar.gz"];
 const SEVEN_Z_EXTENSIONS: &[&str] = &[".7z"];
 const RAR_EXTENSIONS: &[&str] = &[".rar", ".cbr"];
 const DEB_EXTENSIONS: &[&str] = &[".deb"];
@@ -590,6 +593,10 @@ const CREATE_FORMATS: &[FormatDescriptor] = &[
         name: FORMAT_SEVEN_Z,
         extensions: SEVEN_Z_EXTENSIONS,
     },
+    FormatDescriptor {
+        name: FORMAT_TGZ,
+        extensions: TGZ_EXTENSIONS,
+    },
 ];
 
 const EXTRACT_FORMATS: &[FormatDescriptor] = &[
@@ -612,6 +619,10 @@ const EXTRACT_FORMATS: &[FormatDescriptor] = &[
     FormatDescriptor {
         name: FORMAT_SEVEN_Z,
         extensions: SEVEN_Z_EXTENSIONS,
+    },
+    FormatDescriptor {
+        name: FORMAT_TGZ,
+        extensions: TGZ_EXTENSIONS,
     },
     FormatDescriptor {
         name: FORMAT_RAW_STREAM,
@@ -812,6 +823,7 @@ fn progress_job_label(kind: JobKind) -> &'static str {
         JobKind::SevenZExtract => "7z extract",
         JobKind::RarExtract => "rar extract",
         JobKind::TarZstdCreate => "tar.zst create",
+        JobKind::TarGzCreate => "tgz create",
         JobKind::TarZstdExtract => "tar.zst extract",
         JobKind::TzapCreate => "tzap create",
         JobKind::TzapExtract => "tzap extract",
@@ -907,6 +919,7 @@ enum ArchiveFormat {
     Tzap,
     AppleArchive,
     SevenZ,
+    Tgz,
 }
 
 #[derive(Debug)]
@@ -941,6 +954,7 @@ fn create_progress_kind(format: ArchiveFormat) -> JobKind {
         ArchiveFormat::Tzap => JobKind::TzapCreate,
         ArchiveFormat::AppleArchive => JobKind::AppleArchiveCreate,
         ArchiveFormat::SevenZ => JobKind::SevenZCreate,
+        ArchiveFormat::Tgz => JobKind::TarGzCreate,
     }
 }
 
@@ -4490,6 +4504,52 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 })
                 .map_err(|error| error.to_string())
         }
+        ArchiveFormat::Tgz => {
+            let options = zmanager_core::tar_gz_backend::TarGzCreateOptions {
+                level: request.level.unwrap_or_else(|| {
+                    zmanager_core::tar_gz_backend::TarGzCreateOptions::default().level
+                }),
+                preserve_metadata: !request.no_metadata,
+                replace_existing: backend_replace_existing,
+            };
+            let result = {
+                let mut sink = |event| progress.emit(event);
+                let mut context = JobContext::new_with_progress_total(
+                    &token,
+                    &mut sink,
+                    Some(manifest.total_bytes),
+                );
+                let result =
+                    zmanager_core::tar_gz_backend::create_tar_gz_from_manifest_with_context(
+                        &manifest,
+                        &temp,
+                        &options,
+                        &mut context,
+                    );
+                context.flush_progress();
+                result
+            };
+            result
+                .map(|report| CreateOutcome {
+                    summary: format!(
+                        "created tar.gz: {} entries, {} bytes, level {}, {} warnings",
+                        report.written_entries,
+                        report.written_bytes,
+                        report.level,
+                        report.warnings.len()
+                    ),
+                    format: FORMAT_TGZ,
+                    backend: FORMAT_TGZ,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: None,
+                    solid: None,
+                    volume_size: None,
+                    volume_count: 1,
+                })
+                .map_err(|error| error.to_string())
+        }
         ArchiveFormat::Tzap => {
             let uses_secret_key = password.is_some() || request.tzap_recipient_cert.is_some();
             let key_source = if let Some(recipient_certificate) = &request.tzap_recipient_cert {
@@ -4815,7 +4875,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
                 }
             }
             ArchiveFormat::SevenZ | ArchiveFormat::Tzap => {}
-            ArchiveFormat::TarZst | ArchiveFormat::AppleArchive => {
+            ArchiveFormat::TarZst | ArchiveFormat::AppleArchive | ArchiveFormat::Tgz => {
                 return Err(
                     "--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned(),
                 );
@@ -4828,7 +4888,8 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
             (ArchiveFormat::Zip, "deflate" | "store")
             | (ArchiveFormat::TarZst | ArchiveFormat::Tzap, "zstd" | "zst")
             | (ArchiveFormat::AppleArchive, "lzfse" | "lz4" | "zlib" | "lzma" | "raw")
-            | (ArchiveFormat::SevenZ, "lzma2") => {}
+            | (ArchiveFormat::SevenZ, "lzma2")
+            | (ArchiveFormat::Tgz, "gzip" | "gz") => {}
             _ => {
                 return Err(format!(
                     "unsupported method for selected archive format: {method}"
@@ -4839,7 +4900,10 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
 
     if let Some(level) = request.level {
         match format {
-            ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap
+            ArchiveFormat::Zip
+            | ArchiveFormat::SevenZ
+            | ArchiveFormat::Tzap
+            | ArchiveFormat::Tgz
                 if !(0..=9).contains(&level) =>
             {
                 return Err(format!(
@@ -4938,7 +5002,10 @@ fn create_password(
     if !request.encrypt && !request.password_stdin {
         return Ok(None);
     }
-    if matches!(format, ArchiveFormat::TarZst | ArchiveFormat::AppleArchive) {
+    if matches!(
+        format,
+        ArchiveFormat::TarZst | ArchiveFormat::AppleArchive | ArchiveFormat::Tgz
+    ) {
         print_error_line(
             global,
             format_args!("encryption is not supported for this archive format"),
@@ -4965,9 +5032,10 @@ fn create_password(
     let prompt = match format {
         ArchiveFormat::SevenZ => "7z password: ",
         ArchiveFormat::Tzap => "tzap password: ",
-        ArchiveFormat::AppleArchive => "archive password: ",
+        ArchiveFormat::AppleArchive | ArchiveFormat::TarZst | ArchiveFormat::Tgz => {
+            "archive password: "
+        }
         ArchiveFormat::Zip => "ZIP password: ",
-        ArchiveFormat::TarZst => "archive password: ",
     };
     prompt_password(prompt).map(Some)
 }
@@ -6833,6 +6901,7 @@ fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
         raw if TZAP_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::Tzap),
         raw if APPLE_ARCHIVE_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::AppleArchive),
         FORMAT_SEVEN_Z => Ok(ArchiveFormat::SevenZ),
+        raw if TGZ_FORMAT_ALIASES.contains(&raw) => Ok(ArchiveFormat::Tgz),
         _ => Err(format!("unsupported archive format: {raw}")),
     }
 }
@@ -6845,6 +6914,8 @@ fn infer_create_format(path: &str) -> Option<ArchiveFormat> {
         Some(ArchiveFormat::Zip)
     } else if is_tar_zst_archive(path) {
         Some(ArchiveFormat::TarZst)
+    } else if is_tgz_archive(path) {
+        Some(ArchiveFormat::Tgz)
     } else if is_tzap_archive(path) {
         Some(ArchiveFormat::Tzap)
     } else if is_apple_archive(path) {
@@ -7967,6 +8038,10 @@ fn is_rar_archive(path: &str) -> bool {
 
 fn is_tar_zst_archive(path: &str) -> bool {
     path_has_known_extension(path, TAR_ZST_EXTENSIONS)
+}
+
+fn is_tgz_archive(path: &str) -> bool {
+    path_has_known_extension(path, TGZ_EXTENSIONS)
 }
 
 fn is_tzap_archive(path: &str) -> bool {

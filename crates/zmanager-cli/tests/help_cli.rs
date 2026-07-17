@@ -79,7 +79,7 @@ const TOP_LEVEL_FLAGS: &[&str] = &[
 ];
 
 const CREATE_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|tzap|aar|7z>",
+    "--format <zip|tar.zst|tzap|aar|7z|tgz>",
     "--method <method>",
     "--level <level>",
     "-0 .. -9",
@@ -151,7 +151,7 @@ const TEST_FLAGS: &[&str] = &[
 ];
 
 const PLAN_FLAGS: &[&str] = &[
-    "--format <zip|tar.zst|tzap|aar|7z>",
+    "--format <zip|tar.zst|tzap|aar|7z|tgz>",
     "-C, --directory <dir>",
     "-@",
     "--files-from <file|->",

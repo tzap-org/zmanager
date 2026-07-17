@@ -43,6 +43,8 @@ pub enum JobKind {
     RarExtract,
     /// TAR.ZST creation.
     TarZstdCreate,
+    /// TAR.GZ creation.
+    TarGzCreate,
     /// TAR.ZST extraction.
     TarZstdExtract,
     /// TZAP creation.

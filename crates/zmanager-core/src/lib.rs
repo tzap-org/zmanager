@@ -26,6 +26,7 @@ pub mod safety;
 pub mod secrets;
 pub mod sevenz_backend;
 pub mod status_client;
+pub mod tar_gz_backend;
 pub mod tar_zst_backend;
 pub mod trust;
 pub mod tzap_backend;
