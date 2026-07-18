@@ -1360,6 +1360,7 @@ fn write_solid_manifest<W: Write + Seek>(
 
 fn sevenz_archive_entry(entry: &ManifestEntry, preserve_metadata: bool) -> ArchiveEntry {
     if preserve_metadata {
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut archive_entry =
             ArchiveEntry::from_path(&entry.source_path, entry.archive_path.clone());
         #[cfg(unix)]

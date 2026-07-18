@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder, EntryType, Header};
 
-#[cfg(unix)]
 const TAR_MODE_MASK: u32 = 0o7777;
 
 /// Options for `.tar.zst` creation.

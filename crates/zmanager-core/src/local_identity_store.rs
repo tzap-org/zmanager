@@ -10,7 +10,9 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io;
+#[cfg(unix)]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_IDENTITY_INVENTORY_ACCOUNT: &str = "default";
