@@ -794,7 +794,7 @@ fn zm_extract_nested_deb_handles_gzip_and_zstd_payload_members() {
             fs::read_to_string(out.join("data/usr/share/zmanager-compat/file.txt")).unwrap(),
             "deb payload\n"
         );
-        
+
         let debian_binary_meta = fs::metadata(out.join("debian-binary")).unwrap();
         #[cfg(unix)]
         {

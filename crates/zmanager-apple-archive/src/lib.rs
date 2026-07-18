@@ -432,8 +432,9 @@ mod platform {
         /// Returns an error if reading the next entry header from the archive stream fails.
         pub fn next_entry(&mut self) -> Result<Option<Entry>> {
             let mut raw_header = ptr::null_mut();
-            let status =
-                unsafe { AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &raw mut raw_header) };
+            let status = unsafe {
+                AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &raw mut raw_header)
+            };
             if status < 0 {
                 return Err(Error::Status {
                     operation: "read header",
@@ -472,13 +473,14 @@ mod platform {
                 }),
             )?;
             if let Some(expected_bytes) = entry.size().or(entry.data_size())
-                && data_bytes != expected_bytes {
-                    return Err(Error::SizeMismatch {
-                        path: entry.path().to_owned(),
-                        expected: expected_bytes,
-                        actual: data_bytes,
-                    });
-                }
+                && data_bytes != expected_bytes
+            {
+                return Err(Error::SizeMismatch {
+                    path: entry.path().to_owned(),
+                    expected: expected_bytes,
+                    actual: data_bytes,
+                });
+            }
             Ok(data_bytes)
         }
 
@@ -493,7 +495,8 @@ mod platform {
             for blob in &entry.blobs {
                 let mut remaining = blob.size;
                 while remaining > 0 {
-                    let chunk_len = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
+                    let chunk_len = usize::try_from(cmp::min(remaining, buffer.len() as u64))
+                        .unwrap_or(usize::MAX);
                     check_status(
                         unsafe {
                             AAArchiveStreamReadBlob(
@@ -507,9 +510,10 @@ mod platform {
                     )?;
                     if blob.key == BlobKey::Data {
                         if let Some(callback) = data_chunk.as_deref_mut()
-                            && !callback(&buffer[..chunk_len])? {
-                                return Err(Error::Cancelled);
-                            }
+                            && !callback(&buffer[..chunk_len])?
+                        {
+                            return Err(Error::Cancelled);
+                        }
                         data_bytes += chunk_len as u64;
                     }
                     remaining -= chunk_len as u64;
@@ -606,7 +610,8 @@ mod platform {
             let mut written = 0_u64;
             while written < size {
                 let remaining = size - written;
-                let max_read = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
+                let max_read =
+                    usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
                 let read = input.read(&mut buffer[..max_read])?;
                 if read == 0 {
                     return Err(Error::SizeMismatch {
@@ -826,7 +831,13 @@ mod platform {
             let mut length = 0_usize;
             check_status(
                 unsafe {
-                    AAHeaderGetFieldString(self.as_ptr(), index, 0, ptr::null_mut(), &raw mut length)
+                    AAHeaderGetFieldString(
+                        self.as_ptr(),
+                        index,
+                        0,
+                        ptr::null_mut(),
+                        &raw mut length,
+                    )
                 },
                 "measure string field",
             )?;
@@ -879,7 +890,9 @@ mod platform {
                 let mut size = 0_u64;
                 let mut offset = 0_u64;
                 check_status(
-                    unsafe { AAHeaderGetFieldBlob(self.as_ptr(), index, &raw mut size, &raw mut offset) },
+                    unsafe {
+                        AAHeaderGetFieldBlob(self.as_ptr(), index, &raw mut size, &raw mut offset)
+                    },
                     "get blob field",
                 )?;
                 blobs.push(EntryBlob {
