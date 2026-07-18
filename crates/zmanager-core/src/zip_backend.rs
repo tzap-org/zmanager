@@ -23,7 +23,7 @@ const ZIP_EOCD_MIN_SIZE: usize = 22;
 const ZIP_EOCD_MAX_COMMENT_SIZE: u64 = 65_535;
 const MIN_ZIP_VOLUME_SIZE_BYTES: u64 = 65_536;
 const ZIP_SPLIT_SIDE_CAR_EXTENSION_WIDTH: usize = 2;
-const ZIP_MODE_MASK: u32 = 0o7777;
+const ZIP_MODE_MASK: u32 = 0o0777;
 
 /// ZIP compression methods exposed in v1.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -1533,20 +1533,18 @@ fn zip_options<'a>(
         if let Some(mode) = entry.permissions.unix_mode {
             options = options.unix_permissions(mode);
         }
-        if let Some(modified) = entry.modified {
-            if let Ok(offset) = time::OffsetDateTime::try_from(modified) {
-                if let Ok(dt) = zip::DateTime::from_date_and_time(
+        if let Some(modified) = entry.modified
+            && let Ok(offset) = time::OffsetDateTime::try_from(modified)
+                && let Ok(dt) = zip::DateTime::from_date_and_time(
                     offset.year() as u16,
                     offset.month() as u8,
-                    offset.day() as u8,
-                    offset.hour() as u8,
-                    offset.minute() as u8,
-                    offset.second() as u8,
+                    offset.day(),
+                    offset.hour(),
+                    offset.minute(),
+                    offset.second(),
                 ) {
                     options = options.last_modified_time(dt);
                 }
-            }
-        }
     }
 
     if let Some(password) = zip_password(create_options) {
@@ -1696,6 +1694,7 @@ fn write_zip_entry<R: Read>(
                 }
             } else {
                 write_symlink(target, destination_path)?;
+                apply_symlink_mtime(destination_path, modified_time);
                 report.written_entries += 1;
             }
             Ok(0)
@@ -1753,13 +1752,13 @@ fn apply_zip_metadata(
         }
     }
 
-    if let Some(dt) = modified_time {
-        if let Ok(date) = time::Date::from_calendar_date(
-            dt.year() as i32,
+    if let Some(dt) = modified_time
+        && let Ok(date) = time::Date::from_calendar_date(
+            i32::from(dt.year()),
             time::Month::try_from(dt.month()).unwrap_or(time::Month::January),
             dt.day().max(1),
-        ) {
-            if let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
+        )
+            && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
                 let primitive = time::PrimitiveDateTime::new(date, time_cmp);
                 let sys_time = std::time::SystemTime::from(primitive.assume_utc());
                 filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time))
@@ -1768,9 +1767,26 @@ fn apply_zip_metadata(
                         source,
                     })?;
             }
-        }
-    }
     Ok(())
+}
+
+/// Best-effort mtime restoration for symlinks.
+///
+/// Uses `set_symlink_file_times` to avoid following the link. Errors are
+/// silently ignored because some filesystems do not support symlink timestamps.
+fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) {
+    if let Some(dt) = modified_time
+        && let Ok(date) = time::Date::from_calendar_date(
+            i32::from(dt.year()),
+            time::Month::try_from(dt.month()).unwrap_or(time::Month::January),
+            dt.day().max(1),
+        )
+            && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
+                let primitive = time::PrimitiveDateTime::new(date, time_cmp);
+                let sys_time = std::time::SystemTime::from(primitive.assume_utc());
+                let ft = filetime::FileTime::from_system_time(sys_time);
+                let _ = filetime::set_symlink_file_times(path, ft, ft);
+            }
 }
 
 fn apply_deferred_zip_directory_metadata(
@@ -1956,7 +1972,7 @@ mod tests {
 
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         }
-        
+
         #[cfg(not(unix))]
         {
             // Windows fallback doesn't map full unix mode, but let's check readonly if we had set it
@@ -1965,7 +1981,11 @@ mod tests {
         // ZIP only has 2-second resolution (MS-DOS time), so we check with a delta
         let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
         let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
-        assert!(diff <= 2, "extracted mtime diff {} is greater than 2 seconds", diff);
+        assert!(
+            diff <= 2,
+            "extracted mtime diff {} is greater than 2 seconds",
+            diff
+        );
     }
 
     #[test]

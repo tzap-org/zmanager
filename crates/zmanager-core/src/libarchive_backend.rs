@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_libarchive::{FileType, ReadArchive};
 
-const LIBARCHIVE_MODE_MASK: u32 = 0o7777;
+const LIBARCHIVE_MODE_MASK: u32 = 0o0777;
 
 const NUMBERED_VOLUME_EXTENSION_WIDTH: usize = 3;
 const NUMBERED_VOLUME_ARCHIVE_SUFFIXES: &[&str] = &[".7z", ".zip"];
@@ -520,7 +520,8 @@ fn extract_archive_inner(
                 link_target_path,
                 ..
             } => {
-                let processed = write_entry(
+                
+                write_entry(
                     &mut archive,
                     &owned_entry,
                     &destination_path,
@@ -529,8 +530,7 @@ fn extract_archive_inner(
                     &mut report,
                     context.as_deref_mut(),
                     &mut deferred_directories,
-                )?;
-                processed
+                )?
             }
             ExtractionDecision::Skip { reason, .. } => {
                 archive.skip_data()?;
@@ -1048,6 +1048,7 @@ fn write_entry(
                 Ok(0)
             } else {
                 write_symlink(target, destination_path)?;
+                apply_symlink_mtime(destination_path, entry.metadata.modified);
                 report.written_entries += 1;
                 Ok(0)
             }
@@ -1075,7 +1076,7 @@ fn write_entry(
             report
                 .warnings
                 .push(format!("skipped unsupported special entry {}", entry.path));
-            if let Some(context) = context.as_deref_mut() {
+            if let Some(context) = context {
                 context.warning(format!("skipped unsupported special entry {}", entry.path));
             }
             Ok(0)
@@ -1152,11 +1153,13 @@ fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), 
     if let Some(mode) = metadata.mode {
         use std::os::unix::fs::PermissionsExt;
 
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
-            LibarchiveError::Io {
-                path: path.to_path_buf(),
-                source,
-            }
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(mode & LIBARCHIVE_MODE_MASK),
+        )
+        .map_err(|source| LibarchiveError::Io {
+            path: path.to_path_buf(),
+            source,
         })?;
     }
 
@@ -1170,6 +1173,17 @@ fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), 
     }
 
     Ok(())
+}
+
+/// Best-effort mtime restoration for symlinks.
+///
+/// Uses `set_symlink_file_times` to avoid following the link. Errors are
+/// silently ignored because some filesystems do not support symlink timestamps.
+fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
+    if let Some(modified) = modified {
+        let ft = filetime::FileTime::from_system_time(modified);
+        let _ = filetime::set_symlink_file_times(path, ft, ft);
+    }
 }
 
 fn copy_file_entry_to_writer<W: Write>(
@@ -1305,19 +1319,28 @@ mod tests {
             0o751,
             FILE_MTIME,
             b"#!/bin/sh\n",
+            "payload/link.sh",
+            "run.sh",
+            FILE_MTIME,
         );
 
         extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
         let directory_metadata = fs::metadata(temp.path("out/payload")).unwrap();
         let file_metadata = fs::metadata(temp.path("out/payload/run.sh")).unwrap();
+        let link_metadata = fs::symlink_metadata(temp.path("out/payload/link.sh")).unwrap();
+        
         assert_eq!(directory_metadata.mode() & 0o7777, 0o750);
         assert_eq!(file_metadata.mode() & 0o7777, 0o751);
+        
         assert_eq!(
             directory_metadata.mtime(),
             i64::try_from(DIRECTORY_MTIME).unwrap()
         );
         assert_eq!(file_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
+        
+        assert!(link_metadata.is_symlink());
+        assert_eq!(link_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
     }
 
     #[test]
@@ -1649,6 +1672,9 @@ mod tests {
         file_mode: u32,
         file_mtime: u64,
         contents: &[u8],
+        symlink_path: &str,
+        symlink_target: &str,
+        symlink_mtime: u64,
     ) {
         let file = File::create(path).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -1672,6 +1698,16 @@ mod tests {
         file_header.set_cksum();
         builder
             .append_data(&mut file_header, file_path, contents)
+            .unwrap();
+            
+        let mut link_header = tar::Header::new_gnu();
+        link_header.set_entry_type(tar::EntryType::Symlink);
+        link_header.set_size(0);
+        link_header.set_mtime(symlink_mtime);
+        link_header.set_link_name(symlink_target).unwrap();
+        link_header.set_cksum();
+        builder
+            .append_data(&mut link_header, symlink_path, std::io::empty())
             .unwrap();
 
         let encoder = builder.into_inner().unwrap();

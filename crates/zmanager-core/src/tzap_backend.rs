@@ -174,7 +174,7 @@ pub struct TzapX509TrustOptions {
     pub trusted_ca_certificates: Vec<PathBuf>,
     /// Allow OpenSSL's default system trust roots.
     pub trusted_system_roots: bool,
-    /// Include ZManager's embedded official TZAP root certificate.
+    /// Include `ZManager`'s embedded official TZAP root certificate.
     pub include_official_tzap_root: bool,
 }
 
@@ -2219,15 +2219,15 @@ pub fn verify_tzap_x509_public_no_key(
 
 /// Inspects a TZAP X.509 `RootAuth` signer without validating trust roots.
 ///
-/// This verifies archive content, RootAuth commitments, and the RootAuth
+/// This verifies archive content, `RootAuth` commitments, and the `RootAuth`
 /// signature made by the embedded leaf certificate. It intentionally does not
 /// validate that certificate against a trusted root.
 ///
 /// # Errors
 ///
-/// Returns [`TzapError`] when the archive cannot be opened, the RootAuth
+/// Returns [`TzapError`] when the archive cannot be opened, the `RootAuth`
 /// signature does not match the embedded certificate, or the archive is not
-/// signed with the X.509 RootAuth profile.
+/// signed with the X.509 `RootAuth` profile.
 pub fn inspect_tzap_x509_signer(
     archive: impl AsRef<Path>,
     password: Option<&str>,
@@ -2238,15 +2238,15 @@ pub fn inspect_tzap_x509_signer(
 
 /// Inspects a TZAP X.509 `RootAuth` signer without the archive key or trust roots.
 ///
-/// This checks the public data-block commitment and the RootAuth signature, but
+/// This checks the public data-block commitment and the `RootAuth` signature, but
 /// does not decrypt entries, prove recovery/parity material is complete, or
 /// validate the certificate chain against a trusted root.
 ///
 /// # Errors
 ///
 /// Returns [`TzapError`] when public no-key inspection cannot read the volume
-/// set, the RootAuth signature does not match the embedded certificate, or the
-/// archive is not signed with the X.509 RootAuth profile.
+/// set, the `RootAuth` signature does not match the embedded certificate, or the
+/// archive is not signed with the X.509 `RootAuth` profile.
 pub fn inspect_tzap_x509_public_no_key_signer(
     archive: impl AsRef<Path>,
 ) -> Result<TzapX509SignerInspection, TzapError> {
@@ -3973,13 +3973,12 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
         let phase = job_phase_from_tzap(phase);
         debug_assert_eq!(self.active_phase, Some(phase));
 
-        if phase == JobPhase::EmittingPayload {
-            if !self.started_paths.contains(archive_path) {
+        if phase == JobPhase::EmittingPayload
+            && !self.started_paths.contains(archive_path) {
                 self.started_paths.insert(archive_path.to_owned());
                 self.context
                     .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
             }
-        }
 
         if let Some(batch) = self.phase_progress.record(Some(archive_path), bytes) {
             self.emit_phase_batch(phase, batch);
@@ -3996,12 +3995,11 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
                     .expect("inserted TZAP progress path must exist")
             };
             *processed = processed.saturating_add(bytes);
-            if let Some(size) = self.file_sizes.get(archive_path).copied() {
-                if *processed >= size && !self.finished_paths.contains(archive_path) {
+            if let Some(size) = self.file_sizes.get(archive_path).copied()
+                && *processed >= size && !self.finished_paths.contains(archive_path) {
                     self.finished_paths.insert(archive_path.to_owned());
                     self.context.entry_finished(archive_path, size);
                 }
-            }
         }
     }
 }

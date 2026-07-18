@@ -551,9 +551,9 @@ pub fn validate_crl_der_against_manifest(
     Ok(())
 }
 
-fn parse_crl_der<'a>(
-    crl_der: &'a [u8],
-) -> Result<CertificateRevocationList<'a>, TzapStatusClientError> {
+fn parse_crl_der(
+    crl_der: &[u8],
+) -> Result<CertificateRevocationList<'_>, TzapStatusClientError> {
     let (remaining, crl) = CertificateRevocationList::from_der(crl_der).map_err(|error| {
         TzapStatusClientError::CrlValidation {
             reason: error.to_string(),
@@ -569,18 +569,15 @@ fn parse_crl_der<'a>(
 }
 
 fn crl_download_to_der(bytes: &[u8]) -> Result<Vec<u8>, TzapStatusClientError> {
-    match X509Crl::from_pem(bytes) {
-        Ok(crl) => crl
-            .to_der()
-            .map_err(|error| TzapStatusClientError::CrlValidation {
-                reason: error.to_string(),
-            }),
-        Err(_) => {
-            X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation {
-                reason: error.to_string(),
-            })?;
-            Ok(bytes.to_vec())
-        }
+    if let Ok(crl) = X509Crl::from_pem(bytes) { crl
+    .to_der()
+    .map_err(|error| TzapStatusClientError::CrlValidation {
+        reason: error.to_string(),
+    }) } else {
+        X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation {
+            reason: error.to_string(),
+        })?;
+        Ok(bytes.to_vec())
     }
 }
 
@@ -619,7 +616,7 @@ fn validate_crl_manifest_fields(
 
 fn canonical_biguint_hex(value: &num_bigint::BigUint) -> String {
     let mut hex = value.to_str_radix(16).to_ascii_uppercase();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         hex.insert(0, '0');
     }
     hex

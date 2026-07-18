@@ -21,14 +21,14 @@ const APPLE_ARCHIVE_MODE_MASK: u32 = 0o7777;
 /// `.aar` file extension.
 pub const APPLE_ARCHIVE_EXTENSION: &str = "aar";
 
-/// AppleArchive creation options.
+/// `AppleArchive` creation options.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveCreateOptions {
-    /// Native AppleArchive compression algorithm.
+    /// Native `AppleArchive` compression algorithm.
     pub compression: AppleArchiveCompression,
     /// Compression block size in bytes.
     pub block_size: usize,
-    /// Native worker count. Zero lets AppleArchive choose.
+    /// Native worker count. Zero lets `AppleArchive` choose.
     pub threads: i32,
     /// Preserve portable metadata such as mode and modification time.
     pub preserve_metadata: bool,
@@ -49,7 +49,7 @@ impl Default for AppleArchiveCreateOptions {
     }
 }
 
-/// AppleArchive listing entry.
+/// `AppleArchive` listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveListEntry {
     /// Raw path stored in the archive.
@@ -62,7 +62,7 @@ pub struct AppleArchiveListEntry {
     pub modified: Option<SystemTime>,
 }
 
-/// AppleArchive entry kind.
+/// `AppleArchive` entry kind.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum AppleArchiveEntryKind {
     /// Regular file.
@@ -77,14 +77,14 @@ pub enum AppleArchiveEntryKind {
     Special,
 }
 
-/// AppleArchive listing.
+/// `AppleArchive` listing.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveListing {
     /// Entries in archive order.
     pub entries: Vec<AppleArchiveListEntry>,
 }
 
-/// AppleArchive creation report.
+/// `AppleArchive` creation report.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveCreateReport {
     /// Entries written to the archive.
@@ -95,7 +95,7 @@ pub struct AppleArchiveCreateReport {
     pub warnings: Vec<String>,
 }
 
-/// AppleArchive extraction report.
+/// `AppleArchive` extraction report.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveExtractReport {
     /// Entries written to disk.
@@ -108,7 +108,7 @@ pub struct AppleArchiveExtractReport {
     pub warnings: Vec<String>,
 }
 
-/// AppleArchive data-read test report.
+/// `AppleArchive` data-read test report.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveTestReport {
     /// Entries selected and read or skipped through successfully.
@@ -119,12 +119,12 @@ pub struct AppleArchiveTestReport {
     pub tested_bytes: u64,
 }
 
-/// Error returned by the AppleArchive backend.
+/// Error returned by the `AppleArchive` backend.
 #[derive(Debug)]
 pub enum AppleArchiveError {
     /// Manifest planning failed.
     Plan(PlanError),
-    /// Native AppleArchive operation failed.
+    /// Native `AppleArchive` operation failed.
     Native(zmanager_apple_archive::Error),
     /// Filesystem I/O failed.
     Io { path: PathBuf, source: io::Error },
@@ -208,7 +208,7 @@ impl From<JobCancelled> for AppleArchiveError {
     }
 }
 
-/// Returns whether this build can use native AppleArchive APIs.
+/// Returns whether this build can use native `AppleArchive` APIs.
 #[must_use]
 pub const fn apple_archive_supported() -> bool {
     zmanager_apple_archive::is_supported()
@@ -223,7 +223,7 @@ pub fn is_apple_archive_path(path: impl AsRef<Path>) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(APPLE_ARCHIVE_EXTENSION))
 }
 
-/// Creates an AppleArchive from a source path.
+/// Creates an `AppleArchive` from a source path.
 ///
 /// # Errors
 ///
@@ -238,7 +238,7 @@ pub fn create_apple_archive_from_path(
     create_apple_archive_from_manifest(&manifest, destination, options)
 }
 
-/// Creates an AppleArchive from a manifest.
+/// Creates an `AppleArchive` from a manifest.
 ///
 /// # Errors
 ///
@@ -252,7 +252,7 @@ pub fn create_apple_archive_from_manifest(
     create_apple_archive_from_manifest_inner(manifest, destination, options, None)
 }
 
-/// Creates an AppleArchive from a manifest while emitting job events.
+/// Creates an `AppleArchive` from a manifest while emitting job events.
 ///
 /// # Errors
 ///
@@ -317,7 +317,7 @@ fn create_apple_archive_from_manifest_inner(
     Ok(report)
 }
 
-/// Lists entries in an AppleArchive.
+/// Lists entries in an `AppleArchive`.
 ///
 /// # Errors
 ///
@@ -342,7 +342,7 @@ pub fn list_apple_archive(
     Ok(AppleArchiveListing { entries })
 }
 
-/// Extracts an AppleArchive through the shared extraction safety policy.
+/// Extracts an `AppleArchive` through the shared extraction safety policy.
 ///
 /// # Errors
 ///
@@ -356,7 +356,7 @@ pub fn extract_apple_archive(
     extract_apple_archive_inner(archive_path, destination, policy, None, None, None)
 }
 
-/// Extracts an AppleArchive while emitting job events.
+/// Extracts an `AppleArchive` while emitting job events.
 ///
 /// # Errors
 ///
@@ -371,7 +371,7 @@ pub fn extract_apple_archive_with_context(
     extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context))
 }
 
-/// Extracts an AppleArchive with an overwrite resolver.
+/// Extracts an `AppleArchive` with an overwrite resolver.
 ///
 /// # Errors
 ///
@@ -393,7 +393,7 @@ pub fn extract_apple_archive_with_overwrite_resolver(
     )
 }
 
-/// Extracts one selected AppleArchive entry.
+/// Extracts one selected `AppleArchive` entry.
 ///
 /// # Errors
 ///
@@ -487,7 +487,7 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
         .map(|_| report)
 }
 
-/// Reads selected AppleArchive entries to validate data streams.
+/// Reads selected `AppleArchive` entries to validate data streams.
 ///
 /// # Errors
 ///
@@ -715,7 +715,7 @@ fn materialize_entry(
                 safety_entry.archive_path
             );
             report.warnings.push(warning.clone());
-            if let Some(context) = context.as_deref_mut() {
+            if let Some(context) = context {
                 context.warning(warning);
             }
             return Ok(0);

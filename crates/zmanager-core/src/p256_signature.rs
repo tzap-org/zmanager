@@ -152,7 +152,7 @@ fn normalize_low_s(
     order: &BigNumRef,
     half_order: &BigNumRef,
 ) -> Result<BigNum, P256SignatureError> {
-    if is_low_s(s, &order, &half_order)? {
+    if is_low_s(s, order, half_order)? {
         Ok(s.to_owned()?)
     } else {
         let mut normalized = order.to_owned()?;

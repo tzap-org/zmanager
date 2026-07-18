@@ -1700,16 +1700,16 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                     Some(take_value(args, &mut index, "--account-base-url").unwrap());
             }
             "--client-id" => {
-                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap()
+                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap();
             }
             "--redirect-uri" => {
                 endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap();
             }
             "--provider" => {
-                endpoints.provider_id = take_value(args, &mut index, "--provider").unwrap()
+                endpoints.provider_id = take_value(args, &mut index, "--provider").unwrap();
             }
             "--org-id" => {
-                endpoints.org_id = Some(take_value(args, &mut index, "--org-id").unwrap())
+                endpoints.org_id = Some(take_value(args, &mut index, "--org-id").unwrap());
             }
             other => {
                 return command_usage_error(
@@ -1782,27 +1782,27 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
             }
             "--state" => state = Some(take_value(args, &mut index, "--state").unwrap()),
             "--redirect-uri" => {
-                redirect_uri = Some(take_value(args, &mut index, "--redirect-uri").unwrap())
+                redirect_uri = Some(take_value(args, &mut index, "--redirect-uri").unwrap());
             }
             "--auth-base-url" => {
-                auth_base_url = Some(take_value(args, &mut index, "--auth-base-url").unwrap())
+                auth_base_url = Some(take_value(args, &mut index, "--auth-base-url").unwrap());
             }
             "--client-id" => client_id = Some(take_value(args, &mut index, "--client-id").unwrap()),
             "--callback-url" => {
-                callback_url = Some(take_value(args, &mut index, "--callback-url").unwrap())
+                callback_url = Some(take_value(args, &mut index, "--callback-url").unwrap());
             }
             "--handoff-code" => {
-                handoff_code = Some(take_value(args, &mut index, "--handoff-code").unwrap())
+                handoff_code = Some(take_value(args, &mut index, "--handoff-code").unwrap());
             }
             "--relay-body" => {
-                relay_body_path = Some(take_value(args, &mut index, "--relay-body").unwrap())
+                relay_body_path = Some(take_value(args, &mut index, "--relay-body").unwrap());
             }
             other => {
                 return command_usage_error(
@@ -1906,19 +1906,16 @@ fn auth_status_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         Err(code) => return code,
     };
     let store = FileTzapSessionStore::new(&context.state_dir);
-    match store.load_session(&context.account_key) {
-        Some(session) => {
-            print_session_summary(&session, &global);
-            ExitCode::SUCCESS
+    if let Some(session) = store.load_session(&context.account_key) {
+        print_session_summary(&session, &global);
+        ExitCode::SUCCESS
+    } else {
+        if global.json {
+            println!("{{\"authenticated\":false}}");
+        } else {
+            println!("not signed in");
         }
-        None => {
-            if global.json {
-                println!("{{\"authenticated\":false}}");
-            } else {
-                println!("not signed in");
-            }
-            ExitCode::SUCCESS
-        }
+        ExitCode::SUCCESS
     }
 }
 
@@ -1969,10 +1966,10 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
                     Some(take_value(args, &mut index, "--account-base-url").unwrap());
             }
             "--client-id" => {
-                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap()
+                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap();
             }
             "--redirect-uri" => {
-                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap()
+                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap();
             }
             other => {
                 return command_usage_error(
@@ -2207,22 +2204,22 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
             }
             "--certificate-id" => {
-                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap())
+                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap());
             }
             "--output" => {
                 output = Some(PathBuf::from(
                     take_value(args, &mut index, "--output").unwrap(),
-                ))
+                ));
             }
             "--claimed-signing-time" => {
                 claimed_signing_time =
-                    Some(take_value(args, &mut index, "--claimed-signing-time").unwrap())
+                    Some(take_value(args, &mut index, "--claimed-signing-time").unwrap());
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2302,7 +2299,7 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         }
         match args[index].as_str() {
             "--custom-trust-root" => {
-                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap());
             }
             "--custom-trust-root-cert" => {
                 custom_root_cert_paths.push(PathBuf::from(
@@ -2572,17 +2569,17 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
             }
             "--accept" => {
                 accepted = true;
                 index += 1;
             }
             "--custom-trust-root" => {
-                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap())
+                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap());
             }
             "--custom-trust-root-cert" => {
                 custom_root_cert_paths.push(PathBuf::from(
@@ -2671,27 +2668,27 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
             }
             "--recipient-key-id" => {
-                recipient_key_id = Some(take_value(args, &mut index, "--recipient-key-id").unwrap())
+                recipient_key_id = Some(take_value(args, &mut index, "--recipient-key-id").unwrap());
             }
             "--certificate-id" => {
-                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap())
+                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap());
             }
             "--display-name" => {
-                display_name = Some(take_value(args, &mut index, "--display-name").unwrap())
+                display_name = Some(take_value(args, &mut index, "--display-name").unwrap());
             }
             "--device-label" => {
-                device_label = take_value(args, &mut index, "--device-label").unwrap()
+                device_label = take_value(args, &mut index, "--device-label").unwrap();
             }
             "--output" => {
                 output = Some(PathBuf::from(
                     take_value(args, &mut index, "--output").unwrap(),
-                ))
+                ));
             }
             value => {
                 return command_usage_error(
@@ -2766,10 +2763,10 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap())
+                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap()
+                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
             }
             "--contact" => contact_ids.push(take_value(args, &mut index, "--contact").unwrap()),
             "--force" => {

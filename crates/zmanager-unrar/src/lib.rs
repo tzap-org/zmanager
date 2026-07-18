@@ -52,8 +52,17 @@ const FSREDIR_JUNCTION: u32 = 3;
 const FSREDIR_HARDLINK: u32 = 4;
 const FSREDIR_FILECOPY: u32 = 5;
 
-type ListCallback =
-    extern "C" fn(*mut c_void, *const c_char, u64, u64, c_uint, c_uint, *const c_char) -> c_int;
+type ListCallback = extern "C" fn(
+    *mut c_void,
+    *const c_char,
+    u64,
+    u64,
+    c_uint,
+    c_uint,
+    *const c_char,
+    u32,
+    u64,
+) -> c_int;
 
 type ExtractCallback = extern "C" fn(
     *mut c_void,
@@ -62,6 +71,8 @@ type ExtractCallback = extern "C" fn(
     c_uint,
     c_uint,
     *const c_char,
+    u32,
+    u64,
     *mut c_char,
     usize,
 ) -> c_int;
@@ -101,6 +112,10 @@ pub struct RarEntry {
     pub encrypted: bool,
     /// Whether the entry is part of a solid archive.
     pub solid: bool,
+    /// Original file attributes (Unix or Windows).
+    pub file_attr: u32,
+    /// Modification time (Windows FILETIME).
+    pub mtime: u64,
 }
 
 /// Portable RAR entry type.
@@ -269,6 +284,8 @@ extern "C" fn list_callback(
     flags: c_uint,
     redir_type: c_uint,
     redir_target: *const c_char,
+    file_attr: u32,
+    mtime: u64,
 ) -> c_int {
     let context = unsafe { &mut *user.cast::<ListContext>() };
     let Some(path) = c_path_to_string(path) else {
@@ -291,6 +308,8 @@ extern "C" fn list_callback(
         link_target,
         encrypted: (flags & RHDF_ENCRYPTED) != 0,
         solid: (flags & RHDF_SOLID) != 0,
+        file_attr,
+        mtime,
     });
 
     0
@@ -303,6 +322,8 @@ extern "C" fn extract_callback(
     _flags: c_uint,
     _redir_type: c_uint,
     _redir_target: *const c_char,
+    _file_attr: u32,
+    _mtime: u64,
     destination: *mut c_char,
     destination_size: usize,
 ) -> c_int {

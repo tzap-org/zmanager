@@ -26,7 +26,7 @@ const DEFAULT_SEVENZ_COMPRESSION_LEVEL: u32 = 6;
 const DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES: u64 = 16 * 1_024 * 1_024;
 const MAX_SEVENZ_LZMA2_THREADS: u32 = 256;
 const SEVENZ_VOLUME_EXTENSION_WIDTH: usize = 3;
-const SEVENZ_MODE_MASK: u32 = 0o7777;
+const SEVENZ_MODE_MASK: u32 = 0o0777;
 /// Bit 31 in 7z `windows_attributes` signals that Unix permission bits are
 /// present in the upper half-word (bits 16–27).
 const SEVENZ_UNIX_ATTRIBUTES_FLAG: u32 = 0x8000_0000;
@@ -1516,14 +1516,14 @@ fn extract_entry(
         .get(entry.name())
         .ok_or_else(|| missing_extraction_decision(entry.name()))?;
     let unix_mode = modes.get(entry.name()).copied().flatten();
-    
+
     let modified_time = if entry.has_last_modified_date {
         let nt = entry.last_modified_date();
         std::time::SystemTime::try_from(nt).ok()
     } else {
         None
     };
-    
+
     match decision {
         ExtractionDecision::Write {
             destination_path,
@@ -1670,12 +1670,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
-
         filetime::set_file_mtime(&path, mtime).unwrap();
 
         let archive = temp.path("archive.7z");
@@ -1705,7 +1703,6 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         }
 
@@ -1717,7 +1714,11 @@ mod tests {
         // Check mtime. The test creates the archive with mtime=1500000000
         let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
         let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
-        assert!(diff <= 2, "extracted mtime diff {} is greater than 2 seconds", diff);
+        assert!(
+            diff <= 2,
+            "extracted mtime diff {} is greater than 2 seconds",
+            diff
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
-//! Safe, narrow AppleArchive wrapper for `zmanager-core`.
+//! Safe, narrow `AppleArchive` wrapper for `zmanager-core`.
 //!
-//! The native AppleArchive API is available only on Apple targets. This crate
+//! The native `AppleArchive` API is available only on Apple targets. This crate
 //! keeps that native boundary out of `zmanager-core`, whose workspace policy
 //! denies unsafe code.
 
@@ -13,19 +13,19 @@ use std::time::SystemTime;
 
 const APPLE_TARGET: bool = cfg!(any(target_os = "macos", target_os = "ios"));
 
-/// Result alias for AppleArchive wrapper operations.
+/// Result alias for `AppleArchive` wrapper operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Returns whether this target can use the native AppleArchive library.
+/// Returns whether this target can use the native `AppleArchive` library.
 #[must_use]
 pub const fn is_supported() -> bool {
     APPLE_TARGET
 }
 
-/// Error returned by the AppleArchive wrapper.
+/// Error returned by the `AppleArchive` wrapper.
 #[derive(Debug)]
 pub enum Error {
-    /// The native AppleArchive library is not available on this target.
+    /// The native `AppleArchive` library is not available on this target.
     UnsupportedPlatform,
     /// The native library returned a null object.
     NullObject(&'static str),
@@ -113,7 +113,7 @@ impl From<io::Error> for Error {
     }
 }
 
-/// AppleArchive entry type.
+/// `AppleArchive` entry type.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum EntryKind {
     /// Regular file.
@@ -157,14 +157,14 @@ pub enum CompressionAlgorithm {
     Lzbitmap,
 }
 
-/// Options for AppleArchive creation.
+/// Options for `AppleArchive` creation.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct CreateOptions {
     /// Compression algorithm.
     pub compression: CompressionAlgorithm,
     /// Compression block size in bytes.
     pub block_size: usize,
-    /// Native worker thread count. Zero lets AppleArchive choose.
+    /// Native worker thread count. Zero lets `AppleArchive` choose.
     pub threads: i32,
 }
 
@@ -430,7 +430,7 @@ mod platform {
         pub fn next_entry(&mut self) -> Result<Option<Entry>> {
             let mut raw_header = ptr::null_mut();
             let status =
-                unsafe { AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &mut raw_header) };
+                unsafe { AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &raw mut raw_header) };
             if status < 0 {
                 return Err(Error::Status {
                     operation: "read header",
@@ -462,15 +462,14 @@ mod platform {
                     Ok(keep_going)
                 }),
             )?;
-            if let Some(expected_bytes) = entry.size().or(entry.data_size()) {
-                if data_bytes != expected_bytes {
+            if let Some(expected_bytes) = entry.size().or(entry.data_size())
+                && data_bytes != expected_bytes {
                     return Err(Error::SizeMismatch {
                         path: entry.path().to_owned(),
                         expected: expected_bytes,
                         actual: data_bytes,
                     });
                 }
-            }
             Ok(data_bytes)
         }
 
@@ -497,11 +496,10 @@ mod platform {
                         "read blob",
                     )?;
                     if blob.key == BlobKey::Data {
-                        if let Some(callback) = data_chunk.as_deref_mut() {
-                            if !callback(&buffer[..chunk_len])? {
+                        if let Some(callback) = data_chunk.as_deref_mut()
+                            && !callback(&buffer[..chunk_len])? {
                                 return Err(Error::Cancelled);
                             }
-                        }
                         data_bytes += chunk_len as u64;
                     }
                     remaining -= chunk_len as u64;
@@ -768,7 +766,7 @@ mod platform {
                             self.as_ptr(),
                             UINT32_APPEND,
                             field_key(b"MTM"),
-                            &value,
+                            &raw const value,
                         )
                     },
                     "append timespec field",
@@ -786,7 +784,7 @@ mod platform {
             }
             let mut value = 0_u64;
             check_status(
-                unsafe { AAHeaderGetFieldUInt(self.as_ptr(), index, &mut value) },
+                unsafe { AAHeaderGetFieldUInt(self.as_ptr(), index, &raw mut value) },
                 "get uint field",
             )?;
             Ok(Some(value))
@@ -802,7 +800,7 @@ mod platform {
             let mut length = 0_usize;
             check_status(
                 unsafe {
-                    AAHeaderGetFieldString(self.as_ptr(), index, 0, ptr::null_mut(), &mut length)
+                    AAHeaderGetFieldString(self.as_ptr(), index, 0, ptr::null_mut(), &raw mut length)
                 },
                 "measure string field",
             )?;
@@ -817,7 +815,7 @@ mod platform {
                         index,
                         capacity,
                         buffer.as_mut_ptr().cast(),
-                        &mut length,
+                        &raw mut length,
                     )
                 },
                 "get string field",
@@ -838,7 +836,7 @@ mod platform {
                 tv_nsec: 0,
             };
             check_status(
-                unsafe { AAHeaderGetFieldTimespec(self.as_ptr(), index, &mut value) },
+                unsafe { AAHeaderGetFieldTimespec(self.as_ptr(), index, &raw mut value) },
                 "get timespec field",
             )?;
             Ok(timespec_to_system_time(value))
@@ -855,7 +853,7 @@ mod platform {
                 let mut size = 0_u64;
                 let mut offset = 0_u64;
                 check_status(
-                    unsafe { AAHeaderGetFieldBlob(self.as_ptr(), index, &mut size, &mut offset) },
+                    unsafe { AAHeaderGetFieldBlob(self.as_ptr(), index, &raw mut size, &raw mut offset) },
                     "get blob field",
                 )?;
                 blobs.push(EntryBlob {

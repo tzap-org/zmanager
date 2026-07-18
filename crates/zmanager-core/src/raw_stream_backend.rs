@@ -431,8 +431,8 @@ pub fn copy_raw_stream_to_writer_with_progress<W: Write>(
         return copy_external_tool_to_writer(tool, archive_path, output, on_progress);
     }
 
-    if track_source_progress {
-        if let Some(on_progress) = on_progress {
+    if track_source_progress
+        && let Some(on_progress) = on_progress {
             let file = File::open(archive_path).map_err(|source| RawStreamError::Io {
                 path: archive_path.to_path_buf(),
                 source,
@@ -445,7 +445,6 @@ pub fn copy_raw_stream_to_writer_with_progress<W: Write>(
             )?;
             return copy_reader_to_writer_with_progress(&mut reader, output, archive_path, None);
         }
-    }
 
     let mut reader = open_decoder(archive_path, format)?;
 
@@ -807,9 +806,8 @@ fn copy_lrzip_to_writer<W: Write>(
     })?;
     let written_bytes =
         copy_reader_to_writer_with_progress(&mut decoded, output, &temp_path, on_progress)
-            .map_err(|source| {
+            .inspect_err(|source| {
                 let _ = fs::remove_file(&temp_path);
-                source
             })?;
     fs::remove_file(&temp_path).map_err(|source| RawStreamError::Io {
         path: temp_path,
@@ -864,9 +862,8 @@ fn copy_unix_compress_to_writer<W: Write>(
     })?;
     let written_bytes =
         copy_reader_to_writer_with_progress(&mut decoded, output, &temp_output, on_progress)
-            .map_err(|source| {
+            .inspect_err(|source| {
                 let _ = fs::remove_file(&temp_output);
-                source
             })?;
     fs::remove_file(&temp_output).map_err(|source| RawStreamError::Io {
         path: temp_output,

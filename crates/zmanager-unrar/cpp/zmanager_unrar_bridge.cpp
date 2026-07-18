@@ -20,11 +20,13 @@ struct BridgeContext {
 
 using ListCallback = int (*)(void *user, const char *path, std::uint64_t size,
                             std::uint64_t dictionary_size, unsigned int flags,
-                            unsigned int redir_type, const char *redir_target);
+                            unsigned int redir_type, const char *redir_target,
+                            std::uint32_t file_attr, std::uint64_t mtime);
 
 using ExtractCallback = int (*)(void *user, const char *path,
                                std::uint64_t size, unsigned int flags,
                                unsigned int redir_type, const char *redir_target,
+                               std::uint32_t file_attr, std::uint64_t mtime,
                                char *destination, std::size_t destination_size);
 
 struct HeaderBuffers {
@@ -169,10 +171,12 @@ extern "C" int zmu_unrar_list(const char *archive, const char *password,
     const RARHeaderDataEx &header = buffers.header;
     std::string path = file_name_utf8(header);
     std::string redir_target = redir_name_utf8(header);
+    std::uint64_t mtime = ((std::uint64_t)header.MtimeHigh << 32) | header.MtimeLow;
     int callback_code =
         callback(user, path.c_str(), unpacked_size(header),
                  dictionary_size(header), header.Flags, header.RedirType,
-                 redir_target.empty() ? nullptr : redir_target.c_str());
+                 redir_target.empty() ? nullptr : redir_target.c_str(),
+                 header.FileAttr, mtime);
     if (callback_code < 0) {
       RARCloseArchive(handle);
       return ZMU_UNRAR_ABORTED;
@@ -216,9 +220,11 @@ extern "C" int zmu_unrar_extract(const char *archive, const char *password,
     std::string path = file_name_utf8(header);
     std::string redir_target = redir_name_utf8(header);
     char destination[8192]{};
+    std::uint64_t mtime = ((std::uint64_t)header.MtimeHigh << 32) | header.MtimeLow;
     int callback_code = callback(
         user, path.c_str(), unpacked_size(header), header.Flags,
         header.RedirType, redir_target.empty() ? nullptr : redir_target.c_str(),
+        header.FileAttr, mtime,
         destination, sizeof(destination));
     if (callback_code < 0) {
       RARCloseArchive(handle);

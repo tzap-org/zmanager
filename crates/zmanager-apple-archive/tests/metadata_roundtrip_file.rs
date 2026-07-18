@@ -7,7 +7,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use zmanager_apple_archive::{
-        ArchiveReader, ArchiveWriter, CreateOptions, EntryMetadata, CompressionAlgorithm,
+        ArchiveReader, ArchiveWriter, CompressionAlgorithm, CreateOptions, EntryMetadata,
     };
 
     // Helper to create a temporary file path, write an archive, then read it back.
@@ -20,10 +20,13 @@ mod tests {
 
         // Write archive to the temporary file.
         {
-            let mut writer = ArchiveWriter::create(&temp_path, CreateOptions {
-                compression: algo,
-                ..Default::default()
-            })
+            let mut writer = ArchiveWriter::create(
+                &temp_path,
+                CreateOptions {
+                    compression: algo,
+                    ..Default::default()
+                },
+            )
             .expect("create writer");
             writer
                 .append_directory("test_dir", metadata)
@@ -32,10 +35,7 @@ mod tests {
         }
         // Read back from the file.
         let mut reader = ArchiveReader::open(&temp_path).expect("open reader");
-        let entry = reader
-            .next_entry()
-            .expect("read entry")
-            .expect("got entry");
+        let entry = reader.next_entry().expect("read entry").expect("got entry");
         // Clean up the temporary file.
         let _ = fs::remove_file(&temp_path);
         entry.metadata()

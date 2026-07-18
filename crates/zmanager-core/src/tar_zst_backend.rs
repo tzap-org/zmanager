@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder, EntryType, Header};
 
 #[cfg(unix)]
-const TAR_MODE_MASK: u32 = 0o7777;
+const TAR_MODE_MASK: u32 = 0o0777;
 
 /// Options for `.tar.zst` creation.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -594,6 +594,7 @@ fn materialize_tar_entry<R: Read>(
         ),
         ExtractionEntryKind::Symlink { target } => {
             write_symlink(target, destination_path)?;
+            apply_symlink_mtime(destination_path, metadata.mtime);
             Ok(0)
         }
         ExtractionEntryKind::Hardlink { .. } => {
@@ -721,6 +722,18 @@ fn apply_metadata(path: &Path, metadata: TarEntryMetadata) -> Result<(), TarZstd
     }
 
     Ok(())
+}
+
+/// Best-effort mtime restoration for symlinks.
+///
+/// Uses `set_symlink_file_times` to avoid following the link. Errors are
+/// silently ignored because some filesystems do not support symlink timestamps.
+fn apply_symlink_mtime(path: &Path, mtime: Option<u64>) {
+    if let Some(mtime) = mtime
+        && let Ok(mtime) = i64::try_from(mtime) {
+            let ft = filetime::FileTime::from_unix_time(mtime, 0);
+            let _ = filetime::set_symlink_file_times(path, ft, ft);
+        }
 }
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), TarZstdError> {
@@ -1038,8 +1051,13 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            
+            // Add a symlink to test symlink metadata
+            std::os::unix::fs::symlink("script.sh", temp.path("project/link.sh")).unwrap();
+            // Set a specific mtime on the symlink
+            let time = filetime::FileTime::from_unix_time(1500000000, 0);
+            filetime::set_symlink_file_times(temp.path("project/link.sh"), time, time).unwrap();
         }
 
         let archive = temp.path("archive.tar.zst");
@@ -1049,7 +1067,6 @@ mod tests {
             &archive,
             &TarZstdCreateOptions {
                 preserve_metadata: true,
-
                 ..TarZstdCreateOptions::default()
             },
         )
@@ -1058,15 +1075,20 @@ mod tests {
         extract_tar_zst(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
         let out_path = temp.path("out/project/script.sh");
-
+        
         #[allow(unused_variables)]
         let metadata = fs::metadata(&out_path).unwrap();
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+            
+            // Verify symlink metadata
+            let link_metadata = fs::symlink_metadata(temp.path("out/project/link.sh")).unwrap();
+            let link_mtime = filetime::FileTime::from_last_modification_time(&link_metadata);
+            assert!(link_metadata.is_symlink());
+            assert_eq!(link_mtime.unix_seconds(), 1500000000);
         }
     }
 

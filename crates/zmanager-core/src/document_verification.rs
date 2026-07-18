@@ -90,6 +90,7 @@ impl fmt::Display for TzapOfflineVerificationError {
     }
 }
 
+#[must_use] 
 pub fn verify_tzap_document_envelope_offline_json(
     bytes: &[u8],
     options: &TzapOfflineVerificationOptions<'_>,

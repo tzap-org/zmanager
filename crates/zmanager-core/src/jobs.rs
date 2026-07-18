@@ -51,9 +51,9 @@ pub enum JobKind {
     TzapCreate,
     /// TZAP extraction.
     TzapExtract,
-    /// AppleArchive creation.
+    /// `AppleArchive` creation.
     AppleArchiveCreate,
-    /// AppleArchive extraction.
+    /// `AppleArchive` extraction.
     AppleArchiveExtract,
     /// Broad libarchive-backed extraction.
     ArchiveExtract,
@@ -419,10 +419,9 @@ impl ProgressCoalescer {
             if self.latest_path.as_deref() != Some(display_path.as_str()) {
                 self.latest_path = Some(display_path.clone());
             }
-            if !self
+            if self
                 .recent_paths
-                .back()
-                .is_some_and(|(recent_identity, _)| *recent_identity == identity)
+                .back().is_none_or(|(recent_identity, _)| *recent_identity != identity)
             {
                 if let Some(position) = self
                     .recent_paths
@@ -1123,14 +1122,14 @@ pub fn run_tar_zst_create_job_from_sources_with_plan_options(
     finish_tar_zst_create_result(result, sink)
 }
 
-/// Runs an AppleArchive create job for multiple source roots with explicit
+/// Runs an `AppleArchive` create job for multiple source roots with explicit
 /// planning options and emits lifecycle/progress events.
 ///
 /// Partial output state: cancellation can leave a partial destination archive.
 ///
 /// # Errors
 ///
-/// Returns [`AppleArchiveError`] when planning, AppleArchive creation,
+/// Returns [`AppleArchiveError`] when planning, `AppleArchive` creation,
 /// filesystem I/O, or cancellation fails.
 pub fn run_apple_archive_create_job_from_sources_with_plan_options(
     sources: &[PathBuf],
@@ -1344,7 +1343,7 @@ pub fn run_tar_zst_extract_job_with_policy(
     finish_tar_zst_extract_result(result, sink)
 }
 
-/// Runs an AppleArchive extract job with an explicit extraction policy while
+/// Runs an `AppleArchive` extract job with an explicit extraction policy while
 /// emitting lifecycle/progress events.
 ///
 /// Partial output state: cancellation can leave already-extracted files in the
@@ -1352,7 +1351,7 @@ pub fn run_tar_zst_extract_job_with_policy(
 ///
 /// # Errors
 ///
-/// Returns [`AppleArchiveError`] when AppleArchive reading, extraction safety,
+/// Returns [`AppleArchiveError`] when `AppleArchive` reading, extraction safety,
 /// filesystem I/O, or cancellation fails.
 pub fn run_apple_archive_extract_job_with_policy(
     archive_path: impl AsRef<Path>,

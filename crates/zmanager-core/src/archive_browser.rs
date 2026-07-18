@@ -129,7 +129,7 @@ pub enum ArchiveBrowserError {
     SevenZ(SevenZError),
     /// TZAP backend failed.
     Tzap(TzapError),
-    /// AppleArchive backend failed.
+    /// `AppleArchive` backend failed.
     AppleArchive(AppleArchiveError),
     /// Libarchive backend failed.
     Libarchive(LibarchiveError),

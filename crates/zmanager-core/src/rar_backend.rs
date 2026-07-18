@@ -30,6 +30,10 @@ pub struct RarListEntry {
     pub encrypted: bool,
     /// Whether the entry is part of a solid archive.
     pub solid: bool,
+    /// Original file attributes (Unix or Windows).
+    pub file_attr: u32,
+    /// Modification time (Windows FILETIME).
+    pub mtime: u64,
 }
 
 impl RarListEntry {
@@ -42,6 +46,8 @@ impl RarListEntry {
             link_target: self.link_target,
             encrypted: self.encrypted,
             solid: self.solid,
+            file_attr: self.file_attr,
+            mtime: self.mtime,
         }
     }
 }
@@ -187,6 +193,8 @@ pub fn list_rar_with_password(
             link_target: entry.link_target,
             encrypted: entry.encrypted,
             solid: entry.solid,
+            file_attr: entry.file_attr,
+            mtime: entry.mtime,
         })
         .collect();
 
@@ -283,7 +291,7 @@ fn extract_rar_inner(
         password,
         entries,
         overwrite_resolver,
-        context.as_deref_mut(),
+        context,
     )
 }
 
@@ -308,7 +316,9 @@ fn extract_rar_inner_with_entries(
 
     let PlannedRarExtraction {
         selections,
+        metadata_map,
         deferred_links,
+        deferred_dirs,
         entry_progress,
         mut report,
     } = plan_rar_entries(entries, &destination_root, policy, overwrite_resolver)?;
@@ -319,7 +329,7 @@ fn extract_rar_inner_with_entries(
         }
     }
 
-    match context.as_deref_mut() {
+    match context {
         Some(context) => {
             let mut progress = |path: String, bytes: u64| {
                 context.bytes_processed(Some(path.as_str()), bytes);
@@ -336,16 +346,38 @@ fn extract_rar_inner_with_entries(
             zmanager_unrar::extract_selected_with_progress(archive, password, &selections, None)?;
         }
     }
+
+    for (archive_path, dest_path) in &selections {
+        if let Some(&(file_attr, mtime)) = metadata_map.get(archive_path) {
+            apply_rar_metadata(dest_path, file_attr, mtime).map_err(|source| {
+                RarBackendError::Io {
+                    path: dest_path.clone(),
+                    source,
+                }
+            })?;
+        }
+    }
+
     report.written_entries += selections.len();
     for link in deferred_links {
         materialize_deferred_link(&link, &mut report)?;
     }
+
+    for (dir_path, file_attr, mtime) in deferred_dirs.into_iter().rev() {
+        apply_rar_metadata(&dir_path, file_attr, mtime).map_err(|source| RarBackendError::Io {
+            path: dir_path,
+            source,
+        })?;
+    }
+
     Ok(report)
 }
 
 struct PlannedRarExtraction {
     selections: BTreeMap<String, PathBuf>,
+    metadata_map: BTreeMap<String, (u32, u64)>,
     deferred_links: Vec<DeferredLink>,
+    deferred_dirs: Vec<(PathBuf, u32, u64)>,
     entry_progress: Vec<(String, u64)>,
     report: RarExtractReport,
 }
@@ -364,7 +396,9 @@ fn plan_rar_entries(
         None => ExtractionSafetyPlanner::new(destination, policy),
     };
     let mut selections = BTreeMap::new();
+    let mut metadata_map = BTreeMap::new();
     let mut deferred_links = Vec::new();
+    let mut deferred_dirs = Vec::new();
     let mut entry_progress = Vec::new();
     let mut report = RarExtractReport {
         written_entries: 0,
@@ -403,7 +437,9 @@ fn plan_rar_entries(
                     destination_path,
                     replace_existing,
                     selections: &mut selections,
+                    metadata_map: &mut metadata_map,
                     deferred_links: &mut deferred_links,
+                    deferred_dirs: &mut deferred_dirs,
                     entry_progress: &mut entry_progress,
                     report: &mut report,
                 },
@@ -419,7 +455,9 @@ fn plan_rar_entries(
 
     Ok(PlannedRarExtraction {
         selections,
+        metadata_map,
         deferred_links,
+        deferred_dirs,
         entry_progress,
         report,
     })
@@ -439,7 +477,9 @@ struct WritableEntryPlan<'a> {
     destination_path: PathBuf,
     replace_existing: bool,
     selections: &'a mut BTreeMap<String, PathBuf>,
+    metadata_map: &'a mut BTreeMap<String, (u32, u64)>,
     deferred_links: &'a mut Vec<DeferredLink>,
+    deferred_dirs: &'a mut Vec<(PathBuf, u32, u64)>,
     entry_progress: &'a mut Vec<(String, u64)>,
     report: &'a mut RarExtractReport,
 }
@@ -454,7 +494,7 @@ fn plan_writable_entry(
         .push((entry.path.clone(), entry.unpacked_size));
 
     match entry.kind {
-        RarEntryKind::Directory => plan_directory_entry(&mut plan)?,
+        RarEntryKind::Directory => plan_directory_entry(&entry, &mut plan)?,
         RarEntryKind::File => plan_file_entry(entry, plan)?,
         RarEntryKind::Symlink => plan_symlink_entry(&entry, plan)?,
         RarEntryKind::Hardlink | RarEntryKind::FileCopy => {
@@ -467,7 +507,10 @@ fn plan_writable_entry(
     Ok(())
 }
 
-fn plan_directory_entry(plan: &mut WritableEntryPlan<'_>) -> Result<(), RarBackendError> {
+fn plan_directory_entry(
+    entry: &zmanager_unrar::RarEntry,
+    plan: &mut WritableEntryPlan<'_>,
+) -> Result<(), RarBackendError> {
     if plan.replace_existing {
         remove_destination(&plan.destination_path)?;
     }
@@ -475,6 +518,8 @@ fn plan_directory_entry(plan: &mut WritableEntryPlan<'_>) -> Result<(), RarBacke
         path: plan.destination_path.clone(),
         source,
     })?;
+    plan.deferred_dirs
+        .push((plan.destination_path.clone(), entry.file_attr, entry.mtime));
     plan.report.written_entries += 1;
     Ok(())
 }
@@ -493,6 +538,8 @@ fn plan_file_entry(
         })?;
     }
     plan.report.written_bytes += entry.unpacked_size;
+    plan.metadata_map
+        .insert(entry.path.clone(), (entry.file_attr, entry.mtime));
     plan.selections.insert(entry.path, plan.destination_path);
     Ok(())
 }
@@ -508,6 +555,8 @@ fn plan_symlink_entry(
         kind: DeferredLinkKind::Symlink {
             target: PathBuf::from(target),
         },
+        file_attr: entry.file_attr,
+        mtime: entry.mtime,
     });
     Ok(())
 }
@@ -528,6 +577,8 @@ fn plan_hardlink_like_entry(
         } else {
             DeferredLinkKind::FileCopy { source_path }
         },
+        file_attr: entry.file_attr,
+        mtime: entry.mtime,
     });
     Ok(())
 }
@@ -576,6 +627,8 @@ struct DeferredLink {
     destination_path: PathBuf,
     replace_existing: bool,
     kind: DeferredLinkKind,
+    file_attr: u32,
+    mtime: u64,
 }
 
 enum DeferredLinkKind {
@@ -621,7 +674,39 @@ fn materialize_deferred_link(
         }
     }
 
+    apply_rar_metadata(&link.destination_path, link.file_attr, link.mtime).map_err(|source| {
+        RarBackendError::Io {
+            path: link.destination_path.clone(),
+            source,
+        }
+    })?;
+
     report.written_entries += 1;
+    Ok(())
+}
+
+fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        if (file_attr & 0xFFFF0000) != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = (file_attr >> 16) & 0o0777;
+            fs::set_permissions(path, fs::Permissions::from_mode(permissions))?;
+        }
+    }
+
+    if mtime != 0 {
+        let unix_secs = (mtime / 10_000_000).saturating_sub(11_644_473_600) as i64;
+        let nanos = ((mtime % 10_000_000) * 100) as u32;
+        let file_time = filetime::FileTime::from_unix_time(unix_secs, nanos);
+
+        let md = fs::symlink_metadata(path)?;
+        if md.is_symlink() {
+            filetime::set_symlink_file_times(path, file_time, file_time)?;
+        } else {
+            filetime::set_file_mtime(path, file_time)?;
+        }
+    }
     Ok(())
 }
 

@@ -272,12 +272,9 @@ pub const OFFICIAL_TZAP_ROOT_PINS: TzapRootPinSet = TzapRootPinSet {
 };
 
 pub fn certificate_pem_or_der_to_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    match X509::from_pem(bytes) {
-        Ok(certificate) => certificate.to_der().map_err(|error| error.to_string()),
-        Err(_) => {
-            X509::from_der(bytes).map_err(|error| error.to_string())?;
-            Ok(bytes.to_vec())
-        }
+    if let Ok(certificate) = X509::from_pem(bytes) { certificate.to_der().map_err(|error| error.to_string()) } else {
+        X509::from_der(bytes).map_err(|error| error.to_string())?;
+        Ok(bytes.to_vec())
     }
 }
 
@@ -542,9 +539,9 @@ fn validate_tzap_certificate_chain_der(
     })
 }
 
-fn parse_x509_chain<'a>(
-    chain_der: &'a [Vec<u8>],
-) -> Result<Vec<X509Certificate<'a>>, TzapCertificateProfileError> {
+fn parse_x509_chain(
+    chain_der: &[Vec<u8>],
+) -> Result<Vec<X509Certificate<'_>>, TzapCertificateProfileError> {
     chain_der
         .iter()
         .enumerate()
@@ -857,8 +854,8 @@ fn validate_leaf_certificate(
         TzapCertificateProfileError::LeafProfile {
             reason: "subject alternative name is invalid or duplicated",
         }
-    })? {
-        if san
+    })?
+        && san
             .value
             .general_names
             .iter()
@@ -868,7 +865,6 @@ fn validate_leaf_certificate(
                 reason: "MVP leaves must not contain DNS or IP subject alternative names",
             });
         }
-    }
 
     if !has_any_policy(certificate, &options.approved_leaf_policy_oids) {
         return Err(TzapCertificateProfileError::LeafProfile {
@@ -932,7 +928,7 @@ fn reject_forbidden_extended_key_usage(
             .value
             .other
             .iter()
-            .map(|oid| oid.to_id_string())
+            .map(x509_parser::asn1_rs::Oid::to_id_string)
             .collect::<Vec<_>>();
         if other_oids
             .iter()

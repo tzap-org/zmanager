@@ -296,18 +296,18 @@ fn link_bundled_archive_dependencies(target: &str) {
 
         // Link static dependencies from sys crates
         let lz4_out_dir = env::var("DEP_LZ4_ROOT").expect("DEP_LZ4_ROOT not found");
-        println!("cargo:rustc-link-search=native={}", lz4_out_dir);
-        println!("cargo:rustc-link-search=native={}/lib", lz4_out_dir);
+        println!("cargo:rustc-link-search=native={lz4_out_dir}");
+        println!("cargo:rustc-link-search=native={lz4_out_dir}/lib");
         println!("cargo:rustc-link-lib=static=lz4");
 
         let lzma_out_dir = env::var("DEP_LZMA_ROOT").expect("DEP_LZMA_ROOT not found");
-        println!("cargo:rustc-link-search=native={}", lzma_out_dir);
-        println!("cargo:rustc-link-search=native={}/lib", lzma_out_dir);
+        println!("cargo:rustc-link-search=native={lzma_out_dir}");
+        println!("cargo:rustc-link-search=native={lzma_out_dir}/lib");
         println!("cargo:rustc-link-lib=static=lzma");
 
         let zstd_out_dir = env::var("DEP_ZSTD_ROOT").expect("DEP_ZSTD_ROOT not found");
-        println!("cargo:rustc-link-search=native={}", zstd_out_dir);
-        println!("cargo:rustc-link-search=native={}/lib", zstd_out_dir);
+        println!("cargo:rustc-link-search=native={zstd_out_dir}");
+        println!("cargo:rustc-link-search=native={zstd_out_dir}/lib");
         println!("cargo:rustc-link-lib=static=zstd");
     } else if target.contains("linux") && target.contains("musl") {
         println!("cargo:rustc-link-lib=pthread");
@@ -438,7 +438,7 @@ fn print_link_search(path: impl AsRef<Path>) {
 }
 
 fn find_static_library(root_var: &str, lib_name: &str) -> PathBuf {
-    let root = env::var(root_var).unwrap_or_else(|_| panic!("{} not found", root_var));
+    let root = env::var(root_var).unwrap_or_else(|_| panic!("{root_var} not found"));
     let root_path = Path::new(&root);
     let candidates = [
         root_path.join(lib_name),
@@ -450,8 +450,7 @@ fn find_static_library(root_var: &str, lib_name: &str) -> PathBuf {
         }
     }
     panic!(
-        "Could not find static library {} under {}: searched {:?}",
-        lib_name, root, candidates
+        "Could not find static library {lib_name} under {root}: searched {candidates:?}"
     );
 }
 
@@ -468,5 +467,5 @@ fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
             return p;
         }
     }
-    panic!("Could not find include directory for {}", var_name);
+    panic!("Could not find include directory for {var_name}");
 }
