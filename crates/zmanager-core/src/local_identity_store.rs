@@ -727,7 +727,7 @@ fn status_cache_from_json(
     let object = json_object(value, "certificate_status_cache[]")?;
     Ok(TzapCertificateStatusCacheRecord {
         certificate_sha256: json_string(object, "certificate_sha256")?,
-        status: TzapCertificateStatus::from_str(&json_string(object, "status")?)
+        status: TzapCertificateStatus::parse(&json_string(object, "status")?)
             .ok_or(TzapLocalIdentityStoreError::InvalidField { field: "status" })?,
         this_update_unix_seconds: json_u64(object, "this_update_unix_seconds")?,
         next_update_unix_seconds: json_u64(object, "next_update_unix_seconds")?,
@@ -769,19 +769,17 @@ fn contact_from_json(value: &Value) -> Result<TzapContactRecord, TzapLocalIdenti
     let object = json_object(value, "contacts[]")?;
     let trust_anchor_type = match object.get("trust_anchor_type") {
         Some(Value::Null) | None => trust::TzapTrustAnchorType::Untrusted,
-        Some(_) => trust::TzapTrustAnchorType::from_str(&json_string(object, "trust_anchor_type")?)
+        Some(_) => trust::TzapTrustAnchorType::parse(&json_string(object, "trust_anchor_type")?)
             .ok_or(TzapLocalIdentityStoreError::InvalidField {
                 field: "trust_anchor_type",
             })?,
     };
     let verification_state = match object.get("verification_state") {
         Some(Value::Null) | None => trust::TzapVerificationState::CryptographicallyIntactOffline,
-        Some(_) => {
-            trust::TzapVerificationState::from_str(&json_string(object, "verification_state")?)
-                .ok_or(TzapLocalIdentityStoreError::InvalidField {
-                    field: "verification_state",
-                })?
-        }
+        Some(_) => trust::TzapVerificationState::parse(&json_string(object, "verification_state")?)
+            .ok_or(TzapLocalIdentityStoreError::InvalidField {
+                field: "verification_state",
+            })?,
     };
     let missing_status_caveat = match object.get("missing_status_caveat") {
         Some(Value::Null) | None => true,
@@ -820,7 +818,7 @@ fn public_metadata_from_json(
         public_signer_id: json_string(object, "public_signer_id")?,
         public_org_id: json_optional_string(object, "public_org_id")?,
         public_device_id: json_string(object, "public_device_id")?,
-        assurance_level: trust::TzapIdentityAssurance::from_str(&json_string(
+        assurance_level: trust::TzapIdentityAssurance::parse(&json_string(
             object,
             "assurance_level",
         )?)

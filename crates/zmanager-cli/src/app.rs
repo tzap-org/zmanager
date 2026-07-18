@@ -1040,6 +1040,7 @@ impl Default for CreateRequest {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct ExtractRequest {
     archive: String,
     destination: Option<PathBuf>,
@@ -1659,6 +1660,7 @@ fn auth_command(args: &[String], global: GlobalOptions) -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut context = TzapCliContext::default();
     let mut endpoints = AuthEndpointOptions::default();
@@ -1765,6 +1767,7 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[allow(clippy::too_many_lines)]
 fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut context = TzapCliContext::default();
     let mut state = None;
@@ -2213,13 +2216,16 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 certificate_id = Some(take_value_or_exit(args, &mut index, "--certificate-id"));
             }
             "--output" => {
-                output = Some(PathBuf::from(
-                    take_value_or_exit(args, &mut index, "--output"),
-                ));
+                output = Some(PathBuf::from(take_value_or_exit(
+                    args, &mut index, "--output",
+                )));
             }
             "--claimed-signing-time" => {
-                claimed_signing_time =
-                    Some(take_value_or_exit(args, &mut index, "--claimed-signing-time"));
+                claimed_signing_time = Some(take_value_or_exit(
+                    args,
+                    &mut index,
+                    "--claimed-signing-time",
+                ));
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2291,7 +2297,7 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut custom_roots = Vec::new();
     let mut custom_root_cert_paths = Vec::new();
     let mut status_response_path = None;
-    let mut verifier_time = current_unix_seconds() as i64;
+    let mut verifier_time = current_unix_seconds().cast_signed();
     let mut index = 0usize;
     while index < args.len() {
         if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
@@ -2302,9 +2308,11 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 custom_roots.push(take_value_or_exit(args, &mut index, "--custom-trust-root"));
             }
             "--custom-trust-root-cert" => {
-                custom_root_cert_paths.push(PathBuf::from(
-                    take_value_or_exit(args, &mut index, "--custom-trust-root-cert"),
-                ));
+                custom_root_cert_paths.push(PathBuf::from(take_value_or_exit(
+                    args,
+                    &mut index,
+                    "--custom-trust-root-cert",
+                )));
             }
             "--status-response" => {
                 status_response_path =
@@ -2582,9 +2590,11 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
                 custom_roots.push(take_value_or_exit(args, &mut index, "--custom-trust-root"));
             }
             "--custom-trust-root-cert" => {
-                custom_root_cert_paths.push(PathBuf::from(
-                    take_value_or_exit(args, &mut index, "--custom-trust-root-cert"),
-                ));
+                custom_root_cert_paths.push(PathBuf::from(take_value_or_exit(
+                    args,
+                    &mut index,
+                    "--custom-trust-root-cert",
+                )));
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2619,7 +2629,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
             }
         };
     let options = zmanager_core::contact_card::TzapContactCardImportOptions {
-        verifier_time_unix_seconds: current_unix_seconds() as i64,
+        verifier_time_unix_seconds: current_unix_seconds().cast_signed(),
         official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
         official_root_certificates_der: Vec::new(),
         custom_trust_root_sha256: custom_roots,
@@ -2686,9 +2696,9 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
                 device_label = take_value_or_exit(args, &mut index, "--device-label");
             }
             "--output" => {
-                output = Some(PathBuf::from(
-                    take_value_or_exit(args, &mut index, "--output"),
-                ));
+                output = Some(PathBuf::from(take_value_or_exit(
+                    args, &mut index, "--output",
+                )));
             }
             value => {
                 return command_usage_error(
@@ -2745,6 +2755,7 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
         print_help_stdout(SHARE_HELP, &global);
@@ -3392,6 +3403,7 @@ fn certificate_summary_value(
     })
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn retirement_completion_label(
     completion: zmanager_core::certificate_lifecycle::TzapRetirementCompletion,
 ) -> &'static str {
@@ -3909,7 +3921,7 @@ fn session_from_json(
     value: &Value,
 ) -> Result<zmanager_core::auth_client::TzapSessionRecord, String> {
     let assurance = json_string_field(value, "identity_assurance")?;
-    let identity_assurance = zmanager_core::trust::TzapIdentityAssurance::from_str(&assurance)
+    let identity_assurance = zmanager_core::trust::TzapIdentityAssurance::parse(&assurance)
         .ok_or_else(|| "invalid identity assurance".to_owned())?;
     Ok(zmanager_core::auth_client::TzapSessionRecord {
         audience: json_string_field(value, "audience")?,
@@ -4818,6 +4830,7 @@ fn create_stream(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Result<(), String> {
     if request.tzap_recipient_cert.is_some() {
         if format != ArchiveFormat::Tzap {
@@ -5851,6 +5864,7 @@ fn parse_list_request(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
     if let Some(code) = validate_recipient_key_open_option(
         "list",
@@ -7242,6 +7256,7 @@ fn validate_recipient_key_open_option(
     None
 }
 
+#[allow(clippy::too_many_lines)]
 fn list_entries_with_password(
     archive: &str,
     password: Option<&str>,
@@ -7258,7 +7273,8 @@ fn list_entries_with_password(
                             zmanager_core::zip_backend::ZipEntryKind::File => "file",
                             zmanager_core::zip_backend::ZipEntryKind::Directory => "directory",
                             zmanager_core::zip_backend::ZipEntryKind::Symlink => "symlink",
-                        }.to_owned(),
+                        }
+                        .to_owned(),
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),
@@ -7276,9 +7292,12 @@ fn list_entries_with_password(
                     .map(|entry| GenericEntry {
                         kind: match entry.kind {
                             zmanager_core::sevenz_backend::SevenZEntryKind::File => "file",
-                            zmanager_core::sevenz_backend::SevenZEntryKind::Directory => "directory",
+                            zmanager_core::sevenz_backend::SevenZEntryKind::Directory => {
+                                "directory"
+                            }
                             zmanager_core::sevenz_backend::SevenZEntryKind::AntiItem => "anti-item",
-                        }.to_owned(),
+                        }
+                        .to_owned(),
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),

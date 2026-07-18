@@ -3253,7 +3253,7 @@ fn session_from_json(
     value: &Value,
 ) -> Result<zmanager_core::auth_client::TzapSessionRecord, String> {
     let assurance = required_request_string(value, "identity_assurance")?;
-    let identity_assurance = trust::TzapIdentityAssurance::from_str(&assurance)
+    let identity_assurance = trust::TzapIdentityAssurance::parse(&assurance)
         .ok_or_else(|| "invalid identity assurance".to_owned())?;
     Ok(zmanager_core::auth_client::TzapSessionRecord {
         audience: required_request_string(value, "audience")?,
@@ -3361,6 +3361,7 @@ fn certificate_summary_json(certificate: &TzapEnrolledCertificateRecord) -> Valu
     })
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn retirement_completion_label(
     completion: zmanager_core::certificate_lifecycle::TzapRetirementCompletion,
 ) -> &'static str {
@@ -4061,7 +4062,7 @@ fn owned_c_string(value: &str) -> *mut c_char {
 }
 
 fn progress_path_identity_hex(identity: &[u8; 32]) -> String {
-    identity.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex_lower(identity)
 }
 
 fn event_to_json_value(event: &JobEvent) -> Value {

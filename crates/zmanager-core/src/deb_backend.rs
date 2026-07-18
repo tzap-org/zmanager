@@ -278,11 +278,12 @@ fn copy_synthetic_file(
 
             #[cfg(unix)]
             {
-                fs::set_permissions(&destination_path, source_metadata.permissions())
-                    .map_err(|source| DebError::Io {
+                fs::set_permissions(&destination_path, source_metadata.permissions()).map_err(
+                    |source| DebError::Io {
                         path: destination_path.clone(),
                         source,
-                    })?;
+                    },
+                )?;
             }
 
             #[cfg(not(unix))]

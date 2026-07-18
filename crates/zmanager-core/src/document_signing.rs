@@ -97,6 +97,7 @@ impl From<document_envelope::TzapDocumentEnvelopeError> for TzapDocumentSigningE
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn sign_tzap_document_payload(
     store: &impl TzapLocalIdentityStore,
     request: &TzapDocumentSigningRequest,
@@ -221,7 +222,8 @@ mod tests {
             "body": {"amount": 42}
         });
 
-        let envelope = sign_tzap_document_payload(&store, &fixture.request(), payload).unwrap();
+        let envelope =
+            sign_tzap_document_payload(&store, &SigningFixture::request(), payload).unwrap();
         let parsed = validate_tzap_document_envelope_value(&envelope).unwrap();
         let public_key = PKey::public_key_from_der(&fixture.public_key_spki_der).unwrap();
         assert!(
@@ -254,7 +256,7 @@ mod tests {
             .save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory)
             .unwrap();
         assert!(matches!(
-            sign_tzap_document_payload(&store, &fixture.request(), payload.clone()),
+            sign_tzap_document_payload(&store, &SigningFixture::request(), payload.clone()),
             Err(TzapDocumentSigningError::PrivateKeyNotFound)
         ));
 
@@ -263,8 +265,9 @@ mod tests {
             (TzapLocalCertificateState::Suspended, "not_active"),
         ] {
             let store = fixture.store(state, false, None);
-            let error = sign_tzap_document_payload(&store, &fixture.request(), payload.clone())
-                .unwrap_err();
+            let error =
+                sign_tzap_document_payload(&store, &SigningFixture::request(), payload.clone())
+                    .unwrap_err();
             assert!(matches!(
                 error,
                 TzapDocumentSigningError::CertificateNotActive
@@ -272,7 +275,7 @@ mod tests {
             assert_eq!(expected, "not_active");
         }
 
-        let mut future = fixture.request();
+        let mut future = SigningFixture::request();
         future.now_unix_seconds = 50;
         let store = fixture.store(TzapLocalCertificateState::Active, false, None);
         assert!(matches!(
@@ -280,7 +283,7 @@ mod tests {
             Err(TzapDocumentSigningError::CertificateNotYetValid)
         ));
 
-        let mut expired = fixture.request();
+        let mut expired = SigningFixture::request();
         expired.now_unix_seconds = 200;
         assert!(matches!(
             sign_tzap_document_payload(&store, &expired, payload.clone()),
@@ -295,7 +298,7 @@ mod tests {
 
         let store = fixture.store(TzapLocalCertificateState::Active, true, None);
         assert!(matches!(
-            sign_tzap_document_payload(&store, &fixture.request(), payload.clone()),
+            sign_tzap_document_payload(&store, &SigningFixture::request(), payload.clone()),
             Err(TzapDocumentSigningError::IssuerBlocked)
         ));
 
@@ -305,12 +308,12 @@ mod tests {
             Some(TzapCertificateStatus::Suspended),
         );
         assert!(matches!(
-            sign_tzap_document_payload(&store, &fixture.request(), payload.clone()),
+            sign_tzap_document_payload(&store, &SigningFixture::request(), payload.clone()),
             Err(TzapDocumentSigningError::CertificateStatusBlocked)
         ));
 
         let store = fixture.store(TzapLocalCertificateState::Active, false, None);
-        let mut request = fixture.request();
+        let mut request = SigningFixture::request();
         request.signature_algorithm = "RSA".to_owned();
         assert!(matches!(
             sign_tzap_document_payload(&store, &request, payload.clone()),
@@ -320,7 +323,7 @@ mod tests {
         let mut bad_payload = valid_payload();
         bad_payload["tzap_signature"] = json!("nope");
         assert!(matches!(
-            sign_tzap_document_payload(&store, &fixture.request(), bad_payload),
+            sign_tzap_document_payload(&store, &SigningFixture::request(), bad_payload),
             Err(TzapDocumentSigningError::Envelope(_))
         ));
     }
@@ -346,7 +349,7 @@ mod tests {
             }
         }
 
-        fn request(&self) -> TzapDocumentSigningRequest {
+        fn request() -> TzapDocumentSigningRequest {
             TzapDocumentSigningRequest::new(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert-1", 150)
         }
 

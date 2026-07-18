@@ -443,6 +443,7 @@ pub fn test_archive_with_password_filter(
     Ok(report)
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_archive_inner(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -520,19 +521,17 @@ fn extract_archive_inner(
                 replace_existing,
                 link_target_path,
                 ..
-            } => {
-                write_entry(
-                    &mut archive,
-                    &owned_entry,
-                    &destination_path,
-                    replace_existing,
-                    link_target_path.as_deref(),
-                    &mut report,
-                    context.as_deref_mut(),
-                    &mut deferred_directories,
-                    &mut io_buffer,
-                )?
-            }
+            } => write_entry(
+                &mut archive,
+                &owned_entry,
+                &destination_path,
+                replace_existing,
+                link_target_path.as_deref(),
+                &mut report,
+                context.as_deref_mut(),
+                &mut deferred_directories,
+                &mut io_buffer,
+            )?,
             ExtractionDecision::Skip { reason, .. } => {
                 archive.skip_data()?;
                 report.skipped_entries += 1;
@@ -993,6 +992,7 @@ fn extraction_kind(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_entry(
     archive: &mut ReadArchive,
     entry: &OwnedEntry,
@@ -1346,16 +1346,16 @@ mod tests {
         let directory_metadata = fs::metadata(temp.path("out/payload")).unwrap();
         let file_metadata = fs::metadata(temp.path("out/payload/run.sh")).unwrap();
         let link_metadata = fs::symlink_metadata(temp.path("out/payload/link.sh")).unwrap();
-        
+
         assert_eq!(directory_metadata.mode() & 0o7777, 0o750);
         assert_eq!(file_metadata.mode() & 0o7777, 0o751);
-        
+
         assert_eq!(
             directory_metadata.mtime(),
             i64::try_from(DIRECTORY_MTIME).unwrap()
         );
         assert_eq!(file_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
-        
+
         assert!(link_metadata.is_symlink());
         assert_eq!(link_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
     }
@@ -1716,7 +1716,7 @@ mod tests {
         builder
             .append_data(&mut file_header, file_path, contents)
             .unwrap();
-            
+
         let mut link_header = tar::Header::new_gnu();
         link_header.set_entry_type(tar::EntryType::Symlink);
         link_header.set_size(0);

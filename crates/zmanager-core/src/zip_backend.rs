@@ -1397,15 +1397,17 @@ fn extract_zip_inner(
             } => write_zip_entry(
                 &mut file,
                 &entry,
-                &destination_path,
-                replace_existing,
-                link_target_path.as_deref(),
-                &mut report,
-                context.as_deref_mut(),
-                unix_mode,
-                modified_time,
-                &mut deferred_directories,
-                &mut io_buffer,
+                ZipEntryWriteContext {
+                    destination_path: &destination_path,
+                    replace_existing,
+                    link_target_path: link_target_path.as_deref(),
+                    report: &mut report,
+                    job_context: context.as_deref_mut(),
+                    unix_mode,
+                    modified_time,
+                    deferred_directories: &mut deferred_directories,
+                    io_buffer: &mut io_buffer,
+                },
             )?,
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
@@ -1538,17 +1540,18 @@ fn zip_options<'a>(
             options = options.unix_permissions(mode);
         }
         if let Some(modified) = entry.modified
-            && let Ok(offset) = time::OffsetDateTime::try_from(modified)
-                && let Ok(dt) = zip::DateTime::from_date_and_time(
-                    u16::try_from(offset.year()).unwrap_or(1980),
-                    offset.month() as u8,
-                    offset.day(),
-                    offset.hour(),
-                    offset.minute(),
-                    offset.second(),
-                ) {
-                    options = options.last_modified_time(dt);
-                }
+            && let offset = time::OffsetDateTime::from(modified)
+            && let Ok(dt) = zip::DateTime::from_date_and_time(
+                u16::try_from(offset.year()).unwrap_or(1980),
+                u8::from(offset.month()),
+                offset.day(),
+                offset.hour(),
+                offset.minute(),
+                offset.second(),
+            )
+        {
+            options = options.last_modified_time(dt);
+        }
     }
 
     if let Some(password) = zip_password(create_options) {
@@ -1626,19 +1629,23 @@ fn extraction_entry_kind<R: Read>(
     Ok(ExtractionEntryKind::File)
 }
 
-fn write_zip_entry<R: Read>(
-    file: &mut zip::read::ZipFile<'_, R>,
+struct ZipEntryWriteContext<'a, 'context> {
+    destination_path: &'a Path,
+    replace_existing: bool,
+    link_target_path: Option<&'a Path>,
+    report: &'a mut ZipExtractReport,
+    job_context: Option<&'a mut JobContext<'context>>,
+    unix_mode: Option<u32>,
+    modified_time: Option<zip::DateTime>,
+    deferred_directories: &'a mut Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)>,
+    io_buffer: &'a mut [u8],
+}
+
+fn prepare_zip_destination(
     entry: &ExtractionEntry,
     destination_path: &Path,
     replace_existing: bool,
-    link_target_path: Option<&Path>,
-    report: &mut ZipExtractReport,
-    context: Option<&mut JobContext<'_>>,
-    unix_mode: Option<u32>,
-    modified_time: Option<zip::DateTime>,
-    deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)>,
-    io_buffer: &mut [u8],
-) -> Result<u64, ZipBackendError> {
+) -> Result<(), ZipBackendError> {
     if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
             ZipBackendError::Io {
@@ -1647,6 +1654,26 @@ fn write_zip_entry<R: Read>(
             }
         })?;
     }
+    Ok(())
+}
+
+fn write_zip_entry<R: Read>(
+    file: &mut zip::read::ZipFile<'_, R>,
+    entry: &ExtractionEntry,
+    context: ZipEntryWriteContext<'_, '_>,
+) -> Result<u64, ZipBackendError> {
+    let ZipEntryWriteContext {
+        destination_path,
+        replace_existing,
+        link_target_path,
+        report,
+        job_context,
+        unix_mode,
+        modified_time,
+        deferred_directories,
+        io_buffer,
+    } = context;
+    prepare_zip_destination(entry, destination_path, replace_existing)?;
 
     match entry.kind {
         ExtractionEntryKind::Directory => {
@@ -1670,8 +1697,15 @@ fn write_zip_entry<R: Read>(
                     path: destination_path.to_path_buf(),
                     source,
                 })?;
-            let copied = if let Some(context) = context {
-                copy_with_progress(file, output, &entry.archive_path, destination_path, context, io_buffer)?
+            let copied = if let Some(context) = job_context {
+                copy_with_progress(
+                    file,
+                    output,
+                    &entry.archive_path,
+                    destination_path,
+                    context,
+                    io_buffer,
+                )?
             } else {
                 io::copy(file, output).map_err(|source| ZipBackendError::Io {
                     path: destination_path.to_path_buf(),
@@ -1694,7 +1728,7 @@ fn write_zip_entry<R: Read>(
                 report.skipped_entries += 1;
                 let warning = crate::safety::unsupported_symlink_warning(&entry.archive_path);
                 report.warnings.push(warning.clone());
-                if let Some(context) = context {
+                if let Some(context) = job_context {
                     context.warning(warning);
                 }
             } else {
@@ -1763,15 +1797,17 @@ fn apply_zip_metadata(
             time::Month::try_from(dt.month()).unwrap_or(time::Month::January),
             dt.day().max(1),
         )
-            && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
-                let primitive = time::PrimitiveDateTime::new(date, time_cmp);
-                let sys_time = std::time::SystemTime::from(primitive.assume_utc());
-                filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time))
-                    .map_err(|source| ZipBackendError::Io {
-                        path: path.to_path_buf(),
-                        source,
-                    })?;
-            }
+        && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second())
+    {
+        let primitive = time::PrimitiveDateTime::new(date, time_cmp);
+        let sys_time = std::time::SystemTime::from(primitive.assume_utc());
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time)).map_err(
+            |source| ZipBackendError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -1786,12 +1822,13 @@ fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) {
             time::Month::try_from(dt.month()).unwrap_or(time::Month::January),
             dt.day().max(1),
         )
-            && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
-                let primitive = time::PrimitiveDateTime::new(date, time_cmp);
-                let sys_time = std::time::SystemTime::from(primitive.assume_utc());
-                let ft = filetime::FileTime::from_system_time(sys_time);
-                let _ = filetime::set_symlink_file_times(path, ft, ft);
-            }
+        && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second())
+    {
+        let primitive = time::PrimitiveDateTime::new(date, time_cmp);
+        let sys_time = std::time::SystemTime::from(primitive.assume_utc());
+        let ft = filetime::FileTime::from_system_time(sys_time);
+        let _ = filetime::set_symlink_file_times(path, ft, ft);
+    }
 }
 
 fn apply_deferred_zip_directory_metadata(
@@ -1948,7 +1985,7 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
+        let mtime = filetime::FileTime::from_unix_time(1_500_000_000, 0);
 
         filetime::set_file_mtime(&path, mtime).unwrap();
 

@@ -389,6 +389,7 @@ pub fn extract_tar_zst_with_overwrite_resolver(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_tar_zst_inner(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -559,6 +560,7 @@ fn materialize_tar_write_decision<R: Read>(
     Ok(written_bytes)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn materialize_tar_entry<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     safety_entry: &ExtractionEntry,
@@ -750,10 +752,11 @@ fn apply_metadata(path: &Path, metadata: TarEntryMetadata) -> Result<(), TarZstd
 /// silently ignored because some filesystems do not support symlink timestamps.
 fn apply_symlink_mtime(path: &Path, mtime: Option<u64>) {
     if let Some(mtime) = mtime
-        && let Ok(mtime) = i64::try_from(mtime) {
-            let ft = filetime::FileTime::from_unix_time(mtime, 0);
-            let _ = filetime::set_symlink_file_times(path, ft, ft);
-        }
+        && let Ok(mtime) = i64::try_from(mtime)
+    {
+        let ft = filetime::FileTime::from_unix_time(mtime, 0);
+        let _ = filetime::set_symlink_file_times(path, ft, ft);
+    }
 }
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), TarZstdError> {
@@ -1072,11 +1075,11 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            
+
             // Add a symlink to test symlink metadata
             std::os::unix::fs::symlink("script.sh", temp.path("project/link.sh")).unwrap();
             // Set a specific mtime on the symlink
-            let time = filetime::FileTime::from_unix_time(1500000000, 0);
+            let time = filetime::FileTime::from_unix_time(1_500_000_000, 0);
             filetime::set_symlink_file_times(temp.path("project/link.sh"), time, time).unwrap();
         }
 
@@ -1095,7 +1098,7 @@ mod tests {
         extract_tar_zst(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
         let out_path = temp.path("out/project/script.sh");
-        
+
         #[allow(unused_variables)]
         let metadata = fs::metadata(&out_path).unwrap();
 
@@ -1103,12 +1106,12 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
-            
+
             // Verify symlink metadata
             let link_metadata = fs::symlink_metadata(temp.path("out/project/link.sh")).unwrap();
             let link_mtime = filetime::FileTime::from_last_modification_time(&link_metadata);
             assert!(link_metadata.is_symlink());
-            assert_eq!(link_mtime.unix_seconds(), 1500000000);
+            assert_eq!(link_mtime.unix_seconds(), 1_500_000_000);
         }
     }
 

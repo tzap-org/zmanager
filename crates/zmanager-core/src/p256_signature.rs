@@ -31,6 +31,7 @@ pub enum NonceMode {
 /// Fixed-width signature length for P-1363 `(r || s)` on P-256.
 pub const P256_P1363_SIGNATURE_LENGTH: usize = 64;
 const P256_COORDINATE_LENGTH: usize = 32;
+const P256_COORDINATE_LENGTH_I32: i32 = 32;
 
 /// Errors returned by the P-256 helpers.
 #[derive(Debug)]
@@ -86,7 +87,7 @@ pub fn verify_p256_sha256_p1363(
     let (order, half_order) = curve_orders(&public_key)?;
     let signature = decode_p256_p1363_signature(signature)?;
 
-    if !is_low_s(signature.s(), &order, &half_order)? {
+    if !is_low_s(signature.s(), &order, &half_order) {
         return Err(P256SignatureError::NonCanonicalLowS);
     }
 
@@ -100,9 +101,9 @@ pub fn encode_p256_p1363_signature(
 ) -> Result<[u8; P256_P1363_SIGNATURE_LENGTH], P256SignatureError> {
     let mut out = [0_u8; P256_P1363_SIGNATURE_LENGTH];
     out[..P256_COORDINATE_LENGTH]
-        .copy_from_slice(&signature.r().to_vec_padded(P256_COORDINATE_LENGTH as i32)?);
+        .copy_from_slice(&signature.r().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
     out[P256_COORDINATE_LENGTH..]
-        .copy_from_slice(&signature.s().to_vec_padded(P256_COORDINATE_LENGTH as i32)?);
+        .copy_from_slice(&signature.s().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
     Ok(out)
 }
 
@@ -152,7 +153,7 @@ fn normalize_low_s(
     order: &BigNumRef,
     half_order: &BigNumRef,
 ) -> Result<BigNum, P256SignatureError> {
-    if is_low_s(s, order, half_order)? {
+    if is_low_s(s, order, half_order) {
         Ok(s.to_owned()?)
     } else {
         let mut normalized = order.to_owned()?;
@@ -161,15 +162,15 @@ fn normalize_low_s(
     }
 }
 
-fn is_low_s(s: &BigNumRef, order: &BigNumRef, half_order: &BigNumRef) -> Result<bool, ErrorStack> {
+fn is_low_s(s: &BigNumRef, order: &BigNumRef, half_order: &BigNumRef) -> bool {
     if s.ucmp(order) != std::cmp::Ordering::Less {
-        return Ok(false);
+        return false;
     }
 
-    Ok(matches!(
+    matches!(
         s.ucmp(half_order),
         std::cmp::Ordering::Less | std::cmp::Ordering::Equal
-    ))
+    )
 }
 
 #[cfg(test)]

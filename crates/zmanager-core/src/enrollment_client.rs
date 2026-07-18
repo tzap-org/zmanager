@@ -19,7 +19,7 @@ use base64::{
 use openssl::pkey::{PKey, Private};
 use serde_json::{Map, Number, Value, json};
 use sha2::{Digest as _, Sha256};
-use std::fmt;
+use std::fmt::{self, Write as _};
 use x509_parser::prelude::{FromDer as _, X509Certificate};
 
 pub const ENROLLMENT_CHALLENGES_PATH: &str = "/v1/certificates/enrollment-challenges";
@@ -424,7 +424,7 @@ pub fn enroll_device_certificate(
     let chain = payload.certificate_chain_der();
     let (complete_chain, public_metadata) =
         validator.validate_and_complete_certificate_chain(&chain)?;
-    payload.replace_certificate_chain_der(complete_chain)?;
+    payload.replace_certificate_chain_der(&complete_chain)?;
     let record = payload.into_store_record(request, &signing_key.key_id, public_metadata)?;
     let mut inventory = store.load_inventory(&request.account_key)?;
     inventory.enrolled_certificates.push(record.clone());
@@ -442,7 +442,7 @@ impl TzapEnrollmentCertificatePayload {
 
     fn replace_certificate_chain_der(
         &mut self,
-        chain_der: Vec<Vec<u8>>,
+        chain_der: &[Vec<u8>],
     ) -> Result<(), TzapEnrollmentError> {
         let Some((leaf, intermediates)) = chain_der.split_first() else {
             return Err(TzapEnrollmentError::InvalidField {
@@ -740,7 +740,7 @@ fn pem_block(label: &str, der: &[u8]) -> String {
         pem.push_str(std::str::from_utf8(chunk).expect("base64 is ASCII"));
         pem.push('\n');
     }
-    pem.push_str(&format!("-----END {label}-----\n"));
+    writeln!(pem, "-----END {label}-----").expect("writing to String cannot fail");
     pem
 }
 
@@ -785,7 +785,7 @@ fn write_local_staging_canonical_json(
     match value {
         Value::Null => output.push_str("null"),
         Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => output.push_str(&local_staging_canonical_number(value)?),
+        Value::Number(value) => output.push_str(&local_staging_canonical_number(value)),
         Value::String(value) => {
             output.push_str(
                 &serde_json::to_string(value)
@@ -829,21 +829,21 @@ fn write_local_staging_canonical_json(
     Ok(())
 }
 
-fn local_staging_canonical_number(value: &Number) -> Result<String, TzapEnrollmentError> {
+fn local_staging_canonical_number(value: &Number) -> String {
     if let Some(number) = value.as_u64() {
-        return Ok(local_staging_canonical_integer(&number.to_string()));
+        return local_staging_canonical_integer(&number.to_string());
     }
     if let Some(number) = value.as_i64() {
-        return Ok(if number < 0 {
+        return if number < 0 {
             format!(
                 "-{}",
                 local_staging_canonical_integer(&number.unsigned_abs().to_string())
             )
         } else {
             local_staging_canonical_integer(&number.to_string())
-        });
+        };
     }
-    Ok(value.to_string().replace('E', "e"))
+    value.to_string().replace('E', "e")
 }
 
 fn local_staging_canonical_integer(digits: &str) -> String {

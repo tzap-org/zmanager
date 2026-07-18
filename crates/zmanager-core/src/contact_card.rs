@@ -177,7 +177,7 @@ pub fn verify_tzap_contact_card(
         RECIPIENT_ENCRYPTION_KEY_ALGORITHM,
     )?;
     if let Some(expires_at) = optional_u64(payload_object, "expires_at_unix_seconds")?
-        && options.verifier_time_unix_seconds >= expires_at as i64
+        && options.verifier_time_unix_seconds >= expires_at.cast_signed()
     {
         return Err(TzapContactCardError::InvalidField {
             field: "expires_at_unix_seconds",

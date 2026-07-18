@@ -290,6 +290,7 @@ fn validate_document_payload(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_signed_payload(
     signed_payload: &Map<String, Value>,
     expected_payload_hash: &str,

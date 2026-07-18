@@ -688,7 +688,7 @@ fn materialize_deferred_link(
 fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
-        if (file_attr & 0xFFFF0000) != 0 {
+        if (file_attr & 0xFFFF_0000) != 0 {
             use std::os::unix::fs::PermissionsExt;
             let permissions = (file_attr >> 16) & 0o0777;
             fs::set_permissions(path, fs::Permissions::from_mode(permissions))?;
@@ -697,7 +697,7 @@ fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()>
 
     #[cfg(not(unix))]
     {
-        if (file_attr & 0xFFFF0000) != 0 {
+        if (file_attr & 0xFFFF_0000) != 0 {
             let permissions = (file_attr >> 16) & 0o0777;
             if permissions & 0o222 == 0 {
                 if let Ok(fs_metadata) = fs::metadata(path) {
@@ -710,8 +710,11 @@ fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()>
     }
 
     if mtime != 0 {
-        let unix_secs = (mtime / 10_000_000).saturating_sub(11_644_473_600) as i64;
-        let nanos = ((mtime % 10_000_000) * 100) as u32;
+        let unix_secs = (mtime / 10_000_000)
+            .saturating_sub(11_644_473_600)
+            .cast_signed();
+        let nanos = u32::try_from((mtime % 10_000_000) * 100)
+            .expect("RAR timestamp subsecond component always fits in u32");
         let file_time = filetime::FileTime::from_unix_time(unix_secs, nanos);
 
         let md = fs::symlink_metadata(path)?;

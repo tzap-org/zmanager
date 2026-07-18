@@ -104,7 +104,7 @@ impl TzapCertificateStatus {
     }
 
     #[must_use]
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "valid" => Some(Self::Valid),
             "revoked" => Some(Self::Revoked),
@@ -119,6 +119,21 @@ impl TzapCertificateStatus {
             "unsupported_lookup_form" => Some(Self::UnsupportedLookupForm),
             _ => None,
         }
+    }
+
+    /// Parses the stable wire value.
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
+}
+
+impl std::str::FromStr for TzapCertificateStatus {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or(())
     }
 }
 
@@ -142,7 +157,7 @@ impl TzapVerificationState {
     }
 
     #[must_use]
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "valid_now" => Some(Self::ValidNow),
             "valid_at_trusted_time" => Some(Self::ValidAtTrustedTime),
@@ -150,6 +165,21 @@ impl TzapVerificationState {
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
+    }
+
+    /// Parses the stable wire value.
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
+}
+
+impl std::str::FromStr for TzapVerificationState {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or(())
     }
 }
 
@@ -171,13 +201,28 @@ impl TzapTrustAnchorType {
     }
 
     #[must_use]
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "official_tzap" => Some(Self::OfficialTzap),
             "custom" => Some(Self::Custom),
             "untrusted" => Some(Self::Untrusted),
             _ => None,
         }
+    }
+
+    /// Parses the stable wire value.
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
+}
+
+impl std::str::FromStr for TzapTrustAnchorType {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or(())
     }
 }
 
@@ -203,7 +248,7 @@ impl TzapIdentityAssurance {
     }
 
     #[must_use]
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "oauth_verified_email" => Some(Self::OauthVerifiedEmail),
             "oauth_verified_provider_account" => Some(Self::OauthVerifiedProviderAccount),
@@ -212,6 +257,21 @@ impl TzapIdentityAssurance {
             "contract_verified" => Some(Self::ContractVerified),
             _ => None,
         }
+    }
+
+    /// Parses the stable wire value.
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse(value)
+    }
+}
+
+impl std::str::FromStr for TzapIdentityAssurance {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or(())
     }
 }
 
@@ -272,7 +332,9 @@ pub const OFFICIAL_TZAP_ROOT_PINS: TzapRootPinSet = TzapRootPinSet {
 };
 
 pub fn certificate_pem_or_der_to_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if let Ok(certificate) = X509::from_pem(bytes) { certificate.to_der().map_err(|error| error.to_string()) } else {
+    if let Ok(certificate) = X509::from_pem(bytes) {
+        certificate.to_der().map_err(|error| error.to_string())
+    } else {
         X509::from_der(bytes).map_err(|error| error.to_string())?;
         Ok(bytes.to_vec())
     }
@@ -854,17 +916,16 @@ fn validate_leaf_certificate(
         TzapCertificateProfileError::LeafProfile {
             reason: "subject alternative name is invalid or duplicated",
         }
-    })?
-        && san
-            .value
-            .general_names
-            .iter()
-            .any(|name| matches!(name, GeneralName::DNSName(_) | GeneralName::IPAddress(_)))
-        {
-            return Err(TzapCertificateProfileError::LeafProfile {
-                reason: "MVP leaves must not contain DNS or IP subject alternative names",
-            });
-        }
+    })? && san
+        .value
+        .general_names
+        .iter()
+        .any(|name| matches!(name, GeneralName::DNSName(_) | GeneralName::IPAddress(_)))
+    {
+        return Err(TzapCertificateProfileError::LeafProfile {
+            reason: "MVP leaves must not contain DNS or IP subject alternative names",
+        });
+    }
 
     if !has_any_policy(certificate, &options.approved_leaf_policy_oids) {
         return Err(TzapCertificateProfileError::LeafProfile {
@@ -1062,11 +1123,11 @@ fn parse_public_metadata_extension(
         });
     }
 
-    parse_public_metadata_value(value)
+    parse_public_metadata_value(&value)
 }
 
 fn parse_public_metadata_value(
-    value: Value,
+    value: &Value,
 ) -> Result<TzapCertificatePublicMetadata, TzapCertificateProfileError> {
     let object = value
         .as_object()
@@ -1102,7 +1163,7 @@ fn parse_public_metadata_value(
         });
     }
     let assurance_level = required_string(object, "assurance_level")?;
-    let assurance_level = TzapIdentityAssurance::from_str(assurance_level).ok_or(
+    let assurance_level = TzapIdentityAssurance::parse(assurance_level).ok_or(
         TzapCertificateProfileError::MalformedMetadata {
             reason: "invalid assurance_level",
         },
@@ -1873,15 +1934,15 @@ mod tests {
     #[test]
     fn enum_roundtrip_helpers_work() {
         assert_eq!(
-            super::TzapIdentityAssurance::from_str("oauth_verified_email"),
+            super::TzapIdentityAssurance::parse("oauth_verified_email"),
             Some(TzapIdentityAssurance::OauthVerifiedEmail)
         );
         assert_eq!(
-            TzapCertificateStatus::from_str("valid"),
+            TzapCertificateStatus::parse("valid"),
             Some(TzapCertificateStatus::Valid)
         );
         assert_eq!(
-            TzapCertificateStatus::from_str("unsupported_lookup_form"),
+            TzapCertificateStatus::parse("unsupported_lookup_form"),
             Some(TzapCertificateStatus::UnsupportedLookupForm)
         );
         assert_eq!(TzapVerificationState::Invalid.as_str(), "invalid");
@@ -2293,8 +2354,8 @@ mod tests {
                 &pins,
                 &TzapCertificateProfileOptions::default(),
             ),
-            Err(TzapCertificateProfileError::ChainOrder { .. } |
-TzapCertificateProfileError::RootNotSelfSigned)
+            Err(TzapCertificateProfileError::ChainOrder { .. }
+                | TzapCertificateProfileError::RootNotSelfSigned)
         ));
     }
 
@@ -2703,7 +2764,11 @@ TzapCertificateProfileError::RootNotSelfSigned)
         } else if len <= 0xff {
             vec![0x81, u8::try_from(len).unwrap()]
         } else {
-            vec![0x82, u8::try_from(len >> 8).unwrap(), u8::try_from(len & 0xff).unwrap()]
+            vec![
+                0x82,
+                u8::try_from(len >> 8).unwrap(),
+                u8::try_from(len & 0xff).unwrap(),
+            ]
         }
     }
 

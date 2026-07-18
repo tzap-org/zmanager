@@ -162,6 +162,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn renew_certificate(
         &self,
         validator: &impl TzapEnrollmentCertificateValidator,
@@ -172,7 +173,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         previous_signing_key: &TzapDeviceSigningKeyRecord,
         csr_der: &[u8],
     ) -> Result<TzapEnrolledCertificateRecord, TzapCertificateLifecycleError> {
-        let previous = self.precheck_renewal(store, request)?;
+        let previous = Self::precheck_renewal(store, request)?;
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let challenge =
             self.request_renewal_challenge(session, request, new_signing_key, csr_der)?;
@@ -396,7 +397,6 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     }
 
     fn precheck_renewal(
-        &self,
         store: &impl TzapLocalIdentityStore,
         request: &TzapRenewalRequest,
     ) -> Result<TzapEnrolledCertificateRecord, TzapCertificateLifecycleError> {
@@ -598,11 +598,13 @@ fn revocation_completion(
     }
     let value: Value = serde_json::from_slice(&response.body)?;
     let object = json_object(&value, "$")?;
-    match optional_string(object, "result")?.as_deref() {
-        Some("revoked" | "already_revoked") => Ok(TzapRetirementCompletion::Complete),
-        Some("revocation_pending_sync") => Ok(TzapRetirementCompletion::Incomplete),
-        _ => Ok(TzapRetirementCompletion::Complete),
-    }
+    Ok(
+        if optional_string(object, "result")?.as_deref() == Some("revocation_pending_sync") {
+            TzapRetirementCompletion::Incomplete
+        } else {
+            TzapRetirementCompletion::Complete
+        },
+    )
 }
 
 fn mark_certificate_revoked(
@@ -727,7 +729,7 @@ mod tests {
                 &AcceptingLifecycleValidator,
                 &mut store,
                 &fixture.sign_session,
-                &fixture.renewal_request(TzapRenewalPolicy::SameKeyRequired),
+                &LifecycleFixture::renewal_request(TzapRenewalPolicy::SameKeyRequired),
                 &fixture.signing_key,
                 &fixture.signing_key,
                 &fixture.csr_der,
@@ -776,7 +778,7 @@ mod tests {
                 &AcceptingLifecycleValidator,
                 &mut store,
                 &fixture.sign_session,
-                &fixture.renewal_request(TzapRenewalPolicy::KeyRotationAllowed),
+                &LifecycleFixture::renewal_request(TzapRenewalPolicy::KeyRotationAllowed),
                 &rotated.signing_key,
                 &fixture.signing_key,
                 &rotated.csr_der,
@@ -828,7 +830,7 @@ mod tests {
                     &AcceptingLifecycleValidator,
                     &mut store,
                     &fixture.sign_session,
-                    &fixture.renewal_request(TzapRenewalPolicy::SameKeyRequired),
+                    &LifecycleFixture::renewal_request(TzapRenewalPolicy::SameKeyRequired),
                     &fixture.signing_key,
                     &fixture.signing_key,
                     &fixture.csr_der,
@@ -867,7 +869,7 @@ mod tests {
                 &AcceptingLifecycleValidator,
                 &mut store,
                 &fixture.sign_session,
-                &fixture.renewal_request(TzapRenewalPolicy::SameKeyRequired),
+                &LifecycleFixture::renewal_request(TzapRenewalPolicy::SameKeyRequired),
                 &fixture.signing_key,
                 &fixture.signing_key,
                 &fixture.csr_der,
@@ -918,7 +920,7 @@ mod tests {
                     &AcceptingLifecycleValidator,
                     &mut store,
                     &fixture.sign_session,
-                    &fixture.renewal_request(TzapRenewalPolicy::SameKeyRequired),
+                    &LifecycleFixture::renewal_request(TzapRenewalPolicy::SameKeyRequired),
                     &fixture.signing_key,
                     &fixture.signing_key,
                     &fixture.csr_der,
@@ -1057,7 +1059,7 @@ mod tests {
             }
         }
 
-        fn renewal_request(&self, policy: TzapRenewalPolicy) -> TzapRenewalRequest {
+        fn renewal_request(policy: TzapRenewalPolicy) -> TzapRenewalRequest {
             TzapRenewalRequest {
                 account_key: DEFAULT_IDENTITY_INVENTORY_ACCOUNT.to_owned(),
                 previous_certificate_id: "cert_old".to_owned(),

@@ -804,8 +804,7 @@ fn clean_source_exclude_name(name: &str) -> bool {
 fn estimate_regular_file_bytes(metadata: &Metadata, file_type: ManifestFileType) -> u64 {
     match file_type {
         ManifestFileType::File => metadata.len(),
-        ManifestFileType::Directory => 0,
-        ManifestFileType::Symlink | ManifestFileType::Other => 0,
+        ManifestFileType::Directory | ManifestFileType::Symlink | ManifestFileType::Other => 0,
     }
 }
 

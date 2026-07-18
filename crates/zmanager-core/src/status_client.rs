@@ -310,7 +310,7 @@ impl TzapStatusResponse {
 
     pub fn from_json_value(value: &Value) -> Result<Self, TzapStatusClientError> {
         let object = object(value)?;
-        let status = TzapCertificateStatus::from_str(required_string(object, "status")?)
+        let status = TzapCertificateStatus::parse(required_string(object, "status")?)
             .ok_or(TzapStatusClientError::InvalidField { field: "status" })?;
         let query = parse_query_echo(object)?;
         let response = Self {
@@ -382,25 +382,49 @@ impl TzapStatusResponse {
             | TzapCertificateStatus::Suspended
             | TzapCertificateStatus::IssuerSuspended
             | TzapCertificateStatus::IssuerRevoked => {
-                require_some(&self.certificate_sha256, "certificate_sha256")?;
-                require_some(&self.issuer_certificate_sha256, "issuer_certificate_sha256")?;
-                require_some(&self.issuer_key_identifier, "issuer_key_identifier")?;
-                require_some(&self.serial_number, "serial_number")?;
-                require_some(&self.not_before_unix_seconds, "not_before_unix_seconds")?;
-                require_some(&self.not_after_unix_seconds, "not_after_unix_seconds")?;
-                require_some(&self.this_update_unix_seconds, "this_update_unix_seconds")?;
-                require_some(&self.next_update_unix_seconds, "next_update_unix_seconds")?;
+                require_some(self.certificate_sha256.as_ref(), "certificate_sha256")?;
+                require_some(
+                    self.issuer_certificate_sha256.as_ref(),
+                    "issuer_certificate_sha256",
+                )?;
+                require_some(self.issuer_key_identifier.as_ref(), "issuer_key_identifier")?;
+                require_some(self.serial_number.as_ref(), "serial_number")?;
+                require_some(
+                    self.not_before_unix_seconds.as_ref(),
+                    "not_before_unix_seconds",
+                )?;
+                require_some(
+                    self.not_after_unix_seconds.as_ref(),
+                    "not_after_unix_seconds",
+                )?;
+                require_some(
+                    self.this_update_unix_seconds.as_ref(),
+                    "this_update_unix_seconds",
+                )?;
+                require_some(
+                    self.next_update_unix_seconds.as_ref(),
+                    "next_update_unix_seconds",
+                )?;
                 if self.status == TzapCertificateStatus::Revoked {
-                    require_some(&self.revoked_at_unix_seconds, "revoked_at_unix_seconds")?;
-                    require_some(&self.revocation_reason, "revocation_reason")?;
+                    require_some(
+                        self.revoked_at_unix_seconds.as_ref(),
+                        "revoked_at_unix_seconds",
+                    )?;
+                    require_some(self.revocation_reason.as_ref(), "revocation_reason")?;
                 }
             }
             TzapCertificateStatus::UnknownCertificate
             | TzapCertificateStatus::UnknownIssuer
             | TzapCertificateStatus::MalformedLookup
             | TzapCertificateStatus::UnsupportedLookupForm => {
-                require_some(&self.this_update_unix_seconds, "this_update_unix_seconds")?;
-                require_some(&self.next_update_unix_seconds, "next_update_unix_seconds")?;
+                require_some(
+                    self.this_update_unix_seconds.as_ref(),
+                    "this_update_unix_seconds",
+                )?;
+                require_some(
+                    self.next_update_unix_seconds.as_ref(),
+                    "next_update_unix_seconds",
+                )?;
                 if self.certificate_sha256.is_some()
                     || self.issuer_certificate_sha256.is_some()
                     || self.issuer_key_identifier.is_some()
@@ -551,9 +575,7 @@ pub fn validate_crl_der_against_manifest(
     Ok(())
 }
 
-fn parse_crl_der(
-    crl_der: &[u8],
-) -> Result<CertificateRevocationList<'_>, TzapStatusClientError> {
+fn parse_crl_der(crl_der: &[u8]) -> Result<CertificateRevocationList<'_>, TzapStatusClientError> {
     let (remaining, crl) = CertificateRevocationList::from_der(crl_der).map_err(|error| {
         TzapStatusClientError::CrlValidation {
             reason: error.to_string(),
@@ -569,11 +591,12 @@ fn parse_crl_der(
 }
 
 fn crl_download_to_der(bytes: &[u8]) -> Result<Vec<u8>, TzapStatusClientError> {
-    if let Ok(crl) = X509Crl::from_pem(bytes) { crl
-    .to_der()
-    .map_err(|error| TzapStatusClientError::CrlValidation {
-        reason: error.to_string(),
-    }) } else {
+    if let Ok(crl) = X509Crl::from_pem(bytes) {
+        crl.to_der()
+            .map_err(|error| TzapStatusClientError::CrlValidation {
+                reason: error.to_string(),
+            })
+    } else {
         X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation {
             reason: error.to_string(),
         })?;
@@ -862,7 +885,7 @@ fn optional_unix_or_rfc3339(
         .transpose()
 }
 
-fn require_some<T>(value: &Option<T>, field: &'static str) -> Result<(), TzapStatusClientError> {
+fn require_some<T>(value: Option<&T>, field: &'static str) -> Result<(), TzapStatusClientError> {
     if value.is_some() {
         Ok(())
     } else {

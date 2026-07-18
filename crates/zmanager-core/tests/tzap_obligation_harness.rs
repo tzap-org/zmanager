@@ -149,6 +149,7 @@ fn hosted_auth_handoff_obligations_are_enforced() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn personal_happy_path_signs_verifies_imports_contact_and_unwraps_share() {
     let mut harness = PersonalHarness::new();
     let challenge = enrollment_challenge_response(&harness);
@@ -231,7 +232,7 @@ fn personal_happy_path_signs_verifies_imports_contact_and_unwraps_share() {
         offline,
         &expected_status_target,
         &fresh_status,
-        FIXED_NOW as i64,
+        FIXED_NOW.cast_signed(),
     );
     assert_eq!(valid_now.state, TzapVerificationState::ValidNow);
 
@@ -318,6 +319,7 @@ fn personal_happy_path_signs_verifies_imports_contact_and_unwraps_share() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() {
     let harness = PersonalHarness::new();
     let status_transport = FakeTransport::new(vec![json_response(json!({
@@ -331,14 +333,14 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
             {"lookup_id": "unknown", "status_response": {
                 "status": "unknown_certificate",
                 "query": {"certificate_sha256": trust::format_certificate_sha256(&[0x90; 32])},
-                "this_update_unix_seconds": FIXED_NOW as i64 - 60,
-                "next_update_unix_seconds": FIXED_NOW as i64 + 60
+                "this_update_unix_seconds": FIXED_NOW.cast_signed() - 60,
+                "next_update_unix_seconds": FIXED_NOW.cast_signed() + 60
             }},
             {"lookup_id": "malformed", "status_response": {
                 "status": "malformed_lookup",
                 "query": {"certificate_sha256": trust::format_certificate_sha256(&[0x91; 32])},
-                "this_update_unix_seconds": FIXED_NOW as i64 - 60,
-                "next_update_unix_seconds": FIXED_NOW as i64 + 60
+                "this_update_unix_seconds": FIXED_NOW.cast_signed() - 60,
+                "next_update_unix_seconds": FIXED_NOW.cast_signed() + 60
             }}
         ]
     }))]);
@@ -383,7 +385,7 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
         assert!(
             !TzapStatusResponse::from_json_value(&value)
                 .unwrap()
-                .is_fresh_valid_for_valid_now(FIXED_NOW as i64),
+                .is_fresh_valid_for_valid_now(FIXED_NOW.cast_signed()),
             "status should not produce valid_now: {status}"
         );
     }
@@ -395,8 +397,8 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
             "issuer_certificate_sha256": harness.chain.platform_sha256,
             "crl_number": "01",
             "crl_sha256": trust::format_crl_sha256(&[0x33; 32]),
-            "this_update_unix_seconds": FIXED_NOW as i64 - 60,
-            "next_update_unix_seconds": FIXED_NOW as i64 + 60
+            "this_update_unix_seconds": FIXED_NOW.cast_signed() - 60,
+            "next_update_unix_seconds": FIXED_NOW.cast_signed() + 60
         }]
     }))]);
     let crl_entries = TzapStatusClient::new(SIGN_BASE_URL, &crl_manifest_transport)
@@ -587,7 +589,7 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
         LOGIN_BASE_URL,
         &FakeTransport::new(vec![json_response_with_code(
             202,
-            json!({"result": "revocation_pending_sync"}),
+            &json!({"result": "revocation_pending_sync"}),
         )]),
     )
     .retire_personal_devices(
@@ -610,7 +612,7 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
         LOGIN_BASE_URL,
         &FakeTransport::new(vec![json_response_with_code(
             409,
-            json!({"error": "device_linkage_pending"}),
+            &json!({"error": "device_linkage_pending"}),
         )]),
     )
     .retire_organization_devices(&org_store, &harness.login_session, ACCOUNT_KEY)
@@ -960,8 +962,8 @@ fn valid_status(
         "serial_number": serial_number,
         "not_before_unix_seconds": FIXED_NOT_BEFORE,
         "not_after_unix_seconds": FIXED_NOT_AFTER,
-        "this_update_unix_seconds": FIXED_NOW as i64 - 60,
-        "next_update_unix_seconds": FIXED_NOW as i64 + 60,
+        "this_update_unix_seconds": FIXED_NOW.cast_signed() - 60,
+        "next_update_unix_seconds": FIXED_NOW.cast_signed() + 60,
         "query": {"certificate_sha256": certificate_sha256}
     })
 }
@@ -981,8 +983,8 @@ fn non_valid_status(
                     "issuer_certificate_sha256": issuer_sha256,
                     "serial_number": serial_number
                 },
-                "this_update_unix_seconds": FIXED_NOW as i64 - 60,
-                "next_update_unix_seconds": FIXED_NOW as i64 + 60
+                "this_update_unix_seconds": FIXED_NOW.cast_signed() - 60,
+                "next_update_unix_seconds": FIXED_NOW.cast_signed() + 60
             })
         }
         _ => {
@@ -994,7 +996,7 @@ fn non_valid_status(
             );
             value["status"] = json!(status);
             if status == "revoked" {
-                value["revoked_at_unix_seconds"] = json!(FIXED_NOW as i64 - 1);
+                value["revoked_at_unix_seconds"] = json!(FIXED_NOW.cast_signed() - 1);
                 value["revocation_reason"] = json!("key_compromise");
             }
             value
@@ -1277,6 +1279,7 @@ fn der_wrap(tag: u8, contents: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn der_len(len: usize) -> Vec<u8> {
     if len < 128 {
         vec![len as u8]
@@ -1336,11 +1339,12 @@ fn pin_set(root_sha256: &str) -> TzapRootPinSet {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn json_response(value: Value) -> TzapAuthHttpResponse {
-    json_response_with_code(200, value)
+    json_response_with_code(200, &value)
 }
 
-fn json_response_with_code(status_code: u16, value: Value) -> TzapAuthHttpResponse {
+fn json_response_with_code(status_code: u16, value: &Value) -> TzapAuthHttpResponse {
     TzapAuthHttpResponse {
         status_code,
         body: serde_json::to_vec(&value).unwrap(),

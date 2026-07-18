@@ -421,7 +421,8 @@ impl ProgressCoalescer {
             }
             if self
                 .recent_paths
-                .back().is_none_or(|(recent_identity, _)| *recent_identity != identity)
+                .back()
+                .is_none_or(|(recent_identity, _)| *recent_identity != identity)
             {
                 if let Some(position) = self
                     .recent_paths
@@ -679,6 +680,7 @@ impl<'a> JobContext<'a> {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn phase_bytes_processed_with_path_identities(
         &mut self,
         phase: JobPhase,
@@ -2953,7 +2955,9 @@ mod tests {
     }
 
     fn large_tzap_progress_payload() -> Vec<u8> {
-        (0..(512 * 1024)).map(|index| (index % 251) as u8).collect()
+        (0..(512 * 1024))
+            .map(|index| u8::try_from(index % 251).expect("modulo result fits in u8"))
+            .collect()
     }
 
     fn test_tzap_create_options() -> TzapCreateOptions {

@@ -1,5 +1,9 @@
 //! Core engine primitives for `ZManager`.
 
+// The public API predates the workspace-wide pedantic lint policy. Error
+// documentation is tracked separately from behavioral and structural cleanup.
+#![allow(clippy::missing_errors_doc)]
+
 mod atomic_file;
 
 pub mod apple_archive_backend;

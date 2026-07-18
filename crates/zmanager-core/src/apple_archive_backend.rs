@@ -599,7 +599,7 @@ fn extract_apple_archive_inner(
                 &mut reader,
                 &entry,
                 &safety_entry,
-                WriteDecision {
+                &WriteDecision {
                     destination_path: &destination_path,
                     replace_existing,
                     link_target_path: link_target_path.as_deref(),
@@ -644,7 +644,7 @@ fn materialize_entry(
     reader: &mut ArchiveReader,
     entry: &zmanager_apple_archive::Entry,
     safety_entry: &ExtractionEntry,
-    decision: WriteDecision<'_>,
+    decision: &WriteDecision<'_>,
     mut context: Option<&mut JobContext<'_>>,
     deferred_directories: &mut Vec<(PathBuf, zmanager_apple_archive::EntryMetadata)>,
     report: &mut AppleArchiveExtractReport,
@@ -685,7 +685,7 @@ fn materialize_entry(
             reader,
             entry,
             safety_entry,
-            &decision,
+            decision,
             context.as_deref_mut(),
         )?,
         ExtractionEntryKind::Symlink { target } => {
@@ -970,9 +970,10 @@ fn apply_metadata(
 /// silently ignored because some filesystems do not support symlink timestamps.
 fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
     if let Some(modified) = modified
-        && let Some(ft) = system_time_to_filetime(modified) {
-            let _ = filetime::set_symlink_file_times(path, ft, ft);
-        }
+        && let Some(ft) = system_time_to_filetime(modified)
+    {
+        let _ = filetime::set_symlink_file_times(path, ft, ft);
+    }
 }
 
 fn system_time_to_filetime(time: SystemTime) -> Option<filetime::FileTime> {
@@ -1057,12 +1058,9 @@ mod tests {
             mode: Some(0o644),
             ..zmanager_apple_archive::EntryMetadata::default()
         };
-        
-        let result = super::apply_metadata(
-            nonexistent,
-            metadata,
-        );
-        
+
+        let result = super::apply_metadata(nonexistent, metadata);
+
         // This should fail because the file doesn't exist
         assert!(matches!(result, Err(AppleArchiveError::Io { .. })));
     }
@@ -1110,8 +1108,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     #[test]
     fn extracts_symlinks_and_preserves_metadata() {
+        use filetime::{FileTime, set_symlink_file_times};
         use std::os::unix::fs::symlink;
-        use filetime::{set_symlink_file_times, FileTime};
 
         let temp = TestDir::new("apple_archive_symlink_meta");
         temp.write_file("project/target.txt", b"target");
@@ -1119,7 +1117,7 @@ mod tests {
         symlink("target.txt", &symlink_path).unwrap();
 
         // Set a specific timestamp on the symlink
-        let past = FileTime::from_unix_time(1000000000, 0);
+        let past = FileTime::from_unix_time(1_000_000_000, 0);
         set_symlink_file_times(&symlink_path, past, past).unwrap();
 
         let archive = temp.path("project.aar");
@@ -1139,11 +1137,15 @@ mod tests {
 
         let extracted_symlink = out_dir.join("project/link");
         let metadata = fs::symlink_metadata(&extracted_symlink).unwrap();
-        
+
         let mtime = metadata.modified().unwrap();
-        let mtime_secs = i64::try_from(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
-        let diff = (mtime_secs - 1000000000).abs();
-        assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
+        let mtime_secs =
+            i64::try_from(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
+        let diff = (mtime_secs - 1_000_000_000).abs();
+        assert!(
+            diff <= 2,
+            "extracted mtime diff {diff} is greater than 2 seconds"
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]

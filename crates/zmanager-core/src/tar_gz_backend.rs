@@ -374,7 +374,7 @@ mod tests {
         temp.write_file("project/file.txt", b"content");
 
         // Set a specific mod time
-        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12345678);
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12_345_678);
         filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mtime)).unwrap();
 
         #[cfg(unix)]
@@ -408,7 +408,7 @@ mod tests {
             if path.ends_with("file.txt") {
                 found_file = true;
                 let header = entry.header();
-                assert_eq!(header.mtime().unwrap(), 12345678);
+                assert_eq!(header.mtime().unwrap(), 12_345_678);
                 #[cfg(unix)]
                 {
                     assert_eq!(header.mode().unwrap() & 0o777, 0o755);
@@ -425,7 +425,7 @@ mod tests {
         temp.write_file("project/file.txt", b"content");
 
         // Set a specific mod time
-        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12345678);
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12_345_678);
         filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mtime)).unwrap();
 
         #[cfg(unix)]

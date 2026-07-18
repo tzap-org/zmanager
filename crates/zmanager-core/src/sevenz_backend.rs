@@ -1430,10 +1430,12 @@ fn apply_sevenz_metadata(
     }
 
     if let Some(sys_time) = modified_time {
-        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time)).map_err(|source| SevenZError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time)).map_err(
+            |source| SevenZError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
     }
     Ok(())
 }
@@ -1447,18 +1449,15 @@ fn apply_deferred_sevenz_directory_metadata(
     Ok(())
 }
 
+type SevenZExtractionDecisions = HashMap<String, ExtractionDecision>;
+type SevenZUnixModes = HashMap<String, Option<u32>>;
+
 fn plan_extraction(
     entries: &[ArchiveEntry],
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-) -> Result<
-    (
-        HashMap<String, ExtractionDecision>,
-        HashMap<String, Option<u32>>,
-    ),
-    SevenZError,
-> {
+) -> Result<(SevenZExtractionDecisions, SevenZUnixModes), SevenZError> {
     let mut planner = match overwrite_resolver {
         Some(resolver) => {
             ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver)
@@ -1492,11 +1491,12 @@ fn plan_extraction(
     Ok((decisions, modes))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_entry(
     entry: &ArchiveEntry,
     reader: &mut dyn Read,
-    decisions: &HashMap<String, ExtractionDecision>,
-    modes: &HashMap<String, Option<u32>>,
+    decisions: &SevenZExtractionDecisions,
+    modes: &SevenZUnixModes,
     deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)>,
     report: &mut SevenZExtractReport,
     mut context: Option<&mut JobContext<'_>>,
@@ -1528,7 +1528,7 @@ fn extract_entry(
 
     let modified_time = if entry.has_last_modified_date {
         let nt = entry.last_modified_date();
-        std::time::SystemTime::try_from(nt).ok()
+        Some(std::time::SystemTime::from(nt))
     } else {
         None
     };
@@ -1611,10 +1611,12 @@ fn write_file_entry(
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        let read = reader.read(&mut *io_buffer).map_err(|source| SevenZError::Io {
-            path: destination_path.to_path_buf(),
-            source,
-        })?;
+        let read = reader
+            .read(&mut *io_buffer)
+            .map_err(|source| SevenZError::Io {
+                path: destination_path.to_path_buf(),
+                source,
+            })?;
         if read == 0 {
             break;
         }
@@ -1671,13 +1673,10 @@ mod tests {
     fn application_of_metadata_propagates_io_errors() {
         let temp = TestDir::new("sevenz_metadata_error_prop");
         let nonexistent = temp.path("does_not_exist");
-        
-        let result = super::apply_sevenz_metadata(
-            &nonexistent,
-            Some(0o644),
-            Some(SystemTime::now()),
-        );
-        
+
+        let result =
+            super::apply_sevenz_metadata(&nonexistent, Some(0o644), Some(SystemTime::now()));
+
         assert!(matches!(result, Err(SevenZError::Io { .. })));
     }
 
@@ -1697,7 +1696,7 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let mtime = filetime::FileTime::from_unix_time(1500000000, 0);
+        let mtime = filetime::FileTime::from_unix_time(1_500_000_000, 0);
         filetime::set_file_mtime(&path, mtime).unwrap();
 
         let archive = temp.path("archive.7z");

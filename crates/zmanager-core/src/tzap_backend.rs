@@ -516,8 +516,7 @@ impl fmt::Display for TzapError {
             Self::Plan(source) => write!(f, "{source}"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Format(source) => write!(f, "{source}"),
-            Self::X509RootAuth(message) => write!(f, "{message}"),
-            Self::KeyWrap(message) => write!(f, "{message}"),
+            Self::X509RootAuth(message) | Self::KeyWrap(message) => write!(f, "{message}"),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::PasswordRequired => write!(f, "tzap password required"),
             Self::RecipientKeyRequired => write!(f, "tzap recipient private key required"),
@@ -572,6 +571,7 @@ impl From<JobCancelled> for TzapError {
 ///
 /// Returns [`TzapError`] when source files cannot be read, key derivation fails,
 /// tzap encoding fails, filesystem writes fail, or cancellation is requested.
+#[allow(clippy::too_many_lines)]
 pub fn create_tzap_from_manifest_with_context(
     manifest: &ArchiveManifest,
     destination: impl AsRef<Path>,
@@ -622,9 +622,9 @@ pub fn create_tzap_from_manifest_with_context(
                         let certificate =
                             load_single_x509_certificate_file("recipient certificate", path)?;
                         build_recipient_wrap_record_from_certificate_der(
-                            certificate,
+                            &certificate,
                             &master_key,
-                            archive_identity.clone(),
+                            &archive_identity,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -644,9 +644,9 @@ pub fn create_tzap_from_manifest_with_context(
                     .map(|public_key_der| {
                         let certificate = synthetic_recipient_certificate_der(public_key_der)?;
                         build_recipient_wrap_record_from_certificate_der(
-                            certificate,
+                            &certificate,
                             &master_key,
-                            archive_identity.clone(),
+                            &archive_identity,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -1096,16 +1096,16 @@ fn build_recipient_wrap_record_from_certificate_path(
         load_single_x509_certificate_file("recipient certificate", recipient_certificate_path)?;
     let archive_identity = recipient_wrap_archive_identity_for_writer(options);
     build_recipient_wrap_record_from_certificate_der(
-        recipient_certificate,
+        &recipient_certificate,
         master_key,
-        archive_identity,
+        &archive_identity,
     )
 }
 
 fn build_recipient_wrap_record_from_certificate_der(
-    recipient_certificate: Vec<u8>,
+    recipient_certificate: &[u8],
     master_key: &MasterKey,
-    archive_identity: KeyWrapArchiveIdentity,
+    archive_identity: &KeyWrapArchiveIdentity,
 ) -> Result<RecipientRecordV1, TzapError> {
     let master_key_bytes = master_key.0;
     for suite in [
@@ -1114,13 +1114,13 @@ fn build_recipient_wrap_record_from_certificate_der(
     ] {
         match wrap_master_key_for_recipient(
             archive_identity.clone(),
-            &recipient_certificate,
+            recipient_certificate,
             &master_key_bytes,
             suite,
         ) {
             Ok(record) => return Ok(record),
             Err(KeyWrapOutcome::InvalidRecord | KeyWrapOutcome::UnsupportedSuite) => {}
-            Err(outcome) => return Err(key_wrap_outcome_error(outcome)),
+            Err(outcome) => return Err(key_wrap_outcome_error(&outcome)),
         }
     }
     Err(TzapError::Format(FormatError::WriterUnsupported(
@@ -1230,10 +1230,7 @@ fn load_single_x509_certificate_file(
     })?;
     match certificates.as_slice() {
         [certificate] => Ok(certificate.clone()),
-        [] => Err(TzapError::KeyWrap(format!(
-            "{label} must contain exactly one X.509 certificate"
-        ))),
-        _ => Err(TzapError::KeyWrap(format!(
+        [] | [_, _, ..] => Err(TzapError::KeyWrap(format!(
             "{label} must contain exactly one X.509 certificate"
         ))),
     }
@@ -1258,7 +1255,7 @@ fn random_16_bytes() -> [u8; 16] {
     bytes
 }
 
-fn key_wrap_outcome_error(outcome: KeyWrapOutcome) -> TzapError {
+fn key_wrap_outcome_error(outcome: &KeyWrapOutcome) -> TzapError {
     match outcome {
         KeyWrapOutcome::UnsupportedProfileId => TzapError::Format(FormatError::ReaderUnsupported(
             "unsupported keywrap recipient profile",
@@ -1358,10 +1355,10 @@ struct RecipientWrapOpenStats {
 }
 
 fn recipient_wrap_candidates_for_record(
-    context: RecipientWrapRecordContext<'_>,
+    context: &RecipientWrapRecordContext<'_>,
     lookup: &TzapRecipientPrivateKeyLookup,
     stats: &mut RecipientWrapOpenStats,
-) -> Result<Vec<[u8; 32]>, FormatError> {
+) -> Vec<[u8; 32]> {
     stats.records_seen += 1;
     let input = RecipientRecordInput {
         archive_identity: KeyWrapArchiveIdentity {
@@ -1381,22 +1378,22 @@ fn recipient_wrap_candidates_for_record(
     match dispatch_key_wrap_record(input, lookup) {
         KeyWrapOutcome::UnwrappedCandidateMasterKey { master_key, .. } => {
             stats.candidate_count += 1;
-            Ok(vec![master_key])
+            vec![master_key]
         }
         KeyWrapOutcome::NoMatchingPrivateKey => {
             stats.no_matching_private_key += 1;
-            Ok(Vec::new())
+            Vec::new()
         }
         KeyWrapOutcome::InvalidRecord | KeyWrapOutcome::CertificatePolicyRejected => {
             stats.invalid_record_or_unwrap += 1;
-            Ok(Vec::new())
+            Vec::new()
         }
         KeyWrapOutcome::UnsupportedProfileId
         | KeyWrapOutcome::UnsupportedArchiveIdentity
         | KeyWrapOutcome::UnsupportedRecipientIdentity
         | KeyWrapOutcome::UnsupportedSuite => {
             stats.unsupported_record += 1;
-            Ok(Vec::new())
+            Vec::new()
         }
     }
 }
@@ -1555,7 +1552,7 @@ pub fn list_tzap_with_optional_password(
     password: Option<&str>,
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
-    list_opened_tzap_archive(opened)
+    list_opened_tzap_archive(&opened)
 }
 
 /// Lists `.tzap` archive index entries with an optional passphrase.
@@ -1581,10 +1578,10 @@ pub fn list_tzap_with_recipient_key(
     recipient_private_key: impl AsRef<Path>,
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
-    list_opened_tzap_archive(opened)
+    list_opened_tzap_archive(&opened)
 }
 
-fn list_opened_tzap_archive(opened: OpenedArchive) -> Result<TzapListing, TzapError> {
+fn list_opened_tzap_archive(opened: &OpenedArchive) -> Result<TzapListing, TzapError> {
     let entries = opened
         .list_files()?
         .into_iter()
@@ -1648,10 +1645,12 @@ pub fn extract_tzap_with_optional_password_and_restore_options(
     extract_tzap_inner(
         archive,
         destination,
-        policy,
-        password,
-        None,
-        restore_options,
+        ExtractTzapOptions {
+            policy,
+            password,
+            recipient_private_key: None,
+            restore_options,
+        },
         None,
         None,
     )
@@ -1694,10 +1693,12 @@ pub fn extract_tzap_with_recipient_key_and_restore_options(
     extract_tzap_inner(
         archive,
         destination,
-        policy,
-        None,
-        Some(recipient_private_key.as_ref()),
-        restore_options,
+        ExtractTzapOptions {
+            policy,
+            password: None,
+            recipient_private_key: Some(recipient_private_key.as_ref()),
+            restore_options,
+        },
         None,
         None,
     )
@@ -1719,10 +1720,12 @@ pub fn extract_tzap_with_optional_password_and_context(
     extract_tzap_inner(
         archive,
         destination,
-        policy,
-        password,
-        None,
-        TzapRestoreOptions::default(),
+        ExtractTzapOptions {
+            policy,
+            password,
+            recipient_private_key: None,
+            restore_options: TzapRestoreOptions::default(),
+        },
         None,
         Some(context),
     )
@@ -1792,131 +1795,189 @@ pub fn extract_tzap_with_optional_password_and_context_fast_with_restore_options
             path: destination.to_path_buf(),
             source,
         })?;
-    let mut planner = ExtractionSafetyPlanner::new(&destination_root, policy);
-    let mut report = TzapExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
-    let mut deferred_directory_metadata = Vec::new();
+    let planner = ExtractionSafetyPlanner::new(&destination_root, policy);
+    let mut state = FastTzapExtractionState::new(&opened, planner, restore_options);
+    state.extract_entries(&entries, context)?;
+    state.finish()
+}
 
-    for entry in entries {
+struct FastTzapExtractionState<'archive, 'resolver> {
+    opened: &'archive OpenedArchive,
+    planner: ExtractionSafetyPlanner<'resolver>,
+    restore_options: TzapRestoreOptions,
+    report: TzapExtractReport,
+    deferred_directory_metadata: Vec<(PathBuf, TzapPortableEntryMetadata)>,
+}
+
+impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
+    fn new(
+        opened: &'archive OpenedArchive,
+        planner: ExtractionSafetyPlanner<'resolver>,
+        restore_options: TzapRestoreOptions,
+    ) -> Self {
+        Self {
+            opened,
+            planner,
+            restore_options,
+            report: TzapExtractReport {
+                written_entries: 0,
+                skipped_entries: 0,
+                written_bytes: 0,
+                warnings: Vec::new(),
+            },
+            deferred_directory_metadata: Vec::new(),
+        }
+    }
+
+    fn extract_entries(
+        &mut self,
+        entries: &[ArchiveEntry],
+        context: &mut JobContext<'_>,
+    ) -> Result<(), TzapError> {
+        for entry in entries {
+            self.extract_entry(entry, context)?;
+        }
+        Ok(())
+    }
+
+    fn extract_entry(
+        &mut self,
+        entry: &ArchiveEntry,
+        context: &mut JobContext<'_>,
+    ) -> Result<(), TzapError> {
         context.check_cancelled()?;
         append_metadata_diagnostics(
             &entry.path,
             &entry.diagnostics,
-            &mut report.warnings,
+            &mut self.report.warnings,
             Some(context),
         );
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
-            kind: match entry.kind {
-                TarEntryKind::Regular => ExtractionEntryKind::File,
-                TarEntryKind::Directory => ExtractionEntryKind::Directory,
-                TarEntryKind::Symlink
-                | TarEntryKind::Hardlink
-                | TarEntryKind::CharacterDevice
-                | TarEntryKind::BlockDevice
-                | TarEntryKind::Fifo => ExtractionEntryKind::Special,
-            },
+            kind: fast_extraction_kind(entry.kind),
             uncompressed_size: Some(entry.file_data_size),
             compressed_size: None,
         };
         context.entry_started(&safety_entry.archive_path, Some(entry.file_data_size));
 
-        match planner.validate_entry(&safety_entry)? {
+        match self.planner.validate_entry(&safety_entry)? {
             ExtractionDecision::Write {
                 destination_path,
                 replace_existing,
                 ..
             } => match safety_entry.kind {
                 ExtractionEntryKind::File => {
-                    match stream_regular_member_to_destination(
-                        &opened,
-                        &safety_entry.archive_path,
-                        entry.file_data_size,
-                        restore_options,
-                        &destination_path,
-                        replace_existing,
-                        Some(context),
-                    ) {
-                        Ok(Some(processed)) => {
-                            report.written_entries = report.written_entries.saturating_add(1);
-                            report.written_bytes =
-                                report.written_bytes.saturating_add(processed.written_bytes);
-                            for diagnostic in processed.metadata_diagnostics {
-                                let warning =
-                                    format!("metadata {}: {diagnostic}", safety_entry.archive_path);
-                                report.warnings.push(warning.clone());
-                                context.warning(warning);
-                            }
-                            context.entry_finished(
-                                &safety_entry.archive_path,
-                                processed.written_bytes,
-                            );
-                        }
-                        Ok(None) => {
-                            report.skipped_entries = report.skipped_entries.saturating_add(1);
-                            let warning =
-                                format!("skipped missing entry {}", safety_entry.archive_path);
-                            report.warnings.push(warning.clone());
-                            context.warning(warning);
-                            context.entry_finished(&safety_entry.archive_path, 0);
-                        }
-                        Err(error) => {
-                            if let TzapError::Format(
-                                tzap_core::format::FormatError::ReaderUnsupported(_),
-                            ) = error
-                            {
-                                report.skipped_entries = report.skipped_entries.saturating_add(1);
-                                let warning = format!(
-                                    "skipped unsupported entry {}",
-                                    safety_entry.archive_path
-                                );
-                                report.warnings.push(warning.clone());
-                                context.warning(warning);
-                                context.entry_finished(&safety_entry.archive_path, 0);
-                            } else {
-                                return Err(error);
-                            }
-                        }
-                    }
+                    self.extract_regular_entry(entry, &destination_path, replace_existing, context)
                 }
                 ExtractionEntryKind::Directory => {
                     fs::create_dir_all(&destination_path).map_err(|source| TzapError::Io {
                         path: destination_path.clone(),
                         source,
                     })?;
-                    deferred_directory_metadata.push((
+                    self.deferred_directory_metadata.push((
                         destination_path,
-                        TzapPortableEntryMetadata::from_archive_entry(&entry),
+                        TzapPortableEntryMetadata::from_archive_entry(entry),
                     ));
-                    report.written_entries = report.written_entries.saturating_add(1);
+                    self.report.written_entries = self.report.written_entries.saturating_add(1);
                     context.entry_finished(&safety_entry.archive_path, 0);
+                    Ok(())
                 }
                 _ => {
-                    report.skipped_entries = report.skipped_entries.saturating_add(1);
-                    let warning =
-                        format!("skipped unsupported entry {}", safety_entry.archive_path);
-                    report.warnings.push(warning.clone());
-                    context.warning(warning);
-                    context.entry_finished(&safety_entry.archive_path, 0);
+                    self.record_skip(
+                        &safety_entry.archive_path,
+                        format!("skipped unsupported entry {}", safety_entry.archive_path),
+                        context,
+                    );
+                    Ok(())
                 }
             },
             ExtractionDecision::Skip { reason, .. } => {
-                report.skipped_entries = report.skipped_entries.saturating_add(1);
-                let warning = format!("skipped {}: {}", safety_entry.archive_path, reason);
-                report.warnings.push(warning.clone());
-                context.warning(warning);
-                context.entry_finished(&safety_entry.archive_path, 0);
+                self.record_skip(
+                    &safety_entry.archive_path,
+                    format!("skipped {}: {reason}", safety_entry.archive_path),
+                    context,
+                );
+                Ok(())
             }
         }
     }
 
-    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata, restore_options)?;
+    fn extract_regular_entry(
+        &mut self,
+        entry: &ArchiveEntry,
+        destination_path: &Path,
+        replace_existing: bool,
+        context: &mut JobContext<'_>,
+    ) -> Result<(), TzapError> {
+        match stream_regular_member_to_destination(
+            self.opened,
+            &entry.path,
+            entry.file_data_size,
+            self.restore_options,
+            destination_path,
+            replace_existing,
+            Some(context),
+        ) {
+            Ok(Some(processed)) => {
+                self.report.written_entries = self.report.written_entries.saturating_add(1);
+                self.report.written_bytes = self
+                    .report
+                    .written_bytes
+                    .saturating_add(processed.written_bytes);
+                for diagnostic in processed.metadata_diagnostics {
+                    let warning = format!("metadata {}: {diagnostic}", entry.path);
+                    self.report.warnings.push(warning.clone());
+                    context.warning(warning);
+                }
+                context.entry_finished(&entry.path, processed.written_bytes);
+                Ok(())
+            }
+            Ok(None) => {
+                self.record_skip(
+                    &entry.path,
+                    format!("skipped missing entry {}", entry.path),
+                    context,
+                );
+                Ok(())
+            }
+            Err(TzapError::Format(FormatError::ReaderUnsupported(_))) => {
+                self.record_skip(
+                    &entry.path,
+                    format!("skipped unsupported entry {}", entry.path),
+                    context,
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
 
-    Ok(report)
+    fn record_skip(&mut self, entry_path: &str, warning: String, context: &mut JobContext<'_>) {
+        self.report.skipped_entries = self.report.skipped_entries.saturating_add(1);
+        self.report.warnings.push(warning.clone());
+        context.warning(warning);
+        context.entry_finished(entry_path, 0);
+    }
+
+    fn finish(self) -> Result<TzapExtractReport, TzapError> {
+        apply_deferred_tzap_directory_metadata(
+            &self.deferred_directory_metadata,
+            self.restore_options,
+        )?;
+        Ok(self.report)
+    }
+}
+
+fn fast_extraction_kind(kind: TarEntryKind) -> ExtractionEntryKind {
+    match kind {
+        TarEntryKind::Regular => ExtractionEntryKind::File,
+        TarEntryKind::Directory => ExtractionEntryKind::Directory,
+        TarEntryKind::Symlink
+        | TarEntryKind::Hardlink
+        | TarEntryKind::CharacterDevice
+        | TarEntryKind::BlockDevice
+        | TarEntryKind::Fifo => ExtractionEntryKind::Special,
+    }
 }
 
 /// Extracts `.tzap` entries with a passphrase and overwrite resolver.
@@ -1982,10 +2043,12 @@ pub fn extract_tzap_with_overwrite_resolver_and_optional_password_and_restore_op
     extract_tzap_inner(
         archive,
         destination,
-        policy,
-        password,
-        None,
-        restore_options,
+        ExtractTzapOptions {
+            policy,
+            password,
+            recipient_private_key: None,
+            restore_options,
+        },
         Some(overwrite_resolver),
         None,
     )
@@ -2032,10 +2095,12 @@ pub fn extract_tzap_with_overwrite_resolver_and_recipient_key_and_restore_option
     extract_tzap_inner(
         archive,
         destination,
-        policy,
-        None,
-        Some(recipient_private_key.as_ref()),
-        restore_options,
+        ExtractTzapOptions {
+            policy,
+            password: None,
+            recipient_private_key: Some(recipient_private_key.as_ref()),
+            restore_options,
+        },
         Some(overwrite_resolver),
         None,
     )
@@ -2090,7 +2155,7 @@ pub fn test_tzap_with_optional_password_filter_and_x509_trust(
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
-    test_opened_tzap_archive(opened, selector, x509_trust)
+    test_opened_tzap_archive(&opened, selector, x509_trust)
 }
 
 /// Tests recipient-wrapped `.tzap` readability and integrity with a private key.
@@ -2106,18 +2171,18 @@ pub fn test_tzap_with_recipient_key_filter_and_x509_trust(
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
     let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
-    test_opened_tzap_archive(opened, selector, x509_trust)
+    test_opened_tzap_archive(&opened, selector, x509_trust)
 }
 
 fn test_opened_tzap_archive(
-    opened: OpenedArchive,
+    opened: &OpenedArchive,
     selector: impl Fn(&str) -> bool,
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
     opened.verify()?;
     let x509_root_auth = match x509_trust.filter(|trust| trust.has_trust_source()) {
-        Some(trust) if should_verify_opened_x509_root_auth(&opened, trust) => {
-            Some(verify_opened_x509_root_auth(&opened, trust)?)
+        Some(trust) if should_verify_opened_x509_root_auth(opened, trust) => {
+            Some(verify_opened_x509_root_auth(opened, trust)?)
         }
         _ => None,
     };
@@ -2872,16 +2937,224 @@ fn collect_regular_file_sources(
     Ok((files, warnings))
 }
 
+struct ExtractTzapOptions<'a> {
+    policy: ExtractionPolicy,
+    password: Option<&'a str>,
+    recipient_private_key: Option<&'a Path>,
+    restore_options: TzapRestoreOptions,
+}
+
+struct TzapExtractionState<'archive, 'resolver> {
+    opened: &'archive OpenedArchive,
+    planner: ExtractionSafetyPlanner<'resolver>,
+    restore_options: TzapRestoreOptions,
+    report: TzapExtractReport,
+    deferred_directory_metadata: Vec<(PathBuf, TzapPortableEntryMetadata)>,
+}
+
+struct TzapEntryWriteDecision {
+    destination_path: PathBuf,
+    replace_existing: bool,
+    link_target_path: Option<PathBuf>,
+}
+
+impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
+    fn new(
+        opened: &'archive OpenedArchive,
+        planner: ExtractionSafetyPlanner<'resolver>,
+        restore_options: TzapRestoreOptions,
+    ) -> Self {
+        Self {
+            opened,
+            planner,
+            restore_options,
+            report: TzapExtractReport {
+                written_entries: 0,
+                skipped_entries: 0,
+                written_bytes: 0,
+                warnings: Vec::new(),
+            },
+            deferred_directory_metadata: Vec::new(),
+        }
+    }
+
+    fn extract_entries(
+        &mut self,
+        entries: &[ArchiveEntry],
+        mut context: Option<&mut JobContext<'_>>,
+    ) -> Result<(), TzapError> {
+        for entry in entries {
+            self.extract_entry(entry, context.as_deref_mut())?;
+        }
+        Ok(())
+    }
+
+    fn extract_entry(
+        &mut self,
+        entry: &ArchiveEntry,
+        mut context: Option<&mut JobContext<'_>>,
+    ) -> Result<(), TzapError> {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+        }
+        append_metadata_diagnostics(
+            &entry.path,
+            &entry.diagnostics,
+            &mut self.report.warnings,
+            context.as_deref_mut(),
+        );
+        let preloaded_member =
+            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+                self.opened.extract_member(&entry.path)?
+            } else {
+                None
+            };
+        let safety_entry = ExtractionEntry {
+            archive_path: entry.path.clone(),
+            kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
+            uncompressed_size: Some(entry.file_data_size),
+            compressed_size: None,
+        };
+        if let Some(context) = context.as_deref_mut() {
+            context.entry_started(&entry.path, Some(entry.file_data_size));
+        }
+        match self.planner.validate_entry(&safety_entry)? {
+            ExtractionDecision::Write {
+                destination_path,
+                replace_existing,
+                link_target_path,
+                ..
+            } => self.write_entry(
+                entry,
+                &safety_entry,
+                preloaded_member,
+                &TzapEntryWriteDecision {
+                    destination_path,
+                    replace_existing,
+                    link_target_path,
+                },
+                context,
+            ),
+            ExtractionDecision::Skip { reason, .. } => {
+                self.record_skip(
+                    &entry.path,
+                    format!("skipped {}: {reason}", entry.path),
+                    context,
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn write_entry(
+        &mut self,
+        entry: &ArchiveEntry,
+        safety_entry: &ExtractionEntry,
+        preloaded_member: Option<ExtractedArchiveMember>,
+        decision: &TzapEntryWriteDecision,
+        mut context: Option<&mut JobContext<'_>>,
+    ) -> Result<(), TzapError> {
+        if matches!(safety_entry.kind, ExtractionEntryKind::File) {
+            let Some(processed) = stream_regular_member_to_destination(
+                self.opened,
+                &entry.path,
+                entry.file_data_size,
+                self.restore_options,
+                &decision.destination_path,
+                decision.replace_existing,
+                context.as_deref_mut(),
+            )?
+            else {
+                self.record_missing_entry(&entry.path, context);
+                return Ok(());
+            };
+            self.report.written_entries += 1;
+            self.report.written_bytes += processed.written_bytes;
+            for diagnostic in processed.metadata_diagnostics {
+                let warning = format!("metadata {}: {diagnostic}", entry.path);
+                self.report.warnings.push(warning.clone());
+                if let Some(context) = context.as_deref_mut() {
+                    context.warning(warning);
+                }
+            }
+            if let Some(context) = context {
+                context.entry_finished(&entry.path, processed.written_bytes);
+            }
+            return Ok(());
+        }
+
+        let member = match preloaded_member {
+            Some(member) => Some(member),
+            None => self.opened.extract_member(&entry.path)?,
+        };
+        let Some(member) = member else {
+            self.record_missing_entry(&entry.path, context);
+            return Ok(());
+        };
+        let processed = materialize_non_regular_member(
+            &member,
+            &decision.destination_path,
+            decision.replace_existing,
+            decision.link_target_path.as_deref(),
+            &mut self.report,
+        )?;
+        if member.kind == TarEntryKind::Directory {
+            self.deferred_directory_metadata.push((
+                decision.destination_path.clone(),
+                TzapPortableEntryMetadata::from_archive_entry(entry),
+            ));
+        }
+        if let Some(context) = context {
+            context.bytes_processed(Some(&entry.path), processed);
+            context.entry_finished(&entry.path, processed);
+        }
+        Ok(())
+    }
+
+    fn record_missing_entry(&mut self, entry_path: &str, context: Option<&mut JobContext<'_>>) {
+        self.record_skip(
+            entry_path,
+            format!("skipped missing entry {entry_path}"),
+            context,
+        );
+    }
+
+    fn record_skip(
+        &mut self,
+        entry_path: &str,
+        warning: String,
+        context: Option<&mut JobContext<'_>>,
+    ) {
+        self.report.skipped_entries += 1;
+        self.report.warnings.push(warning.clone());
+        if let Some(context) = context {
+            context.warning(warning);
+            context.entry_finished(entry_path, 0);
+        }
+    }
+
+    fn finish(self) -> Result<TzapExtractReport, TzapError> {
+        apply_deferred_tzap_directory_metadata(
+            &self.deferred_directory_metadata,
+            self.restore_options,
+        )?;
+        Ok(self.report)
+    }
+}
+
 fn extract_tzap_inner(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
-    policy: ExtractionPolicy,
-    password: Option<&str>,
-    recipient_private_key: Option<&Path>,
-    restore_options: TzapRestoreOptions,
+    options: ExtractTzapOptions<'_>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    mut context: Option<&mut JobContext<'_>>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<TzapExtractReport, TzapError> {
+    let ExtractTzapOptions {
+        policy,
+        password,
+        recipient_private_key,
+        restore_options,
+    } = options;
     let destination = destination.as_ref();
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io {
@@ -2907,7 +3180,7 @@ fn extract_tzap_inner(
         );
     }
     opened.plan_metadata_restore(restore_options.core_options(false))?;
-    let mut planner = match overwrite_resolver {
+    let planner = match overwrite_resolver {
         Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
             &destination_root,
             policy,
@@ -2915,131 +3188,9 @@ fn extract_tzap_inner(
         ),
         None => ExtractionSafetyPlanner::new(&destination_root, policy),
     };
-    let mut report = TzapExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
-    let mut deferred_directory_metadata = Vec::new();
-
-    for entry in entries {
-        if let Some(context) = context.as_deref_mut() {
-            context.check_cancelled()?;
-        }
-        append_metadata_diagnostics(
-            &entry.path,
-            &entry.diagnostics,
-            &mut report.warnings,
-            context.as_deref_mut(),
-        );
-        let preloaded_member =
-            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
-                opened.extract_member(&entry.path)?
-            } else {
-                None
-            };
-        let safety_entry = ExtractionEntry {
-            archive_path: entry.path.clone(),
-            kind: extraction_kind_from_tzap_entry(&entry, preloaded_member.as_ref()),
-            uncompressed_size: Some(entry.file_data_size),
-            compressed_size: None,
-        };
-        if let Some(context) = context.as_deref_mut() {
-            context.entry_started(&entry.path, Some(entry.file_data_size));
-        }
-        match planner.validate_entry(&safety_entry)? {
-            ExtractionDecision::Write {
-                destination_path,
-                replace_existing,
-                link_target_path,
-                ..
-            } => {
-                if matches!(&safety_entry.kind, ExtractionEntryKind::File) {
-                    let Some(processed) = stream_regular_member_to_destination(
-                        &opened,
-                        &entry.path,
-                        entry.file_data_size,
-                        restore_options,
-                        &destination_path,
-                        replace_existing,
-                        context.as_deref_mut(),
-                    )?
-                    else {
-                        report.skipped_entries += 1;
-                        report
-                            .warnings
-                            .push(format!("skipped missing entry {}", entry.path));
-                        if let Some(context) = context.as_deref_mut() {
-                            context.warning(format!("skipped missing entry {}", entry.path));
-                            context.entry_finished(&entry.path, 0);
-                        }
-                        continue;
-                    };
-                    report.written_entries += 1;
-                    report.written_bytes += processed.written_bytes;
-                    for diagnostic in processed.metadata_diagnostics {
-                        let warning = format!("metadata {}: {diagnostic}", entry.path);
-                        report.warnings.push(warning.clone());
-                        if let Some(context) = context.as_deref_mut() {
-                            context.warning(warning);
-                        }
-                    }
-                    if let Some(context) = context.as_deref_mut() {
-                        context.entry_finished(&entry.path, processed.written_bytes);
-                    }
-                    continue;
-                }
-
-                let member = match preloaded_member {
-                    Some(member) => Some(member),
-                    None => opened.extract_member(&entry.path)?,
-                };
-                let Some(member) = member else {
-                    report.skipped_entries += 1;
-                    report
-                        .warnings
-                        .push(format!("skipped missing entry {}", entry.path));
-                    if let Some(context) = context.as_deref_mut() {
-                        context.warning(format!("skipped missing entry {}", entry.path));
-                        context.entry_finished(&entry.path, 0);
-                    }
-                    continue;
-                };
-                let processed = materialize_non_regular_member(
-                    &member,
-                    &destination_path,
-                    replace_existing,
-                    link_target_path.as_deref(),
-                    &mut report,
-                )?;
-                if member.kind == TarEntryKind::Directory {
-                    deferred_directory_metadata.push((
-                        destination_path,
-                        TzapPortableEntryMetadata::from_archive_entry(&entry),
-                    ));
-                }
-                if let Some(context) = context.as_deref_mut() {
-                    context.bytes_processed(Some(&entry.path), processed);
-                    context.entry_finished(&entry.path, processed);
-                }
-            }
-            ExtractionDecision::Skip { reason, .. } => {
-                report.skipped_entries += 1;
-                report
-                    .warnings
-                    .push(format!("skipped {}: {reason}", entry.path));
-                if let Some(context) = context.as_deref_mut() {
-                    context.warning(format!("skipped {}: {reason}", entry.path));
-                    context.entry_finished(&entry.path, 0);
-                }
-            }
-        }
-    }
-
-    apply_deferred_tzap_directory_metadata(&deferred_directory_metadata, restore_options)?;
-
-    Ok(report)
+    let mut state = TzapExtractionState::new(&opened, planner, restore_options);
+    state.extract_entries(&entries, context)?;
+    state.finish()
 }
 
 fn extract_opened_tzap_with_core_restore(
@@ -3415,7 +3566,11 @@ fn open_tzap_archive_with_key_options(
         let mut stats = RecipientWrapOpenStats::default();
         return open_seekable_archive_volumes_with_recipient_wrap_resolver_options(
             volume_files,
-            |context| recipient_wrap_candidates_for_record(context, &lookup, &mut stats),
+            |context| {
+                Ok(recipient_wrap_candidates_for_record(
+                    &context, &lookup, &mut stats,
+                ))
+            },
             ReaderOptions::default(),
         )
         .map_err(|source| recipient_wrap_open_error(source, &stats));
@@ -3973,12 +4128,11 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
         let phase = job_phase_from_tzap(phase);
         debug_assert_eq!(self.active_phase, Some(phase));
 
-        if phase == JobPhase::EmittingPayload
-            && !self.started_paths.contains(archive_path) {
-                self.started_paths.insert(archive_path.to_owned());
-                self.context
-                    .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
-            }
+        if phase == JobPhase::EmittingPayload && !self.started_paths.contains(archive_path) {
+            self.started_paths.insert(archive_path.to_owned());
+            self.context
+                .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
+        }
 
         if let Some(batch) = self.phase_progress.record(Some(archive_path), bytes) {
             self.emit_phase_batch(phase, batch);
@@ -3996,10 +4150,12 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
             };
             *processed = processed.saturating_add(bytes);
             if let Some(size) = self.file_sizes.get(archive_path).copied()
-                && *processed >= size && !self.finished_paths.contains(archive_path) {
-                    self.finished_paths.insert(archive_path.to_owned());
-                    self.context.entry_finished(archive_path, size);
-                }
+                && *processed >= size
+                && !self.finished_paths.contains(archive_path)
+            {
+                self.finished_paths.insert(archive_path.to_owned());
+                self.context.entry_finished(archive_path, size);
+            }
         }
     }
 }

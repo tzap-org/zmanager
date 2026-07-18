@@ -821,7 +821,7 @@ fn parse_assurance_level(
     field: &'static str,
 ) -> Result<trust::TzapIdentityAssurance, TzapAuthError> {
     let value = required_string_field(object, path, field)?;
-    trust::TzapIdentityAssurance::from_str(&value)
+    trust::TzapIdentityAssurance::parse(&value)
         .ok_or(TzapAuthError::InvalidAssuranceLevel { value })
 }
 

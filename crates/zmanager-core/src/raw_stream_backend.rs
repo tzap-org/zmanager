@@ -431,20 +431,16 @@ pub fn copy_raw_stream_to_writer_with_progress<W: Write>(
         return copy_external_tool_to_writer(tool, archive_path, output, on_progress);
     }
 
-    if track_source_progress
-        && let Some(on_progress) = on_progress {
-            let file = File::open(archive_path).map_err(|source| RawStreamError::Io {
-                path: archive_path.to_path_buf(),
-                source,
-            })?;
-            let reader = BufReader::new(file);
-            let mut reader = open_decoder_from_reader(
-                CountingRead::new(reader, on_progress),
-                format,
-                archive_path,
-            )?;
-            return copy_reader_to_writer_with_progress(&mut reader, output, archive_path, None);
-        }
+    if track_source_progress && let Some(on_progress) = on_progress {
+        let file = File::open(archive_path).map_err(|source| RawStreamError::Io {
+            path: archive_path.to_path_buf(),
+            source,
+        })?;
+        let reader = BufReader::new(file);
+        let mut reader =
+            open_decoder_from_reader(CountingRead::new(reader, on_progress), format, archive_path)?;
+        return copy_reader_to_writer_with_progress(&mut reader, output, archive_path, None);
+    }
 
     let mut reader = open_decoder(archive_path, format)?;
 
@@ -578,15 +574,16 @@ fn write_raw_stream_to_file(
 ) -> Result<u64, RawStreamError> {
     let mut mtime_to_restore = None;
     if format == RawStreamFormat::Gzip
-        && let Ok(file) = File::open(archive_path) {
-            let decoder = flate2::read::GzDecoder::new(file);
-            if let Some(header) = decoder.header() {
-                let mtime = header.mtime();
-                if mtime > 0 {
-                    mtime_to_restore = Some(mtime);
-                }
+        && let Ok(file) = File::open(archive_path)
+    {
+        let decoder = flate2::read::GzDecoder::new(file);
+        if let Some(header) = decoder.header() {
+            let mtime = header.mtime();
+            if mtime > 0 {
+                mtime_to_restore = Some(mtime);
             }
         }
+    }
 
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -634,7 +631,6 @@ fn write_raw_stream_to_file(
 
     Ok(written)
 }
-
 
 pub(crate) fn open_decoder(
     archive_path: &Path,
@@ -1076,7 +1072,7 @@ mod tests {
         let archive_path = dir.path().join("test.gz");
         let extract_path = dir.path().join("extracted.txt");
 
-        let mtime = 1600000000;
+        let mtime = 1_600_000_000;
         let file = File::create(&archive_path).unwrap();
         let builder = flate2::GzBuilder::new().mtime(mtime);
         let mut encoder = builder.write(file, Compression::default());
@@ -1091,7 +1087,8 @@ mod tests {
             None,
             None,
             false,
-        ).unwrap();
+        )
+        .unwrap();
 
         let meta = fs::metadata(&extract_path).unwrap();
         let modified = meta.modified().unwrap();

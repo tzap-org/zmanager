@@ -90,7 +90,7 @@ impl fmt::Display for TzapOfflineVerificationError {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn verify_tzap_document_envelope_offline_json(
     bytes: &[u8],
     options: &TzapOfflineVerificationOptions<'_>,
@@ -111,13 +111,10 @@ pub fn verify_tzap_document_envelope_offline(
 ) -> TzapDocumentVerificationResult {
     match verify_offline_inner(envelope, options) {
         Ok(result) => result,
-        Err(error) => {
-            let trust_anchor_type = match error {
-                TzapOfflineVerificationError::Untrusted(_) => TzapTrustAnchorType::Untrusted,
-                _ => TzapTrustAnchorType::Untrusted,
-            };
-            TzapDocumentVerificationResult::invalid(trust_anchor_type, error.to_string())
-        }
+        Err(error) => TzapDocumentVerificationResult::invalid(
+            TzapTrustAnchorType::Untrusted,
+            error.to_string(),
+        ),
     }
 }
 
@@ -469,7 +466,6 @@ mod tests {
 
         let bad_policy = SignedEnvelopeFixture::new(ChainConfig {
             omit_leaf_policy: true,
-            ..ChainConfig::default()
         });
         let bad_policy_pins = pin_set(&bad_policy.root_sha256);
         let result = verify_tzap_document_envelope_offline(
@@ -557,13 +553,10 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
-    #[derive(Default)]
+    #[derive(Clone, Copy, Default)]
     struct ChainConfig {
         omit_leaf_policy: bool,
     }
-
-    
 
     struct CertificateFixture {
         chain_der: Vec<Vec<u8>>,
