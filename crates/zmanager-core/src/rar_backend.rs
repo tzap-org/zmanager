@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 use zmanager_unrar::{MAX_LARGE_DICTIONARY_BYTES, RarEntryKind, UnrarError};
 
 const LARGE_DICTIONARY_LIMIT_MIB: u64 = MAX_LARGE_DICTIONARY_BYTES / crate::MEBIBYTE_BYTES;
+const RAR_UNIX_MODE_MASK: u32 = 0o7777;
+const RAR_FILETIME_TICKS_PER_SECOND: u64 = 10_000_000;
+const RAR_FILETIME_NANOS_PER_TICK: u64 = 100;
+const WINDOWS_TO_UNIX_EPOCH_SECONDS: u64 = 11_644_473_600;
 
 /// One RAR listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -359,9 +363,7 @@ fn extract_rar_inner_with_entries(
     }
 
     report.written_entries += selections.len();
-    for link in deferred_links {
-        materialize_deferred_link(&link, &mut report)?;
-    }
+    materialize_deferred_links(&deferred_links, &mut report)?;
 
     for (dir_path, file_attr, mtime) in deferred_dirs.into_iter().rev() {
         apply_rar_metadata(&dir_path, file_attr, mtime).map_err(|source| RarBackendError::Io {
@@ -637,6 +639,44 @@ enum DeferredLinkKind {
     FileCopy { source_path: PathBuf },
 }
 
+fn materialize_deferred_links(
+    links: &[DeferredLink],
+    report: &mut RarExtractReport,
+) -> Result<(), RarBackendError> {
+    let mut pending = Vec::new();
+    for link in links {
+        if matches!(&link.kind, DeferredLinkKind::Symlink { .. }) {
+            materialize_deferred_link(link, report)?;
+        } else {
+            pending.push(link);
+        }
+    }
+
+    let paths = pending
+        .iter()
+        .map(|link| {
+            let source_path = match &link.kind {
+                DeferredLinkKind::Hardlink { source_path }
+                | DeferredLinkKind::FileCopy { source_path } => source_path,
+                DeferredLinkKind::Symlink { .. } => unreachable!(),
+            };
+            (source_path.clone(), link.destination_path.clone())
+        })
+        .collect::<Vec<_>>();
+    let order = crate::safety::deferred_link_dependency_order(&paths).map_err(|source| {
+        RarBackendError::Io {
+            path: pending
+                .first()
+                .map_or_else(PathBuf::new, |link| link.destination_path.clone()),
+            source,
+        }
+    })?;
+    for index in order {
+        materialize_deferred_link(pending[index], report)?;
+    }
+    Ok(())
+}
+
 fn materialize_deferred_link(
     link: &DeferredLink,
     report: &mut RarExtractReport,
@@ -686,19 +726,21 @@ fn materialize_deferred_link(
 }
 
 fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()> {
+    let is_symlink = fs::symlink_metadata(path)?.file_type().is_symlink();
+
     #[cfg(unix)]
     {
-        if (file_attr & 0xFFFF_0000) != 0 {
+        if !is_symlink && (file_attr & 0xFFFF_0000) != 0 {
             use std::os::unix::fs::PermissionsExt;
-            let permissions = (file_attr >> 16) & 0o0777;
+            let permissions = (file_attr >> 16) & RAR_UNIX_MODE_MASK;
             fs::set_permissions(path, fs::Permissions::from_mode(permissions))?;
         }
     }
 
     #[cfg(not(unix))]
     {
-        if (file_attr & 0xFFFF_0000) != 0 {
-            let permissions = (file_attr >> 16) & 0o0777;
+        if !is_symlink && (file_attr & 0xFFFF_0000) != 0 {
+            let permissions = (file_attr >> 16) & RAR_UNIX_MODE_MASK;
             if permissions & 0o222 == 0 {
                 if let Ok(fs_metadata) = fs::metadata(path) {
                     let mut perms = fs_metadata.permissions();
@@ -710,15 +752,25 @@ fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()>
     }
 
     if mtime != 0 {
-        let unix_secs = (mtime / 10_000_000)
-            .saturating_sub(11_644_473_600)
-            .cast_signed();
-        let nanos = u32::try_from((mtime % 10_000_000) * 100)
-            .expect("RAR timestamp subsecond component always fits in u32");
+        let filetime_seconds = mtime / RAR_FILETIME_TICKS_PER_SECOND;
+        let unix_seconds = i128::from(filetime_seconds) - i128::from(WINDOWS_TO_UNIX_EPOCH_SECONDS);
+        let unix_secs = i64::try_from(unix_seconds).map_err(|source| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("RAR modification time is out of range: {source}"),
+            )
+        })?;
+        let nanos =
+            u32::try_from((mtime % RAR_FILETIME_TICKS_PER_SECOND) * RAR_FILETIME_NANOS_PER_TICK)
+                .map_err(|source| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("RAR modification time fraction is out of range: {source}"),
+                    )
+                })?;
         let file_time = filetime::FileTime::from_unix_time(unix_secs, nanos);
 
-        let md = fs::symlink_metadata(path)?;
-        if md.is_symlink() {
+        if is_symlink {
             filetime::set_symlink_file_times(path, file_time, file_time)?;
         } else {
             filetime::set_file_mtime(path, file_time)?;
@@ -825,4 +877,138 @@ fn relative_path(from_parent: &str, to: &str) -> PathBuf {
         path.push(part);
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DeferredLink, DeferredLinkKind, RAR_FILETIME_TICKS_PER_SECOND, RarExtractReport,
+        WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata, materialize_deferred_links,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn rar_metadata_preserves_special_mode_bits_without_following_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temp = TestDir::new("rar_metadata_modes");
+        let directory = temp.path("sticky");
+        fs::create_dir(&directory).unwrap();
+        apply_rar_metadata(&directory, 0o1750 << 16, 0).unwrap();
+        assert_eq!(
+            fs::metadata(&directory).unwrap().permissions().mode() & 0o7777,
+            0o1750
+        );
+
+        let target = temp.path("target.txt");
+        fs::write(&target, b"target").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = temp.path("link.txt");
+        symlink("target.txt", &link).unwrap();
+
+        apply_rar_metadata(&link, 0o777 << 16, 0).unwrap();
+
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o640
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rar_metadata_restores_pre_epoch_subsecond_time() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("rar_metadata_pre_epoch_time");
+        let path = temp.path("old.txt");
+        fs::write(&path, b"old").unwrap();
+        let filetime_ticks =
+            (WINDOWS_TO_UNIX_EPOCH_SECONDS - 1) * RAR_FILETIME_TICKS_PER_SECOND + 2_500_000;
+
+        apply_rar_metadata(&path, 0, filetime_ticks).unwrap();
+
+        let metadata = fs::metadata(path).unwrap();
+        assert_eq!(metadata.mtime(), -1);
+        assert_eq!(metadata.mtime_nsec(), 250_000_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rar_deferred_hardlink_chains_do_not_depend_on_archive_order() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("rar_forward_hardlink_chain");
+        let target = temp.path("target.txt");
+        let middle = temp.path("middle.txt");
+        let first = temp.path("first.txt");
+        fs::write(&target, b"target").unwrap();
+        let links = [
+            DeferredLink {
+                destination_path: first.clone(),
+                replace_existing: false,
+                kind: DeferredLinkKind::Hardlink {
+                    source_path: middle.clone(),
+                },
+                file_attr: 0,
+                mtime: 0,
+            },
+            DeferredLink {
+                destination_path: middle.clone(),
+                replace_existing: false,
+                kind: DeferredLinkKind::Hardlink {
+                    source_path: target.clone(),
+                },
+                file_attr: 0,
+                mtime: 0,
+            },
+        ];
+        let mut report = RarExtractReport {
+            written_entries: 0,
+            skipped_entries: 0,
+            written_bytes: 0,
+            warnings: Vec::new(),
+        };
+
+        materialize_deferred_links(&links, &mut report).unwrap();
+
+        assert_eq!(report.written_entries, 2);
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&first).unwrap().ino()
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&middle).unwrap().ino()
+        );
+    }
+
+    struct TestDir {
+        root: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("zmanager-{label}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        fn path(&self, relative: impl AsRef<Path>) -> PathBuf {
+            self.root.join(relative)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 }

@@ -623,10 +623,14 @@ fn write_raw_stream_to_file(
 
     if let Some(mtime) = mtime_to_restore {
         let system_time = UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime));
-        let _ = filetime::set_file_mtime(
+        filetime::set_file_mtime(
             destination_path,
             filetime::FileTime::from_system_time(system_time),
-        );
+        )
+        .map_err(|source| RawStreamError::Io {
+            path: destination_path.to_path_buf(),
+            source,
+        })?;
     }
 
     Ok(written)

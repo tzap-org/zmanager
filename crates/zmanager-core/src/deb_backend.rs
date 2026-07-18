@@ -300,16 +300,18 @@ fn copy_synthetic_file(
                 }
             }
 
-            if let Ok(mtime) = source_metadata.modified() {
-                filetime::set_file_mtime(
-                    &destination_path,
-                    filetime::FileTime::from_system_time(mtime),
-                )
-                .map_err(|source| DebError::Io {
-                    path: destination_path.clone(),
-                    source,
-                })?;
-            }
+            let mtime = source_metadata.modified().map_err(|source| DebError::Io {
+                path: source_path.to_path_buf(),
+                source,
+            })?;
+            filetime::set_file_mtime(
+                &destination_path,
+                filetime::FileTime::from_system_time(mtime),
+            )
+            .map_err(|source| DebError::Io {
+                path: destination_path.clone(),
+                source,
+            })?;
 
             report.written_entries += 1;
             report.written_bytes += written_bytes;

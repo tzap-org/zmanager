@@ -5,6 +5,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 mod atomic_file;
+mod tar_metadata;
 
 pub mod apple_archive_backend;
 pub mod archive_browser;

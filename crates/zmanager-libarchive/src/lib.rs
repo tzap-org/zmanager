@@ -452,15 +452,28 @@ fn modified_time(entry: *mut sys::archive_entry) -> Option<SystemTime> {
         return None;
     }
     let seconds = unsafe { sys::archive_entry_mtime(entry) };
-    system_time_from_unix_seconds(seconds)
+    let nanoseconds = unsafe { sys::archive_entry_mtime_nsec(entry) };
+    system_time_from_unix_timestamp(seconds, nanoseconds)
 }
 
-fn system_time_from_unix_seconds(seconds: libc::time_t) -> Option<SystemTime> {
+fn system_time_from_unix_timestamp(
+    seconds: libc::time_t,
+    nanoseconds: libc::c_long,
+) -> Option<SystemTime> {
+    let nanoseconds = u32::try_from(nanoseconds).ok()?;
+    if nanoseconds >= 1_000_000_000 {
+        return None;
+    }
+    let subsecond = Duration::from_nanos(u64::from(nanoseconds));
     if seconds >= 0 {
         let seconds = u64::try_from(seconds).ok()?;
-        UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(seconds))?
+            .checked_add(subsecond)
     } else {
-        UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(seconds.unsigned_abs()))?
+            .checked_add(subsecond)
     }
 }
 
@@ -497,4 +510,28 @@ pub fn version_details() -> String {
 #[must_use]
 pub fn version_number() -> c_int {
     unsafe { sys::archive_version_number() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_time_from_unix_timestamp;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn converts_positive_and_negative_fractional_unix_timestamps() {
+        assert_eq!(
+            system_time_from_unix_timestamp(1, 250_000_000),
+            UNIX_EPOCH.checked_add(Duration::from_millis(1_250))
+        );
+        assert_eq!(
+            system_time_from_unix_timestamp(-1, 250_000_000),
+            UNIX_EPOCH.checked_sub(Duration::from_millis(750))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_nanoseconds() {
+        assert_eq!(system_time_from_unix_timestamp(0, -1), None);
+        assert_eq!(system_time_from_unix_timestamp(0, 1_000_000_000), None);
+    }
 }

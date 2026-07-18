@@ -1733,7 +1733,7 @@ fn write_zip_entry<R: Read>(
                 }
             } else {
                 write_symlink(target, destination_path)?;
-                apply_symlink_mtime(destination_path, modified_time);
+                apply_symlink_mtime(destination_path, modified_time)?;
                 report.written_entries += 1;
             }
             Ok(0)
@@ -1811,11 +1811,12 @@ fn apply_zip_metadata(
     Ok(())
 }
 
-/// Best-effort mtime restoration for symlinks.
-///
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
-/// silently ignored because some filesystems do not support symlink timestamps.
-fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) {
+/// reported so extraction cannot claim metadata was restored when it was not.
+fn apply_symlink_mtime(
+    path: &Path,
+    modified_time: Option<zip::DateTime>,
+) -> Result<(), ZipBackendError> {
     if let Some(dt) = modified_time
         && let Ok(date) = time::Date::from_calendar_date(
             i32::from(dt.year()),
@@ -1827,8 +1828,12 @@ fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) {
         let primitive = time::PrimitiveDateTime::new(date, time_cmp);
         let sys_time = std::time::SystemTime::from(primitive.assume_utc());
         let ft = filetime::FileTime::from_system_time(sys_time);
-        let _ = filetime::set_symlink_file_times(path, ft, ft);
+        filetime::set_symlink_file_times(path, ft, ft).map_err(|source| ZipBackendError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
+    Ok(())
 }
 
 fn apply_deferred_zip_directory_metadata(

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_libarchive::{FileType, ReadArchive};
 
-const LIBARCHIVE_MODE_MASK: u32 = 0o0777;
+const LIBARCHIVE_MODE_MASK: u32 = 0o7777;
 
 const NUMBERED_VOLUME_EXTENSION_WIDTH: usize = 3;
 const NUMBERED_VOLUME_ARCHIVE_SUFFIXES: &[&str] = &[".7z", ".zip"];
@@ -479,6 +479,7 @@ fn extract_archive_inner(
     };
     let mut found_selected_entry = selected_entry.is_none();
     let mut deferred_directories = Vec::new();
+    let mut deferred_hardlinks = Vec::new();
     let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     while let Some(entry) = archive.next_entry()? {
@@ -530,6 +531,7 @@ fn extract_archive_inner(
                 &mut report,
                 context.as_deref_mut(),
                 &mut deferred_directories,
+                &mut deferred_hardlinks,
                 &mut io_buffer,
             )?,
             ExtractionDecision::Skip { reason, .. } => {
@@ -555,6 +557,7 @@ fn extract_archive_inner(
         });
     }
 
+    materialize_deferred_hardlinks(&deferred_hardlinks, &mut report)?;
     apply_deferred_directory_metadata(&deferred_directories)?;
 
     Ok(report)
@@ -899,6 +902,12 @@ struct LibarchiveEntryMetadata {
     modified: Option<SystemTime>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct DeferredHardlink {
+    source_path: PathBuf,
+    destination_path: PathBuf,
+}
+
 impl OwnedEntry {
     fn from_entry(entry: &zmanager_libarchive::Entry) -> Result<Self, LibarchiveError> {
         let path = entry.pathname().ok_or(LibarchiveError::MissingPath)?;
@@ -1002,6 +1011,7 @@ fn write_entry(
     report: &mut LibarchiveExtractReport,
     mut context: Option<&mut JobContext<'_>>,
     deferred_directories: &mut Vec<(PathBuf, LibarchiveEntryMetadata)>,
+    deferred_hardlinks: &mut Vec<DeferredHardlink>,
     io_buffer: &mut [u8],
 ) -> Result<u64, LibarchiveError> {
     if replace_existing && !matches!(entry.extraction_kind, ExtractionEntryKind::File) {
@@ -1051,7 +1061,7 @@ fn write_entry(
                 Ok(0)
             } else {
                 write_symlink(target, destination_path)?;
-                apply_symlink_mtime(destination_path, entry.metadata.modified);
+                apply_symlink_mtime(destination_path, entry.metadata.modified)?;
                 report.written_entries += 1;
                 Ok(0)
             }
@@ -1069,8 +1079,10 @@ fn write_entry(
                     ),
                 ),
             })?;
-            write_hardlink(source_path, destination_path)?;
-            report.written_entries += 1;
+            deferred_hardlinks.push(DeferredHardlink {
+                source_path: source_path.to_path_buf(),
+                destination_path: destination_path.to_path_buf(),
+            });
             Ok(0)
         }
         ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
@@ -1085,6 +1097,35 @@ fn write_entry(
             Ok(0)
         }
     }
+}
+
+fn materialize_deferred_hardlinks(
+    hardlinks: &[DeferredHardlink],
+    report: &mut LibarchiveExtractReport,
+) -> Result<(), LibarchiveError> {
+    let paths = hardlinks
+        .iter()
+        .map(|hardlink| {
+            (
+                hardlink.source_path.clone(),
+                hardlink.destination_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let order = crate::safety::deferred_link_dependency_order(&paths).map_err(|source| {
+        LibarchiveError::Io {
+            path: hardlinks
+                .first()
+                .map_or_else(PathBuf::new, |link| link.destination_path.clone()),
+            source,
+        }
+    })?;
+    for index in order {
+        let hardlink = &hardlinks[index];
+        write_hardlink(&hardlink.source_path, &hardlink.destination_path)?;
+        report.written_entries += 1;
+    }
+    Ok(())
 }
 
 fn write_file_entry(
@@ -1192,15 +1233,17 @@ fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), 
     Ok(())
 }
 
-/// Best-effort mtime restoration for symlinks.
-///
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
-/// silently ignored because some filesystems do not support symlink timestamps.
-fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
+/// reported so extraction cannot claim metadata was restored when it was not.
+fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) -> Result<(), LibarchiveError> {
     if let Some(modified) = modified {
         let ft = filetime::FileTime::from_system_time(modified);
-        let _ = filetime::set_symlink_file_times(path, ft, ft);
+        filetime::set_symlink_file_times(path, ft, ft).map_err(|source| LibarchiveError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
+    Ok(())
 }
 
 fn copy_file_entry_to_writer<W: Write>(
@@ -1330,7 +1373,7 @@ mod tests {
         write_tar_gz_with_metadata(
             &archive,
             "payload",
-            0o750,
+            0o1750,
             DIRECTORY_MTIME,
             "payload/run.sh",
             0o751,
@@ -1347,7 +1390,7 @@ mod tests {
         let file_metadata = fs::metadata(temp.path("out/payload/run.sh")).unwrap();
         let link_metadata = fs::symlink_metadata(temp.path("out/payload/link.sh")).unwrap();
 
-        assert_eq!(directory_metadata.mode() & 0o7777, 0o750);
+        assert_eq!(directory_metadata.mode() & 0o7777, 0o1750);
         assert_eq!(file_metadata.mode() & 0o7777, 0o751);
 
         assert_eq!(
@@ -1358,6 +1401,39 @@ mod tests {
 
         assert!(link_metadata.is_symlink());
         assert_eq!(link_metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_pax_tar_precise_modification_time() {
+        use std::os::unix::fs::MetadataExt;
+
+        const FILE_MTIME: u64 = 1_700_000_000;
+        const FILE_MTIME_NANOS: i64 = 234_567_890;
+
+        let temp = TestDir::new("extracts_pax_tar_precise_modification_time");
+        let archive = temp.path("archive.tar");
+        let file = File::create(&archive).unwrap();
+        let mut builder = tar::Builder::new(file);
+        builder
+            .append_pax_extensions([("mtime", b"1700000000.234567890".as_slice())])
+            .unwrap();
+        let mut header = tar::Header::new_ustar();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(7);
+        header.set_mode(0o640);
+        header.set_mtime(FILE_MTIME);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "precise.txt", b"precise".as_slice())
+            .unwrap();
+        builder.finish().unwrap();
+
+        extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let metadata = fs::metadata(temp.path("out/precise.txt")).unwrap();
+        assert_eq!(metadata.mtime(), i64::try_from(FILE_MTIME).unwrap());
+        assert_eq!(metadata.mtime_nsec(), FILE_MTIME_NANOS);
     }
 
     #[test]
@@ -1443,6 +1519,33 @@ mod tests {
         let temp = TestDir::new("extracts_hardlinks_from_tar_archive");
         let archive = temp.path("archive.tar");
         write_tar_with_hardlink(
+            &archive,
+            "payload/target.txt",
+            "payload/link.txt",
+            b"target",
+        );
+
+        let report =
+            extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let target = temp.path("out/payload/target.txt");
+        let link = temp.path("out/payload/link.txt");
+        assert_eq!(report.written_entries, 2);
+        assert_eq!(fs::read(&link).unwrap(), b"target");
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&link).unwrap().ino()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracts_forward_hardlinks_from_tar_archive() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("extracts_forward_hardlinks_from_tar_archive");
+        let archive = temp.path("archive.tar");
+        write_tar_with_forward_hardlink(
             &archive,
             "payload/target.txt",
             "payload/link.txt",
@@ -1669,6 +1772,39 @@ mod tests {
         link_header.set_cksum();
         builder
             .append_link(&mut link_header, link_path, Path::new(target_path))
+            .unwrap();
+
+        builder.finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_tar_with_forward_hardlink(
+        path: &Path,
+        target_path: &str,
+        link_path: &str,
+        contents: &[u8],
+    ) {
+        let file = File::create(path).unwrap();
+        let mut builder = tar::Builder::new(file);
+
+        let mut link_header = tar::Header::new_gnu();
+        link_header.set_entry_type(tar::EntryType::Link);
+        link_header.set_size(0);
+        link_header.set_mode(0o644);
+        link_header.set_mtime(0);
+        link_header.set_cksum();
+        builder
+            .append_link(&mut link_header, link_path, Path::new(target_path))
+            .unwrap();
+
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_entry_type(tar::EntryType::Regular);
+        file_header.set_size(contents.len().try_into().unwrap());
+        file_header.set_mode(0o644);
+        file_header.set_mtime(0);
+        file_header.set_cksum();
+        builder
+            .append_data(&mut file_header, target_path, contents)
             .unwrap();
 
         builder.finish().unwrap();

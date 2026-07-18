@@ -26,7 +26,7 @@ const DEFAULT_SEVENZ_COMPRESSION_LEVEL: u32 = 6;
 const DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES: u64 = 16 * 1_024 * 1_024;
 const MAX_SEVENZ_LZMA2_THREADS: u32 = 256;
 const SEVENZ_VOLUME_EXTENSION_WIDTH: usize = 3;
-const SEVENZ_MODE_MASK: u32 = 0o0777;
+const SEVENZ_MODE_MASK: u32 = 0o7777;
 /// Bit 31 in 7z `windows_attributes` signals that Unix permission bits are
 /// present in the upper half-word (bits 16–27).
 const SEVENZ_UNIX_ATTRIBUTES_FLAG: u32 = 0x8000_0000;
@@ -1694,9 +1694,10 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(temp.path("project"), fs::Permissions::from_mode(0o1750)).unwrap();
         }
 
-        let mtime = filetime::FileTime::from_unix_time(1_500_000_000, 0);
+        let mtime = filetime::FileTime::from_unix_time(1_500_000_000, 234_567_800);
         filetime::set_file_mtime(&path, mtime).unwrap();
 
         let archive = temp.path("archive.7z");
@@ -1725,8 +1726,13 @@ mod tests {
 
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt;
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+            let directory_metadata = fs::metadata(temp.path("out/project")).unwrap();
+            assert_eq!(directory_metadata.permissions().mode() & 0o7777, 0o1750);
+            assert_eq!(metadata.mtime(), 1_500_000_000);
+            assert_eq!(metadata.mtime_nsec(), 234_567_800);
         }
 
         #[cfg(not(unix))]

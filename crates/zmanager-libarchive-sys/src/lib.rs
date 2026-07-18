@@ -3,7 +3,7 @@
 //! This is intentionally not a complete libarchive binding. Keep additions
 //! close to actual call sites in `zmanager-libarchive`.
 
-use libc::{c_char, c_int, c_void, size_t, time_t};
+use libc::{c_char, c_int, c_long, c_void, size_t, time_t};
 
 #[allow(non_camel_case_types)]
 pub enum archive {}
@@ -87,6 +87,7 @@ unsafe extern "C" {
     pub fn archive_entry_filetype(entry: *mut archive_entry) -> la_mode_t;
     pub fn archive_entry_mode(entry: *mut archive_entry) -> la_mode_t;
     pub fn archive_entry_mtime(entry: *mut archive_entry) -> time_t;
+    pub fn archive_entry_mtime_nsec(entry: *mut archive_entry) -> c_long;
     pub fn archive_entry_mtime_is_set(entry: *mut archive_entry) -> c_int;
     pub fn archive_entry_symlink(entry: *mut archive_entry) -> *const c_char;
     pub fn archive_entry_symlink_utf8(entry: *mut archive_entry) -> *const c_char;

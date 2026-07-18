@@ -44,7 +44,8 @@ use tzap_core::{
     MetadataDiagnosticStatus, MetadataOperation, OpenedArchive, PortableFileMetadata,
     PortableModeOrigin, PortablePosixOwner, ReaderOptions, RegularFileSource,
     RestorePolicy as CoreRestorePolicy, RootAuthSigningRequest, SafeExtractionOptions,
-    TarEntryKind, WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
+    SourceEntryKind, TarEntryKind, WriterOptions, open_seekable_archive,
+    open_seekable_archive_volumes,
     open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
     public_no_key_verify_volumes_with,
     write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress,
@@ -579,7 +580,7 @@ pub fn create_tzap_from_manifest_with_context(
     context: &mut JobContext<'_>,
 ) -> Result<TzapCreateReport, TzapError> {
     context.check_cancelled()?;
-    let (file_sources, mut warnings) = collect_regular_file_sources(manifest, options, context)?;
+    let (file_sources, mut warnings) = collect_archive_sources(manifest, options, context)?;
     context.check_cancelled()?;
 
     let mut writer_options = WriterOptions {
@@ -1807,6 +1808,7 @@ struct FastTzapExtractionState<'archive, 'resolver> {
     restore_options: TzapRestoreOptions,
     report: TzapExtractReport,
     deferred_directory_metadata: Vec<(PathBuf, TzapPortableEntryMetadata)>,
+    deferred_hardlinks: Vec<DeferredTzapHardlink>,
 }
 
 impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
@@ -1826,6 +1828,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
                 warnings: Vec::new(),
             },
             deferred_directory_metadata: Vec::new(),
+            deferred_hardlinks: Vec::new(),
         }
     }
 
@@ -1852,9 +1855,15 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
             &mut self.report.warnings,
             Some(context),
         );
+        let preloaded_member =
+            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+                self.opened.extract_member(&entry.path)?
+            } else {
+                None
+            };
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
-            kind: fast_extraction_kind(entry.kind),
+            kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
             uncompressed_size: Some(entry.file_data_size),
             compressed_size: None,
         };
@@ -1864,8 +1873,9 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
             ExtractionDecision::Write {
                 destination_path,
                 replace_existing,
+                link_target_path,
                 ..
-            } => match safety_entry.kind {
+            } => match &safety_entry.kind {
                 ExtractionEntryKind::File => {
                     self.extract_regular_entry(entry, &destination_path, replace_existing, context)
                 }
@@ -1882,7 +1892,16 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
                     context.entry_finished(&safety_entry.archive_path, 0);
                     Ok(())
                 }
-                _ => {
+                ExtractionEntryKind::Symlink { .. } | ExtractionEntryKind::Hardlink { .. } => self
+                    .extract_link_entry(
+                        entry,
+                        preloaded_member,
+                        destination_path,
+                        replace_existing,
+                        link_target_path,
+                        context,
+                    ),
+                ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
                     self.record_skip(
                         &safety_entry.archive_path,
                         format!("skipped unsupported entry {}", safety_entry.archive_path),
@@ -1900,6 +1919,60 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
                 Ok(())
             }
         }
+    }
+
+    fn extract_link_entry(
+        &mut self,
+        entry: &ArchiveEntry,
+        preloaded_member: Option<ExtractedArchiveMember>,
+        destination_path: PathBuf,
+        replace_existing: bool,
+        link_target_path: Option<PathBuf>,
+        context: &mut JobContext<'_>,
+    ) -> Result<(), TzapError> {
+        let member = match preloaded_member {
+            Some(member) => Some(member),
+            None => self.opened.extract_member(&entry.path)?,
+        };
+        let Some(member) = member else {
+            self.record_skip(
+                &entry.path,
+                format!("skipped missing entry {}", entry.path),
+                context,
+            );
+            return Ok(());
+        };
+        if member.kind == TarEntryKind::Hardlink {
+            let source_path = link_target_path.ok_or_else(|| TzapError::Io {
+                path: destination_path.clone(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "hardlink target was not resolved by extraction safety planning",
+                ),
+            })?;
+            self.deferred_hardlinks.push(DeferredTzapHardlink {
+                source_path,
+                destination_path,
+                replace_existing,
+            });
+            context.entry_finished(&entry.path, 0);
+            return Ok(());
+        }
+        let processed = materialize_non_regular_member(
+            &member,
+            &destination_path,
+            replace_existing,
+            link_target_path.as_deref(),
+            &mut self.report,
+        )?;
+        if member.kind == TarEntryKind::Symlink
+            && should_restore_tzap_metadata(self.restore_options)
+        {
+            apply_tzap_symlink_mtime(&destination_path, entry.mtime)?;
+        }
+        context.bytes_processed(Some(&entry.path), processed);
+        context.entry_finished(&entry.path, processed);
+        Ok(())
     }
 
     fn extract_regular_entry(
@@ -1959,24 +2032,13 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
         context.entry_finished(entry_path, 0);
     }
 
-    fn finish(self) -> Result<TzapExtractReport, TzapError> {
+    fn finish(mut self) -> Result<TzapExtractReport, TzapError> {
+        materialize_deferred_tzap_hardlinks(&self.deferred_hardlinks, &mut self.report)?;
         apply_deferred_tzap_directory_metadata(
             &self.deferred_directory_metadata,
             self.restore_options,
         )?;
         Ok(self.report)
-    }
-}
-
-fn fast_extraction_kind(kind: TarEntryKind) -> ExtractionEntryKind {
-    match kind {
-        TarEntryKind::Regular => ExtractionEntryKind::File,
-        TarEntryKind::Directory => ExtractionEntryKind::Directory,
-        TarEntryKind::Symlink
-        | TarEntryKind::Hardlink
-        | TarEntryKind::CharacterDevice
-        | TarEntryKind::BlockDevice
-        | TarEntryKind::Fifo => ExtractionEntryKind::Special,
     }
 }
 
@@ -2879,7 +2941,7 @@ fn extract_tzap_file_from_opened_archive(
     }))
 }
 
-fn collect_regular_file_sources(
+fn collect_archive_sources(
     manifest: &ArchiveManifest,
     options: &TzapCreateOptions,
     context: &mut JobContext<'_>,
@@ -2892,7 +2954,7 @@ fn collect_regular_file_sources(
         context.entry_started(&entry.archive_path, Some(entry.size));
 
         match entry.file_type {
-            ManifestFileType::File => {
+            ManifestFileType::File | ManifestFileType::Directory | ManifestFileType::Symlink => {
                 let portable_metadata = if options.preserve_metadata {
                     portable_file_metadata(&entry.source_path)?
                 } else {
@@ -2901,9 +2963,28 @@ fn collect_regular_file_sources(
                 files.push(TzapRegularFileSource {
                     archive_path: entry.archive_path.clone(),
                     source_path: entry.source_path.clone(),
-                    size: entry.size,
+                    kind: match entry.file_type {
+                        ManifestFileType::File => SourceEntryKind::Regular,
+                        ManifestFileType::Directory => SourceEntryKind::Directory,
+                        ManifestFileType::Symlink => SourceEntryKind::Symlink,
+                        ManifestFileType::Other => unreachable!(),
+                    },
+                    link_target: entry.symlink_target.as_deref().map(path_bytes),
+                    size: if entry.file_type == ManifestFileType::File {
+                        entry.size
+                    } else {
+                        0
+                    },
                     mode: if options.preserve_metadata {
-                        entry.permissions.unix_mode.unwrap_or(0o644) & 0o7777
+                        entry.permissions.unix_mode.unwrap_or_else(|| {
+                            if entry.file_type == ManifestFileType::Directory {
+                                0o755
+                            } else {
+                                0o644
+                            }
+                        }) & 0o7777
+                    } else if entry.file_type == ManifestFileType::Directory {
+                        0o755
                     } else {
                         0o644
                     },
@@ -2919,12 +3000,9 @@ fn collect_regular_file_sources(
                     cancellation_token: context.cancellation_token(),
                 });
             }
-            ManifestFileType::Directory => {
-                context.entry_finished(&entry.archive_path, 0);
-            }
-            ManifestFileType::Symlink | ManifestFileType::Other => {
+            ManifestFileType::Other => {
                 let warning = format!(
-                    "skipped {}: tzap backend currently writes regular files only",
+                    "skipped {}: tzap backend does not write special files",
                     entry.archive_path
                 );
                 warnings.push(warning.clone());
@@ -2950,6 +3028,7 @@ struct TzapExtractionState<'archive, 'resolver> {
     restore_options: TzapRestoreOptions,
     report: TzapExtractReport,
     deferred_directory_metadata: Vec<(PathBuf, TzapPortableEntryMetadata)>,
+    deferred_hardlinks: Vec<DeferredTzapHardlink>,
 }
 
 struct TzapEntryWriteDecision {
@@ -2975,6 +3054,7 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
                 warnings: Vec::new(),
             },
             deferred_directory_metadata: Vec::new(),
+            deferred_hardlinks: Vec::new(),
         }
     }
 
@@ -3091,6 +3171,27 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
             self.record_missing_entry(&entry.path, context);
             return Ok(());
         };
+        if member.kind == TarEntryKind::Hardlink {
+            let source_path = decision
+                .link_target_path
+                .clone()
+                .ok_or_else(|| TzapError::Io {
+                    path: decision.destination_path.clone(),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "hardlink target was not resolved by extraction safety planning",
+                    ),
+                })?;
+            self.deferred_hardlinks.push(DeferredTzapHardlink {
+                source_path,
+                destination_path: decision.destination_path.clone(),
+                replace_existing: decision.replace_existing,
+            });
+            if let Some(context) = context {
+                context.entry_finished(&entry.path, 0);
+            }
+            return Ok(());
+        }
         let processed = materialize_non_regular_member(
             &member,
             &decision.destination_path,
@@ -3103,6 +3204,10 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
                 decision.destination_path.clone(),
                 TzapPortableEntryMetadata::from_archive_entry(entry),
             ));
+        } else if member.kind == TarEntryKind::Symlink
+            && should_restore_tzap_metadata(self.restore_options)
+        {
+            apply_tzap_symlink_mtime(&decision.destination_path, entry.mtime)?;
         }
         if let Some(context) = context {
             context.bytes_processed(Some(&entry.path), processed);
@@ -3133,7 +3238,8 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
         }
     }
 
-    fn finish(self) -> Result<TzapExtractReport, TzapError> {
+    fn finish(mut self) -> Result<TzapExtractReport, TzapError> {
+        materialize_deferred_tzap_hardlinks(&self.deferred_hardlinks, &mut self.report)?;
         apply_deferred_tzap_directory_metadata(
             &self.deferred_directory_metadata,
             self.restore_options,
@@ -3281,6 +3387,49 @@ struct TzapPortableEntryMetadata {
     mtime: ArchiveTimestamp,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct DeferredTzapHardlink {
+    source_path: PathBuf,
+    destination_path: PathBuf,
+    replace_existing: bool,
+}
+
+fn materialize_deferred_tzap_hardlinks(
+    hardlinks: &[DeferredTzapHardlink],
+    report: &mut TzapExtractReport,
+) -> Result<(), TzapError> {
+    let paths = hardlinks
+        .iter()
+        .map(|hardlink| {
+            (
+                hardlink.source_path.clone(),
+                hardlink.destination_path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let order =
+        crate::safety::deferred_link_dependency_order(&paths).map_err(|source| TzapError::Io {
+            path: hardlinks
+                .first()
+                .map_or_else(PathBuf::new, |link| link.destination_path.clone()),
+            source,
+        })?;
+    for index in order {
+        let hardlink = &hardlinks[index];
+        if hardlink.replace_existing {
+            crate::safety::remove_destination_for_replace(&hardlink.destination_path).map_err(
+                |source| TzapError::Io {
+                    path: hardlink.destination_path.clone(),
+                    source,
+                },
+            )?;
+        }
+        write_hardlink(&hardlink.source_path, &hardlink.destination_path)?;
+        report.written_entries += 1;
+    }
+    Ok(())
+}
+
 impl TzapPortableEntryMetadata {
     fn from_archive_entry(entry: &ArchiveEntry) -> Self {
         Self {
@@ -3355,7 +3504,7 @@ fn apply_deferred_tzap_directory_metadata(
     directories: &[(PathBuf, TzapPortableEntryMetadata)],
     restore_options: TzapRestoreOptions,
 ) -> Result<(), TzapError> {
-    if restore_options.policy == TzapRestorePolicy::Content {
+    if !should_restore_tzap_metadata(restore_options) {
         return Ok(());
     }
 
@@ -3405,6 +3554,10 @@ fn apply_deferred_tzap_directory_metadata(
     Ok(())
 }
 
+fn should_restore_tzap_metadata(restore_options: TzapRestoreOptions) -> bool {
+    restore_options.policy != TzapRestorePolicy::Content
+}
+
 fn archive_timestamp_file_time(
     timestamp: ArchiveTimestamp,
 ) -> Result<filetime::FileTime, &'static str> {
@@ -3425,6 +3578,17 @@ fn archive_timestamp_file_time(
         timestamp.seconds,
         timestamp.nanoseconds,
     ))
+}
+
+fn apply_tzap_symlink_mtime(path: &Path, timestamp: ArchiveTimestamp) -> Result<(), TzapError> {
+    let file_time = archive_timestamp_file_time(timestamp).map_err(|message| TzapError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidData, message),
+    })?;
+    filetime::set_symlink_file_times(path, file_time, file_time).map_err(|source| TzapError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn append_metadata_diagnostics(
@@ -4024,6 +4188,8 @@ fn tzap_entry_kind_from_member_kind(kind: TarEntryKind) -> TzapEntryKind {
 struct TzapRegularFileSource {
     archive_path: String,
     source_path: PathBuf,
+    kind: SourceEntryKind,
+    link_target: Option<Vec<u8>>,
     size: u64,
     mode: u32,
     mtime: ArchiveTimestamp,
@@ -4034,6 +4200,14 @@ struct TzapRegularFileSource {
 impl RegularFileSource for TzapRegularFileSource {
     fn archive_path(&self) -> &str {
         &self.archive_path
+    }
+
+    fn entry_kind(&self) -> SourceEntryKind {
+        self.kind
+    }
+
+    fn link_target(&self) -> Option<&[u8]> {
+        self.link_target.as_deref()
     }
 
     fn file_data_size(&self) -> u64 {
@@ -4053,6 +4227,9 @@ impl RegularFileSource for TzapRegularFileSource {
     }
 
     fn open(&self) -> Result<Box<dyn io::Read + '_>, ArchiveWriteError> {
+        if self.kind != SourceEntryKind::Regular {
+            return Ok(Box::new(io::empty()));
+        }
         let file = File::open(&self.source_path).map_err(|source| {
             ArchiveWriteError::Io(io::Error::new(
                 source.kind(),
@@ -4067,6 +4244,18 @@ impl RegularFileSource for TzapRegularFileSource {
             token: self.cancellation_token.clone(),
         }))
     }
+}
+
+#[cfg(unix)]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 struct CancellationAwareReader<R> {
@@ -4378,7 +4567,7 @@ fn system_time_to_archive_timestamp(time: SystemTime) -> Option<ArchiveTimestamp
 }
 
 fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError> {
-    let metadata = fs::metadata(path).map_err(|source| TzapError::Io {
+    let metadata = fs::symlink_metadata(path).map_err(|source| TzapError::Io {
         path: path.to_path_buf(),
         source,
     })?;
@@ -4546,6 +4735,17 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn content_restore_policy_excludes_non_payload_metadata() {
+        assert!(!super::should_restore_tzap_metadata(TzapRestoreOptions {
+            policy: TzapRestorePolicy::Content,
+            allow_degraded: false,
+        }));
+        assert!(super::should_restore_tzap_metadata(
+            TzapRestoreOptions::default()
+        ));
+    }
     use tzap_core::{KdfParams, MasterKey, RegularFile, WriterOptions, write_archive_with_kdf};
 
     #[test]
@@ -4666,16 +4866,7 @@ mod tests {
             excluded_bytes: 0,
             warnings: Vec::new(),
         };
-        let options = TzapCreateOptions {
-            key_source: TzapKeySource::NoPassword,
-            level: 1,
-            preserve_metadata: true,
-            replace_existing: false,
-            volume_size: None,
-            recovery_percentage: 0,
-            volume_loss_tolerance: 0,
-            x509_signing: None,
-        };
+        let options = public_metadata_create_options();
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
@@ -4866,6 +5057,113 @@ mod tests {
         assert_eq!(system_metadata.mode() & 0o7777, 0o6751);
         assert_eq!(system_metadata.uid(), source_metadata.uid());
         assert_eq!(system_metadata.gid(), source_metadata.gid());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fast_extract_restores_directory_metadata_after_children() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        let temp = TestDir::new("tzap_fast_extract_restores_directory_metadata");
+        let source_dir = temp.path("payload");
+        let source_file = temp.path("payload/file.txt");
+        let source_link = temp.path("payload/link.txt");
+        fs::create_dir(&source_dir).unwrap();
+        fs::write(&source_file, b"payload").unwrap();
+        symlink("file.txt", &source_link).unwrap();
+        filetime::set_symlink_file_times(
+            &source_link,
+            filetime::FileTime::from_unix_time(1_675_000_000, 456_789_012),
+            filetime::FileTime::from_unix_time(1_675_000_000, 456_789_012),
+        )
+        .unwrap();
+        let directory_time = UNIX_EPOCH + Duration::new(1_650_000_000, 345_678_901);
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![
+                ManifestEntry {
+                    archive_path: "payload".to_owned(),
+                    source_path: source_dir,
+                    file_type: ManifestFileType::Directory,
+                    size: 0,
+                    modified: Some(directory_time),
+                    permissions: PermissionSnapshot {
+                        readonly: false,
+                        unix_mode: Some(0o1750),
+                    },
+                    symlink_target: None,
+                },
+                ManifestEntry {
+                    archive_path: "payload/link.txt".to_owned(),
+                    source_path: source_link,
+                    file_type: ManifestFileType::Symlink,
+                    size: 0,
+                    modified: Some(UNIX_EPOCH + Duration::new(1_675_000_000, 456_789_012)),
+                    permissions: PermissionSnapshot {
+                        readonly: false,
+                        unix_mode: Some(0o777),
+                    },
+                    symlink_target: Some(PathBuf::from("file.txt")),
+                },
+                ManifestEntry {
+                    archive_path: "payload/file.txt".to_owned(),
+                    source_path: source_file,
+                    file_type: ManifestFileType::File,
+                    size: 7,
+                    modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                    permissions: PermissionSnapshot {
+                        readonly: false,
+                        unix_mode: Some(0o640),
+                    },
+                    symlink_target: None,
+                },
+            ],
+            total_bytes: 7,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let archive = temp.path("public.tzap");
+        let options = public_metadata_create_options();
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let extract_token = CancellationToken::new();
+        let mut extract_events = |_| {};
+        let mut extract_context = JobContext::new(&extract_token, &mut extract_events);
+        extract_tzap_with_optional_password_and_context_fast(
+            &archive,
+            temp.path("out"),
+            ExtractionPolicy::default(),
+            None,
+            &mut extract_context,
+        )
+        .unwrap();
+
+        let metadata = fs::metadata(temp.path("out/payload")).unwrap();
+        assert_eq!(metadata.mode() & 0o7777, 0o1750);
+        assert_eq!(metadata.mtime(), 1_650_000_000);
+        assert_eq!(metadata.mtime_nsec(), 345_678_901);
+        let link_path = temp.path("out/payload/link.txt");
+        let link_metadata = fs::symlink_metadata(&link_path).unwrap();
+        assert!(link_metadata.file_type().is_symlink());
+        assert_eq!(
+            fs::read_link(&link_path).unwrap(),
+            PathBuf::from("file.txt")
+        );
+        assert_eq!(link_metadata.mtime(), 1_675_000_000);
+        assert_eq!(link_metadata.mtime_nsec(), 456_789_012);
+        let listing = list_tzap_with_optional_password(&archive, None).unwrap();
+        assert_eq!(listing.entries.len(), 3);
+        assert!(listing.entries.iter().any(|entry| {
+            entry.path == "payload" && entry.kind == super::TzapEntryKind::Directory
+        }));
+        assert!(listing.entries.iter().any(|entry| {
+            entry.path == "payload/link.txt" && entry.kind == super::TzapEntryKind::Symlink
+        }));
     }
 
     #[test]
@@ -5573,6 +5871,19 @@ mod tests {
                     .expect("deterministic byte is reduced below u8::MAX")
             })
             .collect()
+    }
+
+    fn public_metadata_create_options() -> TzapCreateOptions {
+        TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        }
     }
 
     struct TestDir {

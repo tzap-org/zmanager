@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use zmanager_apple_archive::{ArchiveReader, ArchiveWriter};
 
 pub use zmanager_apple_archive::CompressionAlgorithm as AppleArchiveCompression;
@@ -691,7 +691,7 @@ fn materialize_entry(
         ExtractionEntryKind::Symlink { target } => {
             reader.skip_entry_data(entry)?;
             write_symlink(target, decision.destination_path)?;
-            apply_symlink_mtime(decision.destination_path, entry.metadata().modified);
+            apply_symlink_mtime(decision.destination_path, entry.metadata().modified)?;
             0
         }
         ExtractionEntryKind::Hardlink { .. } => {
@@ -952,9 +952,8 @@ fn apply_metadata(
         }
     }
 
-    if let Some(modified) = metadata.modified
-        && let Some(mtime) = system_time_to_filetime(modified)
-    {
+    if let Some(modified) = metadata.modified {
+        let mtime = system_time_to_filetime(modified);
         filetime::set_file_mtime(path, mtime).map_err(|source| AppleArchiveError::Io {
             path: path.to_path_buf(),
             source,
@@ -964,25 +963,21 @@ fn apply_metadata(
     Ok(())
 }
 
-/// Best-effort mtime restoration for symlinks.
-///
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
-/// silently ignored because some filesystems do not support symlink timestamps.
-fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
-    if let Some(modified) = modified
-        && let Some(ft) = system_time_to_filetime(modified)
-    {
-        let _ = filetime::set_symlink_file_times(path, ft, ft);
+/// reported so extraction cannot claim metadata was restored when it was not.
+fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) -> Result<(), AppleArchiveError> {
+    if let Some(modified) = modified {
+        let ft = system_time_to_filetime(modified);
+        filetime::set_symlink_file_times(path, ft, ft).map_err(|source| AppleArchiveError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
+    Ok(())
 }
 
-fn system_time_to_filetime(time: SystemTime) -> Option<filetime::FileTime> {
-    let duration = time.duration_since(UNIX_EPOCH).ok()?;
-    let seconds = i64::try_from(duration.as_secs()).ok()?;
-    Some(filetime::FileTime::from_unix_time(
-        seconds,
-        duration.subsec_nanos(),
-    ))
+fn system_time_to_filetime(time: SystemTime) -> filetime::FileTime {
+    filetime::FileTime::from_system_time(time)
 }
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), AppleArchiveError> {
@@ -1146,6 +1141,34 @@ mod tests {
             diff <= 2,
             "extracted mtime diff {diff} is greater than 2 seconds"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[test]
+    fn preserves_pre_epoch_file_modification_time() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TestDir::new("apple_archive_pre_epoch_mtime");
+        temp.write_file("project/old.txt", b"old");
+        let source = temp.path("project/old.txt");
+        let old_time = filetime::FileTime::from_unix_time(-2, 750_000_000);
+        filetime::set_file_mtime(&source, old_time).unwrap();
+        let archive = temp.path("project.aar");
+
+        create_apple_archive_from_path(
+            temp.path("project"),
+            &archive,
+            &AppleArchiveCreateOptions {
+                compression: AppleArchiveCompression::None,
+                ..AppleArchiveCreateOptions::default()
+            },
+        )
+        .unwrap();
+        extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+
+        let metadata = fs::metadata(temp.path("out/project/old.txt")).unwrap();
+        assert_eq!(metadata.mtime(), -2);
+        assert_eq!(metadata.mtime_nsec(), 750_000_000);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]

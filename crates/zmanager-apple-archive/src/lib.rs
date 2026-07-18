@@ -1099,7 +1099,9 @@ mod platform {
                 nanos,
             ))
         } else {
-            UNIX_EPOCH.checked_sub(Duration::new(value.tv_sec.unsigned_abs(), nanos))
+            UNIX_EPOCH
+                .checked_sub(Duration::from_secs(value.tv_sec.unsigned_abs()))?
+                .checked_add(Duration::from_nanos(u64::from(nanos)))
         }
     }
 
@@ -1111,9 +1113,17 @@ mod platform {
             }),
             Err(error) => {
                 let duration = error.duration();
+                let seconds = i64::try_from(duration.as_secs()).ok()?;
+                let nanoseconds = duration.subsec_nanos();
+                if nanoseconds == 0 {
+                    return Some(timespec {
+                        tv_sec: -seconds,
+                        tv_nsec: 0,
+                    });
+                }
                 Some(timespec {
-                    tv_sec: -i64::try_from(duration.as_secs()).ok()?,
-                    tv_nsec: duration.subsec_nanos().into(),
+                    tv_sec: (-seconds).checked_sub(1)?,
+                    tv_nsec: (1_000_000_000 - nanoseconds).into(),
                 })
             }
         }

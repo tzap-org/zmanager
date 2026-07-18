@@ -203,6 +203,8 @@ fn append_manifest_entry<W: io::Write>(
         context.check_cancelled()?;
     }
 
+    append_manifest_mtime(builder, entry, preserve_metadata)?;
+
     let processed = match entry.file_type {
         ManifestFileType::Directory => {
             if preserve_metadata {
@@ -297,6 +299,22 @@ fn append_manifest_entry<W: io::Write>(
     Ok(())
 }
 
+fn append_manifest_mtime<W: io::Write>(
+    builder: &mut Builder<W>,
+    entry: &ManifestEntry,
+    preserve_metadata: bool,
+) -> Result<(), TarGzError> {
+    if !preserve_metadata || entry.file_type == ManifestFileType::Other {
+        return Ok(());
+    }
+    crate::tar_metadata::append_pax_mtime(builder, entry.modified).map_err(|source| {
+        TarGzError::Io {
+            path: entry.source_path.clone(),
+            source,
+        }
+    })
+}
+
 fn append_symlink<W: io::Write>(
     builder: &mut Builder<W>,
     entry: &ManifestEntry,
@@ -307,7 +325,7 @@ fn append_symlink<W: io::Write>(
     header.set_entry_type(EntryType::Symlink);
     header.set_size(0);
     if preserve_metadata && let Some(mode) = entry.permissions.unix_mode {
-        header.set_mode(mode & 0o777);
+        header.set_mode(mode & 0o7777);
     }
     if preserve_metadata
         && let Some(modified) = entry.modified.and_then(system_time_to_unix_seconds)
@@ -374,7 +392,7 @@ mod tests {
         temp.write_file("project/file.txt", b"content");
 
         // Set a specific mod time
-        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(12_345_678);
+        let mtime = SystemTime::UNIX_EPOCH + std::time::Duration::new(12_345_678, 345_678_901);
         filetime::set_file_mtime(&file_path, filetime::FileTime::from_system_time(mtime)).unwrap();
 
         #[cfg(unix)]
@@ -416,6 +434,15 @@ mod tests {
             }
         }
         assert!(found_file);
+
+        extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = fs::metadata(temp.path("out/project/file.txt")).unwrap();
+            assert_eq!(metadata.mtime(), 12_345_678);
+            assert_eq!(metadata.mtime_nsec(), 345_678_901);
+        }
     }
 
     #[test]

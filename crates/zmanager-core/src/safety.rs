@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 const DEFAULT_MAX_EXTRACTED_MIB: u64 = 64 * 1024;
@@ -144,6 +145,62 @@ pub(crate) fn should_skip_symlink_materialization(kind: &ExtractionEntryKind) ->
 #[must_use]
 pub(crate) fn unsupported_symlink_warning(archive_path: &str) -> String {
     format!("skipped symlink {archive_path}: symlink extraction is not supported on this platform")
+}
+
+/// Returns a linear-time materialization order for deferred filesystem links.
+///
+/// Each pair is `(source, destination)`. A source produced by another pair is
+/// ordered after that dependency; sources outside the deferred set must
+/// already exist. Cycles and missing sources are rejected.
+pub(crate) fn deferred_link_dependency_order(
+    links: &[(PathBuf, PathBuf)],
+) -> io::Result<Vec<usize>> {
+    let destinations = links
+        .iter()
+        .enumerate()
+        .map(|(index, (_, destination))| (destination.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut dependency_counts = vec![0_usize; links.len()];
+    let mut dependents = vec![Vec::new(); links.len()];
+
+    for (index, (source, _)) in links.iter().enumerate() {
+        if let Some(&dependency) = destinations.get(source) {
+            dependency_counts[index] = 1;
+            dependents[dependency].push(index);
+        } else if let Err(source_error) = std::fs::symlink_metadata(source) {
+            return Err(io::Error::new(
+                source_error.kind(),
+                format!(
+                    "deferred link target was not materialized: {}",
+                    source.display()
+                ),
+            ));
+        }
+    }
+
+    let mut ready = dependency_counts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .collect::<VecDeque<_>>();
+    let mut order = Vec::with_capacity(links.len());
+    while let Some(index) = ready.pop_front() {
+        order.push(index);
+        for &dependent in &dependents[index] {
+            dependency_counts[dependent] -= 1;
+            if dependency_counts[dependent] == 0 {
+                ready.push_back(dependent);
+            }
+        }
+    }
+
+    if order.len() != links.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "deferred link dependency cycle",
+        ));
+    }
+    Ok(order)
 }
 
 /// Archive entry metadata needed before extraction writes to disk.
@@ -976,11 +1033,36 @@ mod tests {
         ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits,
         ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteConflict,
         OverwriteDecision, OverwritePolicy, OverwriteResolver, UnsafeFilePolicy,
-        normalize_archive_path, prepare_destination_root,
+        deferred_link_dependency_order, normalize_archive_path, prepare_destination_root,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn deferred_link_order_is_linearized_and_cycles_are_rejected() {
+        let temp = TestDir::new("deferred_link_dependency_order");
+        let target = temp.path("target");
+        fs::write(&target, b"target").unwrap();
+        let first = temp.path("first");
+        let middle = temp.path("middle");
+        let last = temp.path("last");
+        let chain = vec![
+            (middle.clone(), first.clone()),
+            (last.clone(), middle.clone()),
+            (target, last.clone()),
+        ];
+
+        assert_eq!(
+            deferred_link_dependency_order(&chain).unwrap(),
+            vec![2, 1, 0]
+        );
+        let cycle = vec![(middle.clone(), first.clone()), (first, middle)];
+        assert_eq!(
+            deferred_link_dependency_order(&cycle).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn normalizes_archive_paths() {
