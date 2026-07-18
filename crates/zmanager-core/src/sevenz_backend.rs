@@ -1059,6 +1059,7 @@ fn extract_7z_inner(
     let mut callback_error = None;
     let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)> =
         Vec::new();
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     let result = reader.for_each_entries(|entry, entry_reader| {
         match extract_entry(
@@ -1069,6 +1070,7 @@ fn extract_7z_inner(
             &mut deferred_directories,
             &mut report,
             context.as_deref_mut(),
+            &mut io_buffer,
         ) {
             Ok(()) => Ok(true),
             Err(error) => {
@@ -1498,6 +1500,7 @@ fn extract_entry(
     deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)>,
     report: &mut SevenZExtractReport,
     mut context: Option<&mut JobContext<'_>>,
+    io_buffer: &mut [u8],
 ) -> Result<(), SevenZError> {
     let path = entry.name().to_owned();
     if let Some(context) = context.as_deref_mut() {
@@ -1558,6 +1561,7 @@ fn extract_entry(
                     *replace_existing,
                     Some(&path),
                     context.as_deref_mut(),
+                    io_buffer,
                 )?;
                 apply_sevenz_metadata(destination_path, unix_mode, modified_time)?;
                 report.written_entries += 1;
@@ -1593,6 +1597,7 @@ fn write_file_entry(
     replace_existing: bool,
     path: Option<&str>,
     mut context: Option<&mut JobContext<'_>>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, SevenZError> {
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -1602,12 +1607,11 @@ fn write_file_entry(
             }
         })?;
     let mut copied = 0_u64;
-    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     loop {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        let read = reader.read(&mut buffer).map_err(|source| SevenZError::Io {
+        let read = reader.read(&mut *io_buffer).map_err(|source| SevenZError::Io {
             path: destination_path.to_path_buf(),
             source,
         })?;
@@ -1620,7 +1624,7 @@ fn write_file_entry(
                 path: destination_path.to_path_buf(),
                 source,
             })?
-            .write_all(&buffer[..read])
+            .write_all(&io_buffer[..read])
             .map_err(|source| SevenZError::Io {
                 path: destination_path.to_path_buf(),
                 source,

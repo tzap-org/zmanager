@@ -273,9 +273,11 @@ mod platform {
     const ENTRY_TYPE_REG: u64 = b'F' as u64;
     const ENTRY_TYPE_DIR: u64 = b'D' as u64;
     const ENTRY_TYPE_LNK: u64 = b'L' as u64;
+    #[allow(dead_code)]
     const ENTRY_TYPE_FIFO: u64 = b'P' as u64;
     const ENTRY_TYPE_CHR: u64 = b'C' as u64;
     const ENTRY_TYPE_BLK: u64 = b'B' as u64;
+    #[allow(dead_code)]
     const ENTRY_TYPE_SOCK: u64 = b'S' as u64;
     const ENTRY_TYPE_METADATA: u64 = b'M' as u64;
     const COMPRESSION_NONE: u32 = 0x000;
@@ -286,6 +288,7 @@ mod platform {
     const COMPRESSION_LZBITMAP: u32 = 0x702;
 
     #[repr(C)]
+    #[derive(Copy, Clone)]
     pub(crate) union FieldKey {
         skey: [c_char; 4],
         ikey: u32,
@@ -294,18 +297,11 @@ mod platform {
     impl std::fmt::Debug for FieldKey {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let raw = unsafe { self.skey };
+            #[allow(clippy::cast_sign_loss)]
             let bytes = [raw[0] as u8, raw[1] as u8, raw[2] as u8];
             write!(f, "{}", String::from_utf8_lossy(&bytes))
         }
     }
-
-    impl Clone for FieldKey {
-        fn clone(&self) -> Self {
-            *self
-        }
-    }
-
-    impl Copy for FieldKey {}
 
     #[allow(non_camel_case_types)]
     enum AAHeaderImpl {}
@@ -407,6 +403,7 @@ mod platform {
         fn AAHeaderSetFieldBlob(header: AAHeader, index: u32, key: FieldKey, size: u64) -> c_int;
     }
 
+    #[allow(clippy::struct_field_names)]
     pub struct ArchiveReader {
         archive_stream: ArchiveStream,
         _decompression_stream: ByteStream,
@@ -414,6 +411,9 @@ mod platform {
     }
 
     impl ArchiveReader {
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O streams cannot be created or initialized.
         pub fn open(path: impl AsRef<Path>) -> Result<Self> {
             let file_stream = ByteStream::open_path(path.as_ref(), libc::O_RDONLY, 0)?;
             let decompression_stream =
@@ -427,6 +427,9 @@ mod platform {
             })
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if reading the next entry header from the archive stream fails.
         pub fn next_entry(&mut self) -> Result<Option<Entry>> {
             let mut raw_header = ptr::null_mut();
             let status =
@@ -444,10 +447,16 @@ mod platform {
             header.to_entry()
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if advancing the stream to skip the entry data fails.
         pub fn skip_entry_data(&mut self, entry: &Entry) -> Result<()> {
             self.process_entry_blobs(entry, None).map(|_| ())
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if reading the file data from the archive stream fails.
         pub fn read_entry_data<W: Write>(
             &mut self,
             entry: &Entry,
@@ -473,6 +482,7 @@ mod platform {
             Ok(data_bytes)
         }
 
+        #[allow(clippy::type_complexity)]
         fn process_entry_blobs(
             &mut self,
             entry: &Entry,
@@ -483,7 +493,7 @@ mod platform {
             for blob in &entry.blobs {
                 let mut remaining = blob.size;
                 while remaining > 0 {
-                    let chunk_len = cmp::min(remaining, buffer.len() as u64) as usize;
+                    let chunk_len = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
                     check_status(
                         unsafe {
                             AAArchiveStreamReadBlob(
@@ -509,6 +519,7 @@ mod platform {
         }
     }
 
+    #[allow(clippy::struct_field_names)]
     pub struct ArchiveWriter {
         archive_stream: Option<ArchiveStream>,
         compression_stream: Option<ByteStream>,
@@ -516,6 +527,9 @@ mod platform {
     }
 
     impl ArchiveWriter {
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O streams cannot be created or initialized.
         pub fn create(path: impl AsRef<Path>, options: CreateOptions) -> Result<Self> {
             let file_stream = ByteStream::open_path(
                 path.as_ref(),
@@ -541,6 +555,9 @@ mod platform {
             })
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if writing the header to the archive stream fails.
         pub fn append_directory(&mut self, path: &str, metadata: EntryMetadata) -> Result<()> {
             let mut header = Header::new()?;
             header.append_uint(field_key(b"TYP"), ENTRY_TYPE_DIR)?;
@@ -549,6 +566,9 @@ mod platform {
             self.write_header(&header)
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if writing the header to the archive stream fails.
         pub fn append_symlink(
             &mut self,
             path: &str,
@@ -563,6 +583,9 @@ mod platform {
             self.write_header(&header)
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if writing the header or file data to the archive stream fails.
         pub fn append_file<R: Read>(
             &mut self,
             path: &str,
@@ -583,7 +606,7 @@ mod platform {
             let mut written = 0_u64;
             while written < size {
                 let remaining = size - written;
-                let max_read = cmp::min(remaining, buffer.len() as u64) as usize;
+                let max_read = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
                 let read = input.read(&mut buffer[..max_read])?;
                 if read == 0 {
                     return Err(Error::SizeMismatch {
@@ -612,6 +635,9 @@ mod platform {
             Ok(written)
         }
 
+        /// # Errors
+        ///
+        /// Returns an error if closing any of the underlying streams fails.
         pub fn finish(mut self) -> Result<()> {
             let mut first_error = None;
             close_archive_option(
@@ -1014,12 +1040,15 @@ mod platform {
         }
     }
 
+    #[allow(clippy::cast_possible_wrap)]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn field_key(key: &[u8; 3]) -> FieldKey {
         FieldKey {
             skey: [key[0] as c_char, key[1] as c_char, key[2] as c_char, 0],
         }
     }
 
+    #[allow(clippy::cast_sign_loss)]
     fn raw_key_bytes(key: FieldKey) -> [u8; 3] {
         let raw = unsafe { key.skey };
         [raw[0] as u8, raw[1] as u8, raw[2] as u8]
@@ -1040,7 +1069,6 @@ mod platform {
             ENTRY_TYPE_LNK => EntryKind::Symlink,
             ENTRY_TYPE_CHR | ENTRY_TYPE_BLK => EntryKind::Device,
             ENTRY_TYPE_METADATA => EntryKind::Metadata,
-            ENTRY_TYPE_FIFO | ENTRY_TYPE_SOCK => EntryKind::Special,
             _ => EntryKind::Special,
         }
     }
@@ -1066,7 +1094,10 @@ mod platform {
             return None;
         }
         if value.tv_sec >= 0 {
-            UNIX_EPOCH.checked_add(Duration::new(value.tv_sec as u64, nanos))
+            UNIX_EPOCH.checked_add(Duration::new(
+                u64::try_from(value.tv_sec).unwrap_or(0),
+                nanos,
+            ))
         } else {
             UNIX_EPOCH.checked_sub(Duration::new(value.tv_sec.unsigned_abs(), nanos))
         }

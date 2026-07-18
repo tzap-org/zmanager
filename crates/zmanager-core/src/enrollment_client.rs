@@ -1369,6 +1369,7 @@ mod tests {
     #[derive(Default)]
     struct ChallengeOverride {
         csr_sha256: Option<String>,
+        #[allow(clippy::option_option)]
         session_id: Option<Option<String>>,
     }
 

@@ -969,11 +969,10 @@ fn apply_metadata(
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
 /// silently ignored because some filesystems do not support symlink timestamps.
 fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
-    if let Some(modified) = modified {
-        if let Some(ft) = system_time_to_filetime(modified) {
+    if let Some(modified) = modified
+        && let Some(ft) = system_time_to_filetime(modified) {
             let _ = filetime::set_symlink_file_times(path, ft, ft);
         }
-    }
 }
 
 fn system_time_to_filetime(time: SystemTime) -> Option<filetime::FileTime> {
@@ -1142,7 +1141,7 @@ mod tests {
         let metadata = fs::symlink_metadata(&extracted_symlink).unwrap();
         
         let mtime = metadata.modified().unwrap();
-        let mtime_secs = mtime.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let mtime_secs = i64::try_from(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
         let diff = (mtime_secs - 1000000000).abs();
         assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
     }

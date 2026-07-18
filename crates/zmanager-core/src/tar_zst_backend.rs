@@ -430,6 +430,7 @@ fn extract_tar_zst_inner(
         warnings: Vec::new(),
     };
     let mut deferred_directories = Vec::new();
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     for entry in archive.entries().map_err(|source| TarZstdError::Io {
         path: archive_path.to_path_buf(),
@@ -482,6 +483,7 @@ fn extract_tar_zst_inner(
                 context.as_deref_mut(),
                 &mut deferred_directories,
                 &mut report,
+                &mut io_buffer,
             )?,
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
@@ -523,6 +525,7 @@ fn materialize_tar_write_decision<R: Read>(
     mut context: Option<&mut JobContext<'_>>,
     deferred_directories: &mut Vec<(PathBuf, TarEntryMetadata)>,
     report: &mut TarZstdExtractReport,
+    io_buffer: &mut [u8],
 ) -> Result<u64, TarZstdError> {
     let TarWriteDecision {
         safety_entry,
@@ -549,6 +552,7 @@ fn materialize_tar_write_decision<R: Read>(
         link_target_path,
         context,
         deferred_directories,
+        io_buffer,
     )?;
     report.written_entries += 1;
     report.written_bytes += written_bytes;
@@ -563,6 +567,7 @@ fn materialize_tar_entry<R: Read>(
     link_target_path: Option<&Path>,
     context: Option<&mut JobContext<'_>>,
     deferred_directories: &mut Vec<(PathBuf, TarEntryMetadata)>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, TarZstdError> {
     let metadata = tar_entry_metadata(entry.header());
 
@@ -591,6 +596,7 @@ fn materialize_tar_entry<R: Read>(
             replace_existing,
             metadata,
             context,
+            io_buffer,
         ),
         ExtractionEntryKind::Symlink { target } => {
             write_symlink(target, destination_path)?;
@@ -625,6 +631,7 @@ fn copy_tar_file_entry<R: Read>(
     replace_existing: bool,
     metadata: TarEntryMetadata,
     mut context: Option<&mut JobContext<'_>>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, TarZstdError> {
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -633,14 +640,13 @@ fn copy_tar_file_entry<R: Read>(
                 source,
             }
         })?;
-    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut written_bytes = 0_u64;
 
     loop {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        let read = entry.read(&mut buffer).map_err(|source| TarZstdError::Io {
+        let read = entry.read(io_buffer).map_err(|source| TarZstdError::Io {
             path: destination_path.to_path_buf(),
             source,
         })?;
@@ -653,7 +659,7 @@ fn copy_tar_file_entry<R: Read>(
                 path: destination_path.to_path_buf(),
                 source,
             })?
-            .write_all(&buffer[..read])
+            .write_all(&io_buffer[..read])
             .map_err(|source| TarZstdError::Io {
                 path: destination_path.to_path_buf(),
                 source,

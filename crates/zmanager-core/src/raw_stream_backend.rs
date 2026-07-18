@@ -577,8 +577,8 @@ fn write_raw_stream_to_file(
     track_source_progress: bool,
 ) -> Result<u64, RawStreamError> {
     let mut mtime_to_restore = None;
-    if format == RawStreamFormat::Gzip {
-        if let Ok(file) = File::open(archive_path) {
+    if format == RawStreamFormat::Gzip
+        && let Ok(file) = File::open(archive_path) {
             let decoder = flate2::read::GzDecoder::new(file);
             if let Some(header) = decoder.header() {
                 let mtime = header.mtime();
@@ -587,7 +587,6 @@ fn write_raw_stream_to_file(
                 }
             }
         }
-    }
 
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -626,7 +625,7 @@ fn write_raw_stream_to_file(
         })?;
 
     if let Some(mtime) = mtime_to_restore {
-        let system_time = UNIX_EPOCH + std::time::Duration::from_secs(mtime as u64);
+        let system_time = UNIX_EPOCH + std::time::Duration::from_secs(u64::from(mtime));
         let _ = filetime::set_file_mtime(
             destination_path,
             filetime::FileTime::from_system_time(system_time),
@@ -828,7 +827,7 @@ fn copy_lrzip_to_writer<W: Write>(
     })?;
     let written_bytes =
         copy_reader_to_writer_with_progress(&mut decoded, output, &temp_path, on_progress)
-            .inspect_err(|source| {
+            .inspect_err(|_source| {
                 let _ = fs::remove_file(&temp_path);
             })?;
     fs::remove_file(&temp_path).map_err(|source| RawStreamError::Io {
@@ -884,7 +883,7 @@ fn copy_unix_compress_to_writer<W: Write>(
     })?;
     let written_bytes =
         copy_reader_to_writer_with_progress(&mut decoded, output, &temp_output, on_progress)
-            .inspect_err(|source| {
+            .inspect_err(|_source| {
                 let _ = fs::remove_file(&temp_output);
             })?;
     fs::remove_file(&temp_output).map_err(|source| RawStreamError::Io {
@@ -1097,7 +1096,7 @@ mod tests {
         let meta = fs::metadata(&extract_path).unwrap();
         let modified = meta.modified().unwrap();
         let duration = modified.duration_since(UNIX_EPOCH).unwrap();
-        assert_eq!(duration.as_secs(), mtime as u64);
+        assert_eq!(duration.as_secs(), u64::from(mtime));
     }
 
     #[test]

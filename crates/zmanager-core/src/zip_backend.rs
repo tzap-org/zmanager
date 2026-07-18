@@ -1364,6 +1364,7 @@ fn extract_zip_inner(
         warnings: Vec::new(),
     };
     let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)> = Vec::new();
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     for index in 0..archive.len() {
         if let Some(context) = context.as_deref_mut() {
@@ -1404,6 +1405,7 @@ fn extract_zip_inner(
                 unix_mode,
                 modified_time,
                 &mut deferred_directories,
+                &mut io_buffer,
             )?,
             ExtractionDecision::Skip { reason, .. } => {
                 report.skipped_entries += 1;
@@ -1439,6 +1441,7 @@ fn write_manifest_to_zip<W: Write + Seek>(
         volume_count: 1,
         warnings: Vec::new(),
     };
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     for entry in &manifest.entries {
         if let Some(context) = context.as_deref_mut() {
@@ -1467,6 +1470,7 @@ fn write_manifest_to_zip<W: Write + Seek>(
                         &entry.archive_path,
                         &entry.source_path,
                         context,
+                        &mut io_buffer,
                     )?
                 } else {
                     io::copy(&mut source, writer).map_err(|source| ZipBackendError::Io {
@@ -1536,7 +1540,7 @@ fn zip_options<'a>(
         if let Some(modified) = entry.modified
             && let Ok(offset) = time::OffsetDateTime::try_from(modified)
                 && let Ok(dt) = zip::DateTime::from_date_and_time(
-                    offset.year() as u16,
+                    u16::try_from(offset.year()).unwrap_or(1980),
                     offset.month() as u8,
                     offset.day(),
                     offset.hour(),
@@ -1633,6 +1637,7 @@ fn write_zip_entry<R: Read>(
     unix_mode: Option<u32>,
     modified_time: Option<zip::DateTime>,
     deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, ZipBackendError> {
     if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
@@ -1666,7 +1671,7 @@ fn write_zip_entry<R: Read>(
                     source,
                 })?;
             let copied = if let Some(context) = context {
-                copy_with_progress(file, output, &entry.archive_path, destination_path, context)?
+                copy_with_progress(file, output, &entry.archive_path, destination_path, context, io_buffer)?
             } else {
                 io::copy(file, output).map_err(|source| ZipBackendError::Io {
                     path: destination_path.to_path_buf(),
@@ -1804,14 +1809,14 @@ fn copy_with_progress<R: Read, W: Write>(
     archive_path: &str,
     io_path: &Path,
     context: &mut JobContext<'_>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, ZipBackendError> {
-    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut copied = 0_u64;
 
     loop {
         context.check_cancelled()?;
         let read = reader
-            .read(&mut buffer)
+            .read(io_buffer)
             .map_err(|source| ZipBackendError::Io {
                 path: io_path.to_path_buf(),
                 source,
@@ -1820,7 +1825,7 @@ fn copy_with_progress<R: Read, W: Write>(
             break;
         }
         writer
-            .write_all(&buffer[..read])
+            .write_all(&io_buffer[..read])
             .map_err(|source| ZipBackendError::Io {
                 path: io_path.to_path_buf(),
                 source,

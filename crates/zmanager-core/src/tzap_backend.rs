@@ -4236,11 +4236,12 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
         },
         posix_owner: portable_posix_owner(&metadata),
         attributes: portable_file_attributes(&metadata),
-        native: Default::default(),
+        native: tzap_core::NativeFileMetadata::default(),
     })
 }
 
 #[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)]
 fn portable_posix_owner(metadata: &fs::Metadata) -> Option<PortablePosixOwner> {
     use std::os::unix::fs::MetadataExt;
 

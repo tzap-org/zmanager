@@ -399,7 +399,7 @@ mod tests {
         let file = File::open(&archive).unwrap();
         let decoder = flate2::read::GzDecoder::new(file);
         let mut tar_archive = tar::Archive::new(decoder);
-        let mut entries = tar_archive.entries().unwrap();
+        let entries = tar_archive.entries().unwrap();
 
         let mut found_file = false;
         for entry_res in entries {
@@ -450,7 +450,7 @@ mod tests {
         let file = File::open(&archive).unwrap();
         let decoder = flate2::read::GzDecoder::new(file);
         let mut tar_archive = tar::Archive::new(decoder);
-        let mut entries = tar_archive.entries().unwrap();
+        let entries = tar_archive.entries().unwrap();
 
         let mut found_file = false;
         for entry_res in entries {

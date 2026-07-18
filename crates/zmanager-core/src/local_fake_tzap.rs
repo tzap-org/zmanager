@@ -583,6 +583,7 @@ fn der_wrap(tag: u8, contents: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn der_len(len: usize) -> Vec<u8> {
     if len < 128 {
         vec![len as u8]

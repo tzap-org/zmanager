@@ -478,6 +478,7 @@ fn extract_archive_inner(
     };
     let mut found_selected_entry = selected_entry.is_none();
     let mut deferred_directories = Vec::new();
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     while let Some(entry) = archive.next_entry()? {
         if let Some(context) = context.as_deref_mut() {
@@ -520,7 +521,6 @@ fn extract_archive_inner(
                 link_target_path,
                 ..
             } => {
-                
                 write_entry(
                     &mut archive,
                     &owned_entry,
@@ -530,6 +530,7 @@ fn extract_archive_inner(
                     &mut report,
                     context.as_deref_mut(),
                     &mut deferred_directories,
+                    &mut io_buffer,
                 )?
             }
             ExtractionDecision::Skip { reason, .. } => {
@@ -1001,6 +1002,7 @@ fn write_entry(
     report: &mut LibarchiveExtractReport,
     mut context: Option<&mut JobContext<'_>>,
     deferred_directories: &mut Vec<(PathBuf, LibarchiveEntryMetadata)>,
+    io_buffer: &mut [u8],
 ) -> Result<u64, LibarchiveError> {
     if replace_existing && !matches!(entry.extraction_kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
@@ -1030,6 +1032,7 @@ fn write_entry(
                 replace_existing,
                 entry.metadata,
                 context,
+                io_buffer,
             )?;
             report.written_entries += 1;
             report.written_bytes += written_bytes;
@@ -1091,6 +1094,7 @@ fn write_file_entry(
     replace_existing: bool,
     metadata: LibarchiveEntryMetadata,
     mut context: Option<&mut JobContext<'_>>,
+    buffer: &mut [u8],
 ) -> Result<u64, LibarchiveError> {
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
@@ -1099,14 +1103,13 @@ fn write_file_entry(
                 source,
             }
         })?;
-    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut written_bytes = 0_u64;
 
     loop {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        let read = archive.read_data(&mut buffer)?;
+        let read = archive.read_data(&mut *buffer)?;
         if read == 0 {
             break;
         }
@@ -1161,6 +1164,20 @@ fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), 
             path: path.to_path_buf(),
             source,
         })?;
+    }
+
+    #[cfg(not(unix))]
+    if let Some(mode) = metadata.mode {
+        if mode & 0o222 == 0 {
+            if let Ok(fs_metadata) = fs::metadata(path) {
+                let mut perms = fs_metadata.permissions();
+                perms.set_readonly(true);
+                fs::set_permissions(path, perms).map_err(|source| LibarchiveError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
     }
 
     if let Some(modified) = metadata.modified {
@@ -1792,8 +1809,7 @@ mod tests {
             let start = pos + "libzstd/".len();
             let end = details[start..]
                 .find(' ')
-                .map(|p| start + p)
-                .unwrap_or(details.len());
+                .map_or(details.len(), |p| start + p);
             let libarchive_zstd_version = &details[start..end];
 
             println!("Rust zstd version: {rust_version_str}");

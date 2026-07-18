@@ -14,7 +14,7 @@ mod tests {
     fn roundtrip(metadata: EntryMetadata, algo: CompressionAlgorithm) -> EntryMetadata {
         // Create a temporary file in the OS temp directory.
         let mut temp_path = std::env::temp_dir();
-        temp_path.push(format!("metadata_roundtrip_{:?}.aar", algo));
+        temp_path.push(format!("metadata_roundtrip_{algo:?}.aar"));
         // Ensure any previous file is removed.
         let _ = fs::remove_file(&temp_path);
 

@@ -2293,8 +2293,8 @@ mod tests {
                 &pins,
                 &TzapCertificateProfileOptions::default(),
             ),
-            Err(TzapCertificateProfileError::ChainOrder { .. })
-                | Err(TzapCertificateProfileError::RootNotSelfSigned)
+            Err(TzapCertificateProfileError::ChainOrder { .. } |
+TzapCertificateProfileError::RootNotSelfSigned)
         ));
     }
 
@@ -2307,6 +2307,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
+    #[allow(clippy::struct_excessive_bools)]
     struct ChainConfig {
         include_org_intermediate: bool,
         root_path_len: u32,
@@ -2506,7 +2507,7 @@ mod tests {
                 &mut builder,
                 "2.5.29.32",
                 false,
-                &certificate_policies_der(&policies),
+                &certificate_policies_der(policies),
             );
         }
         append_der_extension(&mut builder, "2.5.29.31", false, &[0x30, 0x00]);

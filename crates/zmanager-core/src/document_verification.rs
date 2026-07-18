@@ -558,17 +558,12 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
+    #[derive(Default)]
     struct ChainConfig {
         omit_leaf_policy: bool,
     }
 
-    impl Default for ChainConfig {
-        fn default() -> Self {
-            Self {
-                omit_leaf_policy: false,
-            }
-        }
-    }
+    
 
     struct CertificateFixture {
         chain_der: Vec<Vec<u8>>,
@@ -819,6 +814,7 @@ mod tests {
         out
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn der_len(len: usize) -> Vec<u8> {
         if len < 128 {
             vec![len as u8]

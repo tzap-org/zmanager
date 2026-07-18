@@ -6841,7 +6841,7 @@ fn parse_output_mode(value: &str, option: &str) -> Result<OutputMode, String> {
 
 fn take_value_or_exit(args: &[String], index: &mut usize, option: &str) -> String {
     take_value(args, index, option).unwrap_or_else(|e| {
-        eprintln!("{}", e);
+        eprintln!("{e}");
         std::process::exit(1);
     })
 }

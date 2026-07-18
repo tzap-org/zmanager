@@ -285,6 +285,20 @@ fn copy_synthetic_file(
                     })?;
             }
 
+            #[cfg(not(unix))]
+            {
+                if source_metadata.permissions().readonly() {
+                    let mut perms = source_metadata.permissions();
+                    perms.set_readonly(true);
+                    fs::set_permissions(&destination_path, perms).map_err(|source| {
+                        DebError::Io {
+                            path: destination_path.clone(),
+                            source,
+                        }
+                    })?;
+                }
+            }
+
             if let Ok(mtime) = source_metadata.modified() {
                 filetime::set_file_mtime(
                     &destination_path,

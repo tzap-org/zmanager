@@ -281,7 +281,7 @@ fn extract_rar_inner(
     policy: ExtractionPolicy,
     password: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    mut context: Option<&mut JobContext<'_>>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<RarExtractReport, RarBackendError> {
     let entries = zmanager_unrar::list_archive(archive.as_ref(), password)?;
     extract_rar_inner_with_entries(
@@ -692,6 +692,20 @@ fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()>
             use std::os::unix::fs::PermissionsExt;
             let permissions = (file_attr >> 16) & 0o0777;
             fs::set_permissions(path, fs::Permissions::from_mode(permissions))?;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if (file_attr & 0xFFFF0000) != 0 {
+            let permissions = (file_attr >> 16) & 0o0777;
+            if permissions & 0o222 == 0 {
+                if let Ok(fs_metadata) = fs::metadata(path) {
+                    let mut perms = fs_metadata.permissions();
+                    perms.set_readonly(true);
+                    fs::set_permissions(path, perms)?;
+                }
+            }
         }
     }
 
