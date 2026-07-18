@@ -1108,6 +1108,45 @@ mod tests {
         assert!(temp.path("out/project/empty").is_dir());
     }
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[test]
+    fn extracts_symlinks_and_preserves_metadata() {
+        use std::os::unix::fs::symlink;
+        use filetime::{set_symlink_file_times, FileTime};
+
+        let temp = TestDir::new("apple_archive_symlink_meta");
+        temp.write_file("project/target.txt", b"target");
+        let symlink_path = temp.path("project/link");
+        symlink("target.txt", &symlink_path).unwrap();
+
+        // Set a specific timestamp on the symlink
+        let past = FileTime::from_unix_time(1000000000, 0);
+        set_symlink_file_times(&symlink_path, past, past).unwrap();
+
+        let archive = temp.path("project.aar");
+
+        create_apple_archive_from_path(
+            temp.path("project"),
+            &archive,
+            &AppleArchiveCreateOptions {
+                compression: AppleArchiveCompression::None,
+                ..AppleArchiveCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let out_dir = temp.path("out");
+        extract_apple_archive(&archive, &out_dir, ExtractionPolicy::default()).unwrap();
+
+        let extracted_symlink = out_dir.join("project/link");
+        let metadata = fs::symlink_metadata(&extracted_symlink).unwrap();
+        
+        let mtime = metadata.modified().unwrap();
+        let mtime_secs = mtime.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let diff = (mtime_secs - 1000000000).abs();
+        assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
+    }
+
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn native_operations_return_unsupported_on_non_apple_targets() {
