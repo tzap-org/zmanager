@@ -152,7 +152,7 @@ fn create_tar_gz_from_manifest_inner(
         source,
     })?;
 
-    let encoder = GzEncoder::new(file, Compression::new(options.level as u32));
+    let encoder = GzEncoder::new(file, Compression::new(options.level.cast_unsigned()));
     let mut builder = Builder::new(encoder);
     builder.follow_symlinks(false);
     let mut report = TarGzCreateReport {
@@ -402,7 +402,7 @@ mod tests {
         let mut entries = tar_archive.entries().unwrap();
 
         let mut found_file = false;
-        while let Some(entry_res) = entries.next() {
+        for entry_res in entries {
             let entry = entry_res.unwrap();
             let path = entry.path().unwrap();
             if path.ends_with("file.txt") {
@@ -453,7 +453,7 @@ mod tests {
         let mut entries = tar_archive.entries().unwrap();
 
         let mut found_file = false;
-        while let Some(entry_res) = entries.next() {
+        for entry_res in entries {
             let entry = entry_res.unwrap();
             let path = entry.path().unwrap();
             if path.ends_with("file.txt") {

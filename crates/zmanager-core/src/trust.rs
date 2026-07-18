@@ -2387,9 +2387,9 @@ mod tests {
                 config.platform_path_len
             },
             if config.omit_platform_ca_policy {
-                vec![]
+                &[]
             } else {
-                vec![TZAP_OID_CA_POLICY]
+                &[TZAP_OID_CA_POLICY]
             },
         );
 
@@ -2406,7 +2406,7 @@ mod tests {
                 platform_key.as_ref(),
                 platform.as_ref(),
                 super::ORG_INTERMEDIATE_PATH_LEN,
-                policies,
+                &policies,
             );
             let org_der = org.to_der().unwrap();
             (org, org_key, Some(org_der))
@@ -2476,7 +2476,7 @@ mod tests {
         issuer_key: &PKeyRef<Private>,
         aki_source: &X509Ref,
         path_len: u32,
-        policies: Vec<&str>,
+        policies: &[&str],
     ) -> X509 {
         let mut builder = base_certificate_builder(common_name, key, Some(issuer_cert));
         builder
@@ -2698,11 +2698,11 @@ mod tests {
 
     fn der_len(len: usize) -> Vec<u8> {
         if len < 128 {
-            vec![len as u8]
+            vec![u8::try_from(len).unwrap()]
         } else if len <= 0xff {
-            vec![0x81, len as u8]
+            vec![0x81, u8::try_from(len).unwrap()]
         } else {
-            vec![0x82, (len >> 8) as u8, len as u8]
+            vec![0x82, u8::try_from(len >> 8).unwrap(), u8::try_from(len & 0xff).unwrap()]
         }
     }
 

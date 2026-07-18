@@ -1983,8 +1983,7 @@ mod tests {
         let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
         assert!(
             diff <= 2,
-            "extracted mtime diff {} is greater than 2 seconds",
-            diff
+            "extracted mtime diff {diff} is greater than 2 seconds"
         );
     }
 

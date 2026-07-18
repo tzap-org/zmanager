@@ -903,7 +903,7 @@ mod tests {
     fn status_client_uses_percent_encoded_paths_and_parses_fresh_valid_status() {
         let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
         let transport =
-            FakeStatusTransport::new(vec![json_response(valid_status(&certificate_sha256))]);
+            FakeStatusTransport::new(vec![json_response(&valid_status(&certificate_sha256))]);
         let client = TzapStatusClient::new("https://sign.example/", &transport);
 
         let status = client.status_by_fingerprint(&certificate_sha256).unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
                 {"lookup_id": "b", "status_response": valid_status(&certificate_sha256)}
             ]
         });
-        let transport = FakeStatusTransport::new(vec![json_response(response)]);
+        let transport = FakeStatusTransport::new(vec![json_response(&response)]);
         let client = TzapStatusClient::new("https://sign.example", &transport);
         let results = client
             .bulk_status(&[
@@ -1194,10 +1194,10 @@ mod tests {
         TzapBulkStatusLookup::by_fingerprint(id, certificate_sha256)
     }
 
-    fn json_response(body: serde_json::Value) -> TzapAuthHttpResponse {
+    fn json_response(body: &serde_json::Value) -> TzapAuthHttpResponse {
         TzapAuthHttpResponse {
             status_code: 200,
-            body: serde_json::to_vec(&body).unwrap(),
+            body: serde_json::to_vec(body).unwrap(),
         }
     }
 

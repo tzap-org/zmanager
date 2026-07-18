@@ -691,6 +691,7 @@ fn materialize_entry(
         ExtractionEntryKind::Symlink { target } => {
             reader.skip_entry_data(entry)?;
             write_symlink(target, decision.destination_path)?;
+            apply_symlink_mtime(decision.destination_path, entry.metadata().modified);
             0
         }
         ExtractionEntryKind::Hardlink { .. } => {
@@ -961,6 +962,18 @@ fn apply_metadata(
     }
 
     Ok(())
+}
+
+/// Best-effort mtime restoration for symlinks.
+///
+/// Uses `set_symlink_file_times` to avoid following the link. Errors are
+/// silently ignored because some filesystems do not support symlink timestamps.
+fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) {
+    if let Some(modified) = modified {
+        if let Some(ft) = system_time_to_filetime(modified) {
+            let _ = filetime::set_symlink_file_times(path, ft, ft);
+        }
+    }
 }
 
 fn system_time_to_filetime(time: SystemTime) -> Option<filetime::FileTime> {

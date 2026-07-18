@@ -498,7 +498,7 @@ fn serial_number(
     now_unix_seconds: u64,
 ) -> Result<openssl::asn1::Asn1Integer, TzapLocalFakeServiceError> {
     let serial = (now_unix_seconds % u64::from(u32::MAX - 1)) + 1;
-    BigNum::from_u32(serial as u32)
+    BigNum::from_u32(u32::try_from(serial).unwrap())
         .and_then(|number| number.to_asn1_integer())
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
 }
