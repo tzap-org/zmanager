@@ -55,6 +55,7 @@ def run_metadata(workspace: Path) -> dict:
         ["cargo", "metadata", "--format-version", "1", "--locked"],
         cwd=workspace,
         text=True,
+        encoding="utf-8",
     )
     return json.loads(output)
 
