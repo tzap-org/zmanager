@@ -1419,13 +1419,19 @@ fn apply_sevenz_metadata(
             if let Ok(metadata) = fs::metadata(path) {
                 let mut perms = metadata.permissions();
                 perms.set_readonly(true);
-                let _ = fs::set_permissions(path, perms);
+                fs::set_permissions(path, perms).map_err(|source| SevenZError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
             }
         }
     }
 
     if let Some(sys_time) = modified_time {
-        let _ = filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time));
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time)).map_err(|source| SevenZError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
     Ok(())
 }
@@ -1656,6 +1662,20 @@ mod tests {
     use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn application_of_metadata_propagates_io_errors() {
+        let temp = TestDir::new("sevenz_metadata_error_prop");
+        let nonexistent = temp.path("does_not_exist");
+        
+        let result = super::apply_sevenz_metadata(
+            &nonexistent,
+            Some(0o644),
+            Some(SystemTime::now()),
+        );
+        
+        assert!(matches!(result, Err(SevenZError::Io { .. })));
+    }
 
     #[test]
 

@@ -1671,13 +1671,13 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             "--print-url" => index += 1,
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--environment" => {
-                let value = take_value(args, &mut index, "--environment").unwrap();
+                let value = take_value_or_exit(args, &mut index, "--environment");
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
                     "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
@@ -1693,23 +1693,23 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             }
             "--auth-base-url" => {
                 endpoints.auth_base_url =
-                    Some(take_value(args, &mut index, "--auth-base-url").unwrap());
+                    Some(take_value_or_exit(args, &mut index, "--auth-base-url"));
             }
             "--account-base-url" => {
                 endpoints.account_base_url =
-                    Some(take_value(args, &mut index, "--account-base-url").unwrap());
+                    Some(take_value_or_exit(args, &mut index, "--account-base-url"));
             }
             "--client-id" => {
-                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap();
+                endpoints.client_id = take_value_or_exit(args, &mut index, "--client-id");
             }
             "--redirect-uri" => {
-                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap();
+                endpoints.redirect_uri = take_value_or_exit(args, &mut index, "--redirect-uri");
             }
             "--provider" => {
-                endpoints.provider_id = take_value(args, &mut index, "--provider").unwrap();
+                endpoints.provider_id = take_value_or_exit(args, &mut index, "--provider");
             }
             "--org-id" => {
-                endpoints.org_id = Some(take_value(args, &mut index, "--org-id").unwrap());
+                endpoints.org_id = Some(take_value_or_exit(args, &mut index, "--org-id"));
             }
             other => {
                 return command_usage_error(
@@ -1782,27 +1782,27 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
-            "--state" => state = Some(take_value(args, &mut index, "--state").unwrap()),
+            "--state" => state = Some(take_value_or_exit(args, &mut index, "--state")),
             "--redirect-uri" => {
-                redirect_uri = Some(take_value(args, &mut index, "--redirect-uri").unwrap());
+                redirect_uri = Some(take_value_or_exit(args, &mut index, "--redirect-uri"));
             }
             "--auth-base-url" => {
-                auth_base_url = Some(take_value(args, &mut index, "--auth-base-url").unwrap());
+                auth_base_url = Some(take_value_or_exit(args, &mut index, "--auth-base-url"));
             }
-            "--client-id" => client_id = Some(take_value(args, &mut index, "--client-id").unwrap()),
+            "--client-id" => client_id = Some(take_value_or_exit(args, &mut index, "--client-id")),
             "--callback-url" => {
-                callback_url = Some(take_value(args, &mut index, "--callback-url").unwrap());
+                callback_url = Some(take_value_or_exit(args, &mut index, "--callback-url"));
             }
             "--handoff-code" => {
-                handoff_code = Some(take_value(args, &mut index, "--handoff-code").unwrap());
+                handoff_code = Some(take_value_or_exit(args, &mut index, "--handoff-code"));
             }
             "--relay-body" => {
-                relay_body_path = Some(take_value(args, &mut index, "--relay-body").unwrap());
+                relay_body_path = Some(take_value_or_exit(args, &mut index, "--relay-body"));
             }
             other => {
                 return command_usage_error(
@@ -1947,7 +1947,7 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
         }
         match args[index].as_str() {
             "--environment" => {
-                let value = take_value(args, &mut index, "--environment").unwrap();
+                let value = take_value_or_exit(args, &mut index, "--environment");
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
                     "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
@@ -1963,13 +1963,13 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
             }
             "--account-base-url" => {
                 endpoints.account_base_url =
-                    Some(take_value(args, &mut index, "--account-base-url").unwrap());
+                    Some(take_value_or_exit(args, &mut index, "--account-base-url"));
             }
             "--client-id" => {
-                endpoints.client_id = take_value(args, &mut index, "--client-id").unwrap();
+                endpoints.client_id = take_value_or_exit(args, &mut index, "--client-id");
             }
             "--redirect-uri" => {
-                endpoints.redirect_uri = take_value(args, &mut index, "--redirect-uri").unwrap();
+                endpoints.redirect_uri = take_value_or_exit(args, &mut index, "--redirect-uri");
             }
             other => {
                 return command_usage_error(
@@ -2204,22 +2204,22 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--certificate-id" => {
-                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap());
+                certificate_id = Some(take_value_or_exit(args, &mut index, "--certificate-id"));
             }
             "--output" => {
                 output = Some(PathBuf::from(
-                    take_value(args, &mut index, "--output").unwrap(),
+                    take_value_or_exit(args, &mut index, "--output"),
                 ));
             }
             "--claimed-signing-time" => {
                 claimed_signing_time =
-                    Some(take_value(args, &mut index, "--claimed-signing-time").unwrap());
+                    Some(take_value_or_exit(args, &mut index, "--claimed-signing-time"));
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2299,19 +2299,19 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         }
         match args[index].as_str() {
             "--custom-trust-root" => {
-                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap());
+                custom_roots.push(take_value_or_exit(args, &mut index, "--custom-trust-root"));
             }
             "--custom-trust-root-cert" => {
                 custom_root_cert_paths.push(PathBuf::from(
-                    take_value(args, &mut index, "--custom-trust-root-cert").unwrap(),
+                    take_value_or_exit(args, &mut index, "--custom-trust-root-cert"),
                 ));
             }
             "--status-response" => {
                 status_response_path =
-                    Some(take_value(args, &mut index, "--status-response").unwrap());
+                    Some(take_value_or_exit(args, &mut index, "--status-response"));
             }
             "--time" => {
-                let value = take_value(args, &mut index, "--time").unwrap();
+                let value = take_value_or_exit(args, &mut index, "--time");
                 verifier_time = match value.parse::<i64>() {
                     Ok(value) => value,
                     Err(_) => {
@@ -2501,10 +2501,10 @@ fn contact_remove_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             value if value.starts_with('-') => {
                 return command_usage_error(
@@ -2569,21 +2569,21 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--accept" => {
                 accepted = true;
                 index += 1;
             }
             "--custom-trust-root" => {
-                custom_roots.push(take_value(args, &mut index, "--custom-trust-root").unwrap());
+                custom_roots.push(take_value_or_exit(args, &mut index, "--custom-trust-root"));
             }
             "--custom-trust-root-cert" => {
                 custom_root_cert_paths.push(PathBuf::from(
-                    take_value(args, &mut index, "--custom-trust-root-cert").unwrap(),
+                    take_value_or_exit(args, &mut index, "--custom-trust-root-cert"),
                 ));
             }
             value if value.starts_with('-') => {
@@ -2668,26 +2668,26 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--recipient-key-id" => {
-                recipient_key_id = Some(take_value(args, &mut index, "--recipient-key-id").unwrap());
+                recipient_key_id = Some(take_value_or_exit(args, &mut index, "--recipient-key-id"));
             }
             "--certificate-id" => {
-                certificate_id = Some(take_value(args, &mut index, "--certificate-id").unwrap());
+                certificate_id = Some(take_value_or_exit(args, &mut index, "--certificate-id"));
             }
             "--display-name" => {
-                display_name = Some(take_value(args, &mut index, "--display-name").unwrap());
+                display_name = Some(take_value_or_exit(args, &mut index, "--display-name"));
             }
             "--device-label" => {
-                device_label = take_value(args, &mut index, "--device-label").unwrap();
+                device_label = take_value_or_exit(args, &mut index, "--device-label");
             }
             "--output" => {
                 output = Some(PathBuf::from(
-                    take_value(args, &mut index, "--output").unwrap(),
+                    take_value_or_exit(args, &mut index, "--output"),
                 ));
             }
             value => {
@@ -2763,12 +2763,12 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--state-dir" => {
                 context.state_dir =
-                    PathBuf::from(take_value(args, &mut index, "--state-dir").unwrap());
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
-                context.account_key = take_value(args, &mut index, "--account-key").unwrap();
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
-            "--contact" => contact_ids.push(take_value(args, &mut index, "--contact").unwrap()),
+            "--contact" => contact_ids.push(take_value_or_exit(args, &mut index, "--contact")),
             "--force" => {
                 force = true;
                 index += 1;
@@ -6839,6 +6839,13 @@ fn parse_output_mode(value: &str, option: &str) -> Result<OutputMode, String> {
     }
 }
 
+fn take_value_or_exit(args: &[String], index: &mut usize, option: &str) -> String {
+    take_value(args, index, option).unwrap_or_else(|e| {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    })
+}
+
 fn take_value(args: &[String], index: &mut usize, option: &str) -> Result<String, String> {
     let value_index = index.saturating_add(1);
     let Some(value) = args.get(value_index) else {
@@ -7247,7 +7254,11 @@ fn list_entries_with_password(
                     .entries
                     .into_iter()
                     .map(|entry| GenericEntry {
-                        kind: format!("{:?}", entry.kind).to_lowercase(),
+                        kind: match entry.kind {
+                            zmanager_core::zip_backend::ZipEntryKind::File => "file",
+                            zmanager_core::zip_backend::ZipEntryKind::Directory => "directory",
+                            zmanager_core::zip_backend::ZipEntryKind::Symlink => "symlink",
+                        }.to_owned(),
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),
@@ -7263,7 +7274,11 @@ fn list_entries_with_password(
                     .entries
                     .into_iter()
                     .map(|entry| GenericEntry {
-                        kind: format!("{:?}", entry.kind).to_lowercase(),
+                        kind: match entry.kind {
+                            zmanager_core::sevenz_backend::SevenZEntryKind::File => "file",
+                            zmanager_core::sevenz_backend::SevenZEntryKind::Directory => "directory",
+                            zmanager_core::sevenz_backend::SevenZEntryKind::AntiItem => "anti-item",
+                        }.to_owned(),
                         name: entry.name,
                         size: entry.size,
                         compressed_size: Some(entry.compressed_size),

@@ -706,6 +706,20 @@ fn apply_metadata(path: &Path, metadata: TarEntryMetadata) -> Result<(), TarZstd
         )?;
     }
 
+    #[cfg(not(unix))]
+    if let Some(mode) = metadata.mode {
+        if mode & 0o222 == 0 {
+            if let Ok(fs_metadata) = fs::metadata(path) {
+                let mut perms = fs_metadata.permissions();
+                perms.set_readonly(true);
+                fs::set_permissions(path, perms).map_err(|source| TarZstdError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
+    }
+
     if let Some(mtime) = metadata.mtime {
         let mtime = i64::try_from(mtime).map_err(|source| TarZstdError::Io {
             path: path.to_path_buf(),

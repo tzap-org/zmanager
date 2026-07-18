@@ -943,7 +943,10 @@ fn apply_metadata(
             if let Ok(fs_metadata) = fs::metadata(path) {
                 let mut perms = fs_metadata.permissions();
                 perms.set_readonly(true);
-                let _ = fs::set_permissions(path, perms);
+                fs::set_permissions(path, perms).map_err(|source| AppleArchiveError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
             }
         }
     }
@@ -1031,6 +1034,25 @@ mod tests {
         assert!(is_apple_archive_path("archive.aar"));
         assert!(is_apple_archive_path("archive.AAR"));
         assert!(!is_apple_archive_path("archive.zip"));
+    }
+
+    #[test]
+    fn application_of_metadata_propagates_io_errors() {
+        use super::AppleArchiveError;
+        use std::path::Path;
+        let nonexistent = Path::new("does_not_exist_aar");
+        let metadata = zmanager_apple_archive::EntryMetadata {
+            mode: Some(0o644),
+            ..zmanager_apple_archive::EntryMetadata::default()
+        };
+        
+        let result = super::apply_metadata(
+            nonexistent,
+            metadata,
+        );
+        
+        // This should fail because the file doesn't exist
+        assert!(matches!(result, Err(AppleArchiveError::Io { .. })));
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
