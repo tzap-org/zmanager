@@ -1363,7 +1363,7 @@ fn extract_zip_inner(
         written_bytes: 0,
         warnings: Vec::new(),
     };
-    let mut deferred_directories: Vec<(PathBuf, Option<u32>)> = Vec::new();
+    let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)> = Vec::new();
 
     for index in 0..archive.len() {
         if let Some(context) = context.as_deref_mut() {
@@ -1374,6 +1374,7 @@ fn extract_zip_inner(
             .map_err(map_zip_error)?;
         let entry_size = file.size();
         let unix_mode = file.unix_mode();
+        let modified_time = file.last_modified();
         let kind = extraction_entry_kind(&mut file)?;
         let entry = ExtractionEntry {
             archive_path: file.name().to_owned(),
@@ -1401,6 +1402,7 @@ fn extract_zip_inner(
                 &mut report,
                 context.as_deref_mut(),
                 unix_mode,
+                modified_time,
                 &mut deferred_directories,
             )?,
             ExtractionDecision::Skip { reason, .. } => {
@@ -1527,10 +1529,24 @@ fn zip_options<'a>(
         .compression_level(zip_compression_level(create_options))
         .large_file(needs_zip64(entry.size));
 
-    if create_options.preserve_metadata
-        && let Some(mode) = entry.permissions.unix_mode
-    {
-        options = options.unix_permissions(mode);
+    if create_options.preserve_metadata {
+        if let Some(mode) = entry.permissions.unix_mode {
+            options = options.unix_permissions(mode);
+        }
+        if let Some(modified) = entry.modified {
+            if let Ok(offset) = time::OffsetDateTime::try_from(modified) {
+                if let Ok(dt) = zip::DateTime::from_date_and_time(
+                    offset.year() as u16,
+                    offset.month() as u8,
+                    offset.day() as u8,
+                    offset.hour() as u8,
+                    offset.minute() as u8,
+                    offset.second() as u8,
+                ) {
+                    options = options.last_modified_time(dt);
+                }
+            }
+        }
     }
 
     if let Some(password) = zip_password(create_options) {
@@ -1617,7 +1633,8 @@ fn write_zip_entry<R: Read>(
     report: &mut ZipExtractReport,
     context: Option<&mut JobContext<'_>>,
     unix_mode: Option<u32>,
-    deferred_directories: &mut Vec<(PathBuf, Option<u32>)>,
+    modified_time: Option<zip::DateTime>,
+    deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)>,
 ) -> Result<u64, ZipBackendError> {
     if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
         crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
@@ -1634,7 +1651,7 @@ fn write_zip_entry<R: Read>(
                 path: destination_path.to_path_buf(),
                 source,
             })?;
-            deferred_directories.push((destination_path.to_path_buf(), unix_mode));
+            deferred_directories.push((destination_path.to_path_buf(), unix_mode, modified_time));
             report.written_entries += 1;
             Ok(0)
         }
@@ -1664,7 +1681,7 @@ fn write_zip_entry<R: Read>(
                     path: destination_path.to_path_buf(),
                     source,
                 })?;
-            apply_zip_unix_mode(destination_path, unix_mode)?;
+            apply_zip_metadata(destination_path, unix_mode, modified_time)?;
             report.written_entries += 1;
             report.written_bytes += copied;
             Ok(copied)
@@ -1706,11 +1723,14 @@ fn write_zip_entry<R: Read>(
     }
 }
 
-#[cfg(unix)]
-fn apply_zip_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), ZipBackendError> {
+fn apply_zip_metadata(
+    path: &Path,
+    unix_mode: Option<u32>,
+    modified_time: Option<zip::DateTime>,
+) -> Result<(), ZipBackendError> {
+    #[cfg(unix)]
     if let Some(mode) = unix_mode {
         use std::os::unix::fs::PermissionsExt;
-
         fs::set_permissions(path, fs::Permissions::from_mode(mode & ZIP_MODE_MASK)).map_err(
             |source| ZipBackendError::Io {
                 path: path.to_path_buf(),
@@ -1718,19 +1738,46 @@ fn apply_zip_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), ZipBac
             },
         )?;
     }
-    Ok(())
-}
 
-#[cfg(not(unix))]
-fn apply_zip_unix_mode(_path: &Path, _unix_mode: Option<u32>) -> Result<(), ZipBackendError> {
+    #[cfg(not(unix))]
+    if let Some(mode) = unix_mode {
+        if mode & 0o222 == 0 {
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_readonly(true);
+                fs::set_permissions(path, perms).map_err(|source| ZipBackendError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
+    }
+
+    if let Some(dt) = modified_time {
+        if let Ok(date) = time::Date::from_calendar_date(
+            dt.year() as i32,
+            time::Month::try_from(dt.month()).unwrap_or(time::Month::January),
+            dt.day().max(1),
+        ) {
+            if let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()) {
+                let primitive = time::PrimitiveDateTime::new(date, time_cmp);
+                let sys_time = std::time::SystemTime::from(primitive.assume_utc());
+                filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time))
+                    .map_err(|source| ZipBackendError::Io {
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
+            }
+        }
+    }
     Ok(())
 }
 
 fn apply_deferred_zip_directory_metadata(
-    directories: &[(PathBuf, Option<u32>)],
+    directories: &[(PathBuf, Option<u32>, Option<zip::DateTime>)],
 ) -> Result<(), ZipBackendError> {
-    for (path, unix_mode) in directories.iter().rev() {
-        apply_zip_unix_mode(path, *unix_mode)?;
+    for (path, unix_mode, modified_time) in directories.iter().rev() {
+        apply_zip_metadata(path, *unix_mode, *modified_time)?;
     }
     Ok(())
 }
@@ -1909,10 +1956,16 @@ mod tests {
 
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         }
+        
+        #[cfg(not(unix))]
+        {
+            // Windows fallback doesn't map full unix mode, but let's check readonly if we had set it
+        }
 
-        // ZIP only has 2-second resolution (MS-DOS time), so we can't assert exact unix time easily
-
-        // We just ensure it doesn't panic.
+        // ZIP only has 2-second resolution (MS-DOS time), so we check with a delta
+        let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
+        let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
+        assert!(diff <= 2, "extracted mtime diff {} is greater than 2 seconds", diff);
     }
 
     #[test]

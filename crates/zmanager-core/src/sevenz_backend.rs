@@ -1057,7 +1057,8 @@ fn extract_7z_inner(
         warnings: Vec::new(),
     };
     let mut callback_error = None;
-    let mut deferred_directories: Vec<(PathBuf, Option<u32>)> = Vec::new();
+    let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)> =
+        Vec::new();
 
     let result = reader.for_each_entries(|entry, entry_reader| {
         match extract_entry(
@@ -1396,11 +1397,14 @@ fn sevenz_unix_mode(entry: &ArchiveEntry) -> Option<u32> {
     }
 }
 
-#[cfg(unix)]
-fn apply_sevenz_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), SevenZError> {
+fn apply_sevenz_metadata(
+    path: &Path,
+    unix_mode: Option<u32>,
+    modified_time: Option<std::time::SystemTime>,
+) -> Result<(), SevenZError> {
+    #[cfg(unix)]
     if let Some(mode) = unix_mode {
         use std::os::unix::fs::PermissionsExt;
-
         fs::set_permissions(path, fs::Permissions::from_mode(mode & SEVENZ_MODE_MASK)).map_err(
             |source| SevenZError::Io {
                 path: path.to_path_buf(),
@@ -1408,19 +1412,29 @@ fn apply_sevenz_unix_mode(path: &Path, unix_mode: Option<u32>) -> Result<(), Sev
             },
         )?;
     }
-    Ok(())
-}
 
-#[cfg(not(unix))]
-fn apply_sevenz_unix_mode(_path: &Path, _unix_mode: Option<u32>) -> Result<(), SevenZError> {
+    #[cfg(not(unix))]
+    if let Some(mode) = unix_mode {
+        if mode & 0o222 == 0 {
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_readonly(true);
+                let _ = fs::set_permissions(path, perms);
+            }
+        }
+    }
+
+    if let Some(sys_time) = modified_time {
+        let _ = filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time));
+    }
     Ok(())
 }
 
 fn apply_deferred_sevenz_directory_metadata(
-    directories: &[(PathBuf, Option<u32>)],
+    directories: &[(PathBuf, Option<u32>, Option<std::time::SystemTime>)],
 ) -> Result<(), SevenZError> {
-    for (path, unix_mode) in directories.iter().rev() {
-        apply_sevenz_unix_mode(path, *unix_mode)?;
+    for (path, unix_mode, modified_time) in directories.iter().rev() {
+        apply_sevenz_metadata(path, *unix_mode, *modified_time)?;
     }
     Ok(())
 }
@@ -1475,7 +1489,7 @@ fn extract_entry(
     reader: &mut dyn Read,
     decisions: &HashMap<String, ExtractionDecision>,
     modes: &HashMap<String, Option<u32>>,
-    deferred_directories: &mut Vec<(PathBuf, Option<u32>)>,
+    deferred_directories: &mut Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)>,
     report: &mut SevenZExtractReport,
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<(), SevenZError> {
@@ -1502,6 +1516,14 @@ fn extract_entry(
         .get(entry.name())
         .ok_or_else(|| missing_extraction_decision(entry.name()))?;
     let unix_mode = modes.get(entry.name()).copied().flatten();
+    
+    let modified_time = if entry.has_last_modified_date {
+        let nt = entry.last_modified_date();
+        std::time::SystemTime::try_from(nt).ok()
+    } else {
+        None
+    };
+    
     match decision {
         ExtractionDecision::Write {
             destination_path,
@@ -1521,7 +1543,7 @@ fn extract_entry(
                     path: destination_path.clone(),
                     source,
                 })?;
-                deferred_directories.push((destination_path.clone(), unix_mode));
+                deferred_directories.push((destination_path.clone(), unix_mode, modified_time));
                 report.written_entries += 1;
             } else {
                 let written_bytes = write_file_entry(
@@ -1531,7 +1553,7 @@ fn extract_entry(
                     Some(&path),
                     context.as_deref_mut(),
                 )?;
-                apply_sevenz_unix_mode(destination_path, unix_mode)?;
+                apply_sevenz_metadata(destination_path, unix_mode, modified_time)?;
                 report.written_entries += 1;
                 report.written_bytes += written_bytes;
                 processed_bytes = written_bytes;
@@ -1686,6 +1708,16 @@ mod tests {
 
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         }
+
+        #[cfg(not(unix))]
+        {
+            // Windows fallback check
+        }
+
+        // Check mtime. The test creates the archive with mtime=1500000000
+        let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
+        let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
+        assert!(diff <= 2, "extracted mtime diff {} is greater than 2 seconds", diff);
     }
 
     #[test]

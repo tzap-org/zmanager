@@ -937,6 +937,17 @@ fn apply_metadata(
         })?;
     }
 
+    #[cfg(not(unix))]
+    if let Some(mode) = metadata.mode {
+        if mode & 0o222 == 0 {
+            if let Ok(fs_metadata) = fs::metadata(path) {
+                let mut perms = fs_metadata.permissions();
+                perms.set_readonly(true);
+                let _ = fs::set_permissions(path, perms);
+            }
+        }
+    }
+
     if let Some(modified) = metadata.modified
         && let Some(mtime) = system_time_to_filetime(modified)
     {
