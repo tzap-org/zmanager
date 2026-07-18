@@ -3,8 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, File};
-    use std::path::PathBuf;
+    use std::fs;
     use std::time::{Duration, SystemTime};
 
     use zmanager_apple_archive::{
