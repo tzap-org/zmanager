@@ -576,6 +576,19 @@ fn write_raw_stream_to_file(
     on_progress: ProgressCallback<'_>,
     track_source_progress: bool,
 ) -> Result<u64, RawStreamError> {
+    let mut mtime_to_restore = None;
+    if format == RawStreamFormat::Gzip {
+        if let Ok(file) = File::open(archive_path) {
+            let decoder = flate2::read::GzDecoder::new(file);
+            if let Some(header) = decoder.header() {
+                let mtime = header.mtime();
+                if mtime > 0 {
+                    mtime_to_restore = Some(mtime);
+                }
+            }
+        }
+    }
+
     let mut output =
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| {
             RawStreamError::Io {
@@ -612,8 +625,17 @@ fn write_raw_stream_to_file(
             source,
         })?;
 
+    if let Some(mtime) = mtime_to_restore {
+        let system_time = UNIX_EPOCH + std::time::Duration::from_secs(mtime as u64);
+        let _ = filetime::set_file_mtime(
+            destination_path,
+            filetime::FileTime::from_system_time(system_time),
+        );
+    }
+
     Ok(written)
 }
+
 
 pub(crate) fn open_decoder(
     archive_path: &Path,
@@ -1047,6 +1069,35 @@ mod tests {
         assert_eq!(detect_raw_stream_format("payload.tar.lz4"), None);
         assert_eq!(detect_raw_stream_format("payload.tar.lrz"), None);
         assert_eq!(detect_raw_stream_format("payload.cpgz"), None);
+    }
+
+    #[test]
+    fn test_gz_mtime_preservation() {
+        let dir = TemporaryDirectory::new("test_gz_mtime").unwrap();
+        let archive_path = dir.path().join("test.gz");
+        let extract_path = dir.path().join("extracted.txt");
+
+        let mtime = 1600000000;
+        let file = File::create(&archive_path).unwrap();
+        let builder = flate2::GzBuilder::new().mtime(mtime);
+        let mut encoder = builder.write(file, Compression::default());
+        encoder.write_all(b"hello world").unwrap();
+        encoder.finish().unwrap();
+
+        super::write_raw_stream_to_file(
+            &archive_path,
+            RawStreamFormat::Gzip,
+            &extract_path,
+            true,
+            None,
+            None,
+            false,
+        ).unwrap();
+
+        let meta = fs::metadata(&extract_path).unwrap();
+        let modified = meta.modified().unwrap();
+        let duration = modified.duration_since(UNIX_EPOCH).unwrap();
+        assert_eq!(duration.as_secs(), mtime as u64);
     }
 
     #[test]

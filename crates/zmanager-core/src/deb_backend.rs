@@ -224,13 +224,13 @@ fn copy_synthetic_file(
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     report: &mut DebExtractReport,
 ) -> Result<(), DebError> {
-    let source_size = source_path
-        .metadata()
-        .map(|metadata| metadata.len())
+    let source_metadata = source_path
+        .symlink_metadata()
         .map_err(|source| DebError::Io {
             path: source_path.to_path_buf(),
             source,
         })?;
+    let source_size = source_metadata.len();
     let entry = ExtractionEntry {
         archive_path: archive_path.to_owned(),
         kind: ExtractionEntryKind::File,
@@ -275,6 +275,27 @@ fn copy_synthetic_file(
                     path: destination_path.clone(),
                     source,
                 })?;
+
+            #[cfg(unix)]
+            {
+                fs::set_permissions(&destination_path, source_metadata.permissions())
+                    .map_err(|source| DebError::Io {
+                        path: destination_path.clone(),
+                        source,
+                    })?;
+            }
+
+            if let Ok(mtime) = source_metadata.modified() {
+                filetime::set_file_mtime(
+                    &destination_path,
+                    filetime::FileTime::from_system_time(mtime),
+                )
+                .map_err(|source| DebError::Io {
+                    path: destination_path.clone(),
+                    source,
+                })?;
+            }
+
             report.written_entries += 1;
             report.written_bytes += written_bytes;
         }

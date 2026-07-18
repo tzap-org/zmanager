@@ -794,6 +794,16 @@ fn zm_extract_nested_deb_handles_gzip_and_zstd_payload_members() {
             fs::read_to_string(out.join("data/usr/share/zmanager-compat/file.txt")).unwrap(),
             "deb payload\n"
         );
+        
+        let debian_binary_meta = fs::metadata(out.join("debian-binary")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(debian_binary_meta.permissions().mode() & 0o777, 0o644);
+        }
+        let modified = debian_binary_meta.modified().unwrap();
+        let duration = modified.duration_since(std::time::UNIX_EPOCH).unwrap();
+        assert_eq!(duration.as_secs(), 0);
     }
 }
 
