@@ -138,4 +138,36 @@ mod tests {
         }
         assert_eq!(parse_pax_mtime(b"-+1.0"), None);
     }
+    #[test]
+    fn system_time_to_timestamp_handles_edge_cases() {
+        use super::system_time_to_timestamp;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        // Post-epoch
+        assert_eq!(
+            system_time_to_timestamp(UNIX_EPOCH + Duration::new(1, 250_000_000)),
+            Some(TarTimestamp {
+                seconds: 1,
+                nanoseconds: 250_000_000
+            })
+        );
+
+        // Pre-epoch
+        assert_eq!(
+            system_time_to_timestamp(UNIX_EPOCH - Duration::new(1, 250_000_000)),
+            Some(TarTimestamp {
+                seconds: -2,
+                nanoseconds: 750_000_000
+            })
+        );
+
+        // Exactly epoch
+        assert_eq!(
+            system_time_to_timestamp(UNIX_EPOCH),
+            Some(TarTimestamp {
+                seconds: 0,
+                nanoseconds: 0
+            })
+        );
+    }
 }

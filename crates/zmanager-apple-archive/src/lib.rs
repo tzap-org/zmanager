@@ -1155,18 +1155,30 @@ mod platform {
     pub struct ArchiveReader;
 
     impl ArchiveReader {
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn open(_path: impl AsRef<Path>) -> Result<Self> {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn next_entry(&mut self) -> Result<Option<Entry>> {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn skip_entry_data(&mut self, _entry: &Entry) -> Result<()> {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn read_entry_data<W: Write>(
             &mut self,
             _entry: &Entry,
@@ -1180,10 +1192,16 @@ mod platform {
     pub struct ArchiveWriter;
 
     impl ArchiveWriter {
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn create(_path: impl AsRef<Path>, _options: CreateOptions) -> Result<Self> {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn append_directory(
             &mut self,
             _path: &str,
@@ -1192,6 +1210,9 @@ mod platform {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn append_symlink(
             &mut self,
             _path: &str,
@@ -1201,6 +1222,9 @@ mod platform {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn append_file<R: Read>(
             &mut self,
             _path: &str,
@@ -1212,6 +1236,9 @@ mod platform {
             Err(Error::UnsupportedPlatform)
         }
 
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
         pub fn finish(self) -> Result<()> {
             Err(Error::UnsupportedPlatform)
         }

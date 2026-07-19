@@ -1208,17 +1208,16 @@ fn apply_metadata(path: &Path, metadata: LibarchiveEntryMetadata) -> Result<(), 
     }
 
     #[cfg(not(unix))]
-    if let Some(mode) = metadata.mode {
-        if mode & 0o222 == 0 {
-            if let Ok(fs_metadata) = fs::metadata(path) {
-                let mut perms = fs_metadata.permissions();
-                perms.set_readonly(true);
-                fs::set_permissions(path, perms).map_err(|source| LibarchiveError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-            }
-        }
+    if let Some(mode) = metadata.mode
+        && mode & 0o222 == 0
+        && let Ok(fs_metadata) = fs::metadata(path)
+    {
+        let mut perms = fs_metadata.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(path, perms).map_err(|source| LibarchiveError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
 
     if let Some(modified) = metadata.modified {

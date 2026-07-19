@@ -93,7 +93,7 @@ pub struct AppleArchiveTestReport {
     pub tested_bytes: u64,
 }
 
-/// Stub AppleArchive error.
+/// Stub `AppleArchive` error.
 #[derive(Debug)]
 pub enum AppleArchiveError {
     Plan(PlanError),
@@ -166,6 +166,7 @@ impl From<JobCancelled> for AppleArchiveError {
     }
 }
 
+#[must_use]
 pub const fn apple_archive_supported() -> bool {
     false
 }
@@ -194,7 +195,7 @@ pub fn create_apple_archive_from_manifest_with_context(
     _manifest: &ArchiveManifest,
     _destination: impl AsRef<Path>,
     _options: &AppleArchiveCreateOptions,
-    _context: &JobContext,
+    _context: &mut JobContext,
 ) -> Result<AppleArchiveCreateReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
@@ -217,7 +218,7 @@ pub fn extract_apple_archive_with_context(
     _archive: impl AsRef<Path>,
     _destination: impl AsRef<Path>,
     _policy: ExtractionPolicy,
-    _context: &JobContext,
+    _context: &mut JobContext,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }

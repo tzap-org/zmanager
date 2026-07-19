@@ -1779,17 +1779,16 @@ fn apply_zip_metadata(
     }
 
     #[cfg(not(unix))]
-    if let Some(mode) = unix_mode {
-        if mode & 0o222 == 0 {
-            if let Ok(metadata) = fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                perms.set_readonly(true);
-                fs::set_permissions(path, perms).map_err(|source| ZipBackendError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-            }
-        }
+    if let Some(mode) = unix_mode
+        && mode & 0o222 == 0
+        && let Ok(metadata) = fs::metadata(path)
+    {
+        let mut perms = metadata.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(path, perms).map_err(|source| ZipBackendError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
 
     if let Some(dt) = modified_time

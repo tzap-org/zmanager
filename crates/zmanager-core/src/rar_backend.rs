@@ -741,12 +741,12 @@ fn apply_rar_metadata(path: &Path, file_attr: u32, mtime: u64) -> io::Result<()>
     {
         if !is_symlink && (file_attr & 0xFFFF_0000) != 0 {
             let permissions = (file_attr >> 16) & RAR_UNIX_MODE_MASK;
-            if permissions & 0o222 == 0 {
-                if let Ok(fs_metadata) = fs::metadata(path) {
-                    let mut perms = fs_metadata.permissions();
-                    perms.set_readonly(true);
-                    fs::set_permissions(path, perms)?;
-                }
+            if permissions & 0o222 == 0
+                && let Ok(fs_metadata) = fs::metadata(path)
+            {
+                let mut perms = fs_metadata.permissions();
+                perms.set_readonly(true);
+                fs::set_permissions(path, perms)?;
             }
         }
     }
@@ -886,8 +886,11 @@ mod tests {
         DeferredLink, DeferredLinkKind, RAR_FILETIME_TICKS_PER_SECOND, RarExtractReport,
         WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata, materialize_deferred_links,
     };
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]

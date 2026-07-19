@@ -4604,6 +4604,7 @@ fn portable_posix_owner(_metadata: &fs::Metadata) -> Option<PortablePosixOwner> 
 }
 
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
 fn portable_file_attributes(metadata: &fs::Metadata) -> Option<u32> {
     use std::os::windows::fs::MetadataExt;
 
