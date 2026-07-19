@@ -3159,6 +3159,7 @@ fn write_secret_json_file(path: &Path, value: &Value) -> std::io::Result<()> {
 
 #[cfg(unix)]
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
     let mut file = fs::OpenOptions::new()
