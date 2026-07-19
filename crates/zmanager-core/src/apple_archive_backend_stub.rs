@@ -111,11 +111,17 @@ impl fmt::Display for AppleArchiveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Plan(source) => write!(f, "manifest planning failed: {source}"),
-            Self::UnsupportedPlatform => write!(f, "AppleArchive is supported only on macOS and iOS"),
+            Self::UnsupportedPlatform => {
+                write!(f, "AppleArchive is supported only on macOS and iOS")
+            }
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
-            Self::MissingLinkTarget { path } => write!(f, "AppleArchive symlink entry has no target: {path}"),
-            Self::MissingFileData { path } => write!(f, "AppleArchive file entry has no data blob: {path}"),
+            Self::MissingLinkTarget { path } => {
+                write!(f, "AppleArchive symlink entry has no target: {path}")
+            }
+            Self::MissingFileData { path } => {
+                write!(f, "AppleArchive file entry has no data blob: {path}")
+            }
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
             Self::StdoutSelectionNotSingleFile { selected_files } => write!(
                 f,

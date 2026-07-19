@@ -190,17 +190,41 @@ function Ensure-Vcpkg {
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
     [Environment]::SetEnvironmentVariable("Path", ($debugRuntimePath + ";" + $runtimePath + ";" + $currentPath), "Process")
 
+    $ignoreFlags = "-C link-arg=/ignore:4099 -C link-arg=/ignore:4098"
+    $currentRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
     if (($Triplet -like "*-static") -and ($Triplet -notlike "*-static-md")) {
         $staticCrtFlag = "-C target-feature=+crt-static"
-        $currentRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
         if (-not $currentRustFlags) {
-            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $staticCrtFlag, "Process")
-        } elseif ($currentRustFlags -notlike "*+crt-static*") {
-            [Environment]::SetEnvironmentVariable("RUSTFLAGS", ($currentRustFlags + " " + $staticCrtFlag), "Process")
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", ($staticCrtFlag + " " + $ignoreFlags), "Process")
+        } else {
+            $newFlags = $currentRustFlags
+            if ($currentRustFlags -notlike "*+crt-static*") {
+                $newFlags = $newFlags + " " + $staticCrtFlag
+            }
+            if ($currentRustFlags -notlike "*/ignore:4099*") {
+                $newFlags = $newFlags + " -C link-arg=/ignore:4099"
+            }
+            if ($currentRustFlags -notlike "*/ignore:4098*") {
+                $newFlags = $newFlags + " -C link-arg=/ignore:4098"
+            }
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $newFlags, "Process")
         }
-
-        Write-Host ("RUSTFLAGS=" + [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process"))
+    } else {
+        if (-not $currentRustFlags) {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $ignoreFlags, "Process")
+        } else {
+            $newFlags = $currentRustFlags
+            if ($currentRustFlags -notlike "*/ignore:4099*") {
+                $newFlags = $newFlags + " -C link-arg=/ignore:4099"
+            }
+            if ($currentRustFlags -notlike "*/ignore:4098*") {
+                $newFlags = $newFlags + " -C link-arg=/ignore:4098"
+            }
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $newFlags, "Process")
+        }
     }
+
+    Write-Host ("RUSTFLAGS=" + [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process"))
 }
 
 function Invoke-CargoTest {
