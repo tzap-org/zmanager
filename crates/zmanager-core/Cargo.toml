@@ -32,10 +32,14 @@ tzap-plugin-keywrap = "0.1.11"
 tzap-plugin-signing = "0.1.11"
 zip = "8.6.0"
 zeroize = "1.8.2"
-zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "1.0.6" }
 zmanager-libarchive = { path = "../zmanager-libarchive", version = "1.0.6" }
 zmanager-unrar = { path = "../zmanager-unrar", version = "1.0.6" }
+
 zstd = { version = "0.13.3", features = ["zstdmt"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "1.0.6" }
+
 
 [lints]
 workspace = true

@@ -7,6 +7,11 @@
 mod atomic_file;
 mod tar_metadata;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod apple_archive_backend;
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[path = "apple_archive_backend_stub.rs"]
 pub mod apple_archive_backend;
 pub mod archive_browser;
 pub mod auth_client;

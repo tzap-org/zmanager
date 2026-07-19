@@ -924,6 +924,11 @@ fn apply_metadata(
     path: &Path,
     metadata: zmanager_apple_archive::EntryMetadata,
 ) -> Result<(), AppleArchiveError> {
+    fs::symlink_metadata(path).map_err(|source| AppleArchiveError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
     #[cfg(unix)]
     if let Some(mode) = metadata.mode {
         use std::os::unix::fs::PermissionsExt;
