@@ -49,7 +49,7 @@ Commands:
   verify <input>                 Verify a TZAP document envelope
   contact <command>              Manage TZAP contact cards
   share <archive> <paths...>     Create a TZAP archive for contacts
-  doctor                         Verify the Rust engine
+  doctor                         Verify the archive engine
   completions <shell>            Print shell completion scripts
   help [command]                 Show help for a command
 
