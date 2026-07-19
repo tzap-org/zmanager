@@ -4710,12 +4710,16 @@ mod tests {
     use super::{
         TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy,
         TzapX509SigningOptions, TzapX509TrustOptions, create_tzap_from_manifest_with_context,
-        extract_tzap_file_to_destination, extract_tzap_with_optional_password_and_context_fast,
-        extract_tzap_with_optional_password_and_context_fast_with_restore_options,
-        extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
-        list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots,
-        summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
+        extract_tzap_file_to_destination, extract_tzap_with_recipient_key, is_tzap_archive_path,
+        list_tzap_with_optional_password, list_tzap_with_password, list_tzap_with_recipient_key,
+        load_x509_trusted_roots, summarize_tzap_public_metadata,
+        test_tzap_with_password_filter_and_x509_trust,
         test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
+    };
+    #[cfg(unix)]
+    use super::{
+        extract_tzap_with_optional_password_and_context_fast,
+        extract_tzap_with_optional_password_and_context_fast_with_restore_options,
     };
     use crate::jobs::{CancellationToken, JobContext};
     use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};

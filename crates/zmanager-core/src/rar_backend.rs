@@ -881,6 +881,7 @@ fn relative_path(from_parent: &str, to: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::{
         DeferredLink, DeferredLinkKind, RAR_FILETIME_TICKS_PER_SECOND, RarExtractReport,
         WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata, materialize_deferred_links,
@@ -985,10 +986,12 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     struct TestDir {
         root: PathBuf,
     }
 
+    #[cfg(unix)]
     impl TestDir {
         fn new(label: &str) -> Self {
             let unique = SystemTime::now()
@@ -1006,6 +1009,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);

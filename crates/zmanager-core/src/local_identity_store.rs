@@ -1055,13 +1055,14 @@ fn validate_unique<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::IDENTITY_INVENTORY_FILE_SUFFIX;
     use super::{
         DEFAULT_IDENTITY_INVENTORY_ACCOUNT, FileTzapLocalIdentityStore,
-        IDENTITY_INVENTORY_FILE_SUFFIX, InMemoryTzapLocalIdentityStore,
-        TzapCertificateStatusCacheRecord, TzapContactRecord, TzapDeviceSigningKeyRecord,
-        TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
-        TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-        TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
+        InMemoryTzapLocalIdentityStore, TzapCertificateStatusCacheRecord, TzapContactRecord,
+        TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord,
+        TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
+        TzapLocalIdentityStoreError, TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
     };
     use crate::device_identity::{
         TzapDeviceCsrOptions, ensure_recipient_key_is_distinct_from_signing_key,

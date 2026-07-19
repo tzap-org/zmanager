@@ -23,6 +23,7 @@ const ZIP_EOCD_MIN_SIZE: usize = 22;
 const ZIP_EOCD_MAX_COMMENT_SIZE: u64 = 65_535;
 const MIN_ZIP_VOLUME_SIZE_BYTES: u64 = 65_536;
 const ZIP_SPLIT_SIDE_CAR_EXTENSION_WIDTH: usize = 2;
+#[cfg(unix)]
 const ZIP_MODE_MASK: u32 = 0o0777;
 
 /// ZIP compression methods exposed in v1.
