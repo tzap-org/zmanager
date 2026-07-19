@@ -1,6 +1,8 @@
 //! Integration test to verify that portable metadata survives a full
 //! archive round‑trip for every supported compression algorithm.
 
+#![cfg(any(target_os = "macos", target_os = "ios"))]
+
 #[cfg(test)]
 mod tests {
     use std::fs;
