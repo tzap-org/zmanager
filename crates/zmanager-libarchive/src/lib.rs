@@ -281,7 +281,7 @@ impl ReadArchive {
             .iter()
             .map(|path| c_path(path))
             .collect::<Result<Vec<_>>>()?;
-        let mut pointers = c_paths.iter().map(CString::as_ptr).collect::<Vec<_>>();
+        let mut pointers = c_paths.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
         pointers.push(ptr::null());
 
         self.check_status(unsafe {
