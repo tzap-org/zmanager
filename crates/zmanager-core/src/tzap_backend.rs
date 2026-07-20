@@ -455,6 +455,8 @@ pub struct TzapRestoreOptions {
     pub policy: TzapRestorePolicy,
     /// Permit unsupported requested metadata to be skipped with diagnostics.
     pub allow_degraded: bool,
+    /// Allow absolute symlinks.
+    pub allow_absolute_symlinks: bool,
 }
 
 impl TzapRestoreOptions {
@@ -469,6 +471,7 @@ impl TzapRestoreOptions {
             },
             allow_degraded: self.allow_degraded,
             system_authorized: self.policy == TzapRestorePolicy::System,
+            allow_absolute_symlinks: self.allow_absolute_symlinks,
         }
     }
 }

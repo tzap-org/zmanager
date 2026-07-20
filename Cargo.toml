@@ -25,3 +25,6 @@ pedantic = "warn"
 
 [patch.crates-io]
 zmanager-libarchive-sys = { path = "crates/zmanager-libarchive-sys" }
+tzap-core = { path = "../tzap/crates/tzap-core" }
+tzap-plugin-keywrap = { path = "../tzap/crates/tzap-plugin-keywrap" }
+tzap-plugin-signing = { path = "../tzap/crates/tzap-plugin-signing" }

@@ -104,6 +104,8 @@ pub struct BrowserExtractOptions<'a> {
     pub tzap_restore_policy: TzapRestorePolicy,
     /// Permit unsupported requested TZAP metadata to be skipped with diagnostics.
     pub tzap_allow_degraded: bool,
+    /// Permit absolute symlinks in extracted content.
+    pub tzap_allow_absolute_symlinks: bool,
 }
 
 impl Default for BrowserExtractOptions<'_> {
@@ -114,6 +116,7 @@ impl Default for BrowserExtractOptions<'_> {
             strip_components: 0,
             tzap_restore_policy: TzapRestorePolicy::Portable,
             tzap_allow_degraded: false,
+            tzap_allow_absolute_symlinks: false,
         }
     }
 }
@@ -335,6 +338,7 @@ pub fn extract_entry_with_options(
             TzapRestoreOptions {
                 policy: options.tzap_restore_policy,
                 allow_degraded: options.tzap_allow_degraded,
+                allow_absolute_symlinks: options.tzap_allow_absolute_symlinks,
             },
         )
     } else if apple_archive_backend::is_apple_archive_path(archive_path) {

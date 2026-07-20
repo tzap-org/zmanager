@@ -5307,6 +5307,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             zmanager_core::tzap_backend::TzapRestoreOptions {
                 policy: request.tzap_restore_policy,
                 allow_degraded: request.tzap_allow_degraded,
+                allow_absolute_symlinks: false,
             },
             Some(global),
         )

@@ -1284,6 +1284,7 @@ pub unsafe extern "C" fn zmanager_ffi_start_extract_archive_with_tzap_options(
             TzapRestoreOptions {
                 policy,
                 allow_degraded: tzap_allow_degraded,
+                allow_absolute_symlinks: false,
             },
             out_job,
         )
@@ -2786,6 +2787,7 @@ pub unsafe extern "C" fn zmanager_ffi_extract_archive_entry_with_tzap_options(
             TzapRestoreOptions {
                 policy,
                 allow_degraded: tzap_allow_degraded,
+                allow_absolute_symlinks: false,
             },
         )
     }
@@ -2831,6 +2833,7 @@ unsafe fn extract_archive_entry(
             strip_components,
             tzap_restore_policy: tzap_restore_options.policy,
             tzap_allow_degraded: tzap_restore_options.allow_degraded,
+            tzap_allow_absolute_symlinks: tzap_restore_options.allow_absolute_symlinks,
         },
     ) {
         Ok(report) => json!({
