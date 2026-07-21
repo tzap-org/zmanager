@@ -4,6 +4,7 @@ use crate::apple_archive_backend::{
 use crate::manifest::{PlanOptions, plan_archive, plan_archives};
 use crate::safety::ExtractionPolicy;
 use crate::sevenz_backend::{SevenZCreateOptions, SevenZCreateReport};
+use crate::tar_gz_backend::{self, TarGzCreateOptions, TarGzError};
 use crate::tar_zst_backend::{self, TarZstdCreateOptions, TarZstdError, TarZstdExtractReport};
 use crate::tzap_backend::{self, TzapCreateOptions, TzapCreateReport, TzapError};
 use crate::zip_backend::{self, ZipBackendError, ZipCreateOptions, ZipCreateReport};
