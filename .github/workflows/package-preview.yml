@@ -53,6 +53,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Clone tzap
+        shell: bash
         run: |
           TZAP_REV=$(cat tzap-rev.txt)
           git clone https://github.com/tzap-org/tzap.git ../tzap

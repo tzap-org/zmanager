@@ -49,6 +49,7 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Clone tzap
+        shell: bash
         run: |
           TZAP_REV=$(cat tzap-rev.txt)
           git clone https://github.com/tzap-org/tzap.git ../tzap
