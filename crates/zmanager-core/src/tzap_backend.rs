@@ -4749,6 +4749,7 @@ mod tests {
         assert!(!super::should_restore_tzap_metadata(TzapRestoreOptions {
             policy: TzapRestorePolicy::Content,
             allow_degraded: false,
+            ..Default::default()
         }));
         assert!(super::should_restore_tzap_metadata(
             TzapRestoreOptions::default()
@@ -5037,6 +5038,7 @@ mod tests {
             TzapRestoreOptions {
                 policy: TzapRestorePolicy::Content,
                 allow_degraded: false,
+                ..Default::default()
             },
             &mut content_context,
         )
@@ -5056,6 +5058,7 @@ mod tests {
             TzapRestoreOptions {
                 policy: TzapRestorePolicy::System,
                 allow_degraded: false,
+                ..Default::default()
             },
             &mut system_context,
         )
