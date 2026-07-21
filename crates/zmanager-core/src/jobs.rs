@@ -1124,6 +1124,52 @@ pub fn run_tar_zst_create_job_from_sources_with_plan_options(
     finish_tar_zst_create_result(result, sink)
 }
 
+/// Runs a TAR.GZ create job for multiple source roots with explicit planning
+/// options and emits lifecycle/progress events.
+///
+/// Partial output state: cancellation can leave a partial destination archive.
+///
+/// # Errors
+///
+/// Returns [`TarGzError`] when planning, TAR.GZ creation, filesystem I/O, or
+/// cancellation fails.
+pub fn run_tar_gz_create_job_from_sources_with_plan_options(
+    sources: &[PathBuf],
+    destination: impl AsRef<Path>,
+    options: &TarGzCreateOptions,
+    plan_options: &PlanOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<tar_gz_backend::TarGzCreateReport, TarGzError> {
+    let manifest = match plan_archives(sources, plan_options) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let error = TarGzError::Plan(error);
+            sink.emit(JobEvent::Started {
+                kind: JobKind::TarGzCreate,
+                total_bytes: None,
+            });
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(error);
+        }
+    };
+    sink.emit(JobEvent::Started {
+        kind: JobKind::TarGzCreate,
+        total_bytes: Some(manifest.total_bytes),
+    });
+    let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
+    let result = tar_gz_backend::create_tar_gz_from_manifest_with_context(
+        &manifest,
+        destination,
+        options,
+        &mut context,
+    );
+    context.flush_progress();
+    finish_tar_gz_create_result(result, sink)
+}
+
 /// Runs an `AppleArchive` create job for multiple source roots with explicit
 /// planning options and emits lifecycle/progress events.
 ///
@@ -1914,6 +1960,33 @@ fn finish_tar_zst_create_result(
                 message: "job cancelled".to_owned(),
             });
             Err(TarZstdError::Cancelled)
+        }
+        Err(error) => {
+            sink.emit(JobEvent::Failed {
+                message: error.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+fn finish_tar_gz_create_result(
+    result: Result<tar_gz_backend::TarGzCreateReport, TarGzError>,
+    sink: &mut dyn JobEventSink,
+) -> Result<tar_gz_backend::TarGzCreateReport, TarGzError> {
+    match result {
+        Ok(report) => {
+            sink.emit(JobEvent::Completed {
+                entries: report.written_entries,
+                bytes: report.written_bytes,
+            });
+            Ok(report)
+        }
+        Err(TarGzError::Cancelled(cancelled)) => {
+            sink.emit(JobEvent::Cancelled {
+                message: "job cancelled".to_owned(),
+            });
+            Err(TarGzError::Cancelled(cancelled))
         }
         Err(error) => {
             sink.emit(JobEvent::Failed {
