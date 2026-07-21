@@ -45,6 +45,8 @@ pub struct ExtractionPolicy {
     pub strip_components: usize,
     /// Expanded-size guardrails.
     pub limits: ExtractionLimits,
+    /// Whether to ignore symbolic links during extraction.
+    pub ignore_symlinks: bool,
 }
 
 impl Default for ExtractionPolicy {
@@ -56,6 +58,7 @@ impl Default for ExtractionPolicy {
             exclude_patterns: Vec::new(),
             strip_components: 0,
             limits: ExtractionLimits::default(),
+            ignore_symlinks: false,
         }
     }
 }
@@ -358,6 +361,12 @@ impl<'a> ExtractionSafetyPlanner<'a> {
 
         let link_target_path = match &entry.kind {
             ExtractionEntryKind::Symlink { target } => {
+                if self.policy.ignore_symlinks {
+                    return Ok(ExtractionDecision::Skip {
+                        normalized_archive_path,
+                        reason: "skipped symbolic link by policy".to_owned(),
+                    });
+                }
                 self.validate_symlink_target(&destination_path, target)?;
                 None
             }
@@ -1265,6 +1274,28 @@ mod tests {
         let decision = planner.validate_entry(&entry).unwrap();
 
         assert!(matches!(decision, ExtractionDecision::Write { .. }));
+    }
+
+    #[test]
+    fn skips_symlink_when_ignore_symlinks_enabled() {
+        let temp = TestDir::new("skips_symlink_when_ignore_symlinks_enabled");
+        let policy = ExtractionPolicy {
+            ignore_symlinks: true,
+            ..ExtractionPolicy::default()
+        };
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
+        let entry = ExtractionEntry {
+            archive_path: "dir/link".to_owned(),
+            kind: ExtractionEntryKind::Symlink {
+                target: PathBuf::from("../target.txt"),
+            },
+            uncompressed_size: None,
+            compressed_size: None,
+        };
+
+        let decision = planner.validate_entry(&entry).unwrap();
+
+        assert!(matches!(decision, ExtractionDecision::Skip { .. }));
     }
 
     #[test]
