@@ -27,7 +27,7 @@ mkdir -p "$SRC/nested/empty-dir"
 mkdir -p "$SRC/dir with spaces"
 mkdir -p "$SRC/unicode"
 
-printf 'Z-Manager fixture payload\n' > "$SRC/README.txt"
+printf 'ZManager fixture payload\n' > "$SRC/README.txt"
 printf 'nested fixture file\n' > "$SRC/nested/file.txt"
 printf 'spaces in path\n' > "$SRC/dir with spaces/file with spaces.txt"
 printf 'unicode path fixture\n' > "$SRC/unicode/こんにちは.txt"
@@ -38,9 +38,9 @@ fi
 
 (
   cd "$ROOT"
-  cargo run -p zmanager-cli -- zip-create "$SRC" "$ARCHIVES/basic.zip" deflate
-  cargo run -p zmanager-cli -- source-small "$SRC" "$ARCHIVES/basic.7z" solid
-  cargo run -p zmanager-cli -- source-fast "$SRC" "$ARCHIVES/basic.tar.zst" 1
+  cargo run -p zmanager-cli --bin zmanager-cli -- create "$ARCHIVES/basic.zip" "$SRC" --method deflate
+  cargo run -p zmanager-cli --bin zmanager-cli -- create "$ARCHIVES/basic.7z" "$SRC" --format 7z --solid
+  cargo run -p zmanager-cli --bin zmanager-cli -- create "$ARCHIVES/basic.tar.zst" "$SRC" --format tar.zst --level 1
 )
 
 bsdtar -czf "$ARCHIVES/basic.tar.gz" -C "$WORK" payload
@@ -69,8 +69,8 @@ cat > "$DEB/control/control" <<'CONTROL'
 Package: zmanager-fixture
 Version: 0.1.0
 Architecture: all
-Maintainer: Z-Manager <fixtures@example.invalid>
-Description: Small archive fixture for Z-Manager compatibility tests
+Maintainer: ZManager <fixtures@example.invalid>
+Description: Small archive fixture for ZManager compatibility tests
 CONTROL
 cp "$SRC/README.txt" "$DEB/data/usr/share/zmanager-fixture/README.txt"
 bsdtar -czf "$DEB/control.tar.gz" -C "$DEB/control" control
@@ -101,8 +101,8 @@ append_manifest() {
 }
 
 printf '# filename\tformat\textract\tpassword\tsha256\tnotes\n' > "$MANIFEST"
-append_manifest "basic.zip" "ZIP" "true" "" "ZIP Deflate fixture created by Z-Manager"
-append_manifest "basic.7z" "7Z" "true" "" "7Z LZMA2 solid fixture created by Z-Manager"
+append_manifest "basic.zip" "ZIP" "true" "" "ZIP Deflate fixture created by ZManager"
+append_manifest "basic.7z" "7Z" "true" "" "7Z LZMA2 solid fixture created by ZManager"
 append_manifest "basic.tar.gz" "TAR.GZ" "true" "" "Tar fixture compressed with gzip"
 append_manifest "basic.tar.xz" "TAR.XZ" "true" "" "Tar fixture compressed with xz"
 append_manifest "basic.tar.zst" "TAR.ZST" "true" "" "Tar fixture compressed with zstd"

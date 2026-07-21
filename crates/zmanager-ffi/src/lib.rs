@@ -2831,6 +2831,7 @@ unsafe fn extract_archive_entry(
             password: password.as_deref(),
             overwrite,
             strip_components,
+            ignore_symlinks: false,
             tzap_restore_policy: tzap_restore_options.policy,
             tzap_allow_degraded: tzap_restore_options.allow_degraded,
             tzap_allow_absolute_symlinks: tzap_restore_options.allow_absolute_symlinks,
