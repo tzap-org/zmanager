@@ -52,6 +52,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Clone tzap
+        run: |
+          TZAP_REV=$(cat tzap-rev.txt)
+          git clone https://github.com/tzap-org/tzap.git ../tzap
+          git -C ../tzap checkout "$TZAP_REV"
+
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake libb2 lz4 xz zstd

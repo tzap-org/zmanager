@@ -24,9 +24,16 @@ fi
 cd "$ROOT"
 mkdir -p "$OUT_DIR"
 
+TZAP_DIR="$ROOT/../tzap"
+if [ ! -d "$TZAP_DIR" ]; then
+  echo "tzap directory not found at $TZAP_DIR — clone it first" >&2
+  exit 1
+fi
+
 docker run --rm \
   --platform linux/arm64 \
   -v "$ROOT:/workspace" \
+  -v "$(cd "$TZAP_DIR" && pwd):/tzap" \
   -w /workspace \
   -e TARGET="$TARGET" \
   -e OUT_DIR="$OUT_DIR" \

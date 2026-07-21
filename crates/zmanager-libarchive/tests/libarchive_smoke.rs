@@ -83,7 +83,7 @@ fn reads_fixture_file_payload_contents() {
             output.extend_from_slice(&buffer[..read]);
         }
 
-        assert_eq!(output, b"Z-Manager fixture payload\n");
+        assert_eq!(output, b"ZManager fixture payload\n");
         assert_eq!(entry.file_type(), FileType::RegularFile);
         return;
     }
