@@ -32,8 +32,8 @@ use tzap_core::format::{
     READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV, VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
-    ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic,
-    PublicNoKeyVerification, RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
+    ArchiveEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic, PublicNoKeyVerification,
+    RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
 };
 use tzap_core::wire::{
     CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
@@ -1557,19 +1557,6 @@ pub fn list_tzap_with_optional_password(
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
     list_opened_tzap_archive(&opened)
-}
-
-/// Lists `.tzap` archive index entries with an optional passphrase.
-///
-/// This returns only index metadata from encrypted index records and skips full
-/// tar member decoding. Entry kinds from the full tar member metadata are not
-/// available from this path.
-pub(crate) fn list_tzap_index_entries_with_optional_password(
-    archive: impl AsRef<Path>,
-    password: Option<&str>,
-) -> Result<Vec<ArchiveIndexEntry>, TzapError> {
-    let opened = open_tzap_archive(archive, password)?;
-    opened.list_index_entries().map_err(TzapError::from)
 }
 
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.

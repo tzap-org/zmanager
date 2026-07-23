@@ -919,15 +919,11 @@ pub fn run_zip_extract_job_with_password_and_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
-    let total_bytes = match zip_backend::list_zip(archive_path.as_ref()) {
-        Ok(listing) => Some(listing.entries.iter().map(|entry| entry.size).sum()),
-        Err(_) => None,
-    };
     sink.emit(JobEvent::Started {
         kind: JobKind::ZipExtract,
-        total_bytes,
+        total_bytes: None,
     });
-    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let mut context = JobContext::new(token, sink);
     let result = zip_backend::extract_zip_with_context_and_password(
         archive_path,
         destination,
@@ -1409,22 +1405,11 @@ pub fn run_apple_archive_extract_job_with_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError> {
-    let total_bytes = match apple_archive_backend::list_apple_archive(&archive_path) {
-        Ok(listing) => {
-            let total = listing
-                .entries
-                .iter()
-                .filter_map(|entry| entry.size)
-                .sum::<u64>();
-            Some(total)
-        }
-        Err(_) => None,
-    };
     sink.emit(JobEvent::Started {
         kind: JobKind::AppleArchiveExtract,
-        total_bytes,
+        total_bytes: None,
     });
-    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let mut context = JobContext::new(token, sink);
     let result = apple_archive_backend::extract_apple_archive_with_context(
         archive_path,
         destination,
@@ -1463,16 +1448,12 @@ pub fn run_7z_extract_job_with_password_and_policy(
         });
     }
 
-    let total_bytes = match sevenz_backend::list_7z(&archive_path, password) {
-        Ok(listing) => Some(listing.entries.iter().map(|entry| entry.size).sum()),
-        Err(_) => None,
-    };
     sink.emit(JobEvent::Started {
         kind: JobKind::SevenZExtract,
-        total_bytes,
+        total_bytes: None,
     });
 
-    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let mut context = JobContext::new(token, sink);
     let result = sevenz_backend::extract_7z_with_context(
         archive_path,
         destination,
@@ -1602,27 +1583,12 @@ pub fn run_libarchive_extract_job_with_password_and_policy(
         });
     }
 
-    let total_bytes = match libarchive_backend::list_archive_with_password(&archive_path, password)
-    {
-        Ok(listing) => {
-            let mut total = 0_u64;
-            let mut has_known_size = false;
-            for entry in listing.entries {
-                if let Ok(size) = u64::try_from(entry.size) {
-                    has_known_size = true;
-                    total = total.saturating_add(size);
-                }
-            }
-            has_known_size.then_some(total)
-        }
-        Err(_) => None,
-    };
     sink.emit(JobEvent::Started {
         kind: JobKind::ArchiveExtract,
-        total_bytes,
+        total_bytes: None,
     });
 
-    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let mut context = JobContext::new(token, sink);
     let result = libarchive_backend::extract_archive_with_password_and_context(
         archive_path,
         destination,
@@ -1738,23 +1704,9 @@ pub fn run_tzap_extract_job_with_password_and_policy_and_restore_options(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
-    let total_bytes = match password.filter(|password| !password.is_empty()) {
-        Some(password) => tzap_backend::list_tzap_index_entries_with_optional_password(
-            archive_path.as_ref(),
-            Some(password),
-        )
-        .ok()
-        .map(|entries| entries.iter().map(|entry| entry.file_data_size).sum()),
-        None => tzap_backend::list_tzap_index_entries_with_optional_password(
-            archive_path.as_ref(),
-            None,
-        )
-        .ok()
-        .map(|entries| entries.iter().map(|entry| entry.file_data_size).sum()),
-    };
     sink.emit(JobEvent::Started {
         kind: JobKind::TzapExtract,
-        total_bytes,
+        total_bytes: None,
     });
     if token.is_cancelled() {
         sink.emit(JobEvent::Cancelled {
@@ -1763,7 +1715,7 @@ pub fn run_tzap_extract_job_with_password_and_policy_and_restore_options(
         return Err(TzapError::Cancelled);
     }
 
-    let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
+    let mut context = JobContext::new(token, sink);
     let result =
         tzap_backend::extract_tzap_with_optional_password_and_context_fast_with_restore_options(
             archive_path,
@@ -2140,9 +2092,12 @@ mod tests {
     use super::{
         CancellationToken, JobEvent, JobOutcome, JobPhase, JobProgressState,
         PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
-        run_7z_create_job_from_sources_with_plan_options, run_clean_source_tar_zst_create_job,
-        run_clean_source_tar_zst_create_job_from_sources, run_raw_stream_extract_job_with_policy,
-        run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
+        run_7z_create_job_from_sources_with_plan_options,
+        run_7z_extract_job_with_password_and_policy, run_clean_source_tar_zst_create_job,
+        run_clean_source_tar_zst_create_job_from_sources,
+        run_libarchive_extract_job_with_password_and_policy,
+        run_raw_stream_extract_job_with_policy, run_tar_zst_create_job,
+        run_tzap_create_job_from_sources_with_plan_options,
         run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
         run_zip_create_job_from_sources, run_zip_extract_job,
     };
@@ -2444,6 +2399,86 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(events.first(), Some(JobEvent::Started { .. })));
         assert!(matches!(events.last(), Some(JobEvent::Failed { .. })));
+    }
+
+    #[test]
+    fn zip_extract_job_starts_without_progress_only_listing() {
+        let temp = TestDir::new("zip_extract_without_progress_listing");
+        temp.write_file("project/file.txt", b"hello");
+        run_zip_create_job(
+            temp.path("project"),
+            temp.path("archive.zip"),
+            &ZipCreateOptions::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut events = Vec::new();
+
+        run_zip_extract_job(
+            temp.path("archive.zip"),
+            temp.path("out"),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_extract_started_with_unknown_total(&events, super::JobKind::ZipExtract);
+    }
+
+    #[test]
+    fn sevenz_extract_job_starts_without_progress_only_listing() {
+        let temp = TestDir::new("sevenz_extract_without_progress_listing");
+        temp.write_file("project/file.txt", b"hello");
+        run_7z_create_job_from_sources_with_plan_options(
+            &[temp.path("project")],
+            temp.path("archive.7z"),
+            &SevenZCreateOptions::default(),
+            &crate::manifest::PlanOptions::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut events = Vec::new();
+
+        run_7z_extract_job_with_password_and_policy(
+            temp.path("archive.7z"),
+            temp.path("out"),
+            None,
+            ExtractionPolicy::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_extract_started_with_unknown_total(&events, super::JobKind::SevenZExtract);
+    }
+
+    #[test]
+    fn libarchive_extract_job_starts_without_progress_only_listing() {
+        let temp = TestDir::new("libarchive_extract_without_progress_listing");
+        temp.write_file("project/file.txt", b"hello");
+        run_zip_create_job(
+            temp.path("project"),
+            temp.path("archive.zip"),
+            &ZipCreateOptions::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut events = Vec::new();
+
+        run_libarchive_extract_job_with_password_and_policy(
+            temp.path("archive.zip"),
+            temp.path("out"),
+            None,
+            ExtractionPolicy::default(),
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        assert_extract_started_with_unknown_total(&events, super::JobKind::ArchiveExtract);
     }
 
     #[test]
@@ -2837,6 +2872,7 @@ mod tests {
         )
         .unwrap();
 
+        assert_extract_started_with_unknown_total(&events, super::JobKind::TzapExtract);
         assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
         assert!(events.iter().all(|event| match event {
             JobEvent::BytesProcessed {
@@ -3061,6 +3097,16 @@ mod tests {
                 .all(|window| window[0] <= window[1])
         );
         assert_eq!(progress_totals.last(), Some(&expected_total));
+    }
+
+    fn assert_extract_started_with_unknown_total(events: &[JobEvent], kind: super::JobKind) {
+        assert!(matches!(
+            events.first(),
+            Some(JobEvent::Started {
+                kind: event_kind,
+                total_bytes: None,
+            }) if *event_kind == kind
+        ));
     }
 
     fn progress_totals_before_completion(events: &[JobEvent]) -> Vec<u64> {
