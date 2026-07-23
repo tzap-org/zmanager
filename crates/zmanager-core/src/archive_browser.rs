@@ -127,6 +127,8 @@ impl Default for BrowserExtractOptions<'_> {
 /// Archive browser error.
 #[derive(Debug)]
 pub enum ArchiveBrowserError {
+    /// Enumeration was cancelled by the caller between entries.
+    Cancelled,
     /// ZIP backend failed.
     Zip(ZipBackendError),
     /// TAR.ZST backend failed.
@@ -157,6 +159,7 @@ pub enum ArchiveBrowserError {
 impl fmt::Display for ArchiveBrowserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "archive enumeration cancelled"),
             Self::Zip(source) => write!(f, "ZIP browser operation failed: {source}"),
             Self::TarZst(source) => write!(f, "TAR.ZST browser operation failed: {source}"),
             Self::SevenZ(source) => write!(f, "7z browser operation failed: {source}"),
@@ -179,6 +182,7 @@ impl fmt::Display for ArchiveBrowserError {
 impl std::error::Error for ArchiveBrowserError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Cancelled => None,
             Self::Zip(source) => Some(source),
             Self::TarZst(source) => Some(source),
             Self::SevenZ(source) => Some(source),
@@ -275,6 +279,37 @@ pub fn list_entries_with_options(
     } else {
         list_libarchive_entries(path)
     }
+}
+
+/// Visits archive entries without requiring the caller to retain a complete listing.
+///
+/// ZIP entries are delivered directly from the central directory. Backends that do
+/// not yet expose a progressive iterator use an explicit collect-then-publish
+/// fallback. Returning `false` from `visitor` cancels at the next entry boundary.
+///
+/// # Errors
+///
+/// Returns [`ArchiveBrowserError`] when the archive cannot be read or the visitor
+/// cancels enumeration.
+pub fn visit_entries_with_options(
+    path: impl AsRef<Path>,
+    options: BrowserListOptions<'_>,
+    mut visitor: impl FnMut(BrowserEntry) -> bool,
+) -> Result<usize, ArchiveBrowserError> {
+    let path = path.as_ref();
+    if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path) {
+        return visit_zip_entries(path, visitor);
+    }
+
+    let listing = list_entries_with_options(path, options)?;
+    let mut visited = 0;
+    for entry in listing.entries {
+        if !visitor(entry) {
+            return Err(ArchiveBrowserError::Cancelled);
+        }
+        visited += 1;
+    }
+    Ok(visited)
 }
 
 /// Extracts one selected entry into `destination`.
@@ -435,16 +470,28 @@ pub fn preview_entry_with_options(
 }
 
 fn list_zip_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> {
+    let mut entries = Vec::new();
+    visit_zip_entries(path, |entry| {
+        entries.push(entry);
+        true
+    })?;
+    Ok(BrowserListing { entries })
+}
+
+fn visit_zip_entries(
+    path: &Path,
+    mut visitor: impl FnMut(BrowserEntry) -> bool,
+) -> Result<usize, ArchiveBrowserError> {
     let file = File::open(path).map_err(|source| ArchiveBrowserError::Io {
         path: path.to_path_buf(),
         source,
     })?;
     let mut archive = ZipArchive::new(file).map_err(ZipBackendError::from)?;
-    let mut entries = Vec::with_capacity(archive.len());
+    let entry_count = archive.len();
 
-    for index in 0..archive.len() {
+    for index in 0..entry_count {
         let file = archive.by_index_raw(index).map_err(ZipBackendError::from)?;
-        entries.push(BrowserEntry {
+        if !visitor(BrowserEntry {
             path: file.name().to_owned(),
             kind: zip_entry_kind(&file),
             size: Some(file.size()),
@@ -452,10 +499,12 @@ fn list_zip_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> 
             modified: file.last_modified().map(|modified| modified.to_string()),
             mode: None,
             metadata_diagnostics: Vec::new(),
-        });
+        }) {
+            return Err(ArchiveBrowserError::Cancelled);
+        }
     }
 
-    Ok(BrowserListing { entries })
+    Ok(entry_count)
 }
 
 fn list_tar_zst_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> {
@@ -1114,7 +1163,8 @@ fn unique_preview_id() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserListOptions, extract_entry, list_entries, list_entries_with_options, preview_entry,
+        ArchiveBrowserError, BrowserListOptions, extract_entry, list_entries,
+        list_entries_with_options, preview_entry, visit_entries_with_options,
     };
     use crate::jobs::{CancellationToken, JobContext};
     use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
@@ -1158,6 +1208,45 @@ mod tests {
             "b"
         );
         assert!(!temp.path("out/project/a.txt").exists());
+    }
+
+    #[test]
+    fn progressive_zip_visit_matches_the_existing_listing() {
+        let temp = TestDir::new("browser_zip_progressive_equivalence");
+        temp.write_file("project/a.txt", b"a");
+        temp.write_file("project/b.txt", b"b");
+        let archive = temp.path("archive.zip");
+        create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default()).unwrap();
+
+        let expected = list_entries(&archive).unwrap();
+        let mut visited = Vec::new();
+        let count = visit_entries_with_options(&archive, BrowserListOptions::default(), |entry| {
+            visited.push(entry);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(count, expected.entries.len());
+        assert_eq!(visited, expected.entries);
+    }
+
+    #[test]
+    fn progressive_zip_visit_observes_cancellation_at_an_entry_boundary() {
+        let temp = TestDir::new("browser_zip_progressive_cancel");
+        temp.write_file("project/a.txt", b"a");
+        temp.write_file("project/b.txt", b"b");
+        let archive = temp.path("archive.zip");
+        create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default()).unwrap();
+        let mut callbacks = 0;
+
+        let error = visit_entries_with_options(&archive, BrowserListOptions::default(), |_| {
+            callbacks += 1;
+            false
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, ArchiveBrowserError::Cancelled));
+        assert_eq!(callbacks, 1);
     }
 
     #[test]
