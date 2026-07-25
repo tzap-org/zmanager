@@ -95,6 +95,14 @@ unsafe extern "C" {
     pub fn archive_entry_hardlink_utf8(entry: *mut archive_entry) -> *const c_char;
     pub fn archive_entry_is_data_encrypted(entry: *mut archive_entry) -> c_int;
     pub fn archive_entry_is_metadata_encrypted(entry: *mut archive_entry) -> c_int;
+    pub fn archive_entry_uid(entry: *mut archive_entry) -> i64;
+    pub fn archive_entry_uid_is_set(entry: *mut archive_entry) -> c_int;
+    pub fn archive_entry_gid(entry: *mut archive_entry) -> i64;
+    pub fn archive_entry_gid_is_set(entry: *mut archive_entry) -> c_int;
+    pub fn archive_entry_uname(entry: *mut archive_entry) -> *const c_char;
+    pub fn archive_entry_uname_utf8(entry: *mut archive_entry) -> *const c_char;
+    pub fn archive_entry_gname(entry: *mut archive_entry) -> *const c_char;
+    pub fn archive_entry_gname_utf8(entry: *mut archive_entry) -> *const c_char;
 }
 
 #[cfg(windows)]

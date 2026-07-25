@@ -372,6 +372,8 @@ pub struct TzapCreateReport {
 pub struct TzapListing {
     /// Listed entries.
     pub entries: Vec<TzapEntry>,
+    /// Whether the archive is encrypted.
+    pub encrypted: bool,
 }
 
 /// One `.tzap` archive entry.
@@ -391,6 +393,22 @@ pub struct TzapEntry {
     pub mtime_nanoseconds: u32,
     /// Authenticated metadata diagnostics reported by `tzap`.
     pub metadata_diagnostics: Vec<String>,
+    /// Link target path.
+    pub link_target: Option<String>,
+    /// Creation time when present.
+    pub created: Option<(i64, u32)>,
+    /// Access time when present.
+    pub accessed: Option<(i64, u32)>,
+    /// BSD/macOS file flags.
+    pub attributes: Option<u32>,
+    /// User identifier.
+    pub uid: Option<u32>,
+    /// Group identifier.
+    pub gid: Option<u32>,
+    /// Owner name.
+    pub owner: Option<String>,
+    /// Group name.
+    pub group: Option<String>,
 }
 
 /// Public entry kind for `.tzap` listings.
@@ -1555,8 +1573,10 @@ pub fn list_tzap_with_optional_password(
     archive: impl AsRef<Path>,
     password: Option<&str>,
 ) -> Result<TzapListing, TzapError> {
-    let opened = open_tzap_archive(archive, password)?;
-    list_opened_tzap_archive(&opened)
+    let archive_path = archive.as_ref();
+    let opened = open_tzap_archive(archive_path, password)?;
+    let encrypted = password.is_some() || read_kdf_params_from_path(archive_path).ok().is_some();
+    list_opened_tzap_archive(&opened, encrypted)
 }
 
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.
@@ -1569,16 +1589,19 @@ pub fn list_tzap_with_recipient_key(
     recipient_private_key: impl AsRef<Path>,
 ) -> Result<TzapListing, TzapError> {
     let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
-    list_opened_tzap_archive(&opened)
+    list_opened_tzap_archive(&opened, true)
 }
 
-fn list_opened_tzap_archive(opened: &OpenedArchive) -> Result<TzapListing, TzapError> {
+fn list_opened_tzap_archive(
+    opened: &OpenedArchive,
+    encrypted: bool,
+) -> Result<TzapListing, TzapError> {
     let entries = opened
         .list_files()?
         .into_iter()
         .map(tzap_entry_from_archive_entry)
         .collect();
-    Ok(TzapListing { entries })
+    Ok(TzapListing { entries, encrypted })
 }
 
 /// Extracts `.tzap` entries with a passphrase.
@@ -4159,6 +4182,14 @@ fn tzap_entry_from_archive_entry(entry: ArchiveEntry) -> TzapEntry {
         mtime: entry.mtime.seconds,
         mtime_nanoseconds: entry.mtime.nanoseconds,
         metadata_diagnostics: metadata_diagnostic_labels(&entry.diagnostics),
+        link_target: entry.link_target,
+        created: entry.created.map(|t| (t.seconds, t.nanoseconds)),
+        accessed: entry.accessed.map(|t| (t.seconds, t.nanoseconds)),
+        attributes: entry.attributes,
+        uid: entry.uid.and_then(|u| u32::try_from(u).ok()),
+        gid: entry.gid.and_then(|g| u32::try_from(g).ok()),
+        owner: entry.uname,
+        group: entry.gname,
     }
 }
 

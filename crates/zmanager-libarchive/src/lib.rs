@@ -105,6 +105,10 @@ pub struct Entry {
     hardlink: Option<String>,
     data_encrypted: bool,
     metadata_encrypted: bool,
+    uid: Option<u64>,
+    gid: Option<u64>,
+    uname: Option<String>,
+    gname: Option<String>,
 }
 
 impl Entry {
@@ -160,6 +164,30 @@ impl Entry {
     #[must_use]
     pub fn is_metadata_encrypted(&self) -> bool {
         self.metadata_encrypted
+    }
+
+    /// User ID reported by libarchive.
+    #[must_use]
+    pub fn uid(&self) -> Option<u64> {
+        self.uid
+    }
+
+    /// Group ID reported by libarchive.
+    #[must_use]
+    pub fn gid(&self) -> Option<u64> {
+        self.gid
+    }
+
+    /// Owner name reported by libarchive.
+    #[must_use]
+    pub fn uname(&self) -> Option<String> {
+        self.uname.clone()
+    }
+
+    /// Group name reported by libarchive.
+    #[must_use]
+    pub fn gname(&self) -> Option<String> {
+        self.gname.clone()
     }
 }
 
@@ -398,6 +426,20 @@ fn read_entry(entry: NonNull<sys::archive_entry>) -> Entry {
         ),
         data_encrypted: unsafe { sys::archive_entry_is_data_encrypted(entry) != 0 },
         metadata_encrypted: unsafe { sys::archive_entry_is_metadata_encrypted(entry) != 0 },
+        uid: (unsafe { sys::archive_entry_uid_is_set(entry) } != 0)
+            .then(|| unsafe { sys::archive_entry_uid(entry) } as u64),
+        gid: (unsafe { sys::archive_entry_gid_is_set(entry) } != 0)
+            .then(|| unsafe { sys::archive_entry_gid(entry) } as u64),
+        uname: entry_string(
+            entry,
+            sys::archive_entry_uname_utf8,
+            sys::archive_entry_uname,
+        ),
+        gname: entry_string(
+            entry,
+            sys::archive_entry_gname_utf8,
+            sys::archive_entry_gname,
+        ),
     }
 }
 

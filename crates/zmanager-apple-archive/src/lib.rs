@@ -137,6 +137,16 @@ pub struct EntryMetadata {
     pub mode: Option<u32>,
     /// Modification time when present.
     pub modified: Option<SystemTime>,
+    /// Creation time when present (CTM).
+    pub created: Option<SystemTime>,
+    /// BSD/macOS file flags (FLG).
+    pub flags: Option<u32>,
+    /// POSIX CRC32 checksum (CKS).
+    pub crc: Option<u32>,
+    /// User identifier (UID).
+    pub uid: Option<u32>,
+    /// Group identifier (GID).
+    pub gid: Option<u32>,
 }
 
 /// Compression used for newly created `.aar` files.
@@ -937,6 +947,19 @@ mod platform {
                     .uint_for_key(field_key(b"MOD"))?
                     .and_then(|mode| u32::try_from(mode).ok()),
                 modified: self.timespec_for_key(field_key(b"MTM"))?,
+                created: self.timespec_for_key(field_key(b"CTM"))?,
+                flags: self
+                    .uint_for_key(field_key(b"FLG"))?
+                    .and_then(|flags| u32::try_from(flags).ok()),
+                crc: self
+                    .uint_for_key(field_key(b"CKS"))?
+                    .and_then(|crc| u32::try_from(crc).ok()),
+                uid: self
+                    .uint_for_key(field_key(b"UID"))?
+                    .and_then(|uid| u32::try_from(uid).ok()),
+                gid: self
+                    .uint_for_key(field_key(b"GID"))?
+                    .and_then(|gid| u32::try_from(gid).ok()),
             };
             let link_target = self.string_for_key(field_key(b"LNK"))?.map(PathBuf::from);
 
@@ -1000,6 +1023,33 @@ mod platform {
                     },
                     "append timespec field",
                 )?;
+            }
+            if let Some(created) = metadata.created
+                && let Some(value) = system_time_to_timespec(created)
+            {
+                check_status(
+                    unsafe {
+                        AAHeaderSetFieldTimespec(
+                            self.as_ptr(),
+                            UINT32_APPEND,
+                            field_key(b"CTM"),
+                            &raw const value,
+                        )
+                    },
+                    "append timespec field",
+                )?;
+            }
+            if let Some(flags) = metadata.flags {
+                self.append_uint(field_key(b"FLG"), u64::from(flags))?;
+            }
+            if let Some(crc) = metadata.crc {
+                self.append_uint(field_key(b"CKS"), u64::from(crc))?;
+            }
+            if let Some(uid) = metadata.uid {
+                self.append_uint(field_key(b"UID"), u64::from(uid))?;
+            }
+            if let Some(gid) = metadata.gid {
+                self.append_uint(field_key(b"GID"), u64::from(gid))?;
             }
             Ok(())
         }

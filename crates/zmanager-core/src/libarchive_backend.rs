@@ -35,6 +35,14 @@ pub struct LibarchiveListEntry {
     pub data_encrypted: bool,
     /// Whether entry metadata is encrypted.
     pub metadata_encrypted: bool,
+    /// User ID when present.
+    pub uid: Option<u32>,
+    /// Group ID when present.
+    pub gid: Option<u32>,
+    /// Owner name when present.
+    pub owner: Option<String>,
+    /// Group name when present.
+    pub group: Option<String>,
 }
 
 /// Portable entry type for libarchive-backed archives.
@@ -194,6 +202,10 @@ pub fn list_archive_with_password(
             modified: entry.mtime(),
             data_encrypted: entry.is_data_encrypted(),
             metadata_encrypted: entry.is_metadata_encrypted(),
+            uid: entry.uid().and_then(|u| u32::try_from(u).ok()),
+            gid: entry.gid().and_then(|g| u32::try_from(g).ok()),
+            owner: entry.uname(),
+            group: entry.gname(),
         });
         archive.skip_data()?;
     }

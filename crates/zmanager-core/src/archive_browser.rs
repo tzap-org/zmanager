@@ -53,6 +53,32 @@ pub struct BrowserEntry {
     pub mode: Option<u32>,
     /// Authenticated metadata diagnostics reported by the backend.
     pub metadata_diagnostics: Vec<String>,
+    /// Whether entry data or metadata is encrypted.
+    pub encrypted: Option<bool>,
+    /// Compression algorithm or method name.
+    pub method: Option<String>,
+    /// Pre-computed checksum (e.g. CRC-32).
+    pub crc: Option<u32>,
+    /// Zip comment or entry-level comment.
+    pub comment: Option<String>,
+    /// Creation time formatted for display.
+    pub created: Option<String>,
+    /// Access time formatted for display.
+    pub accessed: Option<String>,
+    /// Solid archive member indicator (7z).
+    pub solid: Option<bool>,
+    /// Target path for symlinks or hardlinks.
+    pub link_target: Option<String>,
+    /// OS-specific or format-specific attribute flags.
+    pub attributes: Option<String>,
+    /// User identifier.
+    pub uid: Option<u32>,
+    /// Group identifier.
+    pub gid: Option<u32>,
+    /// Owner username.
+    pub owner: Option<String>,
+    /// Group name.
+    pub group: Option<String>,
 }
 
 /// Archive browser listing.
@@ -264,21 +290,25 @@ pub fn list_entries_with_options(
     options: BrowserListOptions<'_>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
     let path = path.as_ref();
-    if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path) {
-        list_zip_entries(path)
+    let mut listing = if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path)
+    {
+        list_zip_entries(path)?
     } else if is_tar_zst_archive(path) {
-        list_tar_zst_entries(path)
+        list_tar_zst_entries(path)?
     } else if is_7z_archive(path) {
-        list_7z_entries(path, options.password)
+        list_7z_entries(path, options.password)?
     } else if is_tzap_archive_path(path) {
-        list_tzap_entries(path, options.password)
+        list_tzap_entries(path, options.password)?
     } else if apple_archive_backend::is_apple_archive_path(path) {
-        list_apple_archive_entries(path, options.password)
+        list_apple_archive_entries(path, options.password)?
     } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(path) {
-        list_raw_stream_entry(path, format)
+        list_raw_stream_entry(path, format)?
     } else {
-        list_libarchive_entries(path)
-    }
+        list_libarchive_entries(path)?
+    };
+
+    apply_stream_proportional_sizes(path, &mut listing);
+    Ok(listing)
 }
 
 /// Visits archive entries without requiring the caller to retain a complete listing.
@@ -492,14 +522,28 @@ fn visit_zip_entries(
 
     for index in 0..entry_count {
         let file = archive.by_index_raw(index).map_err(ZipBackendError::from)?;
+        let comment = file.comment();
         if !visitor(BrowserEntry {
             path: file.name().to_owned(),
             kind: zip_entry_kind(&file),
             size: Some(file.size()),
             compressed_size: Some(file.compressed_size()),
             modified: file.last_modified().map(|modified| modified.to_string()),
-            mode: None,
+            mode: file.unix_mode(),
             metadata_diagnostics: Vec::new(),
+            encrypted: Some(file.encrypted()),
+            method: Some(file.compression().to_string()),
+            crc: Some(file.crc32()),
+            comment: (!comment.is_empty()).then(|| comment.to_owned()),
+            created: None,
+            accessed: None,
+            solid: None,
+            link_target: None,
+            attributes: None,
+            uid: None,
+            gid: None,
+            owner: None,
+            group: None,
         }) {
             return Err(ArchiveBrowserError::Cancelled);
         }
@@ -547,6 +591,23 @@ fn list_tar_zst_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserErr
                 modified: header.mtime().ok().map(|mtime| mtime.to_string()),
                 mode: header.mode().ok(),
                 metadata_diagnostics: Vec::new(),
+                encrypted: None,
+                method: None,
+                crc: None,
+                comment: None,
+                created: None,
+                accessed: None,
+                solid: Some(true),
+                link_target: entry
+                    .link_name()
+                    .ok()
+                    .flatten()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                attributes: None,
+                uid: header.uid().ok().map(|u| u as u32),
+                gid: header.gid().ok().map(|g| g as u32),
+                owner: header.username().ok().flatten().map(|s| s.to_owned()),
+                group: header.groupname().ok().flatten().map(|s| s.to_owned()),
             })
         })
         .collect::<Result<Vec<_>, ArchiveBrowserError>>()?;
@@ -556,6 +617,21 @@ fn list_tar_zst_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserErr
 
 fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> {
     let listing = libarchive_backend::list_archive(path)?;
+    let path_str = path.to_string_lossy().to_lowercase();
+    let solid = if path_str.ends_with(".tar.gz")
+        || path_str.ends_with(".tgz")
+        || path_str.ends_with(".tar.bz2")
+        || path_str.ends_with(".tbz2")
+        || path_str.ends_with(".tar.xz")
+        || path_str.ends_with(".txz")
+        || path_str.ends_with(".tar.br")
+    {
+        Some(true)
+    } else if path_str.ends_with(".tar") {
+        Some(false)
+    } else {
+        None
+    };
     let entries = listing
         .entries
         .into_iter()
@@ -567,6 +643,19 @@ fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowser
             modified: entry.modified.and_then(system_time_string),
             mode: (entry.mode != 0).then_some(entry.mode & 0o7777),
             metadata_diagnostics: Vec::new(),
+            encrypted: Some(entry.data_encrypted || entry.metadata_encrypted),
+            method: None,
+            crc: None,
+            comment: None,
+            created: None,
+            accessed: None,
+            solid,
+            link_target: None,
+            attributes: None,
+            uid: entry.uid,
+            gid: entry.gid,
+            owner: entry.owner,
+            group: entry.group,
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -592,6 +681,19 @@ fn list_raw_stream_entry(
             modified: None,
             mode: None,
             metadata_diagnostics: Vec::new(),
+            encrypted: None,
+            method: None,
+            crc: None,
+            comment: None,
+            created: None,
+            accessed: None,
+            solid: None,
+            link_target: None,
+            attributes: None,
+            uid: None,
+            gid: None,
+            owner: None,
+            group: None,
         }],
     })
 }
@@ -609,9 +711,22 @@ fn list_7z_entries(
             kind: sevenz_entry_kind(entry.kind),
             size: Some(entry.size),
             compressed_size: Some(entry.compressed_size),
-            modified: None,
-            mode: None,
+            modified: entry.modified.and_then(system_time_string),
+            mode: entry.mode,
             metadata_diagnostics: Vec::new(),
+            encrypted: None,
+            method: None,
+            crc: entry.crc,
+            comment: None,
+            created: entry.created.and_then(system_time_string),
+            accessed: entry.accessed.and_then(system_time_string),
+            solid: Some(listing.solid),
+            link_target: None,
+            attributes: entry.attributes.map(|attr| format!("{attr:#010X}")),
+            uid: None,
+            gid: None,
+            owner: None,
+            group: None,
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -633,6 +748,23 @@ fn list_tzap_entries(
             modified: tzap_modified_string(entry.mtime, entry.mtime_nanoseconds),
             mode: Some(entry.mode),
             metadata_diagnostics: entry.metadata_diagnostics,
+            encrypted: Some(listing.encrypted),
+            method: Some("Zstd".to_owned()),
+            crc: None,
+            comment: None,
+            created: entry
+                .created
+                .and_then(|(sec, nsec)| tzap_modified_string(sec, nsec)),
+            accessed: entry
+                .accessed
+                .and_then(|(sec, nsec)| tzap_modified_string(sec, nsec)),
+            solid: Some(true),
+            link_target: entry.link_target,
+            attributes: entry.attributes.map(|attr| format!("{attr:#010X}")),
+            uid: entry.uid,
+            gid: entry.gid,
+            owner: entry.owner,
+            group: entry.group,
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -643,6 +775,10 @@ fn list_apple_archive_entries(
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
     let listing = apple_archive_backend::list_apple_archive(path, password)?;
+    let encrypted = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("aea"));
     let entries = listing
         .entries
         .into_iter()
@@ -652,8 +788,21 @@ fn list_apple_archive_entries(
             size: entry.size,
             compressed_size: None,
             modified: entry.modified.and_then(system_time_string),
-            mode: None,
+            mode: entry.mode,
             metadata_diagnostics: Vec::new(),
+            encrypted: Some(encrypted),
+            method: Some("AppleArchive".to_owned()),
+            crc: entry.crc,
+            comment: None,
+            created: entry.created.and_then(system_time_string),
+            accessed: None,
+            solid: None,
+            link_target: entry.link_target,
+            attributes: entry.flags.map(|flags| format!("{flags:#010X}")),
+            uid: entry.uid,
+            gid: entry.gid,
+            owner: None,
+            group: None,
         })
         .collect();
     Ok(BrowserListing { entries })
@@ -1116,6 +1265,28 @@ fn tzap_modified_string(seconds: i64, nanoseconds: u32) -> Option<String> {
     Some(format!("{seconds}.{}", fraction.trim_end_matches('0')))
 }
 
+fn apply_stream_proportional_sizes(path: &Path, listing: &mut BrowserListing) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    let archive_disk_size = metadata.len();
+    let total_uncompressed: u64 = listing.entries.iter().filter_map(|e| e.size).sum();
+
+    if total_uncompressed == 0 {
+        return;
+    }
+
+    let ratio = archive_disk_size as f64 / total_uncompressed as f64;
+    for entry in &mut listing.entries {
+        if entry.compressed_size.is_none() {
+            if let Some(uncompressed) = entry.size {
+                let est_compressed = (uncompressed as f64 * ratio).round() as u64;
+                entry.compressed_size = Some(est_compressed);
+            }
+        }
+    }
+}
+
 fn system_time_string(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -1457,6 +1628,21 @@ mod tests {
 
         assert!(error.to_string().contains("extraction safety"));
         assert!(!temp.path("escape.txt").exists());
+    }
+
+    #[test]
+    fn zip_listing_populates_mode_encrypted_method_crc_and_comment() {
+        let temp = TestDir::new("browser_zip_metadata");
+        let archive = temp.path("archive.zip");
+        write_zip(&archive, &[("hello.txt", b"hello world".as_slice())]);
+
+        let listing = list_archive_entries(&archive, None).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        let entry = &listing.entries[0];
+        assert_eq!(entry.path, "hello.txt");
+        assert_eq!(entry.encrypted, Some(false));
+        assert_eq!(entry.method.as_deref(), Some("Stored"));
+        assert!(entry.crc.is_some());
     }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {

@@ -67,6 +67,20 @@ pub struct AppleArchiveListEntry {
     pub size: Option<u64>,
     /// Modification time when known.
     pub modified: Option<SystemTime>,
+    /// Unix permission bits when present.
+    pub mode: Option<u32>,
+    /// Creation time when present.
+    pub created: Option<SystemTime>,
+    /// BSD/macOS file flags.
+    pub flags: Option<u32>,
+    /// Checksum CRC32.
+    pub crc: Option<u32>,
+    /// User identifier.
+    pub uid: Option<u32>,
+    /// Group identifier.
+    pub gid: Option<u32>,
+    /// Link target path.
+    pub link_target: Option<String>,
 }
 
 /// `AppleArchive` entry kind.
@@ -358,11 +372,21 @@ pub fn list_apple_archive(
     let mut entries = Vec::new();
 
     while let Some(entry) = reader.next_entry()? {
+        let metadata = entry.metadata();
         entries.push(AppleArchiveListEntry {
             path: entry.path().to_owned(),
             kind: apple_entry_kind(entry.kind()),
             size: entry.size(),
-            modified: entry.metadata().modified,
+            modified: metadata.modified,
+            mode: metadata.mode,
+            created: metadata.created,
+            flags: metadata.flags,
+            crc: metadata.crc,
+            uid: metadata.uid,
+            gid: metadata.gid,
+            link_target: entry
+                .link_target()
+                .map(|p| p.to_string_lossy().into_owned()),
         });
         reader.skip_entry_data(&entry)?;
     }
@@ -837,6 +861,7 @@ fn append_manifest_entry(
         zmanager_apple_archive::EntryMetadata {
             mode: entry.permissions.unix_mode,
             modified: entry.modified,
+            ..Default::default()
         }
     } else {
         zmanager_apple_archive::EntryMetadata::default()

@@ -107,6 +107,18 @@ pub struct SevenZListEntry {
     pub compressed_size: u64,
     /// Whether the entry has a data stream.
     pub has_stream: bool,
+    /// Modification time when present.
+    pub modified: Option<std::time::SystemTime>,
+    /// Creation time when present.
+    pub created: Option<std::time::SystemTime>,
+    /// Access time when present.
+    pub accessed: Option<std::time::SystemTime>,
+    /// Unix permission mode when present.
+    pub mode: Option<u32>,
+    /// Checksum CRC32.
+    pub crc: Option<u32>,
+    /// Windows attributes.
+    pub attributes: Option<u32>,
 }
 
 /// Portable 7z entry type exposed by the backend.
@@ -953,6 +965,20 @@ pub fn list_7z(
             size: entry.size(),
             compressed_size: entry.compressed_size,
             has_stream: entry.has_stream(),
+            modified: entry
+                .has_last_modified_date
+                .then(|| std::time::SystemTime::from(entry.last_modified_date())),
+            created: entry
+                .has_creation_date
+                .then(|| std::time::SystemTime::from(entry.creation_date())),
+            accessed: entry
+                .has_access_date
+                .then(|| std::time::SystemTime::from(entry.access_date())),
+            mode: sevenz_unix_mode(entry),
+            crc: entry.has_crc.then_some(entry.crc as u32),
+            attributes: entry
+                .has_windows_attributes
+                .then_some(entry.windows_attributes()),
         })
         .collect();
 
