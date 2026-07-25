@@ -34,6 +34,9 @@ pub struct AppleArchiveCreateOptions {
     pub preserve_metadata: bool,
     /// Replace an existing destination archive at commit time.
     pub replace_existing: bool,
+    /// Optional password for encrypted archive (`.aea`). When set, uses Apple's
+    /// AEA encryption with the SCRYPT profile for password-based key derivation.
+    pub password: Option<String>,
 }
 
 impl Default for AppleArchiveCreateOptions {
@@ -45,6 +48,7 @@ impl Default for AppleArchiveCreateOptions {
             threads: native.threads,
             preserve_metadata: true,
             replace_existing: false,
+            password: None,
         }
     }
 }
@@ -289,7 +293,11 @@ fn create_apple_archive_from_manifest_inner(
         block_size: options.block_size,
         threads: options.threads,
     };
-    let mut writer = ArchiveWriter::create(&temp_path, native_options)?;
+    let mut writer = if let Some(ref password) = options.password {
+        ArchiveWriter::create_encrypted(&temp_path, native_options, password.as_bytes())?
+    } else {
+        ArchiveWriter::create(&temp_path, native_options)?
+    };
     let mut report = AppleArchiveCreateReport {
         written_entries: 0,
         written_bytes: 0,

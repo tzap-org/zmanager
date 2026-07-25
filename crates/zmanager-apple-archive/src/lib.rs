@@ -309,10 +309,13 @@ mod platform {
     enum AAByteStreamImpl {}
     #[allow(non_camel_case_types)]
     enum AAArchiveStreamImpl {}
+    #[allow(non_camel_case_types)]
+    enum AEAContextImpl {}
 
     type AAHeader = *mut AAHeaderImpl;
     type AAByteStream = *mut AAByteStreamImpl;
     type AAArchiveStream = *mut AAArchiveStreamImpl;
+    type AEAContext = *mut AEAContextImpl;
     type AAFlagSet = u64;
     type AACompressionAlgorithm = u32;
 
@@ -401,6 +404,80 @@ mod platform {
             value: *const timespec,
         ) -> c_int;
         fn AAHeaderSetFieldBlob(header: AAHeader, index: u32, key: FieldKey, size: u64) -> c_int;
+    }
+
+    // AEA encryption profiles (from <AppleArchive/AEADefs.h>)
+    const AEA_PROFILE_SCRYPT: u32 = 5; // HKDF_SHA256_AESCTR_HMAC__SCRYPT__NONE
+    // AEA context field keys (from <AppleArchive/AEAContext.h>)
+    const AEA_CONTEXT_FIELD_PASSWORD: u64 = 0x70617373; // 'pass'
+    const AEA_CONTEXT_FIELD_REPRESENTATION_RAW: u64 = 0;
+
+    #[link(name = "AppleArchive")]
+    unsafe extern "C" {
+        fn AEAContextCreateWithProfile(profile: u32) -> AEAContext;
+        fn AEAContextDestroy(context: AEAContext);
+        fn AEAContextSetFieldBlob(
+            context: AEAContext,
+            field: u64,
+            representation: u64,
+            blob: *const c_void,
+            blob_size: size_t,
+        ) -> c_int;
+        fn AEAEncryptionOutputStreamOpen(
+            encrypted_stream: AAByteStream,
+            context: AEAContext,
+            flags: AAFlagSet,
+            n_threads: c_int,
+        ) -> AAByteStream;
+        fn AEAEncryptionOutputStreamCloseAndUpdateContext(
+            stream: AAByteStream,
+            context: AEAContext,
+        ) -> c_int;
+    }
+
+    /// Safe wrapper around Apple's `AEAContext`.
+    struct EncryptionContext {
+        inner: AEAContext,
+    }
+
+    impl EncryptionContext {
+        /// Creates a password-based encryption context using the SCRYPT profile.
+        fn with_password(password: &[u8]) -> Result<Self> {
+            let inner = unsafe { AEAContextCreateWithProfile(AEA_PROFILE_SCRYPT) };
+            if inner.is_null() {
+                return Err(Error::Status {
+                    operation: "create encryption context",
+                    status: -1,
+                });
+            }
+            let status = unsafe {
+                AEAContextSetFieldBlob(
+                    inner,
+                    AEA_CONTEXT_FIELD_PASSWORD,
+                    AEA_CONTEXT_FIELD_REPRESENTATION_RAW,
+                    password.as_ptr().cast::<c_void>(),
+                    password.len(),
+                )
+            };
+            if status < 0 {
+                unsafe { AEAContextDestroy(inner) };
+                return Err(Error::Status {
+                    operation: "set encryption password",
+                    status: i64::from(status),
+                });
+            }
+            Ok(Self { inner })
+        }
+
+        fn as_ptr(&self) -> AEAContext {
+            self.inner
+        }
+    }
+
+    impl Drop for EncryptionContext {
+        fn drop(&mut self) {
+            unsafe { AEAContextDestroy(self.inner) };
+        }
     }
 
     #[allow(clippy::struct_field_names)]
@@ -527,7 +604,9 @@ mod platform {
     pub struct ArchiveWriter {
         archive_stream: Option<ArchiveStream>,
         compression_stream: Option<ByteStream>,
+        encryption_stream: Option<ByteStream>,
         file_stream: Option<ByteStream>,
+        _encryption_context: Option<EncryptionContext>,
     }
 
     impl ArchiveWriter {
@@ -535,13 +614,61 @@ mod platform {
         ///
         /// Returns an error if the underlying I/O streams cannot be created or initialized.
         pub fn create(path: impl AsRef<Path>, options: CreateOptions) -> Result<Self> {
+            Self::create_inner(path, options, None)
+        }
+
+        /// Creates an encrypted Apple Archive (`.aea`) with password protection.
+        ///
+        /// Uses Apple's AEA encryption with the SCRYPT profile for password-based
+        /// key derivation.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O or encryption streams cannot be
+        /// created or initialized.
+        pub fn create_encrypted(
+            path: impl AsRef<Path>,
+            options: CreateOptions,
+            password: &[u8],
+        ) -> Result<Self> {
+            Self::create_inner(path, options, Some(password))
+        }
+
+        fn create_inner(
+            path: impl AsRef<Path>,
+            options: CreateOptions,
+            password: Option<&[u8]>,
+        ) -> Result<Self> {
             let file_stream = ByteStream::open_path(
                 path.as_ref(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
                 0o600,
             )?;
+
+            // Wrap with encryption stream when password is provided
+            let (encryption_context, encryption_stream, compression_input) =
+                if let Some(password) = password {
+                    let ctx = EncryptionContext::with_password(password)?;
+                    let enc_stream_ptr = unsafe {
+                        AEAEncryptionOutputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0)
+                    };
+                    if enc_stream_ptr.is_null() {
+                        return Err(Error::Status {
+                            operation: "open encryption output stream",
+                            status: -1,
+                        });
+                    }
+                    // Safety: AEAEncryptionOutputStreamOpen returns an owned AAByteStream
+                    // that wraps the file_stream. When encryption_stream is dropped, it
+                    // closes the inner file stream automatically.
+                    let enc_stream = ByteStream::from_ptr(enc_stream_ptr, "encryption stream")?;
+                    (Some(ctx), Some(enc_stream), enc_stream_ptr)
+                } else {
+                    (None, None, file_stream.as_ptr())
+                };
+
             let compression_stream = ByteStream::compression_output(
-                file_stream.as_ptr(),
+                compression_input,
                 options.compression.to_native(),
                 options.block_size,
                 options.threads,
@@ -555,7 +682,9 @@ mod platform {
             Ok(Self {
                 archive_stream: Some(archive_stream),
                 compression_stream: Some(compression_stream),
+                encryption_stream,
                 file_stream: Some(file_stream),
+                _encryption_context: encryption_context,
             })
         }
 
@@ -655,6 +784,26 @@ mod platform {
                 "close compression stream",
                 &mut first_error,
             );
+            // Close encryption stream before file stream so the AEA context
+            // captures the archive metadata (raw size, container size, identifier).
+            if let (Some(ctx), Some(enc_stream)) =
+                (&self._encryption_context, &mut self.encryption_stream)
+            {
+                if let Some(ptr) = enc_stream.take_ptr() {
+                    let status = unsafe {
+                        AEAEncryptionOutputStreamCloseAndUpdateContext(
+                            ptr.as_ptr(),
+                            ctx.as_ptr(),
+                        )
+                    };
+                    if status < 0 && first_error.is_none() {
+                        first_error = Some(Error::Status {
+                            operation: "close encryption stream",
+                            status: i64::from(status),
+                        });
+                    }
+                }
+            }
             close_byte_option(&mut self.file_stream, "close file stream", &mut first_error);
 
             match first_error {
@@ -965,6 +1114,13 @@ mod platform {
             self.ptr.expect("byte stream is open").as_ptr()
         }
 
+        /// Takes ownership of the raw pointer without closing it. After calling
+        /// this, the caller is responsible for closing or forwarding the pointer.
+        /// The `ByteStream` will no longer attempt to close it on Drop.
+        fn take_ptr(&mut self) -> Option<NonNull<AAByteStreamImpl>> {
+            self.ptr.take()
+        }
+
         fn close(&mut self, operation: &'static str) -> Result<()> {
             if let Some(ptr) = self.ptr.take() {
                 check_status(unsafe { AAByteStreamClose(ptr.as_ptr()) }, operation)?;
@@ -1196,6 +1352,17 @@ mod platform {
         ///
         /// Always returns `Error::UnsupportedPlatform`.
         pub fn create(_path: impl AsRef<Path>, _options: CreateOptions) -> Result<Self> {
+            Err(Error::UnsupportedPlatform)
+        }
+
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
+        pub fn create_encrypted(
+            _path: impl AsRef<Path>,
+            _options: CreateOptions,
+            _password: &[u8],
+        ) -> Result<Self> {
             Err(Error::UnsupportedPlatform)
         }
 
