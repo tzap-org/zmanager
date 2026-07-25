@@ -4607,15 +4607,78 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
+fn resolve_uname(uid: u32) -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut buf = vec![0i8; 1024];
+    let mut pwd = std::mem::MaybeUninit::uninit();
+    let mut result = std::ptr::null_mut();
+    let res = unsafe {
+        libc::getpwuid_r(
+            uid as libc::uid_t,
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if res == 0 && !result.is_null() {
+        let pwd = unsafe { pwd.assume_init() };
+        if !pwd.pw_name.is_null() {
+            let cstr = unsafe { CStr::from_ptr(pwd.pw_name) };
+            let bytes = cstr.to_bytes();
+            if !bytes.is_empty() {
+                return Some(String::from_utf8_lossy(bytes).into_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn resolve_gname(gid: u32) -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut buf = vec![0i8; 1024];
+    let mut grp = std::mem::MaybeUninit::uninit();
+    let mut result = std::ptr::null_mut();
+    let res = unsafe {
+        libc::getgrgid_r(
+            gid as libc::gid_t,
+            grp.as_mut_ptr(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if res == 0 && !result.is_null() {
+        let grp = unsafe { grp.assume_init() };
+        if !grp.gr_name.is_null() {
+            let cstr = unsafe { CStr::from_ptr(grp.gr_name) };
+            let bytes = cstr.to_bytes();
+            if !bytes.is_empty() {
+                return Some(String::from_utf8_lossy(bytes).into_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
 #[allow(clippy::unnecessary_wraps)]
 fn portable_posix_owner(metadata: &fs::Metadata) -> Option<PortablePosixOwner> {
     use std::os::unix::fs::MetadataExt;
 
+    let uid = metadata.uid();
+    let gid = metadata.gid();
+
     Some(PortablePosixOwner {
-        uid: u64::from(metadata.uid()),
-        gid: u64::from(metadata.gid()),
-        uname: None,
-        gname: None,
+        uid: u64::from(uid),
+        gid: u64::from(gid),
+        uname: resolve_uname(uid),
+        gname: resolve_gname(gid),
     })
 }
 
