@@ -4611,7 +4611,7 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
 fn resolve_uname(uid: u32) -> Option<String> {
     use std::ffi::CStr;
 
-    let mut buf = vec![0i8; 1024];
+    let mut buf = vec![0u8; 1024];
     let mut pwd = std::mem::MaybeUninit::uninit();
     let mut result = std::ptr::null_mut();
     let res = unsafe {
@@ -4641,7 +4641,7 @@ fn resolve_uname(uid: u32) -> Option<String> {
 fn resolve_gname(gid: u32) -> Option<String> {
     use std::ffi::CStr;
 
-    let mut buf = vec![0i8; 1024];
+    let mut buf = vec![0u8; 1024];
     let mut grp = std::mem::MaybeUninit::uninit();
     let mut result = std::ptr::null_mut();
     let res = unsafe {
