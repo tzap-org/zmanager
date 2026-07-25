@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use crate::apple_archive_backend::{
     self, AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveError,
 };
@@ -53,8 +54,10 @@ pub enum JobKind {
     /// TZAP extraction.
     TzapExtract,
     /// `AppleArchive` creation.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     AppleArchiveCreate,
     /// `AppleArchive` extraction.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     AppleArchiveExtract,
     /// Broad libarchive-backed extraction.
     ArchiveExtract,
@@ -1167,6 +1170,7 @@ pub fn run_tar_gz_create_job_from_sources_with_plan_options(
     finish_tar_gz_create_result(result, sink)
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 /// Runs an `AppleArchive` create job for multiple source roots with explicit
 /// planning options and emits lifecycle/progress events.
 ///
@@ -1388,6 +1392,7 @@ pub fn run_tar_zst_extract_job_with_policy(
     finish_tar_zst_extract_result(result, sink)
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 /// Runs an `AppleArchive` extract job with an explicit extraction policy while
 /// emitting lifecycle/progress events.
 ///
@@ -1784,6 +1789,7 @@ fn finish_tzap_create_result(
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn finish_apple_archive_create_result(
     result: Result<AppleArchiveCreateReport, AppleArchiveError>,
     sink: &mut dyn JobEventSink,
@@ -1838,6 +1844,7 @@ fn finish_tzap_extract_result(
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn finish_apple_archive_extract_result(
     result: Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError>,
     sink: &mut dyn JobEventSink,

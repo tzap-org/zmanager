@@ -1,3 +1,5 @@
+#![cfg(any(target_os = "macos", target_os = "ios"))]
+
 //! Safe, narrow `AppleArchive` wrapper for `zmanager-core`.
 //!
 //! The native `AppleArchive` API is available only on Apple targets. This crate
@@ -11,15 +13,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-const APPLE_TARGET: bool = cfg!(any(target_os = "macos", target_os = "ios"));
-
 /// Result alias for `AppleArchive` wrapper operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Returns whether this target can use the native `AppleArchive` library.
 #[must_use]
 pub const fn is_supported() -> bool {
-    APPLE_TARGET
+    true
 }
 
 /// Error returned by the `AppleArchive` wrapper.
@@ -260,7 +260,6 @@ impl Entry {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod platform {
     use super::{
         BlobKey, CompressionAlgorithm, CreateOptions, Entry, EntryBlob, EntryKind, EntryMetadata,
@@ -1398,127 +1397,6 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-mod platform {
-    use super::{CreateOptions, Entry, Error, Result};
-    use std::io::{Read, Write};
-    use std::path::Path;
-
-    #[derive(Debug, Clone, Copy)]
-    pub(crate) struct FieldKey;
-
-    pub struct ArchiveReader;
-
-    impl ArchiveReader {
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn open(_path: impl AsRef<Path>) -> Result<Self> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn open_encrypted(_path: impl AsRef<Path>, _password: &[u8]) -> Result<Self> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn next_entry(&mut self) -> Result<Option<Entry>> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn skip_entry_data(&mut self, _entry: &Entry) -> Result<()> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn read_entry_data<W: Write>(
-            &mut self,
-            _entry: &Entry,
-            _output: &mut W,
-            _on_bytes: impl FnMut(u64) -> bool,
-        ) -> Result<u64> {
-            Err(Error::UnsupportedPlatform)
-        }
-    }
-
-    pub struct ArchiveWriter;
-
-    impl ArchiveWriter {
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn create(_path: impl AsRef<Path>, _options: CreateOptions) -> Result<Self> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn create_encrypted(
-            _path: impl AsRef<Path>,
-            _options: CreateOptions,
-            _password: &[u8],
-        ) -> Result<Self> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn append_directory(
-            &mut self,
-            _path: &str,
-            _metadata: super::EntryMetadata,
-        ) -> Result<()> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn append_symlink(
-            &mut self,
-            _path: &str,
-            _target: &Path,
-            _metadata: super::EntryMetadata,
-        ) -> Result<()> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn append_file<R: Read>(
-            &mut self,
-            _path: &str,
-            _size: u64,
-            _metadata: super::EntryMetadata,
-            _input: &mut R,
-            _on_bytes: impl FnMut(u64) -> bool,
-        ) -> Result<u64> {
-            Err(Error::UnsupportedPlatform)
-        }
-
-        /// # Errors
-        ///
-        /// Always returns `Error::UnsupportedPlatform`.
-        pub fn finish(self) -> Result<()> {
-            Err(Error::UnsupportedPlatform)
-        }
-    }
-}
-
-#[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
 const DEFAULT_BUFFER_BYTES: usize = 128 * 1024;
 
 pub use platform::{ArchiveReader, ArchiveWriter};

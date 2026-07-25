@@ -85,24 +85,14 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        shell: bash
-        run: |
-          args=(--workspace --all-targets)
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            args+=(--exclude zmanager-apple-archive --no-deps)
-          fi
-          cargo clippy "${args[@]}"
+        run: cargo clippy --workspace --all-targets
 
       - name: Test
         shell: bash
         run: |
           set +e
           set -o pipefail
-          args=(--workspace)
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            args+=(--exclude zmanager-apple-archive)
-          fi
-          cargo test "${args[@]}" 2>&1 | tee cargo-test.log
+          cargo test --workspace 2>&1 | tee cargo-test.log
           status=${PIPESTATUS[0]}
           set -e
 
