@@ -41,5 +41,8 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "1.0.6" }
 
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

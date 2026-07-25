@@ -1636,7 +1636,7 @@ mod tests {
         let archive = temp.path("archive.zip");
         write_zip(&archive, &[("hello.txt", b"hello world".as_slice())]);
 
-        let listing = list_archive_entries(&archive, None).unwrap();
+        let listing = list_entries(&archive).unwrap();
         assert_eq!(listing.entries.len(), 1);
         let entry = &listing.entries[0];
         assert_eq!(entry.path, "hello.txt");
