@@ -1575,7 +1575,10 @@ pub fn list_tzap_with_optional_password(
 ) -> Result<TzapListing, TzapError> {
     let archive_path = archive.as_ref();
     let opened = open_tzap_archive(archive_path, password)?;
-    let encrypted = password.is_some() || read_kdf_params_from_path(archive_path).ok().is_some();
+    let encrypted = password.is_some()
+        || read_kdf_params_from_path(archive_path)
+            .ok()
+            .map_or(false, |params| !matches!(params, KdfParams::None));
     list_opened_tzap_archive(&opened, encrypted)
 }
 
