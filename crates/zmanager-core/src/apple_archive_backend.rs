@@ -21,6 +21,9 @@ const APPLE_ARCHIVE_MODE_MASK: u32 = 0o7777;
 /// `.aar` file extension.
 pub const APPLE_ARCHIVE_EXTENSION: &str = "aar";
 
+/// `.aea` file extension (encrypted Apple Archive).
+pub const APPLE_ARCHIVE_ENCRYPTED_EXTENSION: &str = "aea";
+
 /// `AppleArchive` creation options.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppleArchiveCreateOptions {
@@ -218,13 +221,29 @@ pub const fn apple_archive_supported() -> bool {
     zmanager_apple_archive::is_supported()
 }
 
-/// Returns whether a path has the `.aar` extension.
+/// Returns whether a path has an Apple Archive extension (`.aar` or `.aea`).
 #[must_use]
 pub fn is_apple_archive_path(path: impl AsRef<Path>) -> bool {
     path.as_ref()
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(APPLE_ARCHIVE_EXTENSION))
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case(APPLE_ARCHIVE_EXTENSION)
+                || extension.eq_ignore_ascii_case(APPLE_ARCHIVE_ENCRYPTED_EXTENSION)
+        })
+}
+
+/// Opens an `ArchiveReader`, using the encrypted path when a password is
+/// supplied and falling back to the plain path otherwise.
+fn open_apple_archive_reader(
+    path: impl AsRef<Path>,
+    password: Option<&str>,
+) -> Result<ArchiveReader, AppleArchiveError> {
+    if let Some(password) = password {
+        Ok(ArchiveReader::open_encrypted(path, password.as_bytes())?)
+    } else {
+        Ok(ArchiveReader::open(path)?)
+    }
 }
 
 /// Creates an `AppleArchive` from a source path.
@@ -333,8 +352,9 @@ fn create_apple_archive_from_manifest_inner(
 /// archive.
 pub fn list_apple_archive(
     path: impl AsRef<Path>,
+    password: Option<&str>,
 ) -> Result<AppleArchiveListing, AppleArchiveError> {
-    let mut reader = ArchiveReader::open(path)?;
+    let mut reader = open_apple_archive_reader(path, password)?;
     let mut entries = Vec::new();
 
     while let Some(entry) = reader.next_entry()? {
@@ -360,8 +380,9 @@ pub fn extract_apple_archive(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
+    password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(archive_path, destination, policy, None, None, None)
+    extract_apple_archive_inner(archive_path, destination, policy, None, None, None, password)
 }
 
 /// Extracts an `AppleArchive` while emitting job events.
@@ -374,9 +395,10 @@ pub fn extract_apple_archive_with_context(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
+    password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context))
+    extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context), password)
 }
 
 /// Extracts an `AppleArchive` with an overwrite resolver.
@@ -390,6 +412,7 @@ pub fn extract_apple_archive_with_overwrite_resolver(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     overwrite_resolver: &mut dyn OverwriteResolver,
+    password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     extract_apple_archive_inner(
         archive_path,
@@ -398,6 +421,7 @@ pub fn extract_apple_archive_with_overwrite_resolver(
         None,
         Some(overwrite_resolver),
         None,
+        password,
     )
 }
 
@@ -412,6 +436,7 @@ pub fn extract_apple_archive_entry(
     entry_path: &str,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
+    password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     extract_apple_archive_inner(
         archive_path,
@@ -420,6 +445,7 @@ pub fn extract_apple_archive_entry(
         Some(entry_path),
         None,
         None,
+        password,
     )
 }
 
@@ -434,9 +460,10 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
     archive_path: impl AsRef<Path>,
     mut selected: impl FnMut(&str) -> bool,
     output: &mut W,
+    password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     let archive_path = archive_path.as_ref();
-    let mut reader = ArchiveReader::open(archive_path)?;
+    let mut reader = open_apple_archive_reader(archive_path, password)?;
     let mut report = AppleArchiveExtractReport {
         written_entries: 0,
         skipped_entries: 0,
@@ -503,8 +530,9 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
 pub fn test_apple_archive_filter(
     archive_path: impl AsRef<Path>,
     mut selected: impl FnMut(&str) -> bool,
+    password: Option<&str>,
 ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
-    let mut reader = ArchiveReader::open(archive_path)?;
+    let mut reader = open_apple_archive_reader(archive_path, password)?;
     let mut report = AppleArchiveTestReport {
         tested_entries: 0,
         skipped_entries: 0,
@@ -537,6 +565,7 @@ fn extract_apple_archive_inner(
     selected_entry: Option<&str>,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     mut context: Option<&mut JobContext<'_>>,
+    password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     let destination = destination.as_ref();
     let destination_root =
@@ -546,7 +575,7 @@ fn extract_apple_archive_inner(
                 source,
             }
         })?;
-    let mut reader = ArchiveReader::open(archive_path)?;
+    let mut reader = open_apple_archive_reader(archive_path, password)?;
     let mut planner = match overwrite_resolver {
         Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
             &destination_root,
@@ -1094,17 +1123,17 @@ mod tests {
         assert!(create_report.written_entries >= 3);
         assert_eq!(create_report.written_bytes, 22);
 
-        let listing = list_apple_archive(&archive).unwrap();
+        let listing = list_apple_archive(&archive, None).unwrap();
         assert!(
             listing
                 .entries
                 .iter()
                 .any(|entry| entry.path == "project/README.md")
         );
-        test_apple_archive_filter(&archive, |_| true).unwrap();
+        test_apple_archive_filter(&archive, |_| true, None).unwrap();
 
         let extract_report =
-            extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+            extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
         assert!(extract_report.written_entries >= 3);
         assert_eq!(
             fs::read_to_string(temp.path("out/project/README.md")).unwrap(),
@@ -1141,7 +1170,7 @@ mod tests {
         .unwrap();
 
         let out_dir = temp.path("out");
-        extract_apple_archive(&archive, &out_dir, ExtractionPolicy::default()).unwrap();
+        extract_apple_archive(&archive, &out_dir, ExtractionPolicy::default(), None).unwrap();
 
         let extracted_symlink = out_dir.join("project/link");
         let metadata = fs::symlink_metadata(&extracted_symlink).unwrap();
@@ -1177,7 +1206,7 @@ mod tests {
             },
         )
         .unwrap();
-        extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
 
         let metadata = fs::metadata(temp.path("out/project/old.txt")).unwrap();
         assert_eq!(metadata.mtime(), -2);
@@ -1187,7 +1216,7 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn native_operations_return_unsupported_on_non_apple_targets() {
-        let error = list_apple_archive("archive.aar").unwrap_err();
+        let error = list_apple_archive("archive.aar", None).unwrap_err();
         assert!(
             error
                 .to_string()

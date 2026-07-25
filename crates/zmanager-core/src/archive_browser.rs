@@ -273,7 +273,7 @@ pub fn list_entries_with_options(
     } else if is_tzap_archive_path(path) {
         list_tzap_entries(path, options.password)
     } else if apple_archive_backend::is_apple_archive_path(path) {
-        list_apple_archive_entries(path)
+        list_apple_archive_entries(path, options.password)
     } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(path) {
         list_raw_stream_entry(path, format)
     } else {
@@ -389,6 +389,7 @@ pub fn extract_entry_with_options(
             entry_path,
             &destination_root,
             policy,
+            options.password,
         )?;
         Ok(EntryExtractReport {
             destination_path: destination.join(entry_path),
@@ -637,8 +638,11 @@ fn list_tzap_entries(
     Ok(BrowserListing { entries })
 }
 
-fn list_apple_archive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserError> {
-    let listing = apple_archive_backend::list_apple_archive(path)?;
+fn list_apple_archive_entries(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let listing = apple_archive_backend::list_apple_archive(path, password)?;
     let entries = listing
         .entries
         .into_iter()

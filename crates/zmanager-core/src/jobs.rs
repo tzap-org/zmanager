@@ -1414,6 +1414,7 @@ pub fn run_apple_archive_extract_job_with_policy(
         archive_path,
         destination,
         policy,
+        None, // password handled via native AppleArchive prompt if needed
         &mut context,
     );
     context.flush_progress();

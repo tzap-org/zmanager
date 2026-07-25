@@ -433,6 +433,12 @@ mod platform {
             stream: AAByteStream,
             context: AEAContext,
         ) -> c_int;
+        fn AEADecryptionInputStreamOpen(
+            encrypted_stream: AAByteStream,
+            context: AEAContext,
+            flags: AAFlagSet,
+            n_threads: c_int,
+        ) -> AAByteStream;
     }
 
     /// Safe wrapper around Apple's `AEAContext`.
@@ -484,6 +490,7 @@ mod platform {
     pub struct ArchiveReader {
         archive_stream: ArchiveStream,
         _decompression_stream: ByteStream,
+        _decryption_stream: Option<ByteStream>,
         _file_stream: ByteStream,
     }
 
@@ -500,6 +507,52 @@ mod platform {
             Ok(Self {
                 archive_stream,
                 _decompression_stream: decompression_stream,
+                _decryption_stream: None,
+                _file_stream: file_stream,
+            })
+        }
+
+        /// Opens an encrypted Apple Archive (`.aea`) for reading with a password.
+        ///
+        /// Uses Apple's AEA decryption with the SCRYPT profile. The decryption
+        /// stream is inserted between the file stream and the decompression stream.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the underlying I/O, decryption, or decompression
+        /// streams cannot be created or initialized.
+        pub fn open_encrypted(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
+            let file_stream = ByteStream::open_path(path.as_ref(), libc::O_RDONLY, 0)?;
+            let ctx = EncryptionContext::with_password(password)?;
+            let decryption_stream_ptr = unsafe {
+                AEADecryptionInputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0)
+            };
+            if decryption_stream_ptr.is_null() {
+                return Err(Error::Status {
+                    operation: "open decryption input stream",
+                    status: -1,
+                });
+            }
+            // Safety: AEADecryptionInputStreamOpen returns an owned AAByteStream
+            // that wraps the file_stream. ByteStream takes ownership and calls
+            // AAByteStreamClose on drop.
+            let decryption_stream =
+                ByteStream::from_ptr(decryption_stream_ptr, "decryption stream")?;
+            let decompression_stream = ByteStream::decompression_input(
+                decryption_stream.as_ptr(),
+                "open decompression stream",
+            )?;
+            let archive_stream =
+                ArchiveStream::decode_input(decompression_stream.as_ptr(), "open decode stream")?;
+            // Ownership order: archive_stream drops first (closes decode stream),
+            // then _decompression_stream (closes decompression stream),
+            // then _decryption_stream (closes decryption stream wrapping file),
+            // then _file_stream (closes file). This is the reverse of the build
+            // order and ensures each layer is properly finalized.
+            Ok(Self {
+                archive_stream,
+                _decompression_stream: decompression_stream,
+                _decryption_stream: Some(decryption_stream),
                 _file_stream: file_stream,
             })
         }
@@ -1312,6 +1365,16 @@ mod platform {
         ///
         /// Always returns `Error::UnsupportedPlatform`.
         pub fn open(_path: impl AsRef<Path>) -> Result<Self> {
+            Err(Error::UnsupportedPlatform)
+        }
+
+        /// # Errors
+        ///
+        /// Always returns `Error::UnsupportedPlatform`.
+        pub fn open_encrypted(
+            _path: impl AsRef<Path>,
+            _password: &[u8],
+        ) -> Result<Self> {
             Err(Error::UnsupportedPlatform)
         }
 

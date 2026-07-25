@@ -29,6 +29,7 @@ pub struct AppleArchiveCreateOptions {
     pub threads: i32,
     pub preserve_metadata: bool,
     pub replace_existing: bool,
+    pub password: Option<String>,
 }
 
 impl Default for AppleArchiveCreateOptions {
@@ -39,6 +40,7 @@ impl Default for AppleArchiveCreateOptions {
             threads: 0,
             preserve_metadata: true,
             replace_existing: false,
+            password: None,
         }
     }
 }
@@ -202,6 +204,7 @@ pub fn create_apple_archive_from_manifest_with_context(
 
 pub fn list_apple_archive(
     _path: impl AsRef<Path>,
+    _password: Option<&str>,
 ) -> Result<AppleArchiveListing, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
@@ -210,6 +213,7 @@ pub fn extract_apple_archive(
     _archive: impl AsRef<Path>,
     _destination: impl AsRef<Path>,
     _policy: ExtractionPolicy,
+    _password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
@@ -218,6 +222,7 @@ pub fn extract_apple_archive_with_context(
     _archive: impl AsRef<Path>,
     _destination: impl AsRef<Path>,
     _policy: ExtractionPolicy,
+    _password: Option<&str>,
     _context: &mut JobContext,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
@@ -227,6 +232,7 @@ pub fn extract_apple_archive_with_overwrite_resolver(
     _archive: impl AsRef<Path>,
     _destination: impl AsRef<Path>,
     _policy: ExtractionPolicy,
+    _password: Option<&str>,
     _resolver: &mut dyn OverwriteResolver,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
@@ -237,6 +243,7 @@ pub fn extract_apple_archive_entry(
     _entry_path: &str,
     _destination: impl AsRef<Path>,
     _policy: ExtractionPolicy,
+    _password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
@@ -245,6 +252,7 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
     _archive: impl AsRef<Path>,
     _selected: impl FnMut(&str) -> bool,
     _output: &mut W,
+    _password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
@@ -252,6 +260,7 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
 pub fn test_apple_archive_filter(
     _archive: impl AsRef<Path>,
     _filter: impl FnMut(&str) -> bool,
+    _password: Option<&str>,
 ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
     Err(AppleArchiveError::UnsupportedPlatform)
 }
