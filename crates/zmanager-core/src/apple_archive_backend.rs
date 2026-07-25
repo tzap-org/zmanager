@@ -382,7 +382,15 @@ pub fn extract_apple_archive(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(archive_path, destination, policy, None, None, None, password)
+    extract_apple_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        None,
+        None,
+        None,
+        password,
+    )
 }
 
 /// Extracts an `AppleArchive` while emitting job events.
@@ -398,7 +406,15 @@ pub fn extract_apple_archive_with_context(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context), password)
+    extract_apple_archive_inner(
+        archive_path,
+        destination,
+        policy,
+        None,
+        None,
+        Some(context),
+        password,
+    )
 }
 
 /// Extracts an `AppleArchive` with an overwrite resolver.
@@ -1132,8 +1148,13 @@ mod tests {
         );
         test_apple_archive_filter(&archive, |_| true, None).unwrap();
 
-        let extract_report =
-            extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
+        let extract_report = extract_apple_archive(
+            &archive,
+            temp.path("out"),
+            ExtractionPolicy::default(),
+            None,
+        )
+        .unwrap();
         assert!(extract_report.written_entries >= 3);
         assert_eq!(
             fs::read_to_string(temp.path("out/project/README.md")).unwrap(),
@@ -1206,7 +1227,13 @@ mod tests {
             },
         )
         .unwrap();
-        extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
+        extract_apple_archive(
+            &archive,
+            temp.path("out"),
+            ExtractionPolicy::default(),
+            None,
+        )
+        .unwrap();
 
         let metadata = fs::metadata(temp.path("out/project/old.txt")).unwrap();
         assert_eq!(metadata.mtime(), -2);

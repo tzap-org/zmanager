@@ -524,9 +524,8 @@ mod platform {
         pub fn open_encrypted(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
             let file_stream = ByteStream::open_path(path.as_ref(), libc::O_RDONLY, 0)?;
             let ctx = EncryptionContext::with_password(password)?;
-            let decryption_stream_ptr = unsafe {
-                AEADecryptionInputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0)
-            };
+            let decryption_stream_ptr =
+                unsafe { AEADecryptionInputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0) };
             if decryption_stream_ptr.is_null() {
                 return Err(Error::Status {
                     operation: "open decryption input stream",
@@ -1371,10 +1370,7 @@ mod platform {
         /// # Errors
         ///
         /// Always returns `Error::UnsupportedPlatform`.
-        pub fn open_encrypted(
-            _path: impl AsRef<Path>,
-            _password: &[u8],
-        ) -> Result<Self> {
+        pub fn open_encrypted(_path: impl AsRef<Path>, _password: &[u8]) -> Result<Self> {
             Err(Error::UnsupportedPlatform)
         }
 
