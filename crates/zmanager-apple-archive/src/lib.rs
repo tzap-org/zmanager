@@ -791,10 +791,7 @@ mod platform {
             {
                 if let Some(ptr) = enc_stream.take_ptr() {
                     let status = unsafe {
-                        AEAEncryptionOutputStreamCloseAndUpdateContext(
-                            ptr.as_ptr(),
-                            ctx.as_ptr(),
-                        )
+                        AEAEncryptionOutputStreamCloseAndUpdateContext(ptr.as_ptr(), ctx.as_ptr())
                     };
                     if status < 0 && first_error.is_none() {
                         first_error = Some(Error::Status {
