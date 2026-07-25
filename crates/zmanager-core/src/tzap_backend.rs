@@ -4621,7 +4621,7 @@ fn resolve_uname(uid: u32) -> Option<String> {
         libc::getpwuid_r(
             uid as libc::uid_t,
             pwd.as_mut_ptr(),
-            buf.as_mut_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_char,
             buf.len(),
             &mut result,
         )
@@ -4651,7 +4651,7 @@ fn resolve_gname(gid: u32) -> Option<String> {
         libc::getgrgid_r(
             gid as libc::gid_t,
             grp.as_mut_ptr(),
-            buf.as_mut_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_char,
             buf.len(),
             &mut result,
         )
