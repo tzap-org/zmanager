@@ -5287,7 +5287,11 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
     } else if is_apple_archive(&request.archive) {
-        run_apple_archive_extract_with_policy(request.archive, destination, policy, Some(global))
+        let password = match read_optional_password_stdin(request.password_stdin, "AAR", global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        };
+        run_apple_archive_extract_with_policy(request.archive, destination, policy, password.as_deref(), Some(global))
     } else if is_tzap_archive(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
@@ -5618,11 +5622,15 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             }
         }
     } else if is_apple_archive(&request.archive) {
+        let password = match read_optional_password_stdin(request.password_stdin, "AAR", global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        };
         extract_apple_archive_stdout(
             &request.archive,
             &request.include,
             &request.exclude,
-            request.password_stdin,
+            password.as_deref(),
             &mut stdout,
             global,
         )
@@ -6129,6 +6137,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     if is_apple_archive(&request.archive) {
         return run_apple_archive_test_new(
             &request.archive,
+            password.as_deref(),
             &request.include,
             &request.exclude,
             global,
@@ -6245,13 +6254,16 @@ fn run_tar_zst_test_new(
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn run_apple_archive_test_new(
     archive: &str,
+    password: Option<&str>,
     includes: &[String],
     excludes: &[String],
     global: &GlobalOptions,
 ) -> ExitCode {
-    match zmanager_core::apple_archive_backend::test_apple_archive_filter(archive, |name| {
-        entry_selected(name, includes, excludes)
-    }) {
+    match zmanager_core::apple_archive_backend::test_apple_archive_filter(
+        archive,
+        |name| entry_selected(name, includes, excludes),
+        password,
+    ) {
         Ok(report) => {
             print_data_test_success(
                 FORMAT_APPLE_ARCHIVE,
@@ -7360,7 +7372,7 @@ fn list_entries_with_password(
             })
             .map_err(|error| error.to_string())
     } else if is_apple_archive(archive) {
-        list_apple_archive_cli(archive)
+        list_apple_archive_cli(archive, password)
     } else if is_rar_archive(archive) && password.is_some() {
         zmanager_core::rar_backend::list_rar_with_password(archive, password)
             .map(|listing| {
@@ -8067,8 +8079,8 @@ fn is_apple_archive(_path: &str) -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn list_apple_archive_cli(archive: &str) -> Result<Vec<GenericEntry>, String> {
-    zmanager_core::apple_archive_backend::list_apple_archive(archive)
+fn list_apple_archive_cli(archive: &str, password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
+    zmanager_core::apple_archive_backend::list_apple_archive(archive, password)
         .map(|listing| {
             listing
                 .entries
@@ -8099,8 +8111,8 @@ fn list_apple_archive_cli(archive: &str) -> Result<Vec<GenericEntry>, String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-fn list_apple_archive_cli(_archive: &str) -> Result<Vec<GenericEntry>, String> {
-    unreachable!()
+fn list_apple_archive_cli(_archive: &str, _password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
+    Err("Apple Archive is not supported on this platform".to_owned())
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -8108,23 +8120,15 @@ fn extract_apple_archive_stdout(
     archive: &str,
     include: &[String],
     exclude: &[String],
-    password_stdin: bool,
+    password: Option<&str>,
     stdout: &mut impl io::Write,
     global: &GlobalOptions,
 ) -> ExitCode {
-    if password_stdin {
-        print_error_line(
-            global,
-            format_args!(
-                "extract to stdout failed: AAR archives are not encrypted; remove --password-stdin"
-            ),
-        );
-        return ExitCode::from(2);
-    }
     match zmanager_core::apple_archive_backend::copy_apple_archive_files_to_writer(
         archive,
         |name| entry_selected(name, include, exclude),
         stdout,
+        password,
     ) {
         Ok(report) => {
             if global.verbose > 0 && !global.quiet {
@@ -8359,6 +8363,7 @@ fn run_apple_archive_extract_with_policy(
     archive: impl AsRef<std::path::Path>,
     destination: impl AsRef<std::path::Path>,
     policy: zmanager_core::safety::ExtractionPolicy,
+    password: Option<&str>,
     global: Option<&GlobalOptions>,
 ) -> ExitCode {
     let archive_path = archive.as_ref().to_path_buf();
@@ -8378,6 +8383,7 @@ fn run_apple_archive_extract_with_policy(
             &destination_path,
             policy,
             &mut overwrite_resolver,
+            password,
         )
     } else {
         let mut sink = |event| progress.emit(event);
@@ -8386,6 +8392,7 @@ fn run_apple_archive_extract_with_policy(
             &archive_path,
             &destination_path,
             policy,
+            password,
             &mut context,
         );
         context.flush_progress();

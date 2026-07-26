@@ -50,6 +50,11 @@ mod tests {
         let original = EntryMetadata {
             mode: Some(0o644),
             modified: Some(test_time),
+            created: Some(test_time + Duration::from_secs(86400)),
+            flags: Some(0x00000020), // UF_ARCHIVE
+            crc: Some(0xDEADBEEF),
+            uid: Some(501),
+            gid: Some(20),
         };
         for algo in [
             CompressionAlgorithm::None,

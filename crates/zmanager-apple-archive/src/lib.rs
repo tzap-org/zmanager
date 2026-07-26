@@ -418,17 +418,18 @@ mod platform {
     // AEA encryption profiles (from <AppleArchive/AEADefs.h>)
     const AEA_PROFILE_SCRYPT: u32 = 5; // HKDF_SHA256_AESCTR_HMAC__SCRYPT__NONE
     // AEA context field keys (from <AppleArchive/AEAContext.h>)
-    const AEA_CONTEXT_FIELD_PASSWORD: u64 = 0x70617373; // 'pass'
-    const AEA_CONTEXT_FIELD_REPRESENTATION_RAW: u64 = 0;
+    const AEA_CONTEXT_FIELD_PASSWORD: u32 = 19; // password for SCRYPT
+    const AEA_CONTEXT_FIELD_REPRESENTATION_RAW: u32 = 0;
 
     #[link(name = "AppleArchive")]
     unsafe extern "C" {
         fn AEAContextCreateWithProfile(profile: u32) -> AEAContext;
+        fn AEAContextCreateWithEncryptedStream(encrypted_stream: AAByteStream) -> AEAContext;
         fn AEAContextDestroy(context: AEAContext);
         fn AEAContextSetFieldBlob(
             context: AEAContext,
-            field: u64,
-            representation: u64,
+            field: u32,
+            representation: u32,
             blob: *const c_void,
             blob_size: size_t,
         ) -> c_int;
@@ -487,6 +488,34 @@ mod platform {
         fn as_ptr(&self) -> AEAContext {
             self.inner
         }
+
+        /// Creates a decryption context from an encrypted stream and sets the password.
+        fn for_decryption(stream: AAByteStream, password: &[u8]) -> Result<Self> {
+            let inner = unsafe { AEAContextCreateWithEncryptedStream(stream) };
+            if inner.is_null() {
+                return Err(Error::Status {
+                    operation: "create decryption context",
+                    status: -1,
+                });
+            }
+            let status = unsafe {
+                AEAContextSetFieldBlob(
+                    inner,
+                    AEA_CONTEXT_FIELD_PASSWORD,
+                    AEA_CONTEXT_FIELD_REPRESENTATION_RAW,
+                    password.as_ptr().cast::<c_void>(),
+                    password.len(),
+                )
+            };
+            if status < 0 {
+                unsafe { AEAContextDestroy(inner) };
+                return Err(Error::Status {
+                    operation: "set decryption password",
+                    status: i64::from(status),
+                });
+            }
+            Ok(Self { inner })
+        }
     }
 
     impl Drop for EncryptionContext {
@@ -532,7 +561,7 @@ mod platform {
         /// streams cannot be created or initialized.
         pub fn open_encrypted(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
             let file_stream = ByteStream::open_path(path.as_ref(), libc::O_RDONLY, 0)?;
-            let ctx = EncryptionContext::with_password(password)?;
+            let ctx = EncryptionContext::for_decryption(file_stream.as_ptr(), password)?;
             let decryption_stream_ptr =
                 unsafe { AEADecryptionInputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0) };
             if decryption_stream_ptr.is_null() {
