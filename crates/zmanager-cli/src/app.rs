@@ -6290,6 +6290,7 @@ fn run_apple_archive_test_new(
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn run_apple_archive_test_new(
     _archive: &str,
+    _password: Option<&str>,
     _includes: &[String],
     _excludes: &[String],
     _global: &GlobalOptions,
@@ -8169,7 +8170,7 @@ fn extract_apple_archive_stdout(
     _archive: &str,
     _include: &[String],
     _exclude: &[String],
-    _password_stdin: bool,
+    _password: Option<&str>,
     _stdout: &mut impl io::Write,
     _global: &GlobalOptions,
 ) -> ExitCode {
@@ -8444,6 +8445,7 @@ fn run_apple_archive_extract_with_policy(
     _archive: impl AsRef<std::path::Path>,
     _destination: impl AsRef<std::path::Path>,
     _policy: zmanager_core::safety::ExtractionPolicy,
+    _password: Option<&str>,
     _global: Option<&GlobalOptions>,
 ) -> ExitCode {
     unreachable!()
