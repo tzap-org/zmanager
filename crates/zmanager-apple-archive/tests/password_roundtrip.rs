@@ -40,7 +40,8 @@ mod tests {
 
         // Read back with correct password
         {
-            let mut reader = ArchiveReader::open_encrypted(&temp_path, password).expect("open encrypted reader");
+            let mut reader =
+                ArchiveReader::open_encrypted(&temp_path, password).expect("open encrypted reader");
             let entry = reader.next_entry().expect("read entry").expect("got entry");
             assert_eq!(entry.path(), "secret_dir");
         }
@@ -49,7 +50,10 @@ mod tests {
         {
             let bad_password = b"wrong_password";
             let reader_result = ArchiveReader::open_encrypted(&temp_path, bad_password);
-            assert!(reader_result.is_err(), "should fail to open with wrong password");
+            assert!(
+                reader_result.is_err(),
+                "should fail to open with wrong password"
+            );
         }
 
         let _ = fs::remove_file(&temp_path);

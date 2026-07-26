@@ -5291,7 +5291,13 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Ok(password) => password,
             Err(code) => return code,
         };
-        run_apple_archive_extract_with_policy(request.archive, destination, policy, password.as_deref(), Some(global))
+        run_apple_archive_extract_with_policy(
+            request.archive,
+            destination,
+            policy,
+            password.as_deref(),
+            Some(global),
+        )
     } else if is_tzap_archive(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
@@ -8079,7 +8085,10 @@ fn is_apple_archive(_path: &str) -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn list_apple_archive_cli(archive: &str, password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
+fn list_apple_archive_cli(
+    archive: &str,
+    password: Option<&str>,
+) -> Result<Vec<GenericEntry>, String> {
     zmanager_core::apple_archive_backend::list_apple_archive(archive, password)
         .map(|listing| {
             listing
@@ -8111,7 +8120,10 @@ fn list_apple_archive_cli(archive: &str, password: Option<&str>) -> Result<Vec<G
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-fn list_apple_archive_cli(_archive: &str, _password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
+fn list_apple_archive_cli(
+    _archive: &str,
+    _password: Option<&str>,
+) -> Result<Vec<GenericEntry>, String> {
     Err("Apple Archive is not supported on this platform".to_owned())
 }
 
