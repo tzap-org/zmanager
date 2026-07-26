@@ -5,6 +5,7 @@ description = "Command-line archive manager powered by zmanager-core."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "zmanager-cli"
@@ -19,7 +20,7 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 rpassword = "7.5.2"
 serde_json = "1.0.140"
-zmanager-core = { path = "../zmanager-core", version = "1.0.6" }
+zmanager-core = { path = "../zmanager-core", version = "1.0.8" }
 
 [dev-dependencies]
 flate2 = "1.1.9"

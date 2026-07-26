@@ -5,6 +5,7 @@ description = "Safe, narrow AppleArchive wrapper used by zmanager-core on Apple 
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

@@ -5,13 +5,14 @@ description = "Safe, narrow read-side libarchive wrapper used by zmanager-core a
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 libc = "0.2.186"
-zmanager-libarchive-sys = "1.0.6"
+zmanager-libarchive-sys = { path = "../zmanager-libarchive-sys", version = "1.0.8" }
 
 [lints.rust]
 unsafe_code = "allow"

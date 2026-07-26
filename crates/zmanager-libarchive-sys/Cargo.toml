@@ -5,6 +5,7 @@ description = "Raw libarchive FFI bindings and build-time bundling for ZManager"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 links = "archive"
 build = "build.rs"
 

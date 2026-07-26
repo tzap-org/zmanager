@@ -5,6 +5,7 @@ description = "Bindings for unrar operations used as the native RAR backend."
 edition.workspace = true
 repository.workspace = true
 license-file = "vendor/unrar/license.txt"
+readme = "README.md"
 build = "build.rs"
 
 [lib]
