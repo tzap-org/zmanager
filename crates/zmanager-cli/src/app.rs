@@ -318,7 +318,7 @@ Extract/List/Test:
   zip       .zip, .zipx, .jar, .war, .ipa, .apk, .appx, .xpi
   tar.zst   .tar.zst, .tzst
   tzap      .tzap
-  aar       .aar (macOS/iOS)
+  aar       .aar, .aea (macOS/iOS)
   7z        .7z
   tgz       .tgz, .tar.gz
   raw       .zst, .gz, .bz2, .xz, .lzma, .lz, .br, .lz4, .lzo, .Z, .lrz
@@ -565,7 +565,7 @@ const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
 const TAR_ZST_EXTENSIONS: &[&str] = &[".tar.zst", ".tzst"];
 const TZAP_EXTENSIONS: &[&str] = &[".tzap"];
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-const APPLE_ARCHIVE_EXTENSIONS: &[&str] = &[".aar"];
+const APPLE_ARCHIVE_EXTENSIONS: &[&str] = &[".aar", ".aea"];
 const TGZ_EXTENSIONS: &[&str] = &[".tgz", ".tar.gz"];
 const SEVEN_Z_EXTENSIONS: &[&str] = &[".7z"];
 const RAR_EXTENSIONS: &[&str] = &[".rar", ".cbr"];

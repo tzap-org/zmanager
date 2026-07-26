@@ -127,7 +127,8 @@ Passwords are not accepted as command arguments. Use the prompt or
 | TZAP | `.tzap`, passphrase-protected create/list/test/extract |
 | Raw compressed files | `.zst`, `.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, `.br`, `.lz4`, `.lzo`, `.Z`, `.lrz` |
 | Packages and containers | `.deb`, `.rpm`, `.ar`, `.cpio`, `.cpgz`, `.spk`, `.iso`, `.xar`, `.cab` |
-| Passwords | ZIP, 7z, TZAP, and RAR list/test/extract through prompt or `--password-stdin` |
+| Apple Archive | `.aar`, `.aea` encrypted Apple Archives (macOS/iOS) |
+| Passwords | ZIP, 7z, TZAP, Apple Archive, and RAR list/test/extract through prompt or `--password-stdin` |
 
 Creation is intentionally focused on formats people should use today. Extraction
 is intentionally broad, so `zm` can be the one command you try first when
