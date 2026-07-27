@@ -76,6 +76,9 @@ pub fn healthcheck() -> HealthReport {
 }
 
 #[cfg(test)]
+#[cfg(test)]
+mod plan_benchmark;
+
 mod tests {
     use super::{ENGINE_NAME, healthcheck};
 
