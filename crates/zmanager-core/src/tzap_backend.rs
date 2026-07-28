@@ -4595,8 +4595,42 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
         path: path.to_path_buf(),
         source,
     })?;
+    let mut native = tzap_core::NativeFileMetadata::default();
+    let source_os = source_os_label().to_owned();
+
+    // Timestamps that require a platform-specific PAX profile.
+    // LIBARCHIVE.creationtime → owned by source_profile (macos-backup-v1 /
+    // posix-backup-v1), atime is profile-free.
+    if let Ok(created_time) = metadata.created() {
+        if let Some(ts) = system_time_to_archive_timestamp(created_time) {
+            if let Ok(value) = ts.canonical_pax_value() {
+                native
+                    .primary_pax_records
+                    .insert("LIBARCHIVE.creationtime".into(), value);
+            }
+        }
+    }
+    if let Ok(accessed_time) = metadata.accessed() {
+        if let Some(ts) = system_time_to_archive_timestamp(accessed_time) {
+            if let Ok(value) = ts.canonical_pax_value() {
+                native
+                    .primary_pax_records
+                    .insert("atime".into(), value);
+            }
+        }
+    }
+    // Declare platform profiles that own LIBARCHIVE.creationtime.
+    // These are the portable metadata profiles declared in entry_metadata.rs.
+    if !native.primary_pax_records.is_empty() {
+        native.required_profiles = match source_os.as_str() {
+            "macos" => vec!["macos-backup-v1".into(), "posix-backup-v1".into()],
+            "linux" => vec!["linux-backup-v1".into(), "posix-backup-v1".into()],
+            _ => vec!["posix-backup-v1".into()],
+        };
+    }
+
     Ok(PortableFileMetadata {
-        source_os: source_os_label().to_owned(),
+        source_os,
         source_filesystem: "unknown".to_owned(),
         mode_origin: if cfg!(unix) {
             PortableModeOrigin::Native
@@ -4605,7 +4639,9 @@ fn portable_file_metadata(path: &Path) -> Result<PortableFileMetadata, TzapError
         },
         posix_owner: portable_posix_owner(&metadata),
         attributes: portable_file_attributes(&metadata),
-        native: tzap_core::NativeFileMetadata::default(),
+        created: None,
+        accessed: None,
+        native,
     })
 }
 
@@ -4690,23 +4726,45 @@ fn portable_posix_owner(_metadata: &fs::Metadata) -> Option<PortablePosixOwner> 
     None
 }
 
-#[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)]
 fn portable_file_attributes(metadata: &fs::Metadata) -> Option<u32> {
-    use std::os::windows::fs::MetadataExt;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let attributes = metadata.file_attributes();
+        let mut projection = 0u32;
+        // Bit 0: READONLY  (FILE_ATTRIBUTE_READONLY = 0x1)
+        // Bit 1: HIDDEN    (FILE_ATTRIBUTE_HIDDEN   = 0x2)
+        // Bit 2: SYSTEM    (FILE_ATTRIBUTE_SYSTEM   = 0x4)
+        // Bit 3: ARCHIVE   (FILE_ATTRIBUTE_ARCHIVE  = 0x20)
+        projection |= u32::from(attributes & 0x0000_0001 != 0);
+        projection |= u32::from(attributes & 0x0000_0002 != 0) << 1;
+        projection |= u32::from(attributes & 0x0000_0004 != 0) << 2;
+        projection |= u32::from(attributes & 0x0000_0020 != 0) << 3;
+        Some(projection)
+    }
 
-    let attributes = metadata.file_attributes();
-    let mut projection = 0u32;
-    projection |= u32::from(attributes & 0x0000_0001 != 0);
-    projection |= u32::from(attributes & 0x0000_0002 != 0) << 1;
-    projection |= u32::from(attributes & 0x0000_0004 != 0) << 2;
-    projection |= u32::from(attributes & 0x0000_0020 != 0) << 3;
-    Some(projection)
-}
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::darwin::fs::MetadataExt;
+        let flags = metadata.st_flags();
+        // Project BSD st_flags into the portable 4-bit format:
+        // Bit 0: UF_IMMUTABLE | SF_IMMUTABLE → treated as read-only-like
+        // Bit 1: UF_HIDDEN
+        let mut projection = 0u32;
+        projection |= u32::from(flags & (libc::UF_IMMUTABLE | libc::SF_IMMUTABLE) != 0);
+        projection |= u32::from(flags & libc::UF_HIDDEN != 0) << 1;
+        if projection != 0 {
+            Some(projection)
+        } else {
+            None
+        }
+    }
 
-#[cfg(not(windows))]
-fn portable_file_attributes(_metadata: &fs::Metadata) -> Option<u32> {
-    None
+    #[cfg(all(unix, not(target_os = "macos"), not(windows)))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 fn source_os_label() -> &'static str {
@@ -5767,6 +5825,138 @@ mod tests {
             root_auth.trust_anchor_subject.as_deref(),
             Some("CN=ZManager Test Root CA")
         );
+    }
+
+    #[test]
+    fn preserves_all_metadata_in_tzap_round_trip() {
+        use crate::archive_browser::list_entries;
+
+        let temp = TestDir::new("tzap_metadata_roundtrip");
+
+        let file_path = temp.path("data.bin");
+        let payload = b"round-trip payload";
+        fs::write(&file_path, payload).unwrap();
+
+        #[cfg(target_os = "macos")]
+        {
+            let status = std::process::Command::new("/usr/bin/chflags")
+                .arg("hidden")
+                .arg(&file_path)
+                .status()
+                .expect("failed to run chflags");
+            assert!(status.success(), "chflags failed");
+        }
+
+        let symlink_target = "data.bin";
+        #[cfg(unix)]
+        let symlink_path = {
+            let p = temp.path("link.txt");
+            std::os::unix::fs::symlink(symlink_target, &p).unwrap();
+            p
+        };
+
+        let file_modified = fs::metadata(&file_path).unwrap().modified().ok();
+
+        let mut entries = vec![ManifestEntry {
+            archive_path: "data.bin".to_owned(),
+            source_path: file_path.clone(),
+            file_type: ManifestFileType::File,
+            size: payload.len() as u64,
+            modified: file_modified,
+            permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
+            symlink_target: None,
+        }];
+        #[cfg(unix)]
+        entries.push({
+            let sym_modified = fs::metadata(&symlink_path).unwrap().modified().ok();
+            ManifestEntry {
+                archive_path: "link.txt".to_owned(),
+                source_path: symlink_path,
+                file_type: ManifestFileType::Symlink,
+                size: 0,
+                modified: sym_modified,
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o777) },
+                symlink_target: Some(symlink_target.into()),
+            }
+        });
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries,
+            total_bytes: payload.len() as u64,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+
+        let archive = temp.path("metadata.tzap");
+        let options = TzapCreateOptions {
+            level: 1, volume_size: None, recovery_percentage: 0,
+            volume_loss_tolerance: 0, preserve_metadata: true,
+            replace_existing: true, key_source: TzapKeySource::NoPassword,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let listing = list_entries(&archive).unwrap();
+        let file_entry = listing.entries.iter().find(|e| e.path == "data.bin").unwrap();
+
+        // --- name ---
+        assert_eq!(file_entry.path, "data.bin");
+
+        // --- kind ---
+        assert_eq!(file_entry.kind, crate::archive_browser::BrowserEntryKind::File);
+
+        // --- size ---
+        assert_eq!(file_entry.size, Some(payload.len() as u64));
+
+        // --- modified ---
+        assert!(file_entry.modified.is_some(), "modified timestamp");
+
+        // --- created ---
+        assert!(file_entry.created.is_some(), "created timestamp");
+
+        // --- accessed ---
+        assert!(file_entry.accessed.is_some(), "accessed timestamp");
+
+        // --- Unix metadata ---
+        #[cfg(unix)]
+        {
+            // mode
+            assert_eq!(file_entry.mode, Some(0o644), "file mode");
+
+            // uid / gid
+            let file_uid = file_entry.uid.expect("uid");
+            let file_gid = file_entry.gid.expect("gid");
+            assert!(file_uid > 0 || file_gid > 0, "uid/gid should be non-zero");
+
+            // owner / group — name resolution
+            assert!(file_entry.owner.is_some(), "owner name should be resolved from uid");
+            assert!(file_entry.group.is_some(), "group name should be resolved from gid");
+
+            // symlink
+            let sym = listing.entries.iter().find(|e| e.path == "link.txt").unwrap();
+            assert_eq!(sym.kind, crate::archive_browser::BrowserEntryKind::Symlink, "symlink kind");
+            assert_eq!(sym.mode, Some(0o777), "symlink mode");
+            assert_eq!(sym.link_target.as_deref(), Some(symlink_target), "link target");
+            assert!(sym.uid.is_some(), "symlink uid");
+            assert!(sym.gid.is_some(), "symlink gid");
+        }
+
+        // --- portable attributes (v45 §16.7: bits 0-3 only) ---
+        if let Some(ref attrs_hex) = file_entry.attributes {
+            let hex = attrs_hex.strip_prefix("0x").unwrap_or(attrs_hex);
+            let attrs = u32::from_str_radix(hex, 16).expect("valid hex");
+            assert!(attrs <= 0x0f,
+                "portable attributes {attrs_hex} exceed v45 4-bit range");
+            #[cfg(target_os = "macos")]
+            assert_eq!(attrs, 2,
+                "UF_HIDDEN → bit 1 → value 2, got {attrs_hex}");
+        }
     }
 
     fn create_test_tzap_archive(files: &[RegularFile<'_>]) -> tzap_core::writer::WrittenArchive {
