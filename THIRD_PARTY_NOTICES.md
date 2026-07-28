@@ -15,9 +15,9 @@ The referenced license files are shipped beside this notice under
 
 ## Bundled Source
 
-### libarchive 3.8.7
+### libarchive 3.8.8
 
-- Source: `vendor/libarchive/libarchive-3.8.7`
+- Source: `vendor/libarchive/libarchive-3.8.8`
 - License: BSD-2-Clause-style with file-specific exceptions; see COPYING
 - License files: `third-party-licenses/bundled/libarchive/COPYING`
 - Notes: Built into zm for broad archive listing and extraction.
@@ -313,5 +313,5 @@ release reviewers can inspect the complete Cargo dependency closure.
 
 - Workspace: `C:\Users\frankzhu\Projects\zmanager`
 - Cargo metadata command: `cargo metadata --format-version 1 --locked`
-- Bundled license inputs: `vendor/libarchive/libarchive-3.8.7/COPYING`,
+- Bundled license inputs: `vendor/libarchive/libarchive-3.8.8/COPYING`,
   `vendor/unrar/license.txt`

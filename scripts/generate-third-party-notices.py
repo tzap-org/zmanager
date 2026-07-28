@@ -141,10 +141,10 @@ def collect_bundled_notices(workspace: Path, license_dir: Path, notice_path: Pat
     entries = [
         {
             "name": "libarchive",
-            "version": "3.8.7",
-            "source": "vendor/libarchive/libarchive-3.8.7",
+            "version": "3.8.8",
+            "source": "vendor/libarchive/libarchive-3.8.8",
             "license": "BSD-2-Clause-style with file-specific exceptions; see COPYING",
-            "files": [workspace / "vendor/libarchive/libarchive-3.8.7/COPYING"],
+            "files": [workspace / "vendor/libarchive/libarchive-3.8.8/COPYING"],
             "notes": "Built into zm for broad archive listing and extraction.",
         },
         {
@@ -319,7 +319,7 @@ def render_notices(
             "",
             f"- Workspace: `{workspace}`",
             "- Cargo metadata command: `cargo metadata --format-version 1 --locked`",
-            "- Bundled license inputs: `vendor/libarchive/libarchive-3.8.7/COPYING`,",
+            "- Bundled license inputs: `vendor/libarchive/libarchive-3.8.8/COPYING`,",
             "  `vendor/unrar/license.txt`",
             "",
         ]

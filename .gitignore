@@ -35,4 +35,7 @@ __pycache__/
 /.claude/
 /.codex/
 
+# Vendored dependencies
+/vendor/
+
 # Cargo.lock is intentionally tracked for this CLI workspace.
