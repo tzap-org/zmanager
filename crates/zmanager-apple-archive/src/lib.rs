@@ -149,6 +149,18 @@ pub struct EntryMetadata {
     pub gid: Option<u32>,
 }
 
+/// Applies AppleArchive metadata that is not covered by portable Rust
+/// filesystem APIs. Creation time and ownership are restored before flags so
+/// immutable flags cannot block the remaining updates.
+///
+/// # Errors
+///
+/// Returns an I/O error when the operating system rejects an exact metadata
+/// update.
+pub fn apply_native_metadata(path: &Path, metadata: EntryMetadata, symlink: bool) -> Result<()> {
+    platform::apply_native_metadata(path, metadata, symlink)
+}
+
 /// Compression used for newly created `.aar` files.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum CompressionAlgorithm {
@@ -1382,6 +1394,85 @@ mod platform {
 
     fn c_path(path: &Path) -> Result<CString> {
         CString::new(path.as_os_str().as_bytes()).map_err(Error::from)
+    }
+
+    pub(super) fn apply_native_metadata(
+        path: &Path,
+        metadata: EntryMetadata,
+        symlink: bool,
+    ) -> Result<()> {
+        let path = c_path(path)?;
+
+        if let Some(created) = metadata.created
+            && let Some(mut created) = system_time_to_timespec(created)
+        {
+            let mut attributes = libc::attrlist {
+                bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+                reserved: 0,
+                commonattr: libc::ATTR_CMN_CRTIME,
+                volattr: 0,
+                dirattr: 0,
+                fileattr: 0,
+                forkattr: 0,
+            };
+            // SAFETY: `path` is NUL-terminated, both structures remain valid
+            // for the call, and the buffer exactly matches ATTR_CMN_CRTIME.
+            let status = unsafe {
+                libc::setattrlist(
+                    path.as_ptr(),
+                    (&raw mut attributes).cast(),
+                    (&raw mut created).cast(),
+                    std::mem::size_of::<timespec>(),
+                    if symlink { libc::FSOPT_NOFOLLOW } else { 0 },
+                )
+            };
+            if status != 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+        }
+
+        if metadata.uid.is_some() || metadata.gid.is_some() {
+            let uid = metadata.uid.map_or(u32::MAX, |value| value) as libc::uid_t;
+            let gid = metadata.gid.map_or(u32::MAX, |value| value) as libc::gid_t;
+            // SAFETY: `path` is NUL-terminated and the scalar IDs are passed
+            // by value. lchown intentionally does not follow symlinks.
+            let status = unsafe {
+                if symlink {
+                    libc::lchown(path.as_ptr(), uid, gid)
+                } else {
+                    libc::chown(path.as_ptr(), uid, gid)
+                }
+            };
+            if status != 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+        }
+
+        if let Some(flags) = metadata.flags {
+            // SAFETY: `path` is NUL-terminated. Flags are applied last so
+            // immutable bits cannot prevent timestamp or ownership updates.
+            let status = unsafe {
+                if symlink {
+                    const O_SYMLINK: libc::c_int = 0x0020_0000;
+                    let descriptor =
+                        libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC | O_SYMLINK);
+                    if descriptor < 0 {
+                        -1
+                    } else {
+                        let status = libc::fchflags(descriptor, flags);
+                        libc::close(descriptor);
+                        status
+                    }
+                } else {
+                    libc::chflags(path.as_ptr(), flags)
+                }
+            };
+            if status != 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+        }
+
+        Ok(())
     }
 
     fn timespec_to_system_time(value: timespec) -> Option<SystemTime> {

@@ -769,6 +769,11 @@ fn materialize_entry(
             reader.skip_entry_data(entry)?;
             write_symlink(target, decision.destination_path)?;
             apply_symlink_mtime(decision.destination_path, entry.metadata().modified)?;
+            zmanager_apple_archive::apply_native_metadata(
+                decision.destination_path,
+                entry.metadata(),
+                true,
+            )?;
             0
         }
         ExtractionEntryKind::Hardlink { .. } => {
@@ -858,10 +863,21 @@ fn append_manifest_entry(
     }
 
     let metadata = if options.preserve_metadata {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let source_metadata =
+            fs::symlink_metadata(&entry.source_path).map_err(|source| AppleArchiveError::Io {
+                path: entry.source_path.clone(),
+                source,
+            })?;
         zmanager_apple_archive::EntryMetadata {
             mode: entry.permissions.unix_mode,
             modified: entry.modified,
-            ..Default::default()
+            created: source_metadata.created().ok(),
+            flags: apple_file_flags(&source_metadata),
+            crc: None,
+            uid: Some(source_metadata.uid()),
+            gid: Some(source_metadata.gid()),
         }
     } else {
         zmanager_apple_archive::EntryMetadata::default()
@@ -932,6 +948,18 @@ fn append_manifest_entry(
         context.entry_finished(&entry.archive_path, processed);
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apple_file_flags(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::macos::fs::MetadataExt as _;
+
+    Some(metadata.st_flags())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_file_flags(_metadata: &fs::Metadata) -> Option<u32> {
+    None
 }
 
 fn ensure_file_entry_has_data(
@@ -1042,6 +1070,8 @@ fn apply_metadata(
             source,
         })?;
     }
+
+    zmanager_apple_archive::apply_native_metadata(path, metadata, false)?;
 
     Ok(())
 }
@@ -1186,6 +1216,57 @@ mod tests {
             "hello aar"
         );
         assert!(temp.path("out/project/empty").is_dir());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn create_and_extract_preserve_complete_apple_archive_metadata() {
+        use std::os::macos::fs::MetadataExt as _;
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp = TestDir::new("apple_archive_complete_metadata");
+        temp.write_file("project/native.txt", b"native metadata");
+        let source = temp.path("project/native.txt");
+        assert!(
+            std::process::Command::new("/usr/bin/chflags")
+                .arg("hidden")
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let expected = fs::metadata(&source).unwrap();
+        let archive = temp.path("metadata.aar");
+
+        create_apple_archive_from_path(
+            temp.path("project"),
+            &archive,
+            &AppleArchiveCreateOptions {
+                compression: AppleArchiveCompression::None,
+                preserve_metadata: true,
+                ..AppleArchiveCreateOptions::default()
+            },
+        )
+        .unwrap();
+
+        let listing = list_apple_archive(&archive, None).unwrap();
+        let entry = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "project/native.txt")
+            .unwrap();
+        assert_eq!(entry.flags, Some(expected.st_flags()));
+        assert_eq!(entry.uid, Some(expected.uid()));
+        assert_eq!(entry.gid, Some(expected.gid()));
+        assert!(entry.created.is_some());
+
+        let destination = temp.path("out");
+        extract_apple_archive(&archive, &destination, ExtractionPolicy::default(), None).unwrap();
+        let restored = fs::metadata(destination.join("project/native.txt")).unwrap();
+        assert_eq!(restored.st_flags(), expected.st_flags());
+        assert_eq!(restored.uid(), expected.uid());
+        assert_eq!(restored.gid(), expected.gid());
+        assert_eq!(restored.created().unwrap(), expected.created().unwrap());
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]

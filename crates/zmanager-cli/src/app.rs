@@ -1114,6 +1114,17 @@ struct GenericEntry {
     compressed_size: Option<u64>,
     mode: Option<u32>,
     modified: Option<String>,
+    created: Option<String>,
+    accessed: Option<String>,
+    encrypted: Option<bool>,
+    method: Option<String>,
+    solid: Option<bool>,
+    link_target: Option<String>,
+    attributes: Option<String>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    owner: Option<String>,
+    group: Option<String>,
     metadata_diagnostics: Vec<String>,
 }
 
@@ -4347,18 +4358,6 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 );
                 return ExitCode::from(2);
             }
-            if format == ArchiveFormat::Tzap
-                && request.preserve_symlinks
-                && manifest_has_symlinks(&manifest)
-            {
-                print_error_line(
-                    global,
-                    format_args!(
-                        "create failed: tzap symlink preservation is not supported by the current backend; use --follow-symlinks"
-                    ),
-                );
-                return ExitCode::from(2);
-            }
             manifest
         }
         Err(error) => {
@@ -7350,6 +7349,7 @@ fn list_entries_with_password(
         };
         listing
             .map(|listing| {
+                let encrypted = listing.encrypted;
                 listing
                     .entries
                     .into_iter()
@@ -7373,6 +7373,21 @@ fn list_entries_with_password(
                         compressed_size: None,
                         mode: Some(entry.mode),
                         modified: tzap_timestamp_string(entry.mtime, entry.mtime_nanoseconds),
+                        created: entry.created.and_then(|(seconds, nanoseconds)| {
+                            tzap_timestamp_string(seconds, nanoseconds)
+                        }),
+                        accessed: entry.accessed.and_then(|(seconds, nanoseconds)| {
+                            tzap_timestamp_string(seconds, nanoseconds)
+                        }),
+                        encrypted: Some(encrypted),
+                        method: Some("Zstd".to_owned()),
+                        solid: Some(true),
+                        link_target: entry.link_target,
+                        attributes: entry.attributes.map(|value| format!("{value:#010X}")),
+                        uid: entry.uid,
+                        gid: entry.gid,
+                        owner: entry.owner,
+                        group: entry.group,
                         metadata_diagnostics: entry.metadata_diagnostics,
                     })
                     .collect()
@@ -7478,10 +7493,24 @@ fn print_entries_json(entries: &[GenericEntry]) {
             .mode
             .map_or_else(|| "null".to_owned(), |value| value.to_string());
         let modified = serde_json::to_string(&entry.modified).unwrap_or_else(|_| "null".to_owned());
+        let created = serde_json::to_string(&entry.created).unwrap_or_else(|_| "null".to_owned());
+        let accessed = serde_json::to_string(&entry.accessed).unwrap_or_else(|_| "null".to_owned());
+        let encrypted =
+            serde_json::to_string(&entry.encrypted).unwrap_or_else(|_| "null".to_owned());
+        let method = serde_json::to_string(&entry.method).unwrap_or_else(|_| "null".to_owned());
+        let solid = serde_json::to_string(&entry.solid).unwrap_or_else(|_| "null".to_owned());
+        let link_target =
+            serde_json::to_string(&entry.link_target).unwrap_or_else(|_| "null".to_owned());
+        let attributes =
+            serde_json::to_string(&entry.attributes).unwrap_or_else(|_| "null".to_owned());
+        let uid = serde_json::to_string(&entry.uid).unwrap_or_else(|_| "null".to_owned());
+        let gid = serde_json::to_string(&entry.gid).unwrap_or_else(|_| "null".to_owned());
+        let owner = serde_json::to_string(&entry.owner).unwrap_or_else(|_| "null".to_owned());
+        let group = serde_json::to_string(&entry.group).unwrap_or_else(|_| "null".to_owned());
         let metadata_diagnostics =
             serde_json::to_string(&entry.metadata_diagnostics).unwrap_or_else(|_| "[]".to_owned());
         print!(
-            "{{\"kind\":\"{}\",\"name\":\"{}\",\"size\":{},\"compressed_size\":{compressed_size},\"mode\":{mode},\"modified\":{modified},\"metadata_diagnostics\":{metadata_diagnostics}}}",
+            "{{\"kind\":\"{}\",\"name\":\"{}\",\"size\":{},\"compressed_size\":{compressed_size},\"mode\":{mode},\"modified\":{modified},\"created\":{created},\"accessed\":{accessed},\"encrypted\":{encrypted},\"method\":{method},\"solid\":{solid},\"link_target\":{link_target},\"attributes\":{attributes},\"uid\":{uid},\"gid\":{gid},\"owner\":{owner},\"group\":{group},\"metadata_diagnostics\":{metadata_diagnostics}}}",
             json_escape(&entry.kind),
             json_escape(&entry.name),
             entry.size,

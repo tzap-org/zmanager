@@ -13,6 +13,101 @@ use zip::{CompressionMethod, ZipWriter};
 
 const ANSI_PROGRESS_PREFIX: &str = "\x1b[36mprogress\x1b[0m:";
 
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn unix_process_is_elevated() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn create_windows_relative_symlink(path: &Path, target: &str) {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+
+    fs::write(path, []).unwrap();
+    let target = target.encode_utf16().collect::<Vec<_>>();
+    let target_bytes = target.len() * 2;
+    let mut path_units = target.clone();
+    path_units.push(0);
+    path_units.extend_from_slice(&target);
+    path_units.push(0);
+    let payload_len = 12 + path_units.len() * 2;
+    let mut reparse = Vec::with_capacity(8 + payload_len);
+    reparse.extend_from_slice(&0xA000_000Cu32.to_le_bytes());
+    reparse.extend_from_slice(&(payload_len as u16).to_le_bytes());
+    reparse.extend_from_slice(&0u16.to_le_bytes());
+    reparse.extend_from_slice(&0u16.to_le_bytes());
+    reparse.extend_from_slice(&(target_bytes as u16).to_le_bytes());
+    reparse.extend_from_slice(&((target_bytes + 2) as u16).to_le_bytes());
+    reparse.extend_from_slice(&(target_bytes as u16).to_le_bytes());
+    reparse.extend_from_slice(&1u32.to_le_bytes());
+    for unit in path_units {
+        reparse.extend_from_slice(&unit.to_le_bytes());
+    }
+
+    let file = fs::OpenOptions::new()
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .unwrap();
+    let mut returned = 0u32;
+    let result = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle().cast(),
+            FSCTL_SET_REPARSE_POINT,
+            reparse.as_ptr().cast(),
+            reparse.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(
+        result,
+        0,
+        "failed to create relative symlink fixture: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_process_is_elevated() -> bool {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return false;
+    }
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0u32;
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    unsafe {
+        CloseHandle(token);
+    }
+    result != 0 && elevation.TokenIsElevated != 0
+}
+
 #[test]
 fn cli_lists_all_fixture_archives() {
     for fixture in fixture_manifest() {
@@ -1097,40 +1192,292 @@ fn zm_create_tzap_without_password_uses_unencrypted_mode() {
 #[cfg(unix)]
 #[test]
 fn zm_extract_tzap_honors_metadata_restore_policy() {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 
     let temp = TestDir::new("zm_tzap_restore_policy");
-    let source = temp.path("executable.sh");
-    fs::write(&source, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).unwrap();
+    let source_root = temp.path("project");
+    let source_directory = temp.path("project/scripts");
+    let source_file = temp.path("project/scripts/executable.sh");
+    let source_link = temp.path("project/current");
+    fs::create_dir_all(&source_directory).unwrap();
+    fs::write(&source_file, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&source_file, fs::Permissions::from_mode(0o751)).unwrap();
+    fs::set_permissions(&source_directory, fs::Permissions::from_mode(0o750)).unwrap();
+    symlink("scripts/executable.sh", &source_link).unwrap();
+
+    #[cfg(target_os = "macos")]
+    {
+        xattr::set(&source_file, "com.tzap.zm", b"file metadata").unwrap();
+        xattr::set(&source_directory, "com.tzap.zm", b"directory metadata").unwrap();
+        xattr::set(&source_link, "com.tzap.zm", b"link metadata").unwrap();
+        for source in [&source_file, &source_directory] {
+            assert!(
+                Command::new("/bin/chmod")
+                    .args(["+a", "everyone deny delete"])
+                    .arg(source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(
+            Command::new("/bin/chmod")
+                .args(["-h", "+a", "everyone deny delete"])
+                .arg(&source_link)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for source in [&source_file, &source_directory] {
+            assert!(
+                Command::new("/usr/bin/chflags")
+                    .arg("hidden")
+                    .arg(source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(
+            Command::new("/usr/bin/chflags")
+                .args(["-h", "hidden"])
+                .arg(&source_link)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    let (expected_file_acl, expected_directory_acl) = {
+        let file_acl = [
+            2, 0, 0, 0, // POSIX ACL xattr version
+            1, 0, 6, 0, 0xff, 0xff, 0xff, 0xff, // owning user
+            2, 0, 4, 0, 0x39, 0x30, 0, 0, // named user 12345
+            4, 0, 4, 0, 0xff, 0xff, 0xff, 0xff, // owning group
+            0x10, 0, 4, 0, 0xff, 0xff, 0xff, 0xff, // mask
+            0x20, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, // other
+        ];
+        let mut directory_acl = file_acl;
+        directory_acl[6] = 7;
+        directory_acl[14] = 5;
+        directory_acl[22] = 5;
+        directory_acl[30] = 5;
+        xattr::set(&source_file, "user.zmanager.cli", b"file metadata").unwrap();
+        xattr::set(
+            &source_directory,
+            "user.zmanager.cli",
+            b"directory metadata",
+        )
+        .unwrap();
+        xattr::set(&source_file, "system.posix_acl_access", &file_acl).unwrap();
+        xattr::set(&source_directory, "system.posix_acl_access", &directory_acl).unwrap();
+        (
+            xattr::get(&source_file, "system.posix_acl_access")
+                .unwrap()
+                .unwrap(),
+            xattr::get(&source_directory, "system.posix_acl_access")
+                .unwrap()
+                .unwrap(),
+        )
+    };
+
+    let source_file_metadata = fs::symlink_metadata(&source_file).unwrap();
+    let source_directory_metadata = fs::symlink_metadata(&source_directory).unwrap();
     let archive = temp.path("metadata.tzap");
 
     let create = Command::new(zm_path())
         .arg("create")
         .arg(&archive)
-        .arg(&source)
+        .arg("-y")
+        .arg(&source_root)
         .output()
         .unwrap();
     assert_success("zm create metadata tzap", &create);
 
-    let portable = Command::new(zm_path())
-        .arg("extract")
+    let list = Command::new(zm_path())
+        .arg("list")
         .arg(&archive)
-        .arg("-C")
-        .arg(temp.path("portable"))
-        .arg("--restore")
-        .arg("portable")
+        .arg("--json")
         .output()
         .unwrap();
-    assert_success("zm extract tzap portable metadata", &portable);
-    assert_eq!(
-        fs::metadata(temp.path("portable/executable.sh"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o751
+    assert_success("zm list metadata tzap", &list);
+    let listing: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let entries = listing["entries"].as_array().unwrap();
+    let listed_file = entries
+        .iter()
+        .find(|entry| entry["name"] == "project/scripts/executable.sh")
+        .unwrap();
+    for field in [
+        "modified",
+        "accessed",
+        "encrypted",
+        "method",
+        "solid",
+        "uid",
+        "gid",
+        "owner",
+        "group",
+    ] {
+        assert!(!listed_file[field].is_null(), "{field}");
+    }
+    #[cfg(target_os = "macos")]
+    assert!(
+        !listed_file["created"].is_null(),
+        "APFS creation time should be listed"
     );
+    #[cfg(target_os = "macos")]
+    assert!(!listed_file["attributes"].is_null());
+    let listed_link = entries
+        .iter()
+        .find(|entry| entry["name"] == "project/current")
+        .unwrap();
+    assert_eq!(listed_link["link_target"], "scripts/executable.sh");
+
+    let policies: &[&str] = if unix_process_is_elevated() {
+        &["portable", "same-os", "system"]
+    } else {
+        &["portable", "same-os"]
+    };
+    for &policy in policies {
+        let destination = temp.path(&format!("restore-{policy}"));
+        let mut restore_command = Command::new(zm_path());
+        restore_command
+            .arg("extract")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&destination)
+            .arg("--restore")
+            .arg(policy);
+        #[cfg(target_os = "macos")]
+        if policy == "portable" {
+            restore_command.arg("--allow-degraded");
+        }
+        #[cfg(target_os = "linux")]
+        if policy != "portable" {
+            restore_command.arg("--allow-degraded");
+        }
+        let restore = restore_command.output().unwrap();
+        assert_success(&format!("zm extract tzap {policy} metadata"), &restore);
+
+        let restored_file = destination.join("project/scripts/executable.sh");
+        let restored_directory = destination.join("project/scripts");
+        let restored_link = destination.join("project/current");
+        let restored_file_metadata = fs::symlink_metadata(&restored_file).unwrap();
+        let restored_directory_metadata = fs::symlink_metadata(&restored_directory).unwrap();
+        assert_eq!(
+            restored_file_metadata.permissions().mode() & 0o7777,
+            source_file_metadata.permissions().mode() & 0o7777
+        );
+        assert_eq!(
+            restored_directory_metadata.permissions().mode() & 0o7777,
+            source_directory_metadata.permissions().mode() & 0o7777
+        );
+        assert_eq!(
+            fs::read_link(&restored_link).unwrap(),
+            Path::new("scripts/executable.sh")
+        );
+        assert_eq!(
+            (
+                restored_file_metadata.mtime(),
+                restored_file_metadata.mtime_nsec()
+            ),
+            (
+                source_file_metadata.mtime(),
+                source_file_metadata.mtime_nsec()
+            )
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt as _;
+
+            if policy == "portable" {
+                assert_eq!(xattr::get(&restored_file, "com.tzap.zm").unwrap(), None);
+                continue;
+            }
+            assert_eq!(
+                fs::symlink_metadata(&restored_file).unwrap().st_flags(),
+                source_file_metadata.st_flags()
+            );
+            assert_eq!(
+                fs::symlink_metadata(&restored_directory)
+                    .unwrap()
+                    .st_flags(),
+                source_directory_metadata.st_flags()
+            );
+            assert_eq!(
+                fs::symlink_metadata(&restored_link).unwrap().st_flags(),
+                fs::symlink_metadata(&source_link).unwrap().st_flags()
+            );
+            assert_eq!(
+                xattr::get(&restored_file, "com.tzap.zm")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"file metadata".as_slice())
+            );
+            assert_eq!(
+                xattr::get(&restored_directory, "com.tzap.zm")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"directory metadata".as_slice())
+            );
+            assert_eq!(
+                xattr::get(&restored_link, "com.tzap.zm")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"link metadata".as_slice())
+            );
+            for restored_path in [&restored_file, &restored_directory, &restored_link] {
+                let acl = Command::new("/bin/ls")
+                    .args(["-lde"])
+                    .arg(restored_path)
+                    .output()
+                    .unwrap();
+                assert!(acl.status.success());
+                assert!(String::from_utf8_lossy(&acl.stdout).contains("everyone deny delete"));
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if policy == "portable" {
+                assert_eq!(
+                    xattr::get(&restored_file, "user.zmanager.cli").unwrap(),
+                    None
+                );
+                assert_eq!(
+                    xattr::get(&restored_directory, "user.zmanager.cli").unwrap(),
+                    None
+                );
+                continue;
+            }
+            assert_eq!(
+                xattr::get(&restored_file, "user.zmanager.cli")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"file metadata".as_slice())
+            );
+            assert_eq!(
+                xattr::get(&restored_directory, "user.zmanager.cli")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"directory metadata".as_slice())
+            );
+            assert_eq!(
+                xattr::get(&restored_file, "system.posix_acl_access")
+                    .unwrap()
+                    .as_deref(),
+                Some(expected_file_acl.as_slice())
+            );
+            assert_eq!(
+                xattr::get(&restored_directory, "system.posix_acl_access")
+                    .unwrap()
+                    .as_deref(),
+                Some(expected_directory_acl.as_slice())
+            );
+        }
+    }
 
     let content = Command::new(zm_path())
         .arg("extract")
@@ -1144,13 +1491,158 @@ fn zm_extract_tzap_honors_metadata_restore_policy() {
         .unwrap();
     assert_success("zm extract tzap content only", &content);
     assert_ne!(
-        fs::metadata(temp.path("content/executable.sh"))
+        fs::metadata(temp.path("content/project/scripts/executable.sh"))
             .unwrap()
             .permissions()
             .mode()
             & 0o777,
         0o751
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn zm_extract_tzap_preserves_windows_entry_metadata() {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let temp = TestDir::new("zm_tzap_windows_restore_policy");
+    let source_root = temp.path("project");
+    let source_directory = temp.path("project/scripts");
+    let source_file = temp.path("project/scripts/payload.txt");
+    let source_link = temp.path("project/current.txt");
+    fs::create_dir_all(&source_directory).unwrap();
+    fs::write(&source_file, b"windows metadata").unwrap();
+    create_windows_relative_symlink(&source_link, r"scripts\payload.txt");
+    fs::write(
+        PathBuf::from(format!("{}:zmanager-cli", source_file.display())),
+        b"file alternate data",
+    )
+    .unwrap();
+    fs::write(
+        PathBuf::from(format!("{}:zmanager-cli", source_directory.display())),
+        b"directory alternate data",
+    )
+    .unwrap();
+    assert!(
+        Command::new("attrib")
+            .args(["+H", source_file.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut permissions = fs::metadata(&source_file).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&source_file, permissions).unwrap();
+    let source_file_metadata = fs::symlink_metadata(&source_file).unwrap();
+    let source_directory_metadata = fs::symlink_metadata(&source_directory).unwrap();
+    let archive = temp.path("metadata.tzap");
+
+    let create = Command::new(zm_path())
+        .arg("create")
+        .arg(&archive)
+        .arg("-y")
+        .arg(&source_root)
+        .output()
+        .unwrap();
+    assert_success("zm create Windows metadata tzap", &create);
+
+    let list = Command::new(zm_path())
+        .arg("list")
+        .arg(&archive)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_success("zm list Windows metadata tzap", &list);
+    let listing: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let entries = listing["entries"].as_array().unwrap();
+    let file_entry = entries
+        .iter()
+        .find(|entry| entry["name"] == "project/scripts/payload.txt")
+        .unwrap();
+    assert!(file_entry["created"].is_string());
+    assert!(file_entry["accessed"].is_string());
+    assert!(file_entry["attributes"].is_string());
+    let link_entry = entries
+        .iter()
+        .find(|entry| entry["name"] == "project/current.txt")
+        .unwrap();
+    assert_eq!(link_entry["link_target"], "scripts/payload.txt");
+
+    let policies: &[&str] = if windows_process_is_elevated() {
+        &["portable", "same-os", "system"]
+    } else {
+        &["portable", "same-os"]
+    };
+    for &policy in policies {
+        let destination = temp.path(&format!("restore-{policy}"));
+        let mut restore_command = Command::new(zm_path());
+        restore_command
+            .arg("extract")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&destination)
+            .arg("--restore")
+            .arg(policy);
+        if policy == "portable" {
+            restore_command.arg("--allow-degraded");
+        }
+        let restore = restore_command.output().unwrap();
+        assert_success(&format!("zm extract Windows tzap {policy}"), &restore);
+
+        let restored_file = destination.join("project/scripts/payload.txt");
+        let restored_directory = destination.join("project/scripts");
+        let restored_link = destination.join("project/current.txt");
+        let restored_file_ads = PathBuf::from(format!("{}:zmanager-cli", restored_file.display()));
+        let restored_directory_ads =
+            PathBuf::from(format!("{}:zmanager-cli", restored_directory.display()));
+        let restored_file_metadata = fs::symlink_metadata(&restored_file).unwrap();
+        let restored_directory_metadata = fs::symlink_metadata(&restored_directory).unwrap();
+        assert_eq!(fs::read(&restored_file).unwrap(), b"windows metadata");
+        assert_eq!(
+            fs::read_link(&restored_link).unwrap(),
+            Path::new("scripts/payload.txt")
+        );
+        if policy == "portable" {
+            assert!(fs::read(&restored_file_ads).is_err());
+            assert!(fs::read(&restored_directory_ads).is_err());
+        } else {
+            assert_eq!(
+                fs::read(&restored_file_ads).unwrap(),
+                b"file alternate data"
+            );
+            assert_eq!(
+                fs::read(&restored_directory_ads).unwrap(),
+                b"directory alternate data"
+            );
+        }
+        let attribute_mask = if policy == "portable" { 0x1 } else { 0x23 };
+        assert_eq!(
+            restored_file_metadata.file_attributes() & attribute_mask,
+            source_file_metadata.file_attributes() & attribute_mask
+        );
+        assert_eq!(
+            restored_file_metadata.last_write_time(),
+            source_file_metadata.last_write_time()
+        );
+        if policy != "portable" {
+            assert_eq!(
+                restored_file_metadata.creation_time(),
+                source_file_metadata.creation_time()
+            );
+            assert_eq!(
+                restored_file_metadata.last_access_time(),
+                source_file_metadata.last_access_time()
+            );
+            assert_eq!(
+                restored_directory_metadata.creation_time(),
+                source_directory_metadata.creation_time()
+            );
+        }
+    }
+
+    let mut permissions = fs::metadata(&source_file).unwrap().permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&source_file, permissions).unwrap();
 }
 
 #[test]

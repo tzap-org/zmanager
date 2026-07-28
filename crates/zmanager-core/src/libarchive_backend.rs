@@ -43,6 +43,8 @@ pub struct LibarchiveListEntry {
     pub owner: Option<String>,
     /// Group name when present.
     pub group: Option<String>,
+    /// Symbolic-link or hard-link target when present.
+    pub link_target: Option<String>,
 }
 
 /// Portable entry type for libarchive-backed archives.
@@ -194,6 +196,7 @@ pub fn list_archive_with_password(
     let mut entries = Vec::new();
 
     while let Some(entry) = archive.next_entry()? {
+        let link_target = entry.symlink().or_else(|| entry.hardlink());
         entries.push(LibarchiveListEntry {
             path: entry.pathname().ok_or(LibarchiveError::MissingPath)?,
             kind: entry_kind(&entry),
@@ -206,6 +209,7 @@ pub fn list_archive_with_password(
             gid: entry.gid().and_then(|g| u32::try_from(g).ok()),
             owner: entry.uname(),
             group: entry.gname(),
+            link_target,
         });
         archive.skip_data()?;
     }

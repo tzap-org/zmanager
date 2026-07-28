@@ -61,7 +61,8 @@ impl BenchmarkFixture {
 
         let file_count = (ENTRY_COUNT as f64 * FILE_FRACTION) as usize;
         let dir_count = (ENTRY_COUNT as f64 * DIR_FRACTION) as usize;
-        let symlink_count = ENTRY_COUNT - file_count - dir_count;
+        let symlink_count = (ENTRY_COUNT as f64 * SYMLINK_FRACTION) as usize;
+        assert_eq!(file_count + dir_count + symlink_count, ENTRY_COUNT);
 
         eprintln!(
             "Creating benchmark fixture: {} files, {} dirs, {} symlinks ({} total)",
@@ -191,7 +192,7 @@ mod fixture_tests {
     fn benchmark_fixture_counts_are_consistent() {
         let file_count = (ENTRY_COUNT as f64 * FILE_FRACTION) as usize;
         let dir_count = (ENTRY_COUNT as f64 * DIR_FRACTION) as usize;
-        let symlink_count = ENTRY_COUNT - file_count - dir_count;
+        let symlink_count = (ENTRY_COUNT as f64 * SYMLINK_FRACTION) as usize;
         assert_eq!(file_count + dir_count + symlink_count, ENTRY_COUNT);
         assert!(file_count > dir_count, "files should dominate");
         assert!(symlink_count < dir_count, "symlinks are the minority");
@@ -235,7 +236,9 @@ fn plan_benchmark_100k_entries() {
 
     // Warm-up
     eprintln!("Warm-up run...");
-    let _ = run_plan(fixture.root()).expect("warm-up plan failed");
+    for _ in 0..WARMUP_RUNS {
+        let _ = run_plan(fixture.root()).expect("warm-up plan failed");
+    }
 
     // Measured runs
     let mut measurements = Vec::with_capacity(MEASURED_RUNS);

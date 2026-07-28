@@ -29,5 +29,19 @@ tar = "0.4.45"
 zip = "8.6.0"
 zstd = "0.13.3"
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+xattr = "1.6.1"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true

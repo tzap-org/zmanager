@@ -295,25 +295,21 @@ pub fn list_entries_with_options(
     options: BrowserListOptions<'_>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
     let path = path.as_ref();
-    let mut listing = if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path)
-    {
-        list_zip_entries(path)?
+    if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path) {
+        list_zip_entries(path)
     } else if is_tar_zst_archive(path) {
-        list_tar_zst_entries(path)?
+        list_tar_zst_entries(path)
     } else if is_7z_archive(path) {
-        list_7z_entries(path, options.password)?
+        list_7z_entries(path, options.password)
     } else if is_tzap_archive_path(path) {
-        list_tzap_entries(path, options.password)?
+        list_tzap_entries(path, options.password)
     } else if is_apple_archive_path_browser(path) {
-        list_apple_archive_entries(path, options.password)?
+        list_apple_archive_entries(path, options.password)
     } else if let Some(format) = raw_stream_backend::detect_raw_stream_format(path) {
-        list_raw_stream_entry(path, format)?
+        list_raw_stream_entry(path, format)
     } else {
-        list_libarchive_entries(path)?
-    };
-
-    apply_stream_proportional_sizes(path, &mut listing);
-    Ok(listing)
+        list_libarchive_entries(path)
+    }
 }
 
 /// Visits archive entries without requiring the caller to retain a complete listing.
@@ -651,7 +647,7 @@ fn list_libarchive_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowser
             created: None,
             accessed: None,
             solid,
-            link_target: None,
+            link_target: entry.link_target,
             attributes: None,
             uid: entry.uid,
             gid: entry.gid,
@@ -1321,28 +1317,6 @@ fn tzap_modified_string(seconds: i64, nanoseconds: u32) -> Option<String> {
     Some(format!("{seconds}.{}", fraction.trim_end_matches('0')))
 }
 
-fn apply_stream_proportional_sizes(path: &Path, listing: &mut BrowserListing) {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return;
-    };
-    let archive_disk_size = metadata.len();
-    let total_uncompressed: u64 = listing.entries.iter().filter_map(|e| e.size).sum();
-
-    if total_uncompressed == 0 {
-        return;
-    }
-
-    let ratio = archive_disk_size as f64 / total_uncompressed as f64;
-    for entry in &mut listing.entries {
-        if entry.compressed_size.is_none() {
-            if let Some(uncompressed) = entry.size {
-                let est_compressed = (uncompressed as f64 * ratio).round() as u64;
-                entry.compressed_size = Some(est_compressed);
-            }
-        }
-    }
-}
-
 fn system_time_string(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -1409,7 +1383,7 @@ mod tests {
     use bzip2::Compression;
     use bzip2::write::BzEncoder;
     use std::fs::{self, File};
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tar::{Builder, Header};
@@ -1632,11 +1606,43 @@ mod tests {
 
         let listing = list_entries(&archive).unwrap();
         assert!(listing.entries.iter().any(|entry| entry.path == "b.txt"));
+        assert!(
+            listing
+                .entries
+                .iter()
+                .all(|entry| entry.compressed_size.is_none()),
+            "per-entry packed size must remain unknown when the backend does not report it"
+        );
 
         let report = extract_entry(&archive, "b.txt", temp.path("out")).unwrap();
         assert_eq!(report.written_bytes, 1);
         assert_eq!(fs::read_to_string(temp.path("out/b.txt")).unwrap(), "b");
         assert!(!temp.path("out/a.txt").exists());
+    }
+
+    #[test]
+    fn libarchive_listing_exposes_tar_link_targets() {
+        let temp = TestDir::new("browser_libarchive_tar_link");
+        let archive = temp.path("archive.tar");
+        let file = File::create(&archive).unwrap();
+        let mut builder = Builder::new(file);
+        let mut header = Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_link_name("target.txt").unwrap();
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "link.txt", io::empty())
+            .unwrap();
+        builder.finish().unwrap();
+
+        let listing = list_entries(&archive).unwrap();
+        let link = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "link.txt")
+            .unwrap();
+        assert_eq!(link.link_target.as_deref(), Some("target.txt"));
     }
 
     #[test]
