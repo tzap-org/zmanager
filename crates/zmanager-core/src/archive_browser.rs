@@ -331,6 +331,40 @@ pub fn visit_entries_with_options(
     if is_zip_family_archive(path) && !libarchive_backend::is_split_zip_path(path) {
         return visit_zip_entries(path, visitor);
     }
+    if is_tzap_archive_path(path) {
+        let listing =
+            crate::tzap_backend::list_tzap_index_with_optional_password(path, options.password)?;
+        let mut visited = 0;
+        for entry in listing.entries {
+            let browser_entry = BrowserEntry {
+                path: entry.path,
+                kind: tzap_entry_kind(entry.kind),
+                size: Some(entry.size),
+                compressed_size: Some(entry.compressed_size),
+                modified: None,
+                mode: None,
+                metadata_diagnostics: Vec::new(),
+                encrypted: Some(listing.encrypted),
+                method: Some("Zstd".to_owned()),
+                crc: None,
+                comment: None,
+                created: None,
+                accessed: None,
+                solid: Some(true),
+                link_target: None,
+                attributes: None,
+                uid: None,
+                gid: None,
+                owner: None,
+                group: None,
+            };
+            if !visitor(browser_entry) {
+                return Err(ArchiveBrowserError::Cancelled);
+            }
+            visited += 1;
+        }
+        return Ok(visited);
+    }
 
     let listing = list_entries_with_options(path, options)?;
     let mut visited = 0;

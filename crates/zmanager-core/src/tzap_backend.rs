@@ -376,6 +376,31 @@ pub struct TzapListing {
     pub encrypted: bool,
 }
 
+/// Fast `.tzap` listing built from authenticated index metadata.
+///
+/// This intentionally omits portable metadata that requires decoding every tar
+/// member group. It is suitable for responsive browsing and exact-path lookup.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapIndexListing {
+    /// Indexed entries.
+    pub entries: Vec<TzapIndexEntry>,
+    /// Whether the archive is encrypted.
+    pub encrypted: bool,
+}
+
+/// One `.tzap` entry described by authenticated index metadata.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TzapIndexEntry {
+    /// Archive path.
+    pub path: String,
+    /// Entry kind. Ambiguous zero-byte leaves are decoded individually.
+    pub kind: TzapEntryKind,
+    /// Uncompressed file bytes.
+    pub size: u64,
+    /// Compressed member-group bytes.
+    pub compressed_size: u64,
+}
+
 /// One `.tzap` archive entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapEntry {
@@ -1619,11 +1644,57 @@ pub fn list_tzap_with_optional_password(
 ) -> Result<TzapListing, TzapError> {
     let archive_path = archive.as_ref();
     let opened = open_tzap_archive(archive_path, password)?;
-    let encrypted = password.is_some()
-        || read_kdf_params_from_path(archive_path)
-            .ok()
-            .map_or(false, |params| !matches!(params, KdfParams::None));
+    let encrypted = password.is_some() || opened.crypto_header.kdf_algo != KdfAlgo::None;
     list_opened_tzap_archive(&opened, encrypted)
+}
+
+/// Lists `.tzap` archive entries from authenticated index metadata.
+///
+/// Unlike [`list_tzap_with_optional_password`], this does not decode every
+/// payload member group to obtain display-only metadata. Directory paths with
+/// descendants are identified from the index; only ambiguous zero-byte leaves
+/// are decoded to distinguish empty files, empty directories, and links.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or indexed.
+pub fn list_tzap_index_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+) -> Result<TzapIndexListing, TzapError> {
+    let archive_path = archive.as_ref();
+    let opened = open_tzap_archive(archive_path, password)?;
+    let encrypted = password.is_some() || opened.crypto_header.kdf_algo != KdfAlgo::None;
+    let indexed = opened.list_index_entries()?;
+    let mut directory_paths = BTreeSet::new();
+    for entry in &indexed {
+        for (offset, _) in entry.path.match_indices('/') {
+            if offset > 0 {
+                directory_paths.insert(entry.path[..offset].to_owned());
+            }
+        }
+    }
+
+    let mut entries = Vec::with_capacity(indexed.len());
+    for entry in indexed {
+        let kind = if directory_paths.contains(&entry.path) {
+            TzapEntryKind::Directory
+        } else if entry.file_data_size > 0 {
+            TzapEntryKind::File
+        } else {
+            opened
+                .extract_member(&entry.path)?
+                .map(|member| tzap_entry_kind_from_member_kind(member.kind))
+                .unwrap_or(TzapEntryKind::File)
+        };
+        entries.push(TzapIndexEntry {
+            path: entry.path,
+            kind,
+            size: entry.file_data_size,
+            compressed_size: entry.layout.compressed_size,
+        });
+    }
+    Ok(TzapIndexListing { entries, encrypted })
 }
 
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.
@@ -2817,6 +2888,48 @@ pub fn copy_tzap_files_to_writer_with_optional_password(
 ) -> Result<TzapExtractReport, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
     copy_opened_tzap_files_to_writer(&opened, selector, writer)
+}
+
+/// Copies one exact regular `.tzap` member to a writer with an optional
+/// passphrase without first enumerating every index entry.
+///
+/// # Errors
+///
+/// Returns [`TzapError`] when the archive cannot be opened or the selected
+/// member cannot be extracted.
+pub fn copy_tzap_file_to_writer_with_optional_password(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    entry_path: &str,
+    writer: &mut dyn io::Write,
+) -> Result<TzapExtractReport, TzapError> {
+    let opened = open_tzap_archive(archive, password)?;
+    let Some(entry) = opened.lookup_index_entry(entry_path)? else {
+        return Ok(TzapExtractReport {
+            written_entries: 0,
+            skipped_entries: 1,
+            written_bytes: 0,
+            warnings: vec![format!("skipped missing entry {entry_path}")],
+        });
+    };
+    let mut writer_ref = &mut *writer;
+    let Some(_diagnostics) = opened
+        .extract_file_to_writer(entry_path, &mut writer_ref)
+        .map_err(|source| tzap_extract_error(entry_path, source))?
+    else {
+        return Ok(TzapExtractReport {
+            written_entries: 0,
+            skipped_entries: 1,
+            written_bytes: 0,
+            warnings: vec![format!("skipped missing entry {entry_path}")],
+        });
+    };
+    Ok(TzapExtractReport {
+        written_entries: 1,
+        skipped_entries: 0,
+        written_bytes: entry.file_data_size,
+        warnings: Vec::new(),
+    })
 }
 
 /// Copies selected regular recipient-wrapped `.tzap` members to a writer.
@@ -4953,9 +5066,12 @@ fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), Tza
 mod tests {
     use super::{
         TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy,
-        TzapX509SigningOptions, TzapX509TrustOptions, create_tzap_from_manifest_with_context,
+        TzapX509SigningOptions, TzapX509TrustOptions,
+        copy_tzap_file_to_writer_with_optional_password,
+        copy_tzap_files_to_writer_with_optional_password, create_tzap_from_manifest_with_context,
         extract_tzap_file_to_destination, extract_tzap_with_optional_password_and_restore_options,
-        extract_tzap_with_recipient_key, is_tzap_archive_path, list_tzap_with_optional_password,
+        extract_tzap_with_recipient_key, is_tzap_archive_path,
+        list_tzap_index_with_optional_password, list_tzap_with_optional_password,
         list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots,
         summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
         test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
@@ -5456,6 +5572,170 @@ mod tests {
         assert_eq!(summary.format.encryption_algorithm, "none");
         assert_eq!(summary.format.key_derivation, "none");
         assert!(!summary.format.password_required);
+    }
+
+    #[test]
+    fn index_listing_matches_full_paths_kinds_and_sizes_and_exact_copy_skips_full_enumeration() {
+        let temp = TestDir::new("tzap_index_listing");
+        let empty_directory = temp.path("empty-dir");
+        let folder = temp.path("folder");
+        let empty_file = temp.path("empty.txt");
+        let payload = temp.path("folder/payload.txt");
+        let archive = temp.path("public.tzap");
+        fs::create_dir(&empty_directory).unwrap();
+        fs::create_dir(&folder).unwrap();
+        fs::write(&empty_file, []).unwrap();
+        fs::write(&payload, b"payload").unwrap();
+
+        let directory_permissions = PermissionSnapshot {
+            readonly: false,
+            unix_mode: Some(0o755),
+        };
+        let file_permissions = PermissionSnapshot {
+            readonly: false,
+            unix_mode: Some(0o644),
+        };
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![
+                ManifestEntry {
+                    archive_path: "empty-dir".to_owned(),
+                    source_path: empty_directory,
+                    file_type: ManifestFileType::Directory,
+                    size: 0,
+                    modified: None,
+                    permissions: directory_permissions.clone(),
+                    symlink_target: None,
+                },
+                ManifestEntry {
+                    archive_path: "empty.txt".to_owned(),
+                    source_path: empty_file,
+                    file_type: ManifestFileType::File,
+                    size: 0,
+                    modified: None,
+                    permissions: file_permissions.clone(),
+                    symlink_target: None,
+                },
+                ManifestEntry {
+                    archive_path: "folder".to_owned(),
+                    source_path: folder,
+                    file_type: ManifestFileType::Directory,
+                    size: 0,
+                    modified: None,
+                    permissions: directory_permissions,
+                    symlink_target: None,
+                },
+                ManifestEntry {
+                    archive_path: "folder/payload.txt".to_owned(),
+                    source_path: payload,
+                    file_type: ManifestFileType::File,
+                    size: 7,
+                    modified: None,
+                    permissions: file_permissions,
+                    symlink_target: None,
+                },
+            ],
+            total_bytes: 7,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+        create_tzap_from_manifest_with_context(
+            &manifest,
+            &archive,
+            &public_metadata_create_options(),
+            &mut context,
+        )
+        .unwrap();
+
+        let full = list_tzap_with_optional_password(&archive, None).unwrap();
+        let indexed = list_tzap_index_with_optional_password(&archive, None).unwrap();
+        let mut full_facts = full
+            .entries
+            .into_iter()
+            .map(|entry| (entry.path, entry.kind, entry.size))
+            .collect::<Vec<_>>();
+        let mut indexed_facts = indexed
+            .entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.kind, entry.size))
+            .collect::<Vec<_>>();
+        full_facts.sort_by(|left, right| left.0.cmp(&right.0));
+        indexed_facts.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(indexed_facts, full_facts);
+        assert!(
+            indexed
+                .entries
+                .iter()
+                .all(|entry| entry.compressed_size > 0)
+        );
+
+        let mut copied = Vec::new();
+        let report = copy_tzap_file_to_writer_with_optional_password(
+            &archive,
+            None,
+            "folder/payload.txt",
+            &mut copied,
+        )
+        .unwrap();
+        assert_eq!(copied, b"payload");
+        assert_eq!(report.written_entries, 1);
+        assert_eq!(report.written_bytes, 7);
+    }
+
+    #[test]
+    #[ignore = "performance characterization harness; set ZMANAGER_PERF_ARCHIVE"]
+    fn characterize_full_and_index_tzap_listing() {
+        let archive = std::env::var_os("ZMANAGER_PERF_ARCHIVE")
+            .map(PathBuf::from)
+            .expect("set ZMANAGER_PERF_ARCHIVE to a local .tzap fixture");
+
+        let full_started = std::time::Instant::now();
+        let full = list_tzap_with_optional_password(&archive, None).unwrap();
+        let full_elapsed = full_started.elapsed();
+
+        let index_started = std::time::Instant::now();
+        let indexed = list_tzap_index_with_optional_password(&archive, None).unwrap();
+        let index_elapsed = index_started.elapsed();
+
+        assert_eq!(indexed.entries.len(), full.entries.len());
+        let copy_path = indexed
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == super::TzapEntryKind::File && entry.size > 0)
+            .min_by_key(|entry| entry.size)
+            .map(|entry| entry.path.clone())
+            .expect("fixture should contain a non-empty regular file");
+        let old_copy_started = std::time::Instant::now();
+        let old_copy = copy_tzap_files_to_writer_with_optional_password(
+            &archive,
+            None,
+            |path| path == copy_path,
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        let old_copy_elapsed = old_copy_started.elapsed();
+        let exact_copy_started = std::time::Instant::now();
+        let exact_copy = copy_tzap_file_to_writer_with_optional_password(
+            &archive,
+            None,
+            &copy_path,
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        let exact_copy_elapsed = exact_copy_started.elapsed();
+        assert_eq!(exact_copy.written_bytes, old_copy.written_bytes);
+        eprintln!(
+            "tzap-listing-baseline entries={} full_ms={} index_ms={} old_copy_ms={} exact_copy_ms={}",
+            full.entries.len(),
+            full_elapsed.as_millis(),
+            index_elapsed.as_millis(),
+            old_copy_elapsed.as_millis(),
+            exact_copy_elapsed.as_millis(),
+        );
     }
 
     #[test]
