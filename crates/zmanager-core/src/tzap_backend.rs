@@ -386,6 +386,8 @@ pub struct TzapIndexListing {
     pub entries: Vec<TzapIndexEntry>,
     /// Whether the archive is encrypted.
     pub encrypted: bool,
+    /// The key derivation algorithm used, if any.
+    pub kdf_algo: tzap_core::format::KdfAlgo,
 }
 
 /// One `.tzap` entry described by authenticated index metadata.
@@ -1697,6 +1699,14 @@ pub fn list_tzap_index_with_optional_password(
         }
     }
 
+    let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
+    let total_compressed_size = opened.observed_archive_bytes();
+    let total_ratio = if total_uncompressed_size > 0 {
+        total_compressed_size as f64 / total_uncompressed_size as f64
+    } else {
+        1.0
+    };
+
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
         let kind = match entry.kind {
@@ -1712,7 +1722,11 @@ pub fn list_tzap_index_with_optional_password(
             path: entry.path,
             kind,
             size: entry.file_data_size,
-            compressed_size: entry.layout.compressed_size,
+            compressed_size: if entry.file_data_size > 0 {
+                ((entry.file_data_size as f64) * total_ratio) as u64
+            } else {
+                0
+            },
             mode: entry.mode,
             mtime: entry.mtime.seconds,
             mtime_nanoseconds: entry.mtime.nanoseconds,
@@ -1726,7 +1740,11 @@ pub fn list_tzap_index_with_optional_password(
             gname: entry.gname,
         });
     }
-    Ok(TzapIndexListing { entries, encrypted })
+    Ok(TzapIndexListing {
+        entries,
+        encrypted,
+        kdf_algo: opened.crypto_header.kdf_algo,
+    })
 }
 
 /// Lists only the immediate children of the requested directory.
@@ -1739,6 +1757,13 @@ pub fn list_tzap_directory_with_optional_password(
     let opened = open_tzap_archive(archive_path, password)?;
     let encrypted = password.is_some() || opened.crypto_header.kdf_algo != KdfAlgo::None;
     let indexed = opened.list_directory_contents(dir_path)?;
+    let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
+    let total_compressed_size = opened.observed_archive_bytes();
+    let total_ratio = if total_uncompressed_size > 0 {
+        total_compressed_size as f64 / total_uncompressed_size as f64
+    } else {
+        1.0
+    };
 
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
@@ -1755,7 +1780,11 @@ pub fn list_tzap_directory_with_optional_password(
             path: entry.path,
             kind,
             size: entry.file_data_size,
-            compressed_size: entry.layout.compressed_size,
+            compressed_size: if entry.file_data_size > 0 {
+                ((entry.file_data_size as f64) * total_ratio) as u64
+            } else {
+                0
+            },
             mode: entry.mode,
             mtime: entry.mtime.seconds,
             mtime_nanoseconds: entry.mtime.nanoseconds,
@@ -1769,7 +1798,11 @@ pub fn list_tzap_directory_with_optional_password(
             gname: entry.gname,
         });
     }
-    Ok(TzapIndexListing { entries, encrypted })
+    Ok(TzapIndexListing {
+        entries,
+        encrypted,
+        kdf_algo: opened.crypto_header.kdf_algo,
+    })
 }
 
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.
@@ -1791,6 +1824,14 @@ pub fn list_tzap_index_with_recipient_key(
 ) -> Result<TzapIndexListing, TzapError> {
     let opened = open_tzap_archive_with_recipient_key(archive, recipient_private_key)?;
     let indexed = opened.list_index_entries()?;
+    let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
+    let total_compressed_size = opened.observed_archive_bytes();
+    let total_ratio = if total_uncompressed_size > 0 {
+        total_compressed_size as f64 / total_uncompressed_size as f64
+    } else {
+        1.0
+    };
+
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
         let kind = match entry.kind {
@@ -1806,7 +1847,11 @@ pub fn list_tzap_index_with_recipient_key(
             path: entry.path,
             kind,
             size: entry.file_data_size,
-            compressed_size: entry.layout.compressed_size,
+            compressed_size: if entry.file_data_size > 0 {
+                ((entry.file_data_size as f64) * total_ratio) as u64
+            } else {
+                0
+            },
             mode: entry.mode,
             mtime: entry.mtime.seconds,
             mtime_nanoseconds: entry.mtime.nanoseconds,
@@ -1823,6 +1868,7 @@ pub fn list_tzap_index_with_recipient_key(
     Ok(TzapIndexListing {
         entries,
         encrypted: true,
+        kdf_algo: opened.crypto_header.kdf_algo,
     })
 }
 
@@ -5782,12 +5828,13 @@ mod tests {
         full_facts.sort_by(|left, right| left.0.cmp(&right.0));
         indexed_facts.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(indexed_facts, full_facts);
-        assert!(
-            indexed
-                .entries
-                .iter()
-                .all(|entry| entry.compressed_size > 0)
-        );
+        assert!(indexed.entries.iter().all(|entry| {
+            if entry.kind == super::TzapEntryKind::File && entry.size > 0 {
+                entry.compressed_size > 0
+            } else {
+                true
+            }
+        }));
 
         let mut copied = Vec::new();
         let report = copy_tzap_file_to_writer_with_optional_password(

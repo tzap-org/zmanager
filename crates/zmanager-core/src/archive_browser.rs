@@ -338,7 +338,7 @@ pub fn list_directory_with_options(
         list_tzap_directory(path, dir_path, options.password)
     } else {
         Err(ArchiveBrowserError::UnsupportedOperation(
-            "Archive format does not support on-demand directory listing.".to_string()
+            "Archive format does not support on-demand directory listing.".to_string(),
         ))
     }
 }
@@ -367,6 +367,16 @@ pub fn visit_entries_with_options(
             crate::tzap_backend::list_tzap_index_with_optional_password(path, options.password)?;
         let mut entries = listing.entries;
         entries.sort_by_key(|e| e.path.matches('/').count());
+        let method_str = if listing.encrypted {
+            match listing.kdf_algo {
+                tzap_core::format::KdfAlgo::Argon2id => Some("Zstd (Argon2id)".to_owned()),
+                tzap_core::format::KdfAlgo::RecipientWrap => Some("Zstd (Recipient)".to_owned()),
+                _ => Some("Zstd (Encrypted)".to_owned()),
+            }
+        } else {
+            Some("Zstd".to_owned())
+        };
+
         let mut visited = 0;
         for entry in entries {
             let browser_entry = BrowserEntry {
@@ -378,7 +388,7 @@ pub fn visit_entries_with_options(
                 mode: Some(entry.mode),
                 metadata_diagnostics: Vec::new(),
                 encrypted: Some(listing.encrypted),
-                method: Some("Zstd".to_owned()),
+                method: method_str.clone(),
                 crc: None,
                 comment: None,
                 created: entry
@@ -805,6 +815,16 @@ fn list_tzap_entries(
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
     let listing = crate::tzap_backend::list_tzap_index_with_optional_password(path, password)?;
+    let method_str = if listing.encrypted {
+        match listing.kdf_algo {
+            tzap_core::format::KdfAlgo::Argon2id => Some("Zstd (Argon2id)".to_owned()),
+            tzap_core::format::KdfAlgo::RecipientWrap => Some("Zstd (Recipient)".to_owned()),
+            _ => Some("Zstd (Encrypted)".to_owned()),
+        }
+    } else {
+        Some("Zstd".to_owned())
+    };
+
     let entries = listing
         .entries
         .into_iter()
@@ -817,7 +837,7 @@ fn list_tzap_entries(
             mode: Some(entry.mode),
             metadata_diagnostics: vec![],
             encrypted: Some(listing.encrypted),
-            method: Some("Zstd".to_owned()),
+            method: method_str.clone(),
             crc: None,
             comment: None,
             created: entry
@@ -843,7 +863,18 @@ fn list_tzap_directory(
     dir_path: &str,
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
-    let listing = crate::tzap_backend::list_tzap_directory_with_optional_password(path, dir_path, password)?;
+    let listing =
+        crate::tzap_backend::list_tzap_directory_with_optional_password(path, dir_path, password)?;
+    let method_str = if listing.encrypted {
+        match listing.kdf_algo {
+            tzap_core::format::KdfAlgo::Argon2id => Some("Zstd (Argon2id)".to_owned()),
+            tzap_core::format::KdfAlgo::RecipientWrap => Some("Zstd (Recipient)".to_owned()),
+            _ => Some("Zstd (Encrypted)".to_owned()),
+        }
+    } else {
+        Some("Zstd".to_owned())
+    };
+
     let entries = listing
         .entries
         .into_iter()
@@ -856,7 +887,7 @@ fn list_tzap_directory(
             mode: Some(entry.mode),
             metadata_diagnostics: vec![],
             encrypted: Some(listing.encrypted),
-            method: Some("Zstd".to_owned()),
+            method: method_str.clone(),
             crc: None,
             comment: None,
             created: entry
