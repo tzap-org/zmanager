@@ -7343,9 +7343,9 @@ fn list_entries_with_password(
         }])
     } else if is_tzap_archive(archive) {
         let listing = if let Some(recipient_key) = recipient_key {
-            zmanager_core::tzap_backend::list_tzap_with_recipient_key(archive, recipient_key)
+            zmanager_core::tzap_backend::list_tzap_index_with_recipient_key(archive, recipient_key)
         } else {
-            zmanager_core::tzap_backend::list_tzap_with_optional_password(archive, password)
+            zmanager_core::tzap_backend::list_tzap_index_with_optional_password(archive, password)
         };
         listing
             .map(|listing| {
@@ -7370,7 +7370,7 @@ fn list_entries_with_password(
                         .to_owned(),
                         name: entry.path,
                         size: entry.size,
-                        compressed_size: None,
+                        compressed_size: Some(entry.compressed_size),
                         mode: Some(entry.mode),
                         modified: tzap_timestamp_string(entry.mtime, entry.mtime_nanoseconds),
                         created: entry.created.and_then(|(seconds, nanoseconds)| {
@@ -7384,11 +7384,11 @@ fn list_entries_with_password(
                         solid: Some(true),
                         link_target: entry.link_target,
                         attributes: entry.attributes.map(|value| format!("{value:#010X}")),
-                        uid: entry.uid,
-                        gid: entry.gid,
-                        owner: entry.owner,
-                        group: entry.group,
-                        metadata_diagnostics: entry.metadata_diagnostics,
+                        uid: entry.uid.map(|x| x as u32),
+                        gid: entry.gid.map(|x| x as u32),
+                        owner: entry.uname,
+                        group: entry.gname,
+                        metadata_diagnostics: vec![],
                     })
                     .collect()
             })

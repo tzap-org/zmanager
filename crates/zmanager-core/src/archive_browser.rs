@@ -182,6 +182,8 @@ pub enum ArchiveBrowserError {
         path: String,
         kind: BrowserEntryKind,
     },
+    /// Selected operation is not supported by the format.
+    UnsupportedOperation(String),
 }
 
 impl fmt::Display for ArchiveBrowserError {
@@ -204,6 +206,9 @@ impl fmt::Display for ArchiveBrowserError {
             Self::UnsupportedEntry { path, kind } => {
                 write!(f, "unsupported preview/extract entry {path}: {kind:?}")
             }
+            Self::UnsupportedOperation(msg) => {
+                write!(f, "unsupported operation: {msg}")
+            }
         }
     }
 }
@@ -222,7 +227,9 @@ impl std::error::Error for ArchiveBrowserError {
             Self::RawStream(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
-            Self::EntryNotFound { .. } | Self::UnsupportedEntry { .. } => None,
+            Self::EntryNotFound { .. } => None,
+            Self::UnsupportedEntry { .. } => None,
+            Self::UnsupportedOperation(_) => None,
         }
     }
 }
@@ -312,6 +319,30 @@ pub fn list_entries_with_options(
     }
 }
 
+/// Returns true if the archive format supports on-demand directory listing.
+pub fn supports_on_demand_directories(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    is_tzap_archive_path(path)
+}
+
+/// Lists only the immediate children of a given directory path.
+///
+/// If `dir_path` is empty, lists the root directory.
+pub fn list_directory_with_options(
+    path: impl AsRef<Path>,
+    dir_path: &str,
+    options: BrowserListOptions<'_>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let path = path.as_ref();
+    if is_tzap_archive_path(path) {
+        list_tzap_directory(path, dir_path, options.password)
+    } else {
+        Err(ArchiveBrowserError::UnsupportedOperation(
+            "Archive format does not support on-demand directory listing.".to_string()
+        ))
+    }
+}
+
 /// Visits archive entries without requiring the caller to retain a complete listing.
 ///
 /// ZIP entries are delivered directly from the central directory. Backends that do
@@ -334,29 +365,35 @@ pub fn visit_entries_with_options(
     if is_tzap_archive_path(path) {
         let listing =
             crate::tzap_backend::list_tzap_index_with_optional_password(path, options.password)?;
+        let mut entries = listing.entries;
+        entries.sort_by_key(|e| e.path.matches('/').count());
         let mut visited = 0;
-        for entry in listing.entries {
+        for entry in entries {
             let browser_entry = BrowserEntry {
                 path: entry.path,
                 kind: tzap_entry_kind(entry.kind),
                 size: Some(entry.size),
                 compressed_size: Some(entry.compressed_size),
-                modified: None,
-                mode: None,
+                modified: tzap_modified_string(entry.mtime, entry.mtime_nanoseconds),
+                mode: Some(entry.mode),
                 metadata_diagnostics: Vec::new(),
                 encrypted: Some(listing.encrypted),
                 method: Some("Zstd".to_owned()),
                 crc: None,
                 comment: None,
-                created: None,
-                accessed: None,
+                created: entry
+                    .created
+                    .and_then(|(s, ns)| tzap_modified_string(s, ns)),
+                accessed: entry
+                    .accessed
+                    .and_then(|(s, ns)| tzap_modified_string(s, ns)),
                 solid: Some(true),
-                link_target: None,
-                attributes: None,
-                uid: None,
-                gid: None,
-                owner: None,
-                group: None,
+                link_target: entry.link_target,
+                attributes: entry.attributes.map(|a| format!("{:08X}", a)),
+                uid: entry.uid.map(|u| u as u32),
+                gid: entry.gid.map(|g| g as u32),
+                owner: entry.uname,
+                group: entry.gname,
             };
             if !visitor(browser_entry) {
                 return Err(ArchiveBrowserError::Cancelled);
@@ -767,7 +804,7 @@ fn list_tzap_entries(
     path: &Path,
     password: Option<&str>,
 ) -> Result<BrowserListing, ArchiveBrowserError> {
-    let listing = crate::tzap_backend::list_tzap_with_optional_password(path, password)?;
+    let listing = crate::tzap_backend::list_tzap_index_with_optional_password(path, password)?;
     let entries = listing
         .entries
         .into_iter()
@@ -775,10 +812,10 @@ fn list_tzap_entries(
             path: entry.path,
             kind: tzap_entry_kind(entry.kind),
             size: Some(entry.size),
-            compressed_size: None,
+            compressed_size: Some(entry.compressed_size),
             modified: tzap_modified_string(entry.mtime, entry.mtime_nanoseconds),
             mode: Some(entry.mode),
-            metadata_diagnostics: entry.metadata_diagnostics,
+            metadata_diagnostics: vec![],
             encrypted: Some(listing.encrypted),
             method: Some("Zstd".to_owned()),
             crc: None,
@@ -792,10 +829,49 @@ fn list_tzap_entries(
             solid: Some(true),
             link_target: entry.link_target,
             attributes: entry.attributes.map(|attr| format!("{attr:#010X}")),
-            uid: entry.uid,
-            gid: entry.gid,
-            owner: entry.owner,
-            group: entry.group,
+            uid: entry.uid.map(|x| x as u32),
+            gid: entry.gid.map(|x| x as u32),
+            owner: entry.uname,
+            group: entry.gname,
+        })
+        .collect();
+    Ok(BrowserListing { entries })
+}
+
+fn list_tzap_directory(
+    path: &Path,
+    dir_path: &str,
+    password: Option<&str>,
+) -> Result<BrowserListing, ArchiveBrowserError> {
+    let listing = crate::tzap_backend::list_tzap_directory_with_optional_password(path, dir_path, password)?;
+    let entries = listing
+        .entries
+        .into_iter()
+        .map(|entry| BrowserEntry {
+            path: entry.path,
+            kind: tzap_entry_kind(entry.kind),
+            size: Some(entry.size),
+            compressed_size: Some(entry.compressed_size),
+            modified: tzap_modified_string(entry.mtime, entry.mtime_nanoseconds),
+            mode: Some(entry.mode),
+            metadata_diagnostics: vec![],
+            encrypted: Some(listing.encrypted),
+            method: Some("Zstd".to_owned()),
+            crc: None,
+            comment: None,
+            created: entry
+                .created
+                .and_then(|(sec, nsec)| tzap_modified_string(sec, nsec)),
+            accessed: entry
+                .accessed
+                .and_then(|(sec, nsec)| tzap_modified_string(sec, nsec)),
+            solid: Some(true),
+            link_target: entry.link_target,
+            attributes: entry.attributes.map(|attr| format!("{attr:#010X}")),
+            uid: entry.uid.map(|x| x as u32),
+            gid: entry.gid.map(|x| x as u32),
+            owner: entry.uname,
+            group: entry.gname,
         })
         .collect();
     Ok(BrowserListing { entries })
