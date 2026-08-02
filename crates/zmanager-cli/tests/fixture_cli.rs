@@ -1326,8 +1326,15 @@ fn zm_extract_tzap_honors_metadata_restore_policy() {
         !listed_file["created"].is_null(),
         "APFS creation time should be listed"
     );
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
     assert!(!listed_file["attributes"].is_null());
+    #[cfg(target_os = "macos")]
+    {
+        // Fast index listing for .tzap on macOS exposes null for portable attributes
+        // because native BSD flags are stored in PAX header extensions (TZAP.macos.st-flags).
+        // Restored BSD flags on extraction are verified below.
+        assert!(listed_file["attributes"].is_null());
+    }
     let listed_link = entries
         .iter()
         .find(|entry| entry["name"] == "project/current")

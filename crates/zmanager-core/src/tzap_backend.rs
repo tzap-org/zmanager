@@ -1690,15 +1690,6 @@ pub fn list_tzap_index_with_optional_password(
     let opened = open_tzap_archive(archive_path, password)?;
     let encrypted = password.is_some() || opened.crypto_header.kdf_algo != KdfAlgo::None;
     let indexed = opened.list_index_entries()?;
-    let mut directory_paths = BTreeSet::new();
-    for entry in &indexed {
-        for (offset, _) in entry.path.match_indices('/') {
-            if offset > 0 {
-                directory_paths.insert(entry.path[..offset].to_owned());
-            }
-        }
-    }
-
     let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
     let total_compressed_size = opened.observed_archive_bytes();
     let total_ratio = if total_uncompressed_size > 0 {

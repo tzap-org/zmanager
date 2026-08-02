@@ -1917,4 +1917,51 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+
+    #[test]
+    fn list_tzap_directory_pages_virtual_subdirectories() {
+        let temp = TestDir::new("list-tzap-directory");
+        let payload = temp.path("payload.txt");
+        fs::write(&payload, b"hello").unwrap();
+        let archive = temp.path("test.tzap");
+
+        let manifest = ArchiveManifest {
+            root: temp.root.clone(),
+            entries: vec![ManifestEntry {
+                archive_path: "payload.txt".to_owned(),
+                source_path: payload,
+                file_type: ManifestFileType::File,
+                size: 5,
+                modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                permissions: PermissionSnapshot {
+                    readonly: false,
+                    unix_mode: Some(0o644),
+                },
+                symlink_target: None,
+            }],
+            total_bytes: 5,
+            excluded_entries: Vec::new(),
+            excluded_bytes: 0,
+            warnings: Vec::new(),
+        };
+        let options = TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+        };
+        let token = CancellationToken::new();
+        let mut events = |_| {};
+        let mut context = JobContext::new(&token, &mut events);
+
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
+            .unwrap();
+
+        let root_listing = list_entries(&archive).unwrap();
+        assert!(!root_listing.entries.is_empty());
+    }
 }
