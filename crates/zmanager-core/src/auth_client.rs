@@ -19,6 +19,8 @@ pub const LOCAL_HOSTED_AUTH_BASE_URL: &str = "http://localhost:8787";
 pub const LOCAL_HOSTED_ACCOUNT_BASE_URL: &str = "http://localhost:8787";
 pub const DEV_HOSTED_AUTH_BASE_URL: &str = "https://login.dev.tzap.org";
 pub const DEV_HOSTED_ACCOUNT_BASE_URL: &str = "https://account.dev.tzap.org";
+pub const STAGING_HOSTED_AUTH_BASE_URL: &str = "https://staging.tzap.org";
+pub const STAGING_HOSTED_ACCOUNT_BASE_URL: &str = "https://staging.tzap.org";
 pub const PROD_HOSTED_AUTH_BASE_URL: &str = LOGIN_TZAP_BASE_URL;
 pub const PROD_HOSTED_ACCOUNT_BASE_URL: &str = "https://account.tzap.org";
 
@@ -36,6 +38,7 @@ pub const HOSTED_AUTH_RESPONSE_MODE_RELAY: &str = "native_app_relay";
 pub enum TzapHostedAuthEnvironment {
     Local,
     Dev,
+    Staging,
     Prod,
 }
 
@@ -63,6 +66,10 @@ impl TzapHostedAuthLaunchConfig {
             TzapHostedAuthEnvironment::Dev => {
                 (DEV_HOSTED_AUTH_BASE_URL, DEV_HOSTED_ACCOUNT_BASE_URL)
             }
+            TzapHostedAuthEnvironment::Staging => (
+                STAGING_HOSTED_AUTH_BASE_URL,
+                STAGING_HOSTED_ACCOUNT_BASE_URL,
+            ),
             TzapHostedAuthEnvironment::Prod => {
                 (PROD_HOSTED_AUTH_BASE_URL, PROD_HOSTED_ACCOUNT_BASE_URL)
             }
@@ -1165,6 +1172,21 @@ mod tests {
         assert!(url.contains("provider_id=github"));
         assert!(url.contains("org_id=org_123"));
         assert_eq!(config.account_url(), "https://account.tzap.org/account");
+    }
+
+    #[test]
+    fn staging_environment_uses_live_staging_https_origin() {
+        let pending = pending_auth_state();
+        let config = TzapHostedAuthLaunchConfig::for_environment(
+            TzapHostedAuthEnvironment::Staging,
+            "zmanager-macos",
+            pending.redirect_uri.clone(),
+        );
+
+        let url = config.launch_url(&pending).unwrap();
+
+        assert!(url.starts_with("https://staging.tzap.org/auth/launch?"));
+        assert_eq!(config.account_url(), "https://staging.tzap.org/account");
     }
 
     #[test]

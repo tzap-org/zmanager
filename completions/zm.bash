@@ -17,7 +17,7 @@ _zm()
     local auth_commands="login callback status forget account"
     local cert_commands="list enroll renew revoke"
     local device_commands="retire"
-    local contact_commands="export import list remove"
+    local contact_commands="keygen export import list remove"
     local global_opts="-h --help -V --version -q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt -c --create -x --extract -t --list -T --test -f --file"
     local create_opts="-h --help -r --recursive -C --directory -@ --files-from --null --clean --no-ignore --hidden --no-hidden -i --include --exclude --exclude-from --format --method --level -0 -1 -2 -3 -4 -5 -6 -7 -8 -9 --store --solid --no-solid --volume-size --recipient-cert --signing-cert --signing-private-key --signing-chain -j --junk-paths -y --preserve-symlinks --follow-symlinks --preserve-metadata -X --no-metadata -f --file --force --dry-run -T --test-after --encrypt --password-stdin"
     local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin --recipient-key --restore --allow-degraded"
@@ -29,7 +29,7 @@ _zm()
     local cert_opts="$identity_opts --certificate-id --service-base-url --trusted-root-cert --org-id --requested-validity-seconds"
     local sign_opts="$identity_opts --certificate-id --output --claimed-signing-time"
     local verify_opts="-h --help --custom-trust-root --custom-trust-root-cert --status-response --time --json"
-    local contact_opts="$identity_opts --recipient-key-id --certificate-id --display-name --device-label --output --accept --custom-trust-root --custom-trust-root-cert"
+    local contact_opts="$identity_opts --label --recipient-key-id --certificate-id --display-name --device-label --output --accept --custom-trust-root --custom-trust-root-cert"
     local share_opts="$identity_opts --contact --force"
     local format_values="zip tar.zst tzap aar 7z tgz"
     local progress_values="auto always never"
@@ -56,7 +56,7 @@ _zm()
                 continue
             fi
             case "$command:$word" in
-                auth:login|auth:callback|auth:status|auth:forget|auth:account|cert:list|cert:enroll|cert:renew|cert:revoke|device:retire|contact:export|contact:import|contact:list|contact:remove)
+                auth:login|auth:callback|auth:status|auth:forget|auth:account|cert:list|cert:enroll|cert:renew|cert:revoke|device:retire|contact:keygen|contact:export|contact:import|contact:list|contact:remove)
                     subcommand="$word"
                     break
                     ;;
@@ -90,7 +90,7 @@ _zm()
             return
             ;;
         --environment)
-            COMPREPLY=($(compgen -W "local dev prod" -- "$cur"))
+            COMPREPLY=($(compgen -W "local dev staging prod" -- "$cur"))
             return
             ;;
         completions)

@@ -1735,6 +1735,40 @@ pub fn run_tzap_extract_job_with_password_and_policy_and_restore_options(
     finish_tzap_extract_result(result, sink)
 }
 
+/// Runs a recipient-key TZAP extract while retaining the secret in its
+/// zeroizing container and emitting the normal job lifecycle/progress events.
+pub fn run_tzap_extract_job_with_recipient_key_and_policy(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    recipient_private_key: &crate::secrets::SecretBytes,
+    policy: ExtractionPolicy,
+    restore_options: tzap_backend::TzapRestoreOptions,
+    token: &CancellationToken,
+    sink: &mut dyn JobEventSink,
+) -> Result<tzap_backend::TzapExtractReport, TzapError> {
+    sink.emit(JobEvent::Started {
+        kind: JobKind::TzapExtract,
+        total_bytes: None,
+    });
+    if token.is_cancelled() {
+        sink.emit(JobEvent::Cancelled {
+            message: "job cancelled".to_owned(),
+        });
+        return Err(TzapError::Cancelled);
+    }
+    let mut context = JobContext::new(token, sink);
+    let result = tzap_backend::extract_tzap_with_recipient_key_secret_and_context(
+        archive_path,
+        destination,
+        policy,
+        recipient_private_key,
+        restore_options,
+        &mut context,
+    );
+    context.flush_progress();
+    finish_tzap_extract_result(result, sink)
+}
+
 fn finish_zip_create_result(
     result: Result<ZipCreateReport, ZipBackendError>,
     sink: &mut dyn JobEventSink,

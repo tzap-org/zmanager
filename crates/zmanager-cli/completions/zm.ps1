@@ -23,7 +23,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $authCommands = @("login", "callback", "status", "forget", "account")
     $certCommands = @("list", "enroll", "renew", "revoke")
     $deviceCommands = @("retire")
-    $contactCommands = @("export", "import", "list", "remove")
+    $contactCommands = @("keygen", "export", "import", "list", "remove")
 
     $globalOptions = @(
         "-h", "--help", "-V", "--version", "-q", "--quiet", "-v", "--verbose",
@@ -75,7 +75,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         device = @("-h", "--help", "--state-dir", "--account-key", "--json")
         sign = @("-h", "--help", "--state-dir", "--account-key", "--certificate-id", "--output", "--claimed-signing-time", "--json")
         verify = @("-h", "--help", "--custom-trust-root", "--custom-trust-root-cert", "--status-response", "--time", "--json")
-        contact = @("-h", "--help", "--state-dir", "--account-key", "--recipient-key-id", "--certificate-id", "--display-name", "--device-label", "--output", "--accept", "--custom-trust-root", "--custom-trust-root-cert", "--json")
+        contact = @("-h", "--help", "--state-dir", "--account-key", "--label", "--recipient-key-id", "--certificate-id", "--display-name", "--device-label", "--output", "--accept", "--custom-trust-root", "--custom-trust-root-cert", "--json")
         share = @("-h", "--help", "--state-dir", "--account-key", "--contact", "--force", "--json")
         formats = @("-h", "--help", "--json")
         doctor = @("-h", "--help", "--json")

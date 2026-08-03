@@ -4684,6 +4684,9 @@ mod tests {
             TzapX509SigningOptions::CertificateAndKey { .. } => {
                 panic!("expected PKCS#12 identity")
             }
+            TzapX509SigningOptions::InMemory { .. } => {
+                panic!("expected PKCS#12 identity")
+            }
         }
 
         let advanced = unsafe {
@@ -4709,6 +4712,9 @@ mod tests {
                 assert_eq!(signing_chain, vec![PathBuf::from("/tmp/intermediate.pem")]);
             }
             TzapX509SigningOptions::Pkcs12 { .. } => {
+                panic!("expected certificate and key identity")
+            }
+            TzapX509SigningOptions::InMemory { .. } => {
                 panic!("expected certificate and key identity")
             }
         }

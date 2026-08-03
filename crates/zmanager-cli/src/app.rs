@@ -4,11 +4,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, IsTerminal as _, Read as _, Write as _};
-use std::net::TcpStream;
+use std::io::{self, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zmanager_core::auth_client::TzapSessionStore as _;
 use zmanager_core::jobs::{CancellationToken, JobContext, JobEvent, JobKind};
 use zmanager_core::local_identity_store::TzapLocalIdentityStore as _;
@@ -362,7 +361,7 @@ Examples:
 Options:
       --state-dir <dir>          Store local auth/session state in dir
       --account-key <key>        Local account inventory key; default is default
-      --environment <local|dev|prod>
+      --environment <local|dev|staging|prod>
                                   Select named hosted endpoints
       --auth-base-url <url>      Override hosted Auth base URL
       --account-base-url <url>   Override hosted Account base URL
@@ -468,6 +467,7 @@ const CONTACT_HELP: &str = "\
 Manage TZAP contact cards
 
 Usage:
+  zm contact keygen [--label <name>] [options]
   zm contact export --recipient-key-id <id> --certificate-id <id> --display-name <name> --output <file>
   zm contact import <card.json> --accept [options]
   zm contact list [options]
@@ -476,6 +476,7 @@ Usage:
 Options:
       --state-dir <dir>          Store local identity state in dir
       --account-key <key>        Local account inventory key; default is default
+      --label <name>             Local label for a newly generated recipient key
       --recipient-key-id <id>    Local recipient key id for export
       --certificate-id <id>      Local signing certificate id for export
       --display-name <name>      Contact card display name
@@ -1551,12 +1552,11 @@ fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
 const DEFAULT_TZAP_STATE_DIR_ENV: &str = "ZM_TZAP_STATE_DIR";
 const DEFAULT_TZAP_STATE_HOME_CHILD: &str = ".zmanager/tzap";
 const DEFAULT_TZAP_CLIENT_ID: &str = "zmanager-cli";
-const DEFAULT_TZAP_REDIRECT_URI: &str = "zmanager://auth/callback";
+const DEFAULT_TZAP_REDIRECT_URI: &str = "tzap://auth/callback";
 const DEFAULT_TZAP_PROVIDER_ID: &str = "hosted";
 const AUTH_PENDING_FILE: &str = "auth-pending.json";
 const AUTH_SESSION_FILE: &str = "auth-session.json";
 const AUTH_SESSION_EXCHANGE_PATH: &str = "/auth/session/exchange";
-const HTTP_DEFAULT_PORT: u16 = 80;
 const MISSING_TZAP_SESSION: &str = "no local TZAP session";
 const DEFAULT_TZAP_CERT_VALIDITY_SECONDS: u64 = 90 * 24 * 60 * 60;
 const STAGING_ENROLLMENT_KEY_LABEL: &str = "Hosted TZAP enrollment signing key";
@@ -1703,11 +1703,12 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
                     "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
+                    "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
                         return command_usage_error(
                             "auth",
-                            "environment must be local, dev, or prod",
+                            "environment must be local, dev, staging, or prod",
                             &global,
                         );
                     }
@@ -1974,11 +1975,12 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
                     "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
+                    "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
                         return command_usage_error(
                             "auth",
-                            "environment must be local, dev, or prod",
+                            "environment must be local, dev, staging, or prod",
                             &global,
                         );
                     }
@@ -2472,6 +2474,7 @@ fn contact_command(args: &[String], global: GlobalOptions) -> ExitCode {
         };
     }
     match args[0].as_str() {
+        "keygen" => contact_keygen_command(&args[1..], global),
         "list" => contact_list_command(&args[1..], global),
         "remove" => contact_remove_command(&args[1..], global),
         "import" => contact_import_command(&args[1..], global),
@@ -2482,6 +2485,76 @@ fn contact_command(args: &[String], global: GlobalOptions) -> ExitCode {
             &global,
         ),
     }
+}
+
+fn contact_keygen_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut label = "ZManager recipient key".to_owned();
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir =
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+            }
+            "--account-key" => {
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
+            }
+            "--label" => label = take_value_or_exit(args, &mut index, "--label"),
+            value => {
+                return command_usage_error(
+                    "contact",
+                    &format!("unknown contact keygen option: {value}"),
+                    &global,
+                );
+            }
+        }
+    }
+
+    let material = match zmanager_core::device_identity::generate_recipient_encryption_key() {
+        Ok(material) => material,
+        Err(error) => {
+            print_stable_tzap_error("contact_keygen", &error.to_string(), &global);
+            return ExitCode::FAILURE;
+        }
+    };
+    let key_id = material.public_key_fingerprint.clone();
+    let record = zmanager_core::local_identity_store::TzapRecipientEncryptionKeyRecord {
+        key_id: key_id.clone(),
+        algorithm: material.algorithm.to_owned(),
+        public_key_fingerprint: material.public_key_fingerprint,
+        public_key_der: material.public_key_spki_der,
+        private_key_der: material.private_key_der,
+        created_at_unix_seconds: current_unix_seconds(),
+        label: Some(label),
+    };
+    let mut store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut inventory = match store.load_inventory(&context.account_key) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            print_stable_tzap_error("contact_keygen", &error.to_string(), &global);
+            return ExitCode::FAILURE;
+        }
+    };
+    inventory.recipient_encryption_keys.push(record);
+    if let Err(error) = store.save_inventory(&context.account_key, inventory) {
+        print_stable_tzap_error("contact_keygen", &error.to_string(), &global);
+        return ExitCode::FAILURE;
+    }
+
+    if global.json {
+        println!(
+            "{{\"generated\":true,\"recipient_key_id\":\"{}\"}}",
+            json_escape(&key_id)
+        );
+    } else {
+        print_success_line(&global, format_args!("generated recipient key {key_id}"));
+    }
+    ExitCode::SUCCESS
 }
 
 fn contact_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -3704,154 +3777,48 @@ fn http_json_request(
     bearer_token: Option<&str>,
     body: Option<&Value>,
 ) -> Result<zmanager_core::auth_client::TzapAuthHttpResponse, String> {
-    let target = HttpUrl::parse(url)?;
-    let body = body
-        .map(serde_json::to_vec)
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let mut stream = TcpStream::connect((target.host.as_str(), target.port)).map_err(|error| {
-        format!(
-            "could not connect to {}:{}: {error}",
-            target.host, target.port
-        )
-    })?;
-    write!(
-        stream,
-        "{method} {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n",
-        target.path, target.host
-    )
-    .map_err(|error| error.to_string())?;
-    if let Some(token) = bearer_token {
-        write!(stream, "Authorization: Bearer {token}\r\n").map_err(|error| error.to_string())?;
-    }
-    if let Some(body) = &body {
-        write!(
-            stream,
-            "Content-Type: application/json\r\nContent-Length: {}\r\n",
-            body.len()
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    stream
-        .write_all(b"\r\n")
-        .map_err(|error| error.to_string())?;
-    if let Some(body) = body {
-        stream.write_all(&body).map_err(|error| error.to_string())?;
-    }
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|error| error.to_string())?;
-    let (status_code, response_body) = parse_http_response(&response)?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("could not initialize hosted HTTPS client: {error}"))?;
+    let request = build_hosted_http_request(&client, method, url, bearer_token, body)?;
+    let response = client
+        .execute(request)
+        .map_err(|error| format!("hosted HTTPS request failed: {error}"))?;
+    let status_code = response.status().as_u16();
+    let response_body = response
+        .bytes()
+        .map_err(|error| format!("could not read hosted HTTPS response: {error}"))?
+        .to_vec();
     Ok(zmanager_core::auth_client::TzapAuthHttpResponse {
         status_code,
         body: response_body,
     })
 }
 
-#[derive(Debug)]
-struct HttpUrl {
-    host: String,
-    port: u16,
-    path: String,
-}
-
-impl HttpUrl {
-    fn parse(url: &str) -> Result<Self, String> {
-        let without_scheme = url
-            .strip_prefix("http://")
-            .ok_or_else(|| "hosted auth exchange currently requires an http:// URL".to_owned())?;
-        let (authority, path) = without_scheme
-            .split_once('/')
-            .map_or((without_scheme, "/"), |(authority, path)| (authority, path));
-        if authority.is_empty() {
-            return Err("hosted auth exchange URL is missing a host".to_owned());
-        }
-        let (host, port) = if let Some((host, port)) = authority.rsplit_once(':') {
-            let port = port.parse::<u16>().map_err(|error| error.to_string())?;
-            (host, port)
-        } else {
-            (authority, HTTP_DEFAULT_PORT)
-        };
-        if host.is_empty() {
-            return Err("hosted auth exchange URL is missing a host".to_owned());
-        }
-        Ok(Self {
-            host: host.to_owned(),
-            port,
-            path: format!("/{path}"),
-        })
+fn build_hosted_http_request(
+    client: &reqwest::blocking::Client,
+    method: &str,
+    url: &str,
+    bearer_token: Option<&str>,
+    body: Option<&Value>,
+) -> Result<reqwest::blocking::Request, String> {
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|error| format!("invalid hosted HTTP method: {error}"))?;
+    let mut request = client
+        .request(method, url)
+        .header(reqwest::header::ACCEPT, "application/json");
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
     }
-}
-
-fn parse_http_response(response: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    let separator = b"\r\n\r\n";
-    let header_end = response
-        .windows(separator.len())
-        .position(|window| window == separator)
-        .ok_or_else(|| "hosted auth exchange response was malformed".to_owned())?;
-    let headers = String::from_utf8_lossy(&response[..header_end]);
-    let mut header_lines = headers.lines();
-    let status_line = header_lines
-        .next()
-        .ok_or_else(|| "hosted auth exchange response was missing a status line".to_owned())?;
-    let status_code = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| "hosted auth exchange response status was malformed".to_owned())?
-        .parse::<u16>()
-        .map_err(|error| error.to_string())?;
-    let chunked = header_lines.any(|line| {
-        line.split_once(':').is_some_and(|(name, value)| {
-            name.eq_ignore_ascii_case("transfer-encoding")
-                && value.to_ascii_lowercase().contains("chunked")
-        })
-    });
-    let body = response[header_end + separator.len()..].to_vec();
-    if chunked {
-        decode_chunked_body(&body).map(|decoded| (status_code, decoded))
-    } else {
-        Ok((status_code, body))
+    if let Some(body) = body {
+        request = request.json(body);
     }
-}
-
-fn decode_chunked_body(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut index = 0usize;
-    let mut output = Vec::new();
-    loop {
-        let remaining = bytes
-            .get(index..)
-            .ok_or_else(|| "chunked response is truncated".to_owned())?;
-        let line_end = remaining
-            .windows(2)
-            .position(|window| window == b"\r\n")
-            .ok_or_else(|| "chunked response is malformed".to_owned())?
-            + index;
-        let size_text = std::str::from_utf8(&bytes[index..line_end])
-            .map_err(|error| error.to_string())?
-            .split_once(';')
-            .map_or_else(
-                || std::str::from_utf8(&bytes[index..line_end]).unwrap_or(""),
-                |(size, _)| size,
-            );
-        let size =
-            usize::from_str_radix(size_text.trim(), 16).map_err(|error| error.to_string())?;
-        index = line_end + 2;
-        if size == 0 {
-            return Ok(output);
-        }
-        let end = index
-            .checked_add(size)
-            .ok_or_else(|| "chunked response is too large".to_owned())?;
-        let trailer_end = end
-            .checked_add(2)
-            .ok_or_else(|| "chunked response is too large".to_owned())?;
-        if bytes.get(end..trailer_end) != Some(b"\r\n") {
-            return Err("chunked response body is truncated".to_owned());
-        }
-        output.extend_from_slice(&bytes[index..end]);
-        index = trailer_end;
-    }
+    request
+        .build()
+        .map_err(|error| format!("invalid hosted HTTPS request: {error}"))
 }
 
 fn percent_decode_url_component(value: &str) -> Result<String, String> {
@@ -8762,8 +8729,9 @@ fn run_libarchive_extract_with_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        ArchiveFormat, CreateRequest, ExtractRequest, GlobalOptions, InteractiveOverwriteResolver,
-        ListRequest, TestRequest, normalize_prompted_password, parse_create_request,
+        ArchiveFormat, CreateRequest, DEFAULT_TZAP_REDIRECT_URI, ExtractRequest, GlobalOptions,
+        InteractiveOverwriteResolver, ListRequest, TestRequest, build_hosted_http_request,
+        contact_keygen_command, normalize_prompted_password, parse_create_request,
         parse_extract_request, parse_list_request, parse_test_request, publish_archive,
         tzap_default_volume_loss_tolerance, validate_create_options,
     };
@@ -8771,7 +8739,49 @@ mod tests {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zmanager_core::local_identity_store::TzapLocalIdentityStore as _;
     use zmanager_core::safety::{OverwriteConflict, OverwriteDecision, OverwriteResolver};
+
+    #[test]
+    fn native_auth_defaults_match_registered_zmanager_cli_redirect() {
+        assert_eq!(DEFAULT_TZAP_REDIRECT_URI, "tzap://auth/callback");
+    }
+
+    #[test]
+    fn hosted_http_transport_accepts_https_urls() {
+        let client = reqwest::blocking::Client::new();
+        let request =
+            build_hosted_http_request(&client, "GET", "https://staging.tzap.org/v1/me", None, None)
+                .unwrap();
+
+        assert_eq!(request.url().scheme(), "https");
+        assert_eq!(request.url().host_str(), Some("staging.tzap.org"));
+        assert_eq!(request.url().path(), "/v1/me");
+    }
+
+    #[test]
+    fn contact_keygen_persists_a_distinct_recipient_key() {
+        let temp = TestDir::new("contact-keygen");
+        let args = vec![
+            "--state-dir".to_owned(),
+            temp.root.display().to_string(),
+            "--label".to_owned(),
+            "Test recipient".to_owned(),
+            "--json".to_owned(),
+        ];
+
+        let _ = contact_keygen_command(&args, GlobalOptions::default());
+
+        let store =
+            zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
+        let inventory = store.load_inventory("default").unwrap();
+        assert_eq!(inventory.recipient_encryption_keys.len(), 1);
+        assert_eq!(
+            inventory.recipient_encryption_keys[0].label.as_deref(),
+            Some("Test recipient")
+        );
+        assert!(inventory.device_signing_keys.is_empty());
+    }
 
     #[test]
     fn password_prompt_treats_eof_as_cancelled() {

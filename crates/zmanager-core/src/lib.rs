@@ -19,6 +19,7 @@ pub mod document_envelope;
 pub mod document_signing;
 pub mod document_verification;
 pub mod enrollment_client;
+pub mod identity_catalog;
 pub mod jcs;
 pub mod jobs;
 pub mod libarchive_backend;

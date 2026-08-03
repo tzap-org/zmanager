@@ -590,7 +590,10 @@ run_case list_files zm list ""
         "auth_commands: login callback status forget account\n",
     );
     assert_contains(&stdout, "cert_commands: list enroll renew revoke\n");
-    assert_contains(&stdout, "contact_commands: export import list remove\n");
+    assert_contains(
+        &stdout,
+        "contact_commands: keygen export import list remove\n",
+    );
     assert_contains(&stdout, "auth_options: --help");
     assert_contains(&stdout, "--environment");
     assert_contains(&stdout, "completion_shells: bash zsh fish powershell\n");

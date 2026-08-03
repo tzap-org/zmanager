@@ -175,7 +175,7 @@ identity_options=(
 auth_options=(
   $identity_options
   '--print-url[Print the hosted login URL]'
-  '--environment[Select hosted endpoints]:environment:(local dev prod)'
+  '--environment[Select hosted endpoints]:environment:(local dev staging prod)'
   '--auth-base-url[Override hosted Auth base URL]:url'
   '--account-base-url[Override hosted Account base URL]:url'
   '--client-id[Hosted Auth client id]:id'
@@ -215,6 +215,7 @@ verify_options=(
 
 contact_options=(
   $identity_options
+  '--label[Local recipient key label]:label'
   '--recipient-key-id[Local recipient key id]:id'
   '--certificate-id[Local signing certificate id]:id'
   '--display-name[Contact display name]:name'
@@ -252,7 +253,7 @@ _zm_command() {
         device) _arguments $identity_options '1:device command:(retire)' ;;
         sign) _arguments $sign_options '1:input JSON:_files' ;;
         verify) _arguments $verify_options '1:envelope JSON:_files' ;;
-        contact) _arguments $contact_options '1:contact command:(export import list remove)' '*:argument:_files' ;;
+        contact) _arguments $contact_options '1:contact command:(keygen export import list remove)' '*:argument:_files' ;;
         share) _arguments $share_options '1:archive:_files' '*:path:_files' ;;
         formats|doctor) _arguments '(-h --help)'{-h,--help}'[Show help]' '--json[Emit JSON]' ;;
         completions) _arguments '(-h --help)'{-h,--help}'[Show help]' '1:shell:(bash zsh fish powershell)' ;;

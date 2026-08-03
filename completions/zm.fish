@@ -5,7 +5,7 @@ set -l zm_help_topics create extract list test plan formats auth me cert device 
 set -l zm_auth_commands login callback status forget account
 set -l zm_cert_commands list enroll renew revoke
 set -l zm_device_commands retire
-set -l zm_contact_commands export import list remove
+set -l zm_contact_commands keygen export import list remove
 set -l zm_completion_shells bash zsh fish powershell
 
 complete -c zm -f
@@ -144,7 +144,7 @@ complete -c zm -n "__fish_seen_subcommand_from cert; and not __fish_seen_subcomm
 complete -c zm -n "__fish_seen_subcommand_from device; and not __fish_seen_subcommand_from $zm_device_commands" -a "$zm_device_commands" -d "Device command"
 complete -c zm -n "__fish_seen_subcommand_from contact; and not __fish_seen_subcommand_from $zm_contact_commands" -a "$zm_contact_commands" -d "Contact command"
 
-complete -c zm -n "__fish_seen_subcommand_from auth" -l environment -xa "local dev prod" -d "Select hosted endpoints"
+complete -c zm -n "__fish_seen_subcommand_from auth" -l environment -xa "local dev staging prod" -d "Select hosted endpoints"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l print-url -d "Print the hosted login URL"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l auth-base-url -r -d "Override hosted Auth base URL"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l account-base-url -r -d "Override hosted Account base URL"
@@ -161,6 +161,7 @@ complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact 
 complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share" -l account-key -r -d "Local account inventory key"
 complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign verify contact share" -l json -d "Emit machine-readable JSON"
 complete -c zm -n "__fish_seen_subcommand_from cert sign contact" -l certificate-id -r -d "Certificate id"
+complete -c zm -n "__fish_seen_subcommand_from contact" -l label -r -d "Local recipient key label"
 complete -c zm -n "__fish_seen_subcommand_from cert" -l service-base-url -r -d "Hosted TZAP sign API URL"
 complete -c zm -n "__fish_seen_subcommand_from cert" -l trusted-root-cert -r -d "Trusted staging root certificate"
 complete -c zm -n "__fish_seen_subcommand_from cert" -l requested-validity-seconds -r -d "Requested certificate lifetime"

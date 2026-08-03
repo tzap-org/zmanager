@@ -1,0 +1,16 @@
+{
+  "sourceRepository": "tzap-org/cert-root-server",
+  "sourceCommit": "089536f2ef7454fe8f53f362837f4b578448669d",
+  "clientContractVersion": "local-inventory-consolidation/v1",
+  "reviewedAt": "2026-08-03",
+  "owner": "zmanager maintainers",
+  "normativeFiles": [
+    { "path": "specs/README.md", "sha256": "cb763268f929b812bf94a35e97301859d07d33d6d1e19a1387a8f823107194c9" },
+    { "path": "specs/shared-trust-model.md", "sha256": "0e16602c885cb7951f002f78b87bc63508811884cbf856c15a4796e720d18e57" },
+    { "path": "specs/zmanager-obligations.md", "sha256": "3b8c396db2a6300993af7e1b46d78c8e069a8132eff0eb99030ba32f638decab" },
+    { "path": "specs/login-tzap-org-obligations.md", "sha256": "658e4dade6b0e343e620b435669445e1186631aba93465224c1c9c43bbb394f3" },
+    { "path": "specs/sign-tzap-org-obligations.md", "sha256": "747d6ab02c124c63c4b948776030737d24fdbf6a100095f1fd57d437d1030a5d" },
+    { "path": "specs/signup-tzap-org-registration-service.md", "sha256": "e7653dac3c59bee20ec278f12a0f1a84a14850f6315204843ab71eda2d4101cc" },
+    { "path": "specs/operations-and-recovery.md", "sha256": "d3d65932cb8c3b16b8d3f7f6764d15dccad852a466ca98613b40d36bcfb337e4" }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "contractVersion": "local-inventory-consolidation/v1",
+  "nativeAuthExchange": {
+    "method": "POST",
+    "path": "/auth/session/exchange",
+    "requestFields": ["client_id", "redirect_uri", "state", "handoff_code", "code_verifier", "required_audience"],
+    "successFields": ["user_id", "session_id", "session_token", "caller_type", "identity_assurance_level", "expires_at"],
+    "expiresAtFormat": "RFC3339"
+  },
+  "enrollmentChallenge": {
+    "method": "POST",
+    "path": "/v1/certificates/enrollment-challenges",
+    "requestFields": ["operation", "csr_sha256", "device_public_key_fingerprint", "org_id", "requested_validity_days", "renewal_of_certificate_sha256"]
+  },
+  "enrollment": {
+    "method": "POST",
+    "path": "/v1/certificates/enroll",
+    "requestFields": ["operation", "challenge_id", "challenge_signature", "csr_pem", "device_name", "device_public_key_fingerprint", "org_id", "requested_validity_days"],
+    "signatureEncoding": "P1363",
+    "validityFormat": "days"
+  },
+  "renewal": {
+    "method": "POST",
+    "pathTemplate": "/v1/certificates/:certificate_id/renew",
+    "requestFields": ["operation", "challenge_id", "challenge_signature", "csr_pem", "device_name", "device_public_key_fingerprint", "org_id", "requested_validity_days", "renewal_of_certificate_sha256"]
+  },
+  "bulkStatus": {
+    "method": "POST",
+    "path": "/v1/status/bulk",
+    "requestField": "lookups",
+    "responseField": "responses",
+    "itemFields": ["lookup_id", "queried", "status_response"],
+    "freshnessFormat": "RFC3339"
+  },
+  "denial": {
+    "statusClass": "non-2xx",
+    "fields": ["error", "denial_reason", "retryable", "message"]
+  }
+}
