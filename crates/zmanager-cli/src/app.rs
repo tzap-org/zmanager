@@ -403,11 +403,11 @@ Options:
       --state-dir <dir>          Store local identity/session state in dir
       --account-key <key>        Local account inventory key; default is default
       --certificate-id <id>      Certificate id for renew/revoke
-      --service-base-url <url>   Enroll through a hosted TZAP sign API instead of the local fake profile
-      --trusted-root-cert <file> Trust a staging root PEM/DER certificate for hosted enrollment
-      --org-id <id>              Optional organization id for hosted enrollment
+      --service-base-url <url>   Enroll/renew through a hosted TZAP sign API instead of the local fake profile
+      --trusted-root-cert <file> Trust a staging root PEM/DER certificate for hosted enrollment/renewal
+      --org-id <id>              Optional organization id for hosted enrollment/renewal
       --requested-validity-seconds <n>
-                                  Requested hosted enrollment certificate lifetime
+                                  Requested hosted enrollment/renewal certificate lifetime
       --json                     Emit machine-readable JSON
 
 `cert list` reads local inventory. Enroll, renew, and revoke use the local fake
@@ -415,14 +415,17 @@ TZAP service profile by default for deterministic harness runs.
 ";
 
 const DEVICE_HELP: &str = "\
-Retire local TZAP device material
+Manage local TZAP device material
 
 Usage:
   zm device retire [options]
+  zm device revoke [options]
 
 Options:
       --state-dir <dir>          Store local identity/session state in dir
       --account-key <key>        Local account inventory key; default is default
+      --device-id <id>           Sign device id for revoke
+      --service-base-url <url>   Revoke through a hosted TZAP sign API (default: production)
       --json                     Emit machine-readable JSON
 ";
 
@@ -2083,20 +2086,23 @@ fn cert_enroll_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
 }
 
 fn cert_renew_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
-    let (context, certificate_id) = match parse_cert_id_operation_args(args, &mut global, "cert") {
-        Ok(parsed) => parsed,
+    let options = match parse_hosted_cert_renew_args(args, &mut global) {
+        Ok(options) => options,
         Err(code) => return code,
     };
+    if options.service_base_url.is_some() {
+        return run_hosted_cert_renew(&options, &global);
+    }
     run_fake_cert_operation(
         "cert_renew",
-        &context,
+        &options.context,
         &global,
-        |store, session, options| {
+        |store, session, fake_options| {
             zmanager_core::local_fake_tzap::renew_local_fake_certificate(
                 store,
                 session,
-                options,
-                &certificate_id,
+                fake_options,
+                &options.certificate_id,
             )
             .map(|certificate| {
                 json!({
@@ -2186,6 +2192,7 @@ fn device_command(args: &[String], global: GlobalOptions) -> ExitCode {
     }
     match args[0].as_str() {
         "retire" => device_retire_command(&args[1..], global),
+        "revoke" => device_revoke_command(&args[1..], global),
         command => command_usage_error(
             "device",
             &format!("unknown device command: {command}"),
@@ -2216,6 +2223,79 @@ fn device_retire_command(args: &[String], mut global: GlobalOptions) -> ExitCode
             )
         },
     )
+}
+
+fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    let mut context = TzapCliContext::default();
+    let mut sign_device_id = None;
+    let mut service_base_url = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        if parse_global_option(args, &mut index, &mut global).unwrap_or(false) {
+            continue;
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                context.state_dir = PathBuf::from(
+                    take_value_or_exit(args, &mut index, "--state-dir"),
+                );
+            }
+            "--account-key" => {
+                context.account_key = take_value_or_exit(args, &mut index, "--account-key");
+            }
+            "--device-id" => {
+                sign_device_id = Some(take_value_or_exit(args, &mut index, "--device-id"));
+            }
+            "--service-base-url" => {
+                service_base_url = Some(take_value_or_exit(args, &mut index, "--service-base-url"));
+            }
+            other => {
+                return command_usage_error(
+                    "device",
+                    &format!("unknown device option: {other}"),
+                    &global,
+                );
+            }
+        }
+    }
+    let Some(sign_device_id) = sign_device_id else {
+        return command_usage_error("device", "missing --device-id", &global);
+    };
+    let sign_base_url = service_base_url.unwrap_or_else(|| {
+        zmanager_core::auth_client::SIGN_TZAP_BASE_URL.to_owned()
+    });
+    let session_store = FileTzapSessionStore::new(&context.state_dir);
+    let Some(session) = session_store.load_session(&context.account_key) else {
+        print_stable_tzap_error("device_revoke", MISSING_TZAP_SESSION, &global);
+        return ExitCode::FAILURE;
+    };
+    let transport = CliHttpJsonTransport;
+    let lifecycle = zmanager_core::certificate_lifecycle::TzapCertificateLifecycleClient::new(
+        &sign_base_url,
+        zmanager_core::auth_client::LOGIN_TZAP_BASE_URL,
+        &transport,
+    );
+    match lifecycle.revoke_personal_device(&session, &sign_device_id) {
+        Ok(completion) => {
+            if global.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "operation": "device_revoke",
+                        "completion": retirement_completion_label(completion),
+                    })
+                );
+            } else {
+                print_success_line(&global, format_args!("device_revoke complete"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("device_revoke", &error.to_string(), &global);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -3162,6 +3242,112 @@ fn parse_cert_id_operation_args(
 }
 
 #[derive(Debug)]
+struct HostedCertRenewOptions {
+    context: TzapCliContext,
+    certificate_id: String,
+    service_base_url: Option<String>,
+    trusted_root_cert_paths: Vec<PathBuf>,
+    org_id: Option<String>,
+    requested_validity_seconds: u64,
+}
+
+fn parse_hosted_cert_renew_args(
+    args: &[String],
+    global: &mut GlobalOptions,
+) -> Result<HostedCertRenewOptions, ExitCode> {
+    let mut options = HostedCertRenewOptions {
+        context: TzapCliContext::default(),
+        certificate_id: String::new(),
+        service_base_url: None,
+        trusted_root_cert_paths: Vec::new(),
+        org_id: None,
+        requested_validity_seconds: DEFAULT_TZAP_CERT_VALIDITY_SECONDS,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        match parse_global_option(args, &mut index, global) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => return Err(command_usage_error("cert", &error, global)),
+        }
+        match args[index].as_str() {
+            "--state-dir" => {
+                options.context.state_dir = PathBuf::from(
+                    take_value(args, &mut index, "--state-dir")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--account-key" => {
+                options.context.account_key = take_value(args, &mut index, "--account-key")
+                    .map_err(|error| command_usage_error("cert", &error, global))?;
+            }
+            "--certificate-id" => {
+                options.certificate_id = take_value(args, &mut index, "--certificate-id")
+                    .map_err(|error| command_usage_error("cert", &error, global))?;
+            }
+            "--service-base-url" => {
+                options.service_base_url = Some(
+                    take_value(args, &mut index, "--service-base-url")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--trusted-root-cert" => {
+                options.trusted_root_cert_paths.push(PathBuf::from(
+                    take_value(args, &mut index, "--trusted-root-cert")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                ));
+            }
+            "--org-id" => {
+                options.org_id = Some(
+                    take_value(args, &mut index, "--org-id")
+                        .map_err(|error| command_usage_error("cert", &error, global))?,
+                );
+            }
+            "--requested-validity-seconds" => {
+                let value = take_value(args, &mut index, "--requested-validity-seconds")
+                    .map_err(|error| command_usage_error("cert", &error, global))?;
+                options.requested_validity_seconds = value.parse::<u64>().map_err(|_| {
+                    command_usage_error(
+                        "cert",
+                        "--requested-validity-seconds must be an integer",
+                        global,
+                    )
+                })?;
+            }
+            other => {
+                return Err(command_usage_error(
+                    "cert",
+                    &format!("unknown cert option: {other}"),
+                    global,
+                ));
+            }
+        }
+    }
+    if options.certificate_id.is_empty() {
+        return Err(command_usage_error(
+            "cert",
+            "missing --certificate-id",
+            global,
+        ));
+    }
+    if options.service_base_url.is_none() && !options.trusted_root_cert_paths.is_empty() {
+        return Err(command_usage_error(
+            "cert",
+            "--trusted-root-cert requires --service-base-url",
+            global,
+        ));
+    }
+    if options.service_base_url.is_none() && options.org_id.is_some() {
+        return Err(command_usage_error(
+            "cert",
+            "--org-id requires --service-base-url",
+            global,
+        ));
+    }
+    Ok(options)
+}
+
+#[derive(Debug)]
 struct CertEnrollOptions {
     context: TzapCliContext,
     service_base_url: Option<String>,
@@ -3343,6 +3529,157 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
         }
         Err(error) => {
             print_stable_tzap_error("cert_enroll", &error.to_string(), global);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_hosted_cert_renew(
+    options: &HostedCertRenewOptions,
+    global: &GlobalOptions,
+) -> ExitCode {
+    let Some(service_base_url) = options.service_base_url.as_deref() else {
+        unreachable!("hosted renewal checked by caller")
+    };
+    if options.trusted_root_cert_paths.is_empty() {
+        return command_usage_error(
+            "cert",
+            "hosted renewal requires at least one --trusted-root-cert",
+            global,
+        );
+    }
+    let session_store = FileTzapSessionStore::new(&options.context.state_dir);
+    let Some(session) = session_store.load_session(&options.context.account_key) else {
+        print_stable_tzap_error("cert_renew", MISSING_TZAP_SESSION, global);
+        return ExitCode::FAILURE;
+    };
+    let mut trusted_root_sha256 = Vec::new();
+    let trusted_root_der = match load_custom_root_certificates(
+        &options.trusted_root_cert_paths,
+        &mut trusted_root_sha256,
+    ) {
+        Ok(roots) => roots,
+        Err(error) => {
+            print_error_line(global, format_args!("cert renew failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut identity_store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
+            &options.context.state_dir,
+        );
+    let inventory = match identity_store.load_inventory(&options.context.account_key) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            print_error_line(
+                global,
+                format_args!("cert renew failed: cannot load identity store: {error}"),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let previous_certificate = match inventory
+        .enrolled_certificates
+        .iter()
+        .find(|record| record.certificate_id == options.certificate_id)
+    {
+        Some(certificate) => certificate.clone(),
+        None => {
+            print_error_line(
+                global,
+                format_args!(
+                    "cert renew failed: certificate {} not found locally",
+                    options.certificate_id
+                ),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let signing_key = match inventory
+        .device_signing_keys
+        .iter()
+        .find(|record| record.key_id == previous_certificate.signing_key_id)
+    {
+        Some(record) => record.clone(),
+        None => {
+            print_error_line(
+                global,
+                format_args!(
+                    "cert renew failed: signing key {} not found",
+                    previous_certificate.signing_key_id
+                ),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let csr_der = match zmanager_core::device_identity::generate_device_csr_from_private_key(
+        &signing_key.private_key_der,
+        &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
+    ) {
+        Ok(csr) => csr,
+        Err(error) => {
+            print_error_line(
+                global,
+                format_args!("cert renew failed: cannot generate CSR: {error}"),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let now_unix_seconds = current_unix_seconds();
+    let login_base_url = zmanager_core::auth_client::LOGIN_TZAP_BASE_URL;
+    let transport = CliHttpJsonTransport;
+    let lifecycle =
+        zmanager_core::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(
+            service_base_url,
+            login_base_url,
+            &transport,
+        );
+    let validator = CliTrustedEnrollmentCertificateValidator {
+        trusted_root_sha256,
+        trusted_root_der,
+        options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
+    };
+    let org_id = options
+        .org_id
+        .clone()
+        .or_else(|| session.selected_org_id.clone());
+    let renewal_request = zmanager_core::certificate_lifecycle::TzapRenewalRequest {
+        account_key: options.context.account_key.clone(),
+        previous_certificate_id: previous_certificate.certificate_id,
+        previous_certificate_sha256: previous_certificate.certificate_sha256,
+        org_id,
+        requested_validity_seconds: options.requested_validity_seconds,
+        renewal_policy: zmanager_core::certificate_lifecycle::TzapRenewalPolicy::SameKeyRequired,
+        now_unix_seconds,
+        server_grace_seconds: zmanager_core::certificate_lifecycle::RENEWAL_GRACE_MAX_SECONDS,
+    };
+    match lifecycle.renew_certificate(
+        &validator,
+        &mut identity_store,
+        &session,
+        &renewal_request,
+        &signing_key,
+        &signing_key,
+        &csr_der,
+    ) {
+        Ok(certificate) => {
+            if global.json {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "operation": "cert_renew",
+                        "service_base_url": service_base_url,
+                        "certificate": certificate_summary_value(&certificate),
+                    })
+                );
+            } else {
+                print_success_line(global, format_args!("cert_renew complete"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            print_stable_tzap_error("cert_renew", &error.to_string(), global);
             ExitCode::FAILURE
         }
     }

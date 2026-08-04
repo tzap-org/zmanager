@@ -8,7 +8,8 @@ use crate::auth_client::{
 use crate::enrollment_client::{
     ENROLLMENT_CHALLENGE_CANONICALIZATION, ENROLLMENT_CHALLENGES_PATH,
     TzapEnrollmentCertificateValidator, TzapEnrollmentError, TzapEnrollmentRequest,
-    parse_enrollment_response,
+    canonicalize_local_staging_server_json_bytes, csr_der_to_pem, csr_fingerprint,
+    parse_enrollment_response, requested_validity_days,
 };
 use crate::jcs;
 use crate::local_identity_store::{
@@ -28,6 +29,13 @@ pub const CERTIFICATE_REVOKE_PATH_SUFFIX: &str = "/revoke";
 pub const CERTIFICATE_RENEW_PATH_SUFFIX: &str = "/renew";
 pub const SIGN_DEVICE_REVOKE_PATH_PREFIX: &str = "/v1/devices/";
 pub const LOGIN_ORG_DEVICES_PATH_PREFIX: &str = "/v1/orgs/";
+pub const DEFAULT_RENEWAL_DEVICE_NAME: &str = "ZManager CLI";
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TzapCertificateLifecycleWireProfile {
+    Spec,
+    LocalStagingServer,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TzapRenewalPolicy {
@@ -146,6 +154,8 @@ pub struct TzapCertificateLifecycleClient<'a, T> {
     sign_base_url: String,
     login_base_url: String,
     transport: &'a T,
+    wire_profile: TzapCertificateLifecycleWireProfile,
+    device_name: String,
 }
 
 impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
@@ -155,10 +165,44 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         login_base_url: impl Into<String>,
         transport: &'a T,
     ) -> Self {
+        Self::with_wire_profile(
+            sign_base_url,
+            login_base_url,
+            transport,
+            TzapCertificateLifecycleWireProfile::Spec,
+            DEFAULT_RENEWAL_DEVICE_NAME,
+        )
+    }
+
+    #[must_use]
+    pub fn local_staging_server(
+        sign_base_url: impl Into<String>,
+        login_base_url: impl Into<String>,
+        transport: &'a T,
+    ) -> Self {
+        Self::with_wire_profile(
+            sign_base_url,
+            login_base_url,
+            transport,
+            TzapCertificateLifecycleWireProfile::LocalStagingServer,
+            DEFAULT_RENEWAL_DEVICE_NAME,
+        )
+    }
+
+    #[must_use]
+    pub fn with_wire_profile(
+        sign_base_url: impl Into<String>,
+        login_base_url: impl Into<String>,
+        transport: &'a T,
+        wire_profile: TzapCertificateLifecycleWireProfile,
+        device_name: impl Into<String>,
+    ) -> Self {
         Self {
             sign_base_url: sign_base_url.into(),
             login_base_url: login_base_url.into(),
             transport,
+            wire_profile,
+            device_name: device_name.into(),
         }
     }
 
@@ -177,9 +221,15 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let challenge =
             self.request_renewal_challenge(session, request, new_signing_key, csr_der)?;
-        validate_renewal_challenge(request, &challenge.payload)?;
+        validate_renewal_challenge(
+            self.wire_profile,
+            challenge.canonicalization.as_deref(),
+            request,
+            &challenge.payload,
+        )?;
         let old_signature = match request.renewal_policy {
             TzapRenewalPolicy::SameKeyRequired => Some(sign_old_certificate_challenge(
+                self.wire_profile,
                 previous_signing_key,
                 &challenge.payload,
             )?),
@@ -190,7 +240,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             request,
             new_signing_key,
             csr_der,
-            &challenge.challenge_id,
+            &challenge,
             old_signature.as_deref(),
         )?;
         parse_renewal_barriers(&response.body)?;
@@ -248,6 +298,23 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             mark_certificate_revoked(store, account_key, certificate_id)?;
         }
         Ok(completion)
+    }
+
+    pub fn revoke_personal_device(
+        &self,
+        session: &TzapSessionRecord,
+        sign_device_id: &str,
+    ) -> Result<TzapRetirementCompletion, TzapCertificateLifecycleError> {
+        session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
+        let path = format!("{SIGN_DEVICE_REVOKE_PATH_PREFIX}{sign_device_id}/revoke");
+        let response = self.send(
+            TzapAuthHttpMethod::Post,
+            &self.sign_base_url,
+            &path,
+            Some(session.access_token.clone()),
+            None,
+        )?;
+        revocation_completion(&response)
     }
 
     pub fn retire_personal_devices(
@@ -348,14 +415,25 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         csr_der: &[u8],
     ) -> Result<crate::enrollment_client::TzapEnrollmentChallenge, TzapCertificateLifecycleError>
     {
-        let body = json!({
-            "operation": RENEW_OPERATION,
-            "csr_der": URL_SAFE_NO_PAD.encode(csr_der),
-            "device_public_key_fingerprint": signing_key.public_key_fingerprint,
-            "org_id": request.org_id,
-            "requested_validity_seconds": request.requested_validity_seconds,
-            "renewal_of_certificate_sha256": request.previous_certificate_sha256,
-        });
+        let body = match self.wire_profile {
+            TzapCertificateLifecycleWireProfile::Spec => json!({
+                "operation": RENEW_OPERATION,
+                "csr_der": URL_SAFE_NO_PAD.encode(csr_der),
+                "device_public_key_fingerprint": signing_key.public_key_fingerprint,
+                "org_id": request.org_id,
+                "requested_validity_seconds": request.requested_validity_seconds,
+                "renewal_of_certificate_sha256": request.previous_certificate_sha256,
+            }),
+            TzapCertificateLifecycleWireProfile::LocalStagingServer => json!({
+                "operation": RENEW_OPERATION,
+                "csr_sha256": csr_fingerprint(csr_der),
+                "device_public_key_fingerprint": signing_key.public_key_fingerprint,
+                "org_id": request.org_id,
+                "requested_validity_days": requested_validity_days(request.requested_validity_seconds)
+                    .map_err(TzapCertificateLifecycleError::Enrollment)?,
+                "renewal_of_certificate_sha256": request.previous_certificate_sha256,
+            }),
+        };
         let response = self.send(
             TzapAuthHttpMethod::Post,
             &self.sign_base_url,
@@ -372,21 +450,41 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         request: &TzapRenewalRequest,
         signing_key: &TzapDeviceSigningKeyRecord,
         csr_der: &[u8],
-        challenge_id: &str,
+        challenge: &crate::enrollment_client::TzapEnrollmentChallenge,
         old_certificate_signature: Option<&str>,
     ) -> Result<TzapAuthHttpResponse, TzapCertificateLifecycleError> {
         let path = format!(
             "/v1/certificates/{}{}",
             request.previous_certificate_id, CERTIFICATE_RENEW_PATH_SUFFIX
         );
-        let body = json!({
-            "operation": RENEW_OPERATION,
-            "challenge_id": challenge_id,
-            "csr_der": URL_SAFE_NO_PAD.encode(csr_der),
-            "device_public_key_fingerprint": signing_key.public_key_fingerprint,
-            "renewal_of_certificate_sha256": request.previous_certificate_sha256,
-            "old_certificate_signature": old_certificate_signature,
-        });
+        let body = match self.wire_profile {
+            TzapCertificateLifecycleWireProfile::Spec => json!({
+                "operation": RENEW_OPERATION,
+                "challenge_id": challenge.challenge_id,
+                "csr_der": URL_SAFE_NO_PAD.encode(csr_der),
+                "device_public_key_fingerprint": signing_key.public_key_fingerprint,
+                "renewal_of_certificate_sha256": request.previous_certificate_sha256,
+                "old_certificate_signature": old_certificate_signature,
+            }),
+            TzapCertificateLifecycleWireProfile::LocalStagingServer => {
+                let challenge_signature =
+                    sign_new_key_challenge_staging(signing_key, &challenge.payload)?;
+                let org_id = optional_string_from_payload(&challenge.payload, "org_id")?;
+                json!({
+                    "operation": RENEW_OPERATION,
+                    "challenge_id": challenge.challenge_id,
+                    "renewal_of_certificate_sha256": request.previous_certificate_sha256,
+                    "challenge_signature": challenge_signature,
+                    "old_certificate_signature": old_certificate_signature,
+                    "csr_pem": csr_der_to_pem(csr_der),
+                    "device_name": self.device_name,
+                    "device_public_key_fingerprint": signing_key.public_key_fingerprint,
+                    "org_id": org_id,
+                    "requested_validity_days": requested_validity_days(request.requested_validity_seconds)
+                        .map_err(TzapCertificateLifecycleError::Enrollment)?,
+                })
+            }
+        };
         self.send(
             TzapAuthHttpMethod::Post,
             &self.sign_base_url,
@@ -514,21 +612,40 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     }
 }
 
+fn optional_string_from_payload(
+    payload: &Value,
+    field: &'static str,
+) -> Result<Option<String>, TzapCertificateLifecycleError> {
+    let object = json_object(payload, "challenge_payload")?;
+    optional_string(object, field)
+}
+
 enum OrganizationDeviceLookup {
     Found(String),
     Incomplete(String),
 }
 
 fn validate_renewal_challenge(
+    wire_profile: TzapCertificateLifecycleWireProfile,
+    canonicalization: Option<&str>,
     request: &TzapRenewalRequest,
     payload: &Value,
 ) -> Result<(), TzapCertificateLifecycleError> {
     let object = json_object(payload, "challenge_payload")?;
-    expect_string(
-        object,
-        "canonicalization",
-        ENROLLMENT_CHALLENGE_CANONICALIZATION,
-    )?;
+    match wire_profile {
+        TzapCertificateLifecycleWireProfile::Spec => {
+            expect_string(
+                object,
+                "canonicalization",
+                ENROLLMENT_CHALLENGE_CANONICALIZATION,
+            )?;
+        }
+        TzapCertificateLifecycleWireProfile::LocalStagingServer => {
+            if canonicalization != Some(ENROLLMENT_CHALLENGE_CANONICALIZATION) {
+                return Err(TzapCertificateLifecycleError::RenewalTargetMismatch);
+            }
+        }
+    }
     expect_string(object, "operation", RENEW_OPERATION)?;
     expect_string(
         object,
@@ -562,13 +679,35 @@ fn parse_renewal_challenge_response(
 }
 
 fn sign_old_certificate_challenge(
+    wire_profile: TzapCertificateLifecycleWireProfile,
     previous_signing_key: &TzapDeviceSigningKeyRecord,
     challenge_payload: &Value,
 ) -> Result<String, TzapCertificateLifecycleError> {
-    let canonical = jcs::canonicalize_json_bytes(challenge_payload)
-        .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
+    let canonical = match wire_profile {
+        TzapCertificateLifecycleWireProfile::Spec => jcs::canonicalize_json_bytes(challenge_payload)
+            .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?,
+        TzapCertificateLifecycleWireProfile::LocalStagingServer => {
+            canonicalize_local_staging_server_json_bytes(challenge_payload).map_err(|error| {
+                TzapCertificateLifecycleError::Crypto(format!("{error:?}"))
+            })?
+        }
+    };
     let private_key =
         PKey::<Private>::private_key_from_der(previous_signing_key.private_key_der.expose_secret())
+            .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
+    let signature = p256_signature::sign_p256_sha256_p1363(&private_key, &canonical)
+        .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
+    Ok(URL_SAFE_NO_PAD.encode(signature))
+}
+
+fn sign_new_key_challenge_staging(
+    signing_key: &TzapDeviceSigningKeyRecord,
+    challenge_payload: &Value,
+) -> Result<String, TzapCertificateLifecycleError> {
+    let canonical = canonicalize_local_staging_server_json_bytes(challenge_payload)
+        .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
+    let private_key =
+        PKey::<Private>::private_key_from_der(signing_key.private_key_der.expose_secret())
             .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
     let signature = p256_signature::sign_p256_sha256_p1363(&private_key, &canonical)
         .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;

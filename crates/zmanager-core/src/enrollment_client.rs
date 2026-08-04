@@ -707,7 +707,7 @@ fn parse_denial(value: &Value) -> Result<TzapEnrollmentDenial, TzapEnrollmentErr
     })
 }
 
-fn csr_fingerprint(csr_der: &[u8]) -> String {
+pub(crate) fn csr_fingerprint(csr_der: &[u8]) -> String {
     let digest: [u8; 32] = Sha256::digest(csr_der).into();
     trust::format_csr_sha256(&digest)
 }
@@ -720,7 +720,7 @@ fn decode_base64url(value: String) -> Result<Vec<u8>, TzapEnrollmentError> {
         .map_err(|_| TzapEnrollmentError::InvalidField { field: "base64url" })
 }
 
-fn requested_validity_days(requested_validity_seconds: u64) -> Result<u64, TzapEnrollmentError> {
+pub(crate) fn requested_validity_days(requested_validity_seconds: u64) -> Result<u64, TzapEnrollmentError> {
     if requested_validity_seconds == 0 {
         return Err(TzapEnrollmentError::InvalidField {
             field: "requested_validity_seconds",
@@ -729,7 +729,7 @@ fn requested_validity_days(requested_validity_seconds: u64) -> Result<u64, TzapE
     Ok(requested_validity_seconds.div_ceil(SECONDS_PER_DAY))
 }
 
-fn csr_der_to_pem(csr_der: &[u8]) -> String {
+pub(crate) fn csr_der_to_pem(csr_der: &[u8]) -> String {
     pem_block("CERTIFICATE REQUEST", csr_der)
 }
 
@@ -770,7 +770,7 @@ fn certificate_validity_unix_seconds(der: &[u8]) -> Result<(u64, u64), TzapEnrol
     Ok((not_before, not_after))
 }
 
-fn canonicalize_local_staging_server_json_bytes(
+pub(crate) fn canonicalize_local_staging_server_json_bytes(
     value: &Value,
 ) -> Result<Vec<u8>, TzapEnrollmentError> {
     let mut output = String::new();
