@@ -476,6 +476,7 @@ pub fn online_verification_result_from_status(
     {
         return TzapDocumentVerificationResult {
             state: TzapVerificationState::ValidNow,
+            reason: None,
             ..offline
         };
     }
@@ -1091,7 +1092,7 @@ mod tests {
         let offline = TzapDocumentVerificationResult {
             state: TzapVerificationState::CryptographicallyIntactOffline,
             trust_anchor_type: TzapTrustAnchorType::OfficialTzap,
-            reason: None,
+            reason: Some("offline verification has no fresh status proof".to_owned()),
             root_certificate_sha256: None,
             public_metadata: None,
         };
@@ -1104,10 +1105,10 @@ mod tests {
         };
         let valid =
             TzapStatusResponse::from_json_value(&valid_status(&certificate_sha256)).unwrap();
-        assert_eq!(
-            online_verification_result_from_status(offline.clone(), &expected, &valid, 1_000).state,
-            TzapVerificationState::ValidNow
-        );
+        let valid_now =
+            online_verification_result_from_status(offline.clone(), &expected, &valid, 1_000);
+        assert_eq!(valid_now.state, TzapVerificationState::ValidNow);
+        assert_eq!(valid_now.reason, None);
         let mismatched = TzapStatusResponse::from_json_value(&valid_status(
             &trust::format_certificate_sha256(&[0x55; 32]),
         ))
