@@ -684,12 +684,13 @@ fn sign_old_certificate_challenge(
     challenge_payload: &Value,
 ) -> Result<String, TzapCertificateLifecycleError> {
     let canonical = match wire_profile {
-        TzapCertificateLifecycleWireProfile::Spec => jcs::canonicalize_json_bytes(challenge_payload)
-            .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?,
+        TzapCertificateLifecycleWireProfile::Spec => {
+            jcs::canonicalize_json_bytes(challenge_payload)
+                .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?
+        }
         TzapCertificateLifecycleWireProfile::LocalStagingServer => {
-            canonicalize_local_staging_server_json_bytes(challenge_payload).map_err(|error| {
-                TzapCertificateLifecycleError::Crypto(format!("{error:?}"))
-            })?
+            canonicalize_local_staging_server_json_bytes(challenge_payload)
+                .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?
         }
     };
     let private_key =

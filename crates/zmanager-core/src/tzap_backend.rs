@@ -1465,14 +1465,12 @@ fn load_recipient_private_key_lookup_from_bytes(
     }
     .map_err(|source| {
         TzapError::KeyWrap(format!(
-            "failed to parse recipient private key {}: {source}",
-            description
+            "failed to parse recipient private key {description}: {source}"
         ))
     })?;
     let private_key_bytes = private_key.private_key_to_der().map_err(|source| {
         TzapError::KeyWrap(format!(
-            "failed to normalize recipient private key {}: {source}",
-            description
+            "failed to normalize recipient private key {description}: {source}"
         ))
     })?;
     let private_key_spki_der = private_key.public_key_to_der().ok();
@@ -3714,7 +3712,7 @@ fn extract_tzap_inner(
         password,
         recipient_private_key,
         recipient_private_key_secret
-            .map(|secret| secret.expose_secret())
+            .map(super::secrets::SecretBytes::expose_secret)
             .or(recipient_private_key_bytes),
     )?;
     let entries = opened.list_files()?;
@@ -4736,13 +4734,13 @@ impl RegularFileSource for TzapRegularFileSource {
                 .ok_or(FormatError::WriterInvariant(
                     "macOS metadata identity is missing",
                 ))?;
-            return tzap_core::macos_metadata::open_macos_resource_fork(
+            tzap_core::macos_metadata::open_macos_resource_fork(
                 &self.source_path,
                 self.kind == SourceEntryKind::Symlink,
                 identity,
                 record.logical_size,
             )
-            .map_err(ArchiveWriteError::Io);
+            .map_err(ArchiveWriteError::Io)
         }
         #[cfg(not(target_os = "macos"))]
         Err(FormatError::WriterUnsupported(
@@ -5158,9 +5156,9 @@ fn resolve_uname(uid: u32) -> Option<String> {
         libc::getpwuid_r(
             uid as libc::uid_t,
             pwd.as_mut_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
             buf.len(),
-            &mut result,
+            &raw mut result,
         )
     };
     if res == 0 && !result.is_null() {
@@ -5188,9 +5186,9 @@ fn resolve_gname(gid: u32) -> Option<String> {
         libc::getgrgid_r(
             gid as libc::gid_t,
             grp.as_mut_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
             buf.len(),
-            &mut result,
+            &raw mut result,
         )
     };
     if res == 0 && !result.is_null() {
@@ -5887,7 +5885,7 @@ mod tests {
                     file_type: ManifestFileType::Directory,
                     size: 0,
                     modified: None,
-                    permissions: directory_permissions.clone(),
+                    permissions: directory_permissions,
                     symlink_target: None,
                 },
                 ManifestEntry {
@@ -5896,7 +5894,7 @@ mod tests {
                     file_type: ManifestFileType::File,
                     size: 0,
                     modified: None,
-                    permissions: file_permissions.clone(),
+                    permissions: file_permissions,
                     symlink_target: None,
                 },
                 ManifestEntry {

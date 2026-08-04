@@ -720,7 +720,9 @@ fn decode_base64url(value: String) -> Result<Vec<u8>, TzapEnrollmentError> {
         .map_err(|_| TzapEnrollmentError::InvalidField { field: "base64url" })
 }
 
-pub(crate) fn requested_validity_days(requested_validity_seconds: u64) -> Result<u64, TzapEnrollmentError> {
+pub(crate) fn requested_validity_days(
+    requested_validity_seconds: u64,
+) -> Result<u64, TzapEnrollmentError> {
     if requested_validity_seconds == 0 {
         return Err(TzapEnrollmentError::InvalidField {
             field: "requested_validity_seconds",

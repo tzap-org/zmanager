@@ -1347,7 +1347,7 @@ fn zm_extract_tzap_honors_metadata_restore_policy() {
         &["portable", "same-os"]
     };
     for &policy in policies {
-        let destination = temp.path(&format!("restore-{policy}"));
+        let destination = temp.path(format!("restore-{policy}"));
         let mut restore_command = Command::new(zm_path());
         restore_command
             .arg("extract")

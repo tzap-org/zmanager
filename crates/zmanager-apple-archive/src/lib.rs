@@ -149,7 +149,7 @@ pub struct EntryMetadata {
     pub gid: Option<u32>,
 }
 
-/// Applies AppleArchive metadata that is not covered by portable Rust
+/// Applies `AppleArchive` metadata that is not covered by portable Rust
 /// filesystem APIs. Creation time and ownership are restored before flags so
 /// immutable flags cannot block the remaining updates.
 ///
@@ -708,7 +708,7 @@ mod platform {
         compression_stream: Option<ByteStream>,
         encryption_stream: Option<ByteStream>,
         file_stream: Option<ByteStream>,
-        _encryption_context: Option<EncryptionContext>,
+        encryption_context: Option<EncryptionContext>,
     }
 
     impl ArchiveWriter {
@@ -786,7 +786,7 @@ mod platform {
                 compression_stream: Some(compression_stream),
                 encryption_stream,
                 file_stream: Some(file_stream),
-                _encryption_context: encryption_context,
+                encryption_context,
             })
         }
 
@@ -889,18 +889,17 @@ mod platform {
             // Close encryption stream before file stream so the AEA context
             // captures the archive metadata (raw size, container size, identifier).
             if let (Some(ctx), Some(enc_stream)) =
-                (&self._encryption_context, &mut self.encryption_stream)
+                (&self.encryption_context, &mut self.encryption_stream)
+                && let Some(ptr) = enc_stream.take_ptr()
             {
-                if let Some(ptr) = enc_stream.take_ptr() {
-                    let status = unsafe {
-                        AEAEncryptionOutputStreamCloseAndUpdateContext(ptr.as_ptr(), ctx.as_ptr())
-                    };
-                    if status < 0 && first_error.is_none() {
-                        first_error = Some(Error::Status {
-                            operation: "close encryption stream",
-                            status: i64::from(status),
-                        });
-                    }
+                let status = unsafe {
+                    AEAEncryptionOutputStreamCloseAndUpdateContext(ptr.as_ptr(), ctx.as_ptr())
+                };
+                if status < 0 && first_error.is_none() {
+                    first_error = Some(Error::Status {
+                        operation: "close encryption stream",
+                        status: i64::from(status),
+                    });
                 }
             }
             close_byte_option(&mut self.file_stream, "close file stream", &mut first_error);

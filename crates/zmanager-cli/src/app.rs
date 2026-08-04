@@ -2236,9 +2236,8 @@ fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir = PathBuf::from(
-                    take_value_or_exit(args, &mut index, "--state-dir"),
-                );
+                context.state_dir =
+                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2261,9 +2260,8 @@ fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode
     let Some(sign_device_id) = sign_device_id else {
         return command_usage_error("device", "missing --device-id", &global);
     };
-    let sign_base_url = service_base_url.unwrap_or_else(|| {
-        zmanager_core::auth_client::SIGN_TZAP_BASE_URL.to_owned()
-    });
+    let sign_base_url = service_base_url
+        .unwrap_or_else(|| zmanager_core::auth_client::SIGN_TZAP_BASE_URL.to_owned());
     let session_store = FileTzapSessionStore::new(&context.state_dir);
     let Some(session) = session_store.load_session(&context.account_key) else {
         print_stable_tzap_error("device_revoke", MISSING_TZAP_SESSION, &global);
@@ -3534,10 +3532,7 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
     }
 }
 
-fn run_hosted_cert_renew(
-    options: &HostedCertRenewOptions,
-    global: &GlobalOptions,
-) -> ExitCode {
+fn run_hosted_cert_renew(options: &HostedCertRenewOptions, global: &GlobalOptions) -> ExitCode {
     let Some(service_base_url) = options.service_base_url.as_deref() else {
         unreachable!("hosted renewal checked by caller")
     };
@@ -3564,10 +3559,9 @@ fn run_hosted_cert_renew(
             return ExitCode::FAILURE;
         }
     };
-    let mut identity_store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
-            &options.context.state_dir,
-        );
+    let mut identity_store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
+        &options.context.state_dir,
+    );
     let inventory = match identity_store.load_inventory(&options.context.account_key) {
         Ok(inventory) => inventory,
         Err(error) => {
@@ -3578,39 +3572,37 @@ fn run_hosted_cert_renew(
             return ExitCode::FAILURE;
         }
     };
-    let previous_certificate = match inventory
+    let previous_certificate = if let Some(certificate) = inventory
         .enrolled_certificates
         .iter()
         .find(|record| record.certificate_id == options.certificate_id)
     {
-        Some(certificate) => certificate.clone(),
-        None => {
-            print_error_line(
-                global,
-                format_args!(
-                    "cert renew failed: certificate {} not found locally",
-                    options.certificate_id
-                ),
-            );
-            return ExitCode::FAILURE;
-        }
+        certificate.clone()
+    } else {
+        print_error_line(
+            global,
+            format_args!(
+                "cert renew failed: certificate {} not found locally",
+                options.certificate_id
+            ),
+        );
+        return ExitCode::FAILURE;
     };
-    let signing_key = match inventory
+    let signing_key = if let Some(record) = inventory
         .device_signing_keys
         .iter()
         .find(|record| record.key_id == previous_certificate.signing_key_id)
     {
-        Some(record) => record.clone(),
-        None => {
-            print_error_line(
-                global,
-                format_args!(
-                    "cert renew failed: signing key {} not found",
-                    previous_certificate.signing_key_id
-                ),
-            );
-            return ExitCode::FAILURE;
-        }
+        record.clone()
+    } else {
+        print_error_line(
+            global,
+            format_args!(
+                "cert renew failed: signing key {} not found",
+                previous_certificate.signing_key_id
+            ),
+        );
+        return ExitCode::FAILURE;
     };
     let csr_der = match zmanager_core::device_identity::generate_device_csr_from_private_key(
         &signing_key.private_key_der,

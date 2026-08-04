@@ -399,7 +399,7 @@ pub fn visit_entries_with_options(
                     .and_then(|(s, ns)| tzap_modified_string(s, ns)),
                 solid: Some(true),
                 link_target: entry.link_target,
-                attributes: entry.attributes.map(|a| format!("{:08X}", a)),
+                attributes: entry.attributes.map(|a| format!("{a:08X}")),
                 uid: entry.uid.map(|u| u as u32),
                 gid: entry.gid.map(|g| g as u32),
                 owner: entry.uname,
@@ -684,8 +684,16 @@ fn list_tar_zst_entries(path: &Path) -> Result<BrowserListing, ArchiveBrowserErr
                 attributes: None,
                 uid: header.uid().ok().map(|u| u as u32),
                 gid: header.gid().ok().map(|g| g as u32),
-                owner: header.username().ok().flatten().map(|s| s.to_owned()),
-                group: header.groupname().ok().flatten().map(|s| s.to_owned()),
+                owner: header
+                    .username()
+                    .ok()
+                    .flatten()
+                    .map(std::borrow::ToOwned::to_owned),
+                group: header
+                    .groupname()
+                    .ok()
+                    .flatten()
+                    .map(std::borrow::ToOwned::to_owned),
             })
         })
         .collect::<Result<Vec<_>, ArchiveBrowserError>>()?;

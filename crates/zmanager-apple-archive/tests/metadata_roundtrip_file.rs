@@ -50,9 +50,10 @@ mod tests {
         let original = EntryMetadata {
             mode: Some(0o644),
             modified: Some(test_time),
-            created: Some(test_time + Duration::from_secs(86400)),
-            flags: Some(0x00000020), // UF_ARCHIVE
-            crc: Some(0xDEADBEEF),
+            #[allow(clippy::duration_suboptimal_units)]
+            created: Some(test_time + Duration::from_secs(86_400)),
+            flags: Some(0x0000_0020), // UF_ARCHIVE
+            crc: Some(0xDEAD_BEEF),
             uid: Some(501),
             gid: Some(20),
         };

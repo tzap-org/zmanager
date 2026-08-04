@@ -1,10 +1,15 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 //! Reproducible planning performance benchmark.
 //!
 //! Creates a temporary directory with 100,000 entries (90 % regular files,
 //! 10 % directories / symlinks) and measures planning elapsed time.
 //!
 //! Run with:
-//!   cargo test -p zmanager-core plan_benchmark --release -- --nocapture --ignored
+//!   cargo test -p zmanager-core `plan_benchmark` --release -- --nocapture --ignored
 //!
 //! The test is `#[ignore]` by default because it creates 100,000 files and
 //! takes several seconds. Use `--release` for representative timings.
@@ -65,8 +70,7 @@ impl BenchmarkFixture {
         assert_eq!(file_count + dir_count + symlink_count, ENTRY_COUNT);
 
         eprintln!(
-            "Creating benchmark fixture: {} files, {} dirs, {} symlinks ({} total)",
-            file_count, dir_count, symlink_count, ENTRY_COUNT
+            "Creating benchmark fixture: {file_count} files, {dir_count} dirs, {symlink_count} symlinks ({ENTRY_COUNT} total)"
         );
 
         // Create all entries inside a single level to keep traversal simple.
@@ -76,7 +80,7 @@ impl BenchmarkFixture {
         let entries_per_shard = ENTRY_COUNT / shard_count;
 
         for shard in 0..shard_count {
-            let shard_dir = root.join(format!("s{:03}", shard));
+            let shard_dir = root.join(format!("s{shard:03}"));
             fs::create_dir_all(&shard_dir)?;
 
             let file_in_shard = (entries_per_shard as f64 * FILE_FRACTION) as usize;
@@ -84,21 +88,21 @@ impl BenchmarkFixture {
             let symlink_in_shard = entries_per_shard - file_in_shard - dir_in_shard;
 
             for i in 0..file_in_shard {
-                let path = shard_dir.join(format!("f{:06}.txt", i));
+                let path = shard_dir.join(format!("f{i:06}.txt"));
                 let mut f = File::create(&path)?;
                 // Write a small amount of data so files have non-zero size
-                writeln!(f, "benchmark entry {}", i)?;
+                writeln!(f, "benchmark entry {i}")?;
             }
 
             for i in 0..dir_in_shard {
-                let path = shard_dir.join(format!("d{:06}", i));
+                let path = shard_dir.join(format!("d{i:06}"));
                 fs::create_dir_all(&path)?;
             }
 
             // Symlinks: link to existing regular files in the same shard
             #[cfg(unix)]
             for i in 0..symlink_in_shard {
-                let link_path = shard_dir.join(format!("l{:06}.lnk", i));
+                let link_path = shard_dir.join(format!("l{i:06}.lnk"));
                 // Target: the first regular file in this shard (always exists)
                 let target = format!("f{:06}.txt", i % file_in_shard.max(1));
                 let _ = std::os::unix::fs::symlink(&target, &link_path);
@@ -207,9 +211,9 @@ mod fixture_tests {
         let sub = root.join("test");
         fs::create_dir_all(&sub).unwrap();
         for i in 0..10 {
-            let path = sub.join(format!("f{:03}.txt", i));
+            let path = sub.join(format!("f{i:03}.txt"));
             let mut f = File::create(&path).unwrap();
-            writeln!(f, "entry {}", i).unwrap();
+            writeln!(f, "entry {i}").unwrap();
         }
         // Create a symlink
         #[cfg(unix)]
@@ -219,7 +223,7 @@ mod fixture_tests {
 
         let manifest = plan_archive(&root, &PlanOptions::default()).unwrap();
         assert!(
-            manifest.entries.len() > 0,
+            !manifest.entries.is_empty(),
             "should have planned some entries"
         );
         eprintln!("Small fixture: {} entries planned", manifest.entries.len());

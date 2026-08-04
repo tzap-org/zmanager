@@ -851,9 +851,7 @@ pub fn migrate_legacy_inventory(
         Ok::<_, TzapIdentityCatalogError>(())
     })();
 
-    if let Err(error) = result {
-        return Err(error);
-    }
+    result?;
 
     let catalog = catalog_store
         .load_catalog(account_key)?

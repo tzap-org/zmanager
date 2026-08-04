@@ -427,9 +427,9 @@ fn read_entry(entry: NonNull<sys::archive_entry>) -> Entry {
         data_encrypted: unsafe { sys::archive_entry_is_data_encrypted(entry) != 0 },
         metadata_encrypted: unsafe { sys::archive_entry_is_metadata_encrypted(entry) != 0 },
         uid: (unsafe { sys::archive_entry_uid_is_set(entry) } != 0)
-            .then(|| unsafe { sys::archive_entry_uid(entry) } as u64),
+            .then(|| unsafe { sys::archive_entry_uid(entry) }.cast_unsigned()),
         gid: (unsafe { sys::archive_entry_gid_is_set(entry) } != 0)
-            .then(|| unsafe { sys::archive_entry_gid(entry) } as u64),
+            .then(|| unsafe { sys::archive_entry_gid(entry) }.cast_unsigned()),
         uname: entry_string(
             entry,
             sys::archive_entry_uname_utf8,
