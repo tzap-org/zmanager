@@ -76,7 +76,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         sign = @("-h", "--help", "--state-dir", "--account-key", "--certificate-id", "--output", "--claimed-signing-time", "--json")
         verify = @("-h", "--help", "--custom-trust-root", "--custom-trust-root-cert", "--status-response", "--time", "--json")
         contact = @("-h", "--help", "--state-dir", "--account-key", "--label", "--recipient-key-id", "--certificate-id", "--display-name", "--device-label", "--output", "--accept", "--custom-trust-root", "--custom-trust-root-cert", "--json")
-        share = @("-h", "--help", "--state-dir", "--account-key", "--contact", "--force", "--json")
+        share = @("-h", "--help", "--state-dir", "--account-key", "--contact", "--certificate-id", "--force", "--json")
         formats = @("-h", "--help", "--json")
         doctor = @("-h", "--help", "--json")
         completions = @("-h", "--help")

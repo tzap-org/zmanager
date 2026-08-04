@@ -169,6 +169,7 @@ complete -c zm -n "__fish_seen_subcommand_from sign contact" -l output -r -d "De
 complete -c zm -n "__fish_seen_subcommand_from verify contact" -l custom-trust-root -r -d "Custom root fingerprint"
 complete -c zm -n "__fish_seen_subcommand_from verify contact" -l custom-trust-root-cert -r -d "Custom root certificate"
 complete -c zm -n "__fish_seen_subcommand_from share" -l contact -r -d "Accepted contact id"
+complete -c zm -n "__fish_seen_subcommand_from share" -l certificate-id -r -d "Active local certificate used for RootAuth signing"
 complete -c zm -n "__fish_seen_subcommand_from share" -l force -d "Replace existing output archive"
 
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -s h -l help -d "Show help"

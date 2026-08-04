@@ -93,6 +93,21 @@ pub fn generate_device_signing_key_and_csr(
     })
 }
 
+/// Rebuilds a device CSR from an existing private key.
+///
+/// Hosted organization enrollment uses this after an administrator approves
+/// the pending device key, so the retry presents the same device identity.
+pub fn generate_device_csr_from_private_key(
+    private_key_der: &SecretBytes,
+    options: &TzapDeviceCsrOptions,
+) -> Result<Vec<u8>, TzapDeviceIdentityError> {
+    if options.common_name.is_empty() {
+        return Err(TzapDeviceIdentityError::EmptyCommonName);
+    }
+    let private_key = PKey::private_key_from_der(private_key_der.expose_secret())?;
+    Ok(build_device_csr(&private_key, options)?)
+}
+
 pub fn generate_recipient_encryption_key()
 -> Result<TzapRecipientEncryptionKeyMaterial, TzapDeviceIdentityError> {
     let private_key = generate_p256_private_key()?;
@@ -153,7 +168,8 @@ mod tests {
     use super::{
         DEVICE_CSR_COMMON_NAME, RECIPIENT_ENCRYPTION_KEY_ALGORITHM, TzapDeviceCsrOptions,
         TzapDeviceIdentityError, ensure_recipient_key_is_distinct_from_signing_key,
-        generate_device_signing_key_and_csr, generate_recipient_encryption_key,
+        generate_device_csr_from_private_key, generate_device_signing_key_and_csr,
+        generate_recipient_encryption_key,
     };
     use crate::trust;
     use openssl::nid::Nid;
@@ -203,6 +219,25 @@ mod tests {
             }),
             Err(TzapDeviceIdentityError::EmptyCommonName)
         ));
+    }
+
+    #[test]
+    fn existing_device_key_can_rebuild_a_valid_csr() {
+        let material =
+            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+
+        let rebuilt = generate_device_csr_from_private_key(
+            &material.private_key_der,
+            &TzapDeviceCsrOptions::default(),
+        )
+        .unwrap();
+        let csr = X509Req::from_der(&rebuilt).unwrap();
+
+        assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
+        assert_eq!(
+            csr.public_key().unwrap().public_key_to_der().unwrap(),
+            material.public_key_spki_der
+        );
     }
 
     #[test]

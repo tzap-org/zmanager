@@ -229,6 +229,7 @@ contact_options=(
 share_options=(
   $identity_options
   '--contact[Accepted contact id]:id'
+  '--certificate-id[Active local certificate used for RootAuth signing]:id'
   '--force[Replace an existing output archive]'
 )
 

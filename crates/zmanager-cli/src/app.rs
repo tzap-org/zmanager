@@ -494,12 +494,13 @@ const SHARE_HELP: &str = "\
 Create a TZAP archive for accepted contacts
 
 Usage:
-  zm share <archive.tzap> <paths...> --contact <id> [options]
+  zm share <archive.tzap> <paths...> --contact <id> --certificate-id <id> [options]
 
 Options:
       --state-dir <dir>          Store local identity state in dir
       --account-key <key>        Local account inventory key; default is default
       --contact <id>             Accepted contact id; repeat for multiple recipients
+      --certificate-id <id>      Active local certificate used for RootAuth signing
       --force                    Replace an existing output archive
       --json                     Emit machine-readable JSON
 ";
@@ -2858,6 +2859,7 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut archive = None;
     let mut sources = Vec::new();
     let mut contact_ids = Vec::new();
+    let mut certificate_id = None;
     let mut force = false;
     let mut index = 0usize;
     while index < args.len() {
@@ -2873,6 +2875,9 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--contact" => contact_ids.push(take_value_or_exit(args, &mut index, "--contact")),
+            "--certificate-id" => {
+                certificate_id = Some(take_value_or_exit(args, &mut index, "--certificate-id"));
+            }
             "--force" => {
                 force = true;
                 index += 1;
@@ -2900,8 +2905,23 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if sources.is_empty() {
         return command_usage_error("share", "missing source path", &global);
     }
+    let Some(certificate_id) = certificate_id else {
+        return command_usage_error("share", "missing --certificate-id", &global);
+    };
     let store =
         zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let x509_signing = match local_tzap_x509_signing_options(
+        &store,
+        &context.account_key,
+        &certificate_id,
+        current_unix_seconds(),
+    ) {
+        Ok(signing) => signing,
+        Err(error) => {
+            print_stable_tzap_error("share", &error, &global);
+            return ExitCode::FAILURE;
+        }
+    };
     let recipients = match zmanager_core::contact_card::accepted_contact_recipients(
         &store,
         &context.account_key,
@@ -2948,7 +2968,7 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         volume_size: None,
         recovery_percentage: TZAP_DEFAULT_RECOVERY_PERCENTAGE,
         volume_loss_tolerance: TZAP_SINGLE_VOLUME_LOSS_TOLERANCE,
-        x509_signing: None,
+        x509_signing: Some(x509_signing),
     };
     let result = {
         let mut sink = |event| progress.emit(event);
@@ -2967,12 +2987,13 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         Ok(report) => {
             if global.json {
                 println!(
-                    "{{\"archive\":\"{}\",\"format\":\"tzap\",\"entries\":{},\"bytes\":{},\"recipients\":{},\"recipient_status_caveats\":{}}}",
+                    "{{\"archive\":\"{}\",\"format\":\"tzap\",\"entries\":{},\"bytes\":{},\"recipients\":{},\"recipient_status_caveats\":{},\"signed\":true,\"certificate_id\":\"{}\"}}",
                     json_escape(&archive.display().to_string()),
                     report.written_entries,
                     report.written_bytes,
                     contact_ids.len(),
-                    recipient_warning_count
+                    recipient_warning_count,
+                    json_escape(&certificate_id)
                 );
             } else {
                 if recipient_warning_count > 0 {
@@ -2995,6 +3016,59 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn local_tzap_x509_signing_options(
+    store: &impl zmanager_core::local_identity_store::TzapLocalIdentityStore,
+    account_key: &str,
+    certificate_id: &str,
+    now_unix_seconds: u64,
+) -> Result<zmanager_core::tzap_backend::TzapX509SigningOptions, String> {
+    let inventory = store
+        .load_inventory(account_key)
+        .map_err(|error| error.to_string())?;
+    let certificate = inventory
+        .enrolled_certificates
+        .iter()
+        .find(|record| record.certificate_id == certificate_id)
+        .ok_or_else(|| format!("certificate not found: {certificate_id}"))?;
+    if certificate.state != zmanager_core::local_identity_store::TzapLocalCertificateState::Active {
+        return Err(format!(
+            "certificate is not active: {}",
+            certificate.state.as_str()
+        ));
+    }
+    if now_unix_seconds < certificate.not_before_unix_seconds {
+        return Err("certificate is not yet valid".to_owned());
+    }
+    if now_unix_seconds >= certificate.not_after_unix_seconds {
+        return Err("certificate is expired".to_owned());
+    }
+    if inventory
+        .emergency_blocklist
+        .blocked_issuer_sha256
+        .contains(&certificate.issuer_certificate_sha256)
+    {
+        return Err("certificate issuer is locally blocked".to_owned());
+    }
+    if inventory.certificate_status_cache.iter().any(|status| {
+        status.certificate_sha256 == certificate.certificate_sha256
+            && status.status != zmanager_core::trust::TzapCertificateStatus::Valid
+    }) {
+        return Err("certificate status blocks signing".to_owned());
+    }
+    let signing_key = inventory
+        .device_signing_keys
+        .iter()
+        .find(|key| key.key_id == certificate.signing_key_id)
+        .ok_or_else(|| "certificate signing key is missing".to_owned())?;
+    Ok(
+        zmanager_core::tzap_backend::TzapX509SigningOptions::InMemory {
+            signing_certificate: certificate.leaf_certificate_der.clone(),
+            signing_private_key: signing_key.private_key_der.clone(),
+            signing_chain: certificate.intermediate_chain_der.clone(),
+        },
+    )
 }
 
 fn parse_tzap_context_args(
@@ -3206,17 +3280,6 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
         &options.context.state_dir,
     );
     let now_unix_seconds = current_unix_seconds();
-    let (signing_key, csr_der) = match create_and_store_staging_enrollment_key(
-        &mut identity_store,
-        options,
-        now_unix_seconds,
-    ) {
-        Ok(material) => material,
-        Err(error) => {
-            print_error_line(global, format_args!("cert enroll failed: {error}"));
-            return ExitCode::FAILURE;
-        }
-    };
     let request = zmanager_core::enrollment_client::TzapEnrollmentRequest {
         account_key: options.context.account_key.clone(),
         org_id: options
@@ -3225,6 +3288,17 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
             .or_else(|| session.selected_org_id.clone()),
         requested_validity_seconds: options.requested_validity_seconds,
         now_unix_seconds,
+    };
+    let (signing_key, csr_der) = match create_and_store_staging_enrollment_key(
+        &mut identity_store,
+        &request,
+        now_unix_seconds,
+    ) {
+        Ok(material) => material,
+        Err(error) => {
+            print_error_line(global, format_args!("cert enroll failed: {error}"));
+            return ExitCode::FAILURE;
+        }
     };
     let transport = CliHttpJsonTransport;
     let client = zmanager_core::enrollment_client::TzapEnrollmentClient::local_staging_server(
@@ -3262,11 +3336,6 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
             ExitCode::SUCCESS
         }
         Err(error) => {
-            let _ = remove_staging_enrollment_key(
-                &mut identity_store,
-                &options.context.account_key,
-                &signing_key.key_id,
-            );
             print_stable_tzap_error("cert_enroll", &error.to_string(), global);
             ExitCode::FAILURE
         }
@@ -3275,7 +3344,7 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
 
 fn create_and_store_staging_enrollment_key(
     store: &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
-    options: &CertEnrollOptions,
+    request: &zmanager_core::enrollment_client::TzapEnrollmentRequest,
     now_unix_seconds: u64,
 ) -> Result<
     (
@@ -3284,6 +3353,25 @@ fn create_and_store_staging_enrollment_key(
     ),
     String,
 > {
+    let mut inventory = store
+        .load_inventory(&request.account_key)
+        .map_err(|error| error.to_string())?;
+    let label = staging_enrollment_key_label(request.org_id.as_deref());
+    if let Some(record) = inventory.device_signing_keys.iter().find(|record| {
+        record.label.as_deref() == Some(label.as_str())
+            && !inventory
+                .enrolled_certificates
+                .iter()
+                .any(|certificate| certificate.signing_key_id == record.key_id)
+    }) {
+        let csr_der = zmanager_core::device_identity::generate_device_csr_from_private_key(
+            &record.private_key_der,
+            &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok((record.clone(), csr_der));
+    }
+
     let material = zmanager_core::device_identity::generate_device_signing_key_and_csr(
         &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
     )
@@ -3293,32 +3381,20 @@ fn create_and_store_staging_enrollment_key(
         public_key_fingerprint: material.public_key_fingerprint,
         private_key_der: material.private_key_der,
         created_at_unix_seconds: now_unix_seconds,
-        label: Some(STAGING_ENROLLMENT_KEY_LABEL.to_owned()),
+        label: Some(label),
     };
-    let mut inventory = store
-        .load_inventory(&options.context.account_key)
-        .map_err(|error| error.to_string())?;
     inventory.device_signing_keys.push(record.clone());
     store
-        .save_inventory(&options.context.account_key, inventory)
+        .save_inventory(&request.account_key, inventory)
         .map_err(|error| error.to_string())?;
     Ok((record, material.csr_der))
 }
 
-fn remove_staging_enrollment_key(
-    store: &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
-    account_key: &str,
-    key_id: &str,
-) -> Result<(), String> {
-    let mut inventory = store
-        .load_inventory(account_key)
-        .map_err(|error| error.to_string())?;
-    inventory
-        .device_signing_keys
-        .retain(|record| record.key_id != key_id);
-    store
-        .save_inventory(account_key, inventory)
-        .map_err(|error| error.to_string())
+fn staging_enrollment_key_label(org_id: Option<&str>) -> String {
+    match org_id {
+        Some(org_id) => format!("{STAGING_ENROLLMENT_KEY_LABEL} (org:{org_id})"),
+        None => format!("{STAGING_ENROLLMENT_KEY_LABEL} (personal)"),
+    }
 }
 
 struct CliTrustedEnrollmentCertificateValidator {
@@ -8731,8 +8807,9 @@ mod tests {
     use super::{
         ArchiveFormat, CreateRequest, DEFAULT_TZAP_REDIRECT_URI, ExtractRequest, GlobalOptions,
         InteractiveOverwriteResolver, ListRequest, TestRequest, build_hosted_http_request,
-        contact_keygen_command, normalize_prompted_password, parse_create_request,
-        parse_extract_request, parse_list_request, parse_test_request, publish_archive,
+        contact_keygen_command, create_and_store_staging_enrollment_key,
+        normalize_prompted_password, parse_create_request, parse_extract_request,
+        parse_list_request, parse_test_request, publish_archive,
         tzap_default_volume_loss_tolerance, validate_create_options,
     };
     use std::fs;
@@ -8781,6 +8858,31 @@ mod tests {
             Some("Test recipient")
         );
         assert!(inventory.device_signing_keys.is_empty());
+    }
+
+    #[test]
+    fn pending_organization_enrollment_reuses_the_same_device_key() {
+        let temp = TestDir::new("organization-enrollment-key-retry");
+        let mut store =
+            zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
+        let request = zmanager_core::enrollment_client::TzapEnrollmentRequest {
+            account_key: "default".to_owned(),
+            org_id: Some("porg_test".to_owned()),
+            requested_validity_seconds: 86_400,
+            now_unix_seconds: 1_000,
+        };
+
+        let (first_key, first_csr) =
+            create_and_store_staging_enrollment_key(&mut store, &request, 1_000).unwrap();
+        let (retried_key, retried_csr) =
+            create_and_store_staging_enrollment_key(&mut store, &request, 1_001).unwrap();
+
+        assert_eq!(retried_key.key_id, first_key.key_id);
+        assert_eq!(retried_key.private_key_der, first_key.private_key_der);
+        assert!(!first_csr.is_empty());
+        assert!(!retried_csr.is_empty());
+        let inventory = store.load_inventory("default").unwrap();
+        assert_eq!(inventory.device_signing_keys.len(), 1);
     }
 
     #[test]

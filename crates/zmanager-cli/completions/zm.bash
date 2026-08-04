@@ -30,7 +30,7 @@ _zm()
     local sign_opts="$identity_opts --certificate-id --output --claimed-signing-time"
     local verify_opts="-h --help --custom-trust-root --custom-trust-root-cert --status-response --time --json"
     local contact_opts="$identity_opts --label --recipient-key-id --certificate-id --display-name --device-label --output --accept --custom-trust-root --custom-trust-root-cert"
-    local share_opts="$identity_opts --contact --force"
+    local share_opts="$identity_opts --contact --certificate-id --force"
     local format_values="zip tar.zst tzap aar 7z tgz"
     local progress_values="auto always never"
     local color_values="auto always never"
