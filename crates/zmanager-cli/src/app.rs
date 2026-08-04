@@ -663,7 +663,13 @@ pub fn run_from_env() -> ExitCode {
                 print_help_stderr(USAGE, &global);
                 return ExitCode::from(2);
             }
-            println!("zm {}", env!("CARGO_PKG_VERSION"));
+            let version = env!("CARGO_PKG_VERSION");
+            let rev = option_env!("ZMANAGER_BUILD_REV").unwrap_or("");
+            if rev.is_empty() {
+                println!("zm {version}");
+            } else {
+                println!("zm {version} ({rev})");
+            }
             ExitCode::SUCCESS
         }
         "help" => help_command(&raw_args[1..], &global),
