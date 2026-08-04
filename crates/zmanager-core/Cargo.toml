@@ -34,13 +34,13 @@ tzap-plugin-keywrap = "0.2.0"
 tzap-plugin-signing = "0.2.0"
 zip = "8.6.0"
 zeroize = "1.8.2"
-zmanager-libarchive = { path = "../zmanager-libarchive", version = "1.0.8" }
-zmanager-unrar = { path = "../zmanager-unrar", version = "1.0.8" }
+zmanager-libarchive = { path = "../zmanager-libarchive", version = "2.0.0" }
+zmanager-unrar = { path = "../zmanager-unrar", version = "2.0.0" }
 
 zstd = { version = "0.13.3", features = ["zstdmt"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "1.0.8" }
+zmanager-apple-archive = { path = "../zmanager-apple-archive", version = "2.0.0" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

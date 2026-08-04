@@ -2420,7 +2420,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3268,14 +3268,14 @@ checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmanager-apple-archive"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "zmanager-cli"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-core"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "base64",
  "brotli",
@@ -3331,7 +3331,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-ffi"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "base64",
  "openssl",
@@ -3341,7 +3341,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "libc",
  "zmanager-libarchive-sys",
@@ -3349,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-libarchive-sys"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "cmake",
  "libc",
@@ -3361,7 +3361,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "1.0.8"
+version = "2.0.0"
 dependencies = [
  "cc",
  "zeroize",

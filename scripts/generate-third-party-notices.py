@@ -142,17 +142,23 @@ def collect_bundled_notices(workspace: Path, license_dir: Path, notice_path: Pat
         {
             "name": "libarchive",
             "version": "3.8.8",
-            "source": "vendor/libarchive/libarchive-3.8.8",
+            "source": "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8",
             "license": "BSD-2-Clause-style with file-specific exceptions; see COPYING",
-            "files": [workspace / "vendor/libarchive/libarchive-3.8.8/COPYING"],
+            "files": [
+                workspace / "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8/COPYING",
+                workspace / "vendor/libarchive/libarchive-3.8.8/COPYING",
+            ],
             "notes": "Built into zm for broad archive listing and extraction.",
         },
         {
             "name": "UnRAR",
             "version": "vendored",
-            "source": "vendor/unrar",
+            "source": "crates/zmanager-unrar/vendor/unrar",
             "license": "UnRAR freeware license",
-            "files": [workspace / "vendor/unrar/license.txt"],
+            "files": [
+                workspace / "crates/zmanager-unrar/vendor/unrar/license.txt",
+                workspace / "vendor/unrar/license.txt",
+            ],
             "notes": "Used only for RAR handling; not used to create RAR archives or recreate RAR compression.",
         },
     ]
@@ -164,6 +170,7 @@ def collect_bundled_notices(workspace: Path, license_dir: Path, notice_path: Pat
             if source.is_file():
                 copied = copy_file(source, destination_root / source.name)
                 copied_files.append(display_path(copied, notice_path))
+                break
         bundled.append({**entry, "license_files": copied_files})
 
     return bundled
@@ -319,8 +326,9 @@ def render_notices(
             "",
             f"- Workspace: `{workspace}`",
             "- Cargo metadata command: `cargo metadata --format-version 1 --locked`",
-            "- Bundled license inputs: `vendor/libarchive/libarchive-3.8.8/COPYING`,",
-            "  `vendor/unrar/license.txt`",
+            "- Bundled license inputs:",
+            "  `crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8/COPYING`,",
+            "  `crates/zmanager-unrar/vendor/unrar/license.txt`",
             "",
         ]
     )
