@@ -33,9 +33,9 @@ jobs:
 
       - name: Clone tzap
         run: |
-          TZAP_REV=$(cat tzap-rev.txt)
+          TZAP_REV=$(cat tzap-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/tzap-org/tzap.git ../tzap
-          git -C ../tzap checkout "$TZAP_REV"
+          git -C ../tzap checkout "$TZAP_REV" || git -C ../tzap checkout main
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -139,9 +139,9 @@ jobs:
       - name: Clone tzap
         shell: bash
         run: |
-          TZAP_REV=$(cat tzap-rev.txt)
+          TZAP_REV=$(cat tzap-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/tzap-org/tzap.git ../tzap
-          git -C ../tzap checkout "$TZAP_REV"
+          git -C ../tzap checkout "$TZAP_REV" || git -C ../tzap checkout main
 
       - name: Test
         shell: pwsh
