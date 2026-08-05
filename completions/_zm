@@ -175,7 +175,6 @@ identity_options=(
 auth_options=(
   $identity_options
   '--print-url[Print the hosted login URL]'
-  '--environment[Select hosted endpoints]:environment:(local dev staging prod)'
   '--auth-base-url[Override hosted Auth base URL]:url'
   '--account-base-url[Override hosted Account base URL]:url'
   '--client-id[Hosted Auth client id]:id'

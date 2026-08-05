@@ -595,7 +595,6 @@ run_case list_files zm list ""
         "contact_commands: keygen export import list remove\n",
     );
     assert_contains(&stdout, "auth_options: --help");
-    assert_contains(&stdout, "--environment");
     assert_contains(&stdout, "completion_shells: bash zsh fish powershell\n");
     assert_contains(&stdout, "list_files: archive.zip\n");
     assert_not_contains(

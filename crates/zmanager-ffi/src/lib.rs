@@ -3122,9 +3122,9 @@ fn parse_auth_environment(
 ) -> Result<zmanager_core::auth_client::TzapHostedAuthEnvironment, String> {
     match value {
         "local" => Ok(zmanager_core::auth_client::TzapHostedAuthEnvironment::Local),
-        "dev" => Ok(zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev),
+        "staging" => Ok(zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging),
         "prod" => Ok(zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod),
-        _ => Err("environment must be local, dev, or prod".to_owned()),
+        _ => Err("environment must be local, staging, or prod".to_owned()),
     }
 }
 

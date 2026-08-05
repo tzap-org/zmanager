@@ -361,8 +361,6 @@ Examples:
 Options:
       --state-dir <dir>          Store local auth/session state in dir
       --account-key <key>        Local account inventory key; default is default
-      --environment <local|dev|staging|prod>
-                                  Select named hosted endpoints
       --auth-base-url <url>      Override hosted Auth base URL
       --account-base-url <url>   Override hosted Account base URL
       --client-id <id>           Hosted Auth client id
@@ -1712,13 +1710,12 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 let value = take_value_or_exit(args, &mut index, "--environment");
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
-                    "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
                     "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
                         return command_usage_error(
                             "auth",
-                            "environment must be local, dev, staging, or prod",
+                            "environment must be local, staging, or prod",
                             &global,
                         );
                     }
@@ -1984,13 +1981,12 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
                 let value = take_value_or_exit(args, &mut index, "--environment");
                 endpoints.environment = match value.as_str() {
                     "local" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Local,
-                    "dev" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Dev,
                     "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
                         return command_usage_error(
                             "auth",
-                            "environment must be local, dev, staging, or prod",
+                            "environment must be local, staging, or prod",
                             &global,
                         );
                     }

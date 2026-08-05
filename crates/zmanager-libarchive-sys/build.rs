@@ -2,8 +2,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const BUNDLED_SOURCE_PATHS: [&str; 2] = [
-    "vendor/libarchive/libarchive-3.8.8",
-    "../../vendor/libarchive/libarchive-3.8.8",
+    "vendor/libarchive/libarchive-3.8.9",
+    "../../vendor/libarchive/libarchive-3.8.9",
 ];
 const ENV_CMAKE_TOOLCHAIN_FILE: &str = "CMAKE_TOOLCHAIN_FILE";
 const ENV_VCPKG_DEFAULT_TRIPLET: &str = "VCPKG_DEFAULT_TRIPLET";
@@ -59,6 +59,8 @@ fn main() {
     } else {
         build_bundled_libarchive();
     }
+
+    generate_bindings();
 }
 
 fn link_system_libarchive() {
@@ -466,4 +468,33 @@ fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
         }
     }
     panic!("Could not find include directory for {var_name}");
+}
+
+fn generate_bindings() {
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let wrapper_path = out_path.join("wrapper.h");
+    std::fs::write(&wrapper_path, "#include <archive.h>\n#include <archive_entry.h>\n").unwrap();
+
+    let mut builder = bindgen::Builder::default()
+        .header(wrapper_path.to_str().unwrap())
+        .allowlist_function("archive_.*")
+        .allowlist_type("archive_.*|la_.*|__LA_.*")
+        .allowlist_var("ARCHIVE_.*|AE_.*|__LA_.*");
+
+    if env::var_os("ZMANAGER_LIBARCHIVE_SYSTEM").is_some() {
+        if let Some(root) = env::var_os("LIBARCHIVE_DIR") {
+            let inc = PathBuf::from(root).join("include");
+            builder = builder.clang_arg(format!("-I{}", inc.display()));
+        }
+    } else {
+        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        let source = locate_bundled_libarchive_source(&manifest_dir);
+        let inc = source.join("libarchive");
+        builder = builder.clang_arg(format!("-I{}", inc.display()));
+    }
+
+    let bindings = builder.generate().expect("Unable to generate bindings");
+    bindings
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("Couldn't write bindings!");
 }

@@ -24,7 +24,7 @@ _zm()
     local list_opts="-h --help -f --file -l --long --name-only --tree -i --include --exclude --password-stdin --recipient-key --json"
     local test_opts="-h --help -f --file -i --include --exclude --password-stdin --recipient-key --public-no-key --trusted-ca-cert --trusted-system-roots --json"
     local plan_opts="-h --help --format -C --directory -@ --files-from --null --clean --no-ignore -i --include --exclude --exclude-from --json"
-    local auth_opts="-h --help --print-url --state-dir --account-key --environment --auth-base-url --account-base-url --client-id --redirect-uri --provider --org-id --state --callback-url --handoff-code --relay-body --json"
+    local auth_opts="-h --help --print-url --state-dir --account-key --auth-base-url --account-base-url --client-id --redirect-uri --provider --org-id --state --callback-url --handoff-code --relay-body --json"
     local identity_opts="-h --help --state-dir --account-key --json"
     local cert_opts="$identity_opts --certificate-id --service-base-url --trusted-root-cert --org-id --requested-validity-seconds"
     local sign_opts="$identity_opts --certificate-id --output --claimed-signing-time"
@@ -89,10 +89,7 @@ _zm()
             COMPREPLY=($(compgen -W "$volume_size_values" -- "$cur"))
             return
             ;;
-        --environment)
-            COMPREPLY=($(compgen -W "local dev staging prod" -- "$cur"))
-            return
-            ;;
+
         completions)
             COMPREPLY=($(compgen -W "$shell_values" -- "$cur"))
             return

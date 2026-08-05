@@ -37,7 +37,6 @@ pub const HOSTED_AUTH_RESPONSE_MODE_RELAY: &str = "native_app_relay";
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TzapHostedAuthEnvironment {
     Local,
-    Dev,
     Staging,
     Prod,
 }
@@ -62,9 +61,6 @@ impl TzapHostedAuthLaunchConfig {
         let (hosted_auth_base_url, hosted_account_base_url) = match environment {
             TzapHostedAuthEnvironment::Local => {
                 (LOCAL_HOSTED_AUTH_BASE_URL, LOCAL_HOSTED_ACCOUNT_BASE_URL)
-            }
-            TzapHostedAuthEnvironment::Dev => {
-                (DEV_HOSTED_AUTH_BASE_URL, DEV_HOSTED_ACCOUNT_BASE_URL)
             }
             TzapHostedAuthEnvironment::Staging => (
                 STAGING_HOSTED_AUTH_BASE_URL,

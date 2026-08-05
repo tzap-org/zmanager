@@ -69,7 +69,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         list = $listOptions
         test = $testOptions
         plan = $planOptions
-        auth = @("-h", "--help", "--print-url", "--state-dir", "--account-key", "--environment", "--auth-base-url", "--account-base-url", "--client-id", "--redirect-uri", "--provider", "--org-id", "--state", "--callback-url", "--handoff-code", "--relay-body", "--json")
+        auth = @("-h", "--help", "--print-url", "--state-dir", "--account-key", "--auth-base-url", "--account-base-url", "--client-id", "--redirect-uri", "--provider", "--org-id", "--state", "--callback-url", "--handoff-code", "--relay-body", "--json")
         me = @("-h", "--help", "--state-dir", "--account-key", "--json")
         cert = @("-h", "--help", "--state-dir", "--account-key", "--certificate-id", "--service-base-url", "--trusted-root-cert", "--org-id", "--requested-validity-seconds", "--json")
         device = @("-h", "--help", "--state-dir", "--account-key", "--json")
@@ -199,10 +199,6 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         }
         "--volume-size" {
             Complete-ZmValues -Values $volumeSizeValues -Prefix $wordToComplete
-            return
-        }
-        "--environment" {
-            Complete-ZmValues -Values @("local", "dev", "prod") -Prefix $wordToComplete
             return
         }
         "-C" {

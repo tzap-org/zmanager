@@ -144,7 +144,6 @@ complete -c zm -n "__fish_seen_subcommand_from cert; and not __fish_seen_subcomm
 complete -c zm -n "__fish_seen_subcommand_from device; and not __fish_seen_subcommand_from $zm_device_commands" -a "$zm_device_commands" -d "Device command"
 complete -c zm -n "__fish_seen_subcommand_from contact; and not __fish_seen_subcommand_from $zm_contact_commands" -a "$zm_contact_commands" -d "Contact command"
 
-complete -c zm -n "__fish_seen_subcommand_from auth" -l environment -xa "local dev staging prod" -d "Select hosted endpoints"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l print-url -d "Print the hosted login URL"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l auth-base-url -r -d "Override hosted Auth base URL"
 complete -c zm -n "__fish_seen_subcommand_from auth" -l account-base-url -r -d "Override hosted Account base URL"

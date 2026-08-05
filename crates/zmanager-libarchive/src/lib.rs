@@ -313,7 +313,7 @@ impl ReadArchive {
         pointers.push(ptr::null());
 
         self.check_status(unsafe {
-            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_ptr(), BLOCK_SIZE)
+            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_mut_ptr() as *mut *const i8, BLOCK_SIZE)
         })?;
         Ok(())
     }
@@ -330,7 +330,7 @@ impl ReadArchive {
         let mut entry = ptr::null_mut();
         let status =
             unsafe { sys::archive_read_next_header(self.as_ptr(), std::ptr::addr_of_mut!(entry)) };
-        if status == sys::ARCHIVE_EOF {
+        if status == sys::ARCHIVE_EOF.try_into().unwrap() {
             return Ok(None);
         }
         self.check_status(status)?;
@@ -376,7 +376,7 @@ impl ReadArchive {
     }
 
     fn check_status(&self, status: c_int) -> Result<c_int> {
-        if status < sys::ARCHIVE_OK {
+        if status < sys::ARCHIVE_OK.try_into().unwrap() {
             Err(self.error_from_archive(status))
         } else {
             Ok(status)
@@ -463,26 +463,26 @@ unsafe fn nullable_c_string(pointer: *const c_char) -> Option<String> {
     }
 }
 
-fn file_type(value: sys::la_mode_t) -> FileType {
-    match value & sys::AE_IFMT {
-        sys::AE_IFREG => FileType::RegularFile,
-        sys::AE_IFDIR => FileType::Directory,
-        sys::AE_IFLNK => FileType::SymbolicLink,
-        sys::AE_IFBLK => FileType::BlockDevice,
-        sys::AE_IFCHR => FileType::CharacterDevice,
-        sys::AE_IFIFO => FileType::Fifo,
-        sys::AE_IFSOCK => FileType::Socket,
+fn file_type(value: sys::mode_t) -> FileType {
+    match value & 0o170000 {
+        0o100000 => FileType::RegularFile,
+        0o040000 => FileType::Directory,
+        0o120000 => FileType::SymbolicLink,
+        0o060000 => FileType::BlockDevice,
+        0o020000 => FileType::CharacterDevice,
+        0o010000 => FileType::Fifo,
+        0o140000 => FileType::Socket,
         _ => FileType::Unknown,
     }
 }
 
 #[cfg(any(windows, target_vendor = "apple"))]
-fn entry_mode(value: sys::la_mode_t) -> u32 {
+fn entry_mode(value: sys::mode_t) -> u32 {
     u32::from(value)
 }
 
 #[cfg(not(any(windows, target_vendor = "apple")))]
-fn entry_mode(value: sys::la_mode_t) -> u32 {
+fn entry_mode(value: sys::mode_t) -> u32 {
     value
 }
 
