@@ -1,0 +1,416 @@
+namespace zmanager {
+    HealthcheckResult healthcheck();
+    [Throws=ZmanagerGuiError]
+    DetectArchiveResult detectArchive(DetectArchiveRequest request);
+    [Throws=ZmanagerGuiError]
+    ListArchiveResult listArchive(ListArchiveRequest request);
+    [Throws=ZmanagerGuiError]
+    TestArchiveResult testArchive(TestArchiveRequest request);
+    [Throws=ZmanagerGuiError]
+    MaterializePreviewResult materializePreview(MaterializePreviewRequest request);
+    [Throws=ZmanagerGuiError]
+    PlanExtractResult planExtract(PlanExtractRequest request);
+    [Throws=ZmanagerGuiError]
+    PlanCreateResult planCreate(PlanCreateRequest request);
+    [Throws=ZmanagerGuiError]
+    StartJobResult startCreate(StartCreateRequest request);
+    [Throws=ZmanagerGuiError]
+    StartJobResult startExtract(StartExtractRequest request);
+    [Throws=ZmanagerGuiError]
+    PollJobEventsResult pollJobEvents(PollJobEventsRequest request);
+    [Throws=ZmanagerGuiError]
+    CancelJobResult cancelJob(CancelJobRequest request);
+    ClearSensitiveStateResult clearSensitiveState();
+
+    // TZAP service endpoints. Each returns a JSON response envelope
+    // documented by the zmanager-core `tzap_service` module.
+    string tzapPublicMetadataSummary(string archive_path);
+    string verifyTzapX509(string archive_path, string? password, sequence<string> trusted_ca_certs, boolean trusted_system_roots);
+    string verifyTzapX509PublicNoKey(string archive_path, sequence<string> trusted_ca_certs, boolean trusted_system_roots);
+    string inspectTzapX509Signer(string archive_path, string? password);
+    string inspectTzapX509PublicNoKeySigner(string archive_path);
+    string createTzapSelfSignedIdentity(string identity_path, string public_certificate_path, string common_name, string password);
+    string tzap_auth_login_json(string request_json);
+    string tzap_auth_callback_json(string request_json);
+    string tzap_auth_status_json(string request_json);
+    string tzap_auth_forget_json(string request_json);
+    string tzap_auth_account_url_json(string request_json);
+    string tzap_certificate_inventory_json(string request_json);
+    string tzap_cert_enroll_json(string request_json);
+    string tzap_cert_renew_json(string request_json);
+    string tzap_cert_revoke_json(string request_json);
+    string tzap_device_retire_json(string request_json);
+    string tzap_document_sign_json(string request_json);
+    string tzap_document_verify_json(string request_json);
+    string tzap_recipient_key_generate_json(string request_json);
+    string tzap_recipient_key_remove_json(string request_json);
+    string tzap_contact_export_json(string request_json);
+    string tzap_contact_import_json(string request_json);
+    string tzap_contact_list_json(string request_json);
+    string tzap_contact_remove_json(string request_json);
+    string tzap_share_create_json(string request_json);
+};
+
+enum BridgeSeverity {
+    "Info",
+    "Warning",
+    "Error"
+};
+
+dictionary BridgeError {
+    string code;
+    string message;
+    string? recovery_hint;
+    BridgeSeverity severity;
+    boolean retryable;
+};
+
+dictionary HealthcheckResult {
+    string status;
+    string engine;
+    string version;
+    boolean ready;
+    string summary;
+};
+
+enum ArchiveFormat {
+    "Zip",
+    "SplitZip",
+    "Rar",
+    "MultipartRar",
+    "SevenZ",
+    "Tar",
+    "TarGz",
+    "TarBz2",
+    "TarXz",
+    "TarZst",
+    "Gzip",
+    "Bzip2",
+    "Xz",
+    "Zstd",
+    "Tzap",
+    "AppleArchive",
+    "Xip",
+    "RawStream",
+    "Other"
+};
+
+dictionary DetectArchiveRequest {
+    string archive_path;
+};
+
+dictionary DetectArchiveResult {
+    string archive_path;
+    ArchiveFormat format;
+    string format_label;
+    boolean exists;
+    boolean is_file;
+    boolean can_list;
+    boolean can_extract;
+    boolean can_create;
+    sequence<BridgeError> warnings;
+};
+
+enum ArchiveEntryKind {
+    "File",
+    "Directory",
+    "Symlink",
+    "Hardlink",
+    "Special"
+};
+
+dictionary ArchiveEntry {
+    string path;
+    ArchiveEntryKind kind;
+    boolean is_dir;
+    u64? size;
+    u64? compressed_size;
+    string? modified_at;
+};
+
+dictionary ListArchiveRequest {
+    string archive_path;
+    string? password;
+};
+
+dictionary ListArchiveResult {
+    string archive_path;
+    ArchiveFormat format;
+    string format_label;
+    sequence<ArchiveEntry> entries;
+    u64 entry_count;
+    u64? total_size;
+    sequence<BridgeError> warnings;
+};
+
+dictionary TestArchiveRequest {
+    string archive_path;
+    string? password;
+    sequence<string> selected_paths;
+};
+
+dictionary TestArchiveResult {
+    string archive_path;
+    ArchiveFormat format;
+    string format_label;
+    boolean verified;
+    u64 tested_entries;
+    u64 skipped_entries;
+    u64 total_entries;
+    u64 tested_bytes;
+    sequence<BridgeError> warnings;
+};
+
+dictionary MaterializePreviewRequest {
+    string archive_path;
+    string entry_path;
+    string? password;
+    u64 strip_components;
+};
+
+dictionary MaterializePreviewResult {
+    string archive_path;
+    string entry_path;
+    string cleanup_root;
+    string preview_path;
+    u64 written_bytes;
+    sequence<BridgeError> warnings;
+};
+
+enum ExtractionCollisionPolicy {
+    "Refuse",
+    "Replace",
+    "Rename"
+};
+
+enum ExtractionPlanEntryStatus {
+    "Write",
+    "Skip",
+    "Block"
+};
+
+dictionary PlanExtractRequest {
+    string archive_path;
+    string destination_root;
+    string? password;
+    sequence<string> selected_paths;
+    u64 strip_components;
+    ExtractionCollisionPolicy collision_policy;
+};
+
+dictionary ExtractionPlanEntry {
+    string archive_path;
+    string? normalized_path;
+    string? destination_path;
+    ArchiveEntryKind kind;
+    ExtractionPlanEntryStatus status;
+    string? reason;
+    u64? size;
+    u64? compressed_size;
+    boolean replace_existing;
+};
+
+dictionary PlanExtractResult {
+    string plan_id;
+    string archive_path;
+    string destination_root;
+    ArchiveFormat format;
+    string format_label;
+    sequence<ExtractionPlanEntry> entries;
+    u64 total_entries;
+    u64 writable_entries;
+    u64 skipped_entries;
+    u64 blocked_entries;
+    u64? estimated_bytes;
+    boolean can_start;
+    sequence<BridgeError> warnings;
+};
+
+enum CreateArchiveFormat {
+    "Zip",
+    "SevenZ",
+    "TarZst",
+    "Tzap"
+};
+
+dictionary PlanCreateRequest {
+    sequence<string> source_paths;
+    string destination_archive_path;
+    CreateArchiveFormat format;
+    string? password;
+    boolean preserve_metadata;
+    boolean replace_existing;
+    boolean clean_source;
+    boolean verify_after_create;
+};
+
+dictionary CreatePlanEntry {
+    string archive_path;
+    string source_path;
+    ArchiveEntryKind kind;
+    u64 size;
+};
+
+dictionary PlanCreateResult {
+    string plan_id;
+    sequence<string> source_paths;
+    string destination_archive_path;
+    CreateArchiveFormat format;
+    string format_label;
+    sequence<CreatePlanEntry> entries;
+    u64 total_entries;
+    u64 total_bytes;
+    u64 excluded_entries;
+    u64 excluded_bytes;
+    boolean output_exists;
+    boolean replace_existing;
+    boolean encrypted;
+    boolean preserve_metadata;
+    boolean clean_source;
+    boolean verify_after_create;
+    boolean verify_supported;
+    boolean can_start;
+    sequence<BridgeError> warnings;
+};
+
+dictionary StartCreateRequest {
+    sequence<string> source_paths;
+    string destination_archive_path;
+    CreateArchiveFormat format;
+    string? password;
+    boolean preserve_metadata;
+    boolean replace_existing;
+    boolean clean_source;
+    boolean verify_after_create;
+    sequence<string> excluded_paths;
+    u32 level;
+    boolean encrypt_file_names;
+    u64? volume_size;
+    u8 recovery_percentage;
+    u8 volume_loss_tolerance;
+    string? tzap_signing_certificate;
+    string? tzap_signing_private_key;
+    sequence<string> tzap_signing_chain;
+    string? tzap_identity;
+    string? tzap_identity_password;
+};
+
+enum MobileJobStatus {
+    "Queued",
+    "Running",
+    "Paused",
+    "Completed",
+    "Failed",
+    "Cancelled"
+};
+
+enum MobileJobKind {
+    "ZipCreate",
+    "ZipExtract",
+    "SevenZCreate",
+    "SevenZExtract",
+    "RarExtract",
+    "TarZstdCreate",
+    "TarZstdExtract",
+    "TzapCreate",
+    "TzapExtract",
+    "AppleArchiveCreate",
+    "AppleArchiveExtract",
+    "ArchiveExtract",
+    "RawStreamExtract",
+    "TestArchive",
+    "TarGzCreate"
+};
+
+enum MobileJobEventKind {
+    "Started",
+    "EntryStarted",
+    "BytesProcessed",
+    "EntryFinished",
+    "Paused",
+    "Resumed",
+    "Warning",
+    "Completed",
+    "Failed",
+    "Cancelled"
+};
+
+dictionary MobileJobEvent {
+    u64 sequence;
+    MobileJobEventKind event_type;
+    MobileJobKind? job_kind;
+    string? path;
+    u64? bytes;
+    u64? total_bytes;
+    u64? total_bytes_processed;
+    u64? entries;
+    u64? total_entries;
+    string? message;
+    BridgeError? error;
+};
+
+dictionary JobTerminalSummary {
+    u64 written_entries;
+    u64? skipped_entries;
+    u64 written_bytes;
+    boolean? encrypted;
+    u64? volume_size;
+    u64? volume_count;
+    sequence<string> output_paths;
+    boolean? verified;
+    u64? verified_entries;
+    u64? verified_bytes;
+    sequence<BridgeError> warnings;
+};
+
+dictionary StartExtractRequest {
+    string archive_path;
+    string destination_root;
+    string? password;
+    sequence<string> selected_paths;
+    u64 strip_components;
+    ExtractionCollisionPolicy collision_policy;
+};
+
+dictionary StartJobResult {
+    string job_id;
+    MobileJobKind kind;
+    MobileJobStatus status;
+};
+
+dictionary PollJobEventsRequest {
+    string job_id;
+    u64 cursor;
+};
+
+dictionary PollJobEventsResult {
+    string job_id;
+    MobileJobKind kind;
+    MobileJobStatus status;
+    sequence<MobileJobEvent> events;
+    u64 next_cursor;
+    u64 min_retained_sequence;
+    boolean is_terminal;
+    JobTerminalSummary? terminal_summary;
+};
+
+dictionary CancelJobRequest {
+    string job_id;
+};
+
+dictionary CancelJobResult {
+    string job_id;
+    MobileJobStatus status;
+    boolean cancel_requested;
+};
+
+dictionary ClearSensitiveStateResult {
+    u64 cleared_terminal_jobs;
+    u64 cancel_requested_jobs;
+    u64 retained_active_jobs;
+};
+
+[Error]
+interface ZmanagerGuiError {
+    Bridge(string code, string user_message, string? recovery_hint, BridgeSeverity severity, boolean retryable);
+};

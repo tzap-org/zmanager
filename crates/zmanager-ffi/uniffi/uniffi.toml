@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "org.tzap.zmanager.mobile.bridge.generated"
+cdylib_name = "zmanager_ffi"
+android = true
