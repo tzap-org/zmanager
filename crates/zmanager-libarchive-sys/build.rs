@@ -473,7 +473,11 @@ fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
 fn generate_bindings() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let wrapper_path = out_path.join("wrapper.h");
-    std::fs::write(&wrapper_path, "#include <archive.h>\n#include <archive_entry.h>\n").unwrap();
+    std::fs::write(
+        &wrapper_path,
+        "#include <archive.h>\n#include <archive_entry.h>\n",
+    )
+    .unwrap();
 
     let mut builder = bindgen::Builder::default()
         .header(wrapper_path.to_str().unwrap())

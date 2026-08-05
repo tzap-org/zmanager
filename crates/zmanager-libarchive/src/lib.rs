@@ -313,7 +313,11 @@ impl ReadArchive {
         pointers.push(ptr::null());
 
         self.check_status(unsafe {
-            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_mut_ptr() as *mut *const i8, BLOCK_SIZE)
+            sys::archive_read_open_filenames(
+                self.as_ptr(),
+                pointers.as_mut_ptr() as *mut *const i8,
+                BLOCK_SIZE,
+            )
         })?;
         Ok(())
     }
