@@ -49,6 +49,7 @@ docker run --rm \
       bash \
       binutils \
       build-base \
+      clang20-libclang \
       cmake \
       file \
       linux-headers \

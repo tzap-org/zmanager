@@ -282,7 +282,7 @@ impl ReadArchive {
         let mut pointers = wide_paths.iter().map(Vec::as_ptr).collect::<Vec<_>>();
         pointers.push(ptr::null());
 
-        self.check_status(unsafe { sys::archive_read_open_filenames_w(self.as_ptr(), pointers.as_ptr(), BLOCK_SIZE) })?;
+        self.check_status(unsafe { sys::archive_read_open_filenames_w(self.as_ptr(), pointers.as_mut_ptr(), BLOCK_SIZE) })?;
         Ok(())
     }
 
@@ -293,7 +293,7 @@ impl ReadArchive {
         pointers.push(ptr::null());
 
         self.check_status(unsafe {
-            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_mut_ptr() as *mut *const i8, BLOCK_SIZE)
+            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_mut_ptr(), BLOCK_SIZE)
         })?;
         Ok(())
     }
@@ -401,7 +401,14 @@ unsafe fn nullable_c_string(pointer: *const c_char) -> Option<String> {
     if pointer.is_null() { None } else { Some(unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned()) }
 }
 
-fn file_type(value: sys::mode_t) -> FileType {
+// libarchive's `__LA_MODE_T` is `mode_t` on POSIX and `unsigned short` on
+// Windows; bindgen only emits the `mode_t` alias on POSIX targets.
+#[cfg(windows)]
+type LaModeT = u16;
+#[cfg(not(windows))]
+type LaModeT = sys::mode_t;
+
+fn file_type(value: LaModeT) -> FileType {
     match value & 0o170000 {
         0o100000 => FileType::RegularFile,
         0o040000 => FileType::Directory,
@@ -415,12 +422,12 @@ fn file_type(value: sys::mode_t) -> FileType {
 }
 
 #[cfg(any(windows, target_vendor = "apple"))]
-fn entry_mode(value: sys::mode_t) -> u32 {
+fn entry_mode(value: LaModeT) -> u32 {
     u32::from(value)
 }
 
 #[cfg(not(any(windows, target_vendor = "apple")))]
-fn entry_mode(value: sys::mode_t) -> u32 {
+fn entry_mode(value: LaModeT) -> u32 {
     value
 }
 

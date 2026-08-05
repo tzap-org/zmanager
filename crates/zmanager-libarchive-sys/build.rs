@@ -450,11 +450,30 @@ fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
 
 fn generate_bindings() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // bindgen dlopens libclang while generating bindings, which a static-musl
+    // build host (the Alpine packaging container) cannot do. Use the checked-in
+    // musl bindings instead; they were generated on aarch64-linux with the same
+    // allowlists (see bindings/linux-musl.rs header for the exact command).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("musl") {
+        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        std::fs::copy(
+            manifest_dir.join("bindings/linux-musl.rs"),
+            out_path.join("bindings.rs"),
+        )
+        .expect("Unable to copy checked-in musl bindings");
+        return;
+    }
     let wrapper_path = out_path.join("wrapper.h");
     std::fs::write(&wrapper_path, "#include <archive.h>\n#include <archive_entry.h>\n").unwrap();
 
     let mut builder = bindgen::Builder::default()
         .header(wrapper_path.to_str().unwrap())
+        // Plain `char` is unsigned on AArch64; normalize it so the generated
+        // bindings spell `char *` the same way on every target. Pointer ABI is
+        // unaffected (char is one byte everywhere), and this keeps one
+        // pre-generated musl file (bindings/linux-musl.rs) valid for both
+        // x86_64 and aarch64.
+        .clang_arg("-fsigned-char")
         .allowlist_function("archive_.*")
         .allowlist_type("archive_.*|la_.*|__LA_.*")
         .allowlist_var("ARCHIVE_.*|AE_.*|__LA_.*");
