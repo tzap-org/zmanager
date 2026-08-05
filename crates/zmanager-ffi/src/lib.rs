@@ -3373,14 +3373,17 @@ mod tests {
     #[test]
     fn detect_archive_returns_normalized_launch_gated_warning() {
         let temp = TestDir::new("detect-launch-gated-warning");
-        temp.write_file("archive.aar", b"not parsed during detection");
+        temp.write_file("archive.xip", b"not parsed during detection");
 
         let result = detect_archive(DetectArchiveRequest {
-            archive_path: temp.path("archive.aar").to_string_lossy().to_string(),
+            archive_path: temp.path("archive.xip").to_string_lossy().to_string(),
         })
         .expect("detection should classify launch-gated app-controlled path");
 
-        assert_eq!(result.format, ArchiveFormat::AppleArchive);
+        assert_eq!(result.format, ArchiveFormat::Xip);
+        assert!(!result.can_list);
+        assert!(!result.can_extract);
+        assert!(!result.can_create);
         assert_eq!(result.warnings.len(), 1);
         let warning = &result.warnings[0];
         assert_eq!(warning.code, WARNING_LAUNCH_GATED_FORMAT);
@@ -3685,6 +3688,17 @@ mod tests {
             replace_existing: false,
             clean_source: false,
             verify_after_create: false,
+            excluded_paths: vec![],
+            level: 0,
+            encrypt_file_names: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            tzap_signing_certificate: None,
+            tzap_signing_private_key: None,
+            tzap_signing_chain: vec![],
+            tzap_identity: None,
+            tzap_identity_password: None,
         })
         .expect("create job should start");
 
@@ -3726,6 +3740,17 @@ mod tests {
             replace_existing: false,
             clean_source: true,
             verify_after_create: false,
+            excluded_paths: vec![],
+            level: 0,
+            encrypt_file_names: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            tzap_signing_certificate: None,
+            tzap_signing_private_key: None,
+            tzap_signing_chain: vec![],
+            tzap_identity: None,
+            tzap_identity_password: None,
         })
         .expect("clean source create job should start");
 
@@ -3759,6 +3784,17 @@ mod tests {
             replace_existing: false,
             clean_source: false,
             verify_after_create: true,
+            excluded_paths: vec![],
+            level: 0,
+            encrypt_file_names: false,
+            volume_size: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            tzap_signing_certificate: None,
+            tzap_signing_private_key: None,
+            tzap_signing_chain: vec![],
+            tzap_identity: None,
+            tzap_identity_password: None,
         })
         .expect("encrypted create job should start");
 
