@@ -12,9 +12,7 @@ impl SecretString {
     /// Stores a password for later borrowed use.
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
-        Self {
-            value: value.into(),
-        }
+        Self { value: value.into() }
     }
 
     /// Borrows the secret for backend APIs that accept string slices.
@@ -77,9 +75,7 @@ pub struct SecretBytes {
 impl SecretBytes {
     #[must_use]
     pub fn new(value: impl Into<Vec<u8>>) -> Self {
-        Self {
-            value: value.into(),
-        }
+        Self { value: value.into() }
     }
 
     #[must_use]

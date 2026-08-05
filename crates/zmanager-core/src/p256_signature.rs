@@ -100,10 +100,8 @@ pub fn encode_p256_p1363_signature(
     signature: &EcdsaSig,
 ) -> Result<[u8; P256_P1363_SIGNATURE_LENGTH], P256SignatureError> {
     let mut out = [0_u8; P256_P1363_SIGNATURE_LENGTH];
-    out[..P256_COORDINATE_LENGTH]
-        .copy_from_slice(&signature.r().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
-    out[P256_COORDINATE_LENGTH..]
-        .copy_from_slice(&signature.s().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
+    out[..P256_COORDINATE_LENGTH].copy_from_slice(&signature.r().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
+    out[P256_COORDINATE_LENGTH..].copy_from_slice(&signature.s().to_vec_padded(P256_COORDINATE_LENGTH_I32)?);
     Ok(out)
 }
 
@@ -113,9 +111,7 @@ pub fn encode_p256_p1363_signature(
 /// canonical low-S policy checks before asking OpenSSL to verify.
 pub fn decode_p256_p1363_signature(signature: &[u8]) -> Result<EcdsaSig, P256SignatureError> {
     if signature.len() != P256_P1363_SIGNATURE_LENGTH {
-        return Err(P256SignatureError::InvalidSignatureLength {
-            actual: signature.len(),
-        });
+        return Err(P256SignatureError::InvalidSignatureLength { actual: signature.len() });
     }
 
     let r = BigNum::from_slice(&signature[..P256_COORDINATE_LENGTH])?;
@@ -128,15 +124,8 @@ fn sha256_digest(payload: &[u8]) -> [u8; 32] {
 }
 
 fn ensure_p256_key<T: HasPublic>(key: &EcKey<T>) -> Result<(), P256SignatureError> {
-    let curve = key
-        .group()
-        .curve_name()
-        .ok_or(P256SignatureError::UnsupportedCurve)?;
-    if curve == Nid::X9_62_PRIME256V1 {
-        Ok(())
-    } else {
-        Err(P256SignatureError::UnsupportedCurve)
-    }
+    let curve = key.group().curve_name().ok_or(P256SignatureError::UnsupportedCurve)?;
+    if curve == Nid::X9_62_PRIME256V1 { Ok(()) } else { Err(P256SignatureError::UnsupportedCurve) }
 }
 
 fn curve_orders<T: HasPublic>(key: &EcKey<T>) -> Result<(BigNum, BigNum), P256SignatureError> {
@@ -148,11 +137,7 @@ fn curve_orders<T: HasPublic>(key: &EcKey<T>) -> Result<(BigNum, BigNum), P256Si
     Ok((order, half_order))
 }
 
-fn normalize_low_s(
-    s: &BigNumRef,
-    order: &BigNumRef,
-    half_order: &BigNumRef,
-) -> Result<BigNum, P256SignatureError> {
+fn normalize_low_s(s: &BigNumRef, order: &BigNumRef, half_order: &BigNumRef) -> Result<BigNum, P256SignatureError> {
     if is_low_s(s, order, half_order) {
         Ok(s.to_owned()?)
     } else {
@@ -167,19 +152,15 @@ fn is_low_s(s: &BigNumRef, order: &BigNumRef, half_order: &BigNumRef) -> bool {
         return false;
     }
 
-    matches!(
-        s.ucmp(half_order),
-        std::cmp::Ordering::Less | std::cmp::Ordering::Equal
-    )
+    matches!(s.ucmp(half_order), std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
 }
 
 #[cfg(test)]
 mod tests {
     use super::P256SignatureError;
     use super::{
-        NonceMode, P256_NONCE_MODE, P256_P1363_SIGNATURE_LENGTH, curve_orders,
-        decode_p256_p1363_signature, encode_p256_p1363_signature, sign_p256_sha256_p1363,
-        verify_p256_sha256_p1363,
+        NonceMode, P256_NONCE_MODE, P256_P1363_SIGNATURE_LENGTH, curve_orders, decode_p256_p1363_signature,
+        encode_p256_p1363_signature, sign_p256_sha256_p1363, verify_p256_sha256_p1363,
     };
     use openssl::bn::BigNum;
     use openssl::ec::EcGroup;
@@ -196,8 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn p256_signature_is_64_bytes_and_rejects_wrong_key_or_tamper() -> Result<(), P256SignatureError>
-    {
+    fn p256_signature_is_64_bytes_and_rejects_wrong_key_or_tamper() -> Result<(), P256SignatureError> {
         let (private, public) = test_keys()?;
         let payload = b"deterministic payload";
 
@@ -205,25 +185,13 @@ mod tests {
         assert_eq!(signature.len(), P256_P1363_SIGNATURE_LENGTH);
 
         assert!(verify_p256_sha256_p1363(&public, payload, &signature)?);
-        assert!(!verify_p256_sha256_p1363(
-            &public,
-            &Sha256::digest(payload),
-            &signature
-        )?);
+        assert!(!verify_p256_sha256_p1363(&public, &Sha256::digest(payload), &signature)?);
 
         let tampered_payload = b"tampered payload";
-        assert!(!verify_p256_sha256_p1363(
-            &public,
-            tampered_payload,
-            &signature
-        )?);
+        assert!(!verify_p256_sha256_p1363(&public, tampered_payload, &signature)?);
 
         let (_other_private, other_public) = test_keys()?;
-        assert!(!verify_p256_sha256_p1363(
-            &other_public,
-            payload,
-            &signature
-        )?);
+        assert!(!verify_p256_sha256_p1363(&other_public, payload, &signature)?);
 
         Ok(())
     }
@@ -275,8 +243,7 @@ mod tests {
         assert_eq!(high_s.ucmp(&half_order), std::cmp::Ordering::Greater);
 
         let mut high_signature = signature;
-        high_signature[P256_P1363_SIGNATURE_LENGTH / 2..]
-            .copy_from_slice(&high_s.to_vec_padded(32)?);
+        high_signature[P256_P1363_SIGNATURE_LENGTH / 2..].copy_from_slice(&high_s.to_vec_padded(32)?);
 
         let result = verify_p256_sha256_p1363(&public, payload, &high_signature);
         assert!(matches!(result, Err(P256SignatureError::NonCanonicalLowS)));

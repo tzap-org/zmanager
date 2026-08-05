@@ -12,17 +12,13 @@ const INSTALL_DOC: &str = include_str!("../../../docs/INSTALL.md");
 const RELEASE_DOC: &str = include_str!("../../../RELEASE.md");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
-const PACKAGE_PREVIEW_WORKFLOW: &str =
-    include_str!("../../../.github/workflows/package-preview.yml");
+const PACKAGE_PREVIEW_WORKFLOW: &str = include_str!("../../../.github/workflows/package-preview.yml");
 const RELEASE_NOTES_2_0_0: &str = include_str!("../../../docs/release-notes/2.0.0.md");
-const LIBARCHIVE_SYS_BUILD_RS: &str =
-    include_str!("../../../crates/zmanager-libarchive-sys/build.rs");
+const LIBARCHIVE_SYS_BUILD_RS: &str = include_str!("../../../crates/zmanager-libarchive-sys/build.rs");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
-const RELEASE_COMPATIBILITY_SH: &str =
-    include_str!("../../../scripts/release-compatibility-check.sh");
-const THIRD_PARTY_NOTICE_GENERATOR: &str =
-    include_str!("../../../scripts/generate-third-party-notices.py");
+const RELEASE_COMPATIBILITY_SH: &str = include_str!("../../../scripts/release-compatibility-check.sh");
+const THIRD_PARTY_NOTICE_GENERATOR: &str = include_str!("../../../scripts/generate-third-party-notices.py");
 const RUNTIME_DEPS_SH: &str = include_str!("../../../scripts/inspect-runtime-deps.sh");
 const CI_WINDOWS_PS1: &str = include_str!("../../../scripts/ci-windows.ps1");
 const HOMEBREW_TEMPLATE: &str = include_str!("../../../packaging/homebrew/zmanager.rb.template");
@@ -30,17 +26,8 @@ const WINGET_INSTALLER_TEMPLATE: &str =
     include_str!("../../../packaging/winget/TzapOrg.ZManagerCLI.installer.yaml.template");
 const WINGET_LOCALE_TEMPLATE: &str =
     include_str!("../../../packaging/winget/TzapOrg.ZManagerCLI.locale.en-US.yaml.template");
-const PUBLIC_COMMANDS: &[&str] = &[
-    "create",
-    "extract",
-    "list",
-    "test",
-    "plan",
-    "formats",
-    "doctor",
-    "completions",
-    "help",
-];
+const PUBLIC_COMMANDS: &[&str] =
+    &["create", "extract", "list", "test", "plan", "formats", "doctor", "completions", "help"];
 const LEGACY_COMMANDS: &[&str] = &[
     "job-zip-create",
     "job-source-fast",
@@ -184,14 +171,8 @@ const EXTRACT_HELP_NEEDLES: &[&str] = &[
     "printf '%s\\n'",
 ];
 
-const LIST_HELP_NEEDLES: &[&str] = &[
-    "List archive contents",
-    "zm list <archive>",
-    "--name-only",
-    "--tree",
-    FILTER_GLOB_NOTE,
-    "printf '%s\\n'",
-];
+const LIST_HELP_NEEDLES: &[&str] =
+    &["List archive contents", "zm list <archive>", "--name-only", "--tree", FILTER_GLOB_NOTE, "printf '%s\\n'"];
 
 const TEST_HELP_NEEDLES: &[&str] = &[
     "Verify archive readability",
@@ -259,10 +240,7 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
     assert_success("zm --help", &output);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_contains(
-        &stdout,
-        "ZManager is a universal file archiver built for high-performance compression",
-    );
+    assert_contains(&stdout, "ZManager is a universal file archiver built for high-performance compression");
     assert_contains(&stdout, "Usage:");
     assert_contains(&stdout, "zm [options] <command>");
     assert_contains(&stdout, "zm -cf <archive> [create-options] <paths...>");
@@ -289,11 +267,7 @@ fn top_level_help_is_user_facing_and_hides_legacy_commands() {
 
 #[test]
 fn legacy_help_topic_and_command_aliases_are_rejected() {
-    let help = Command::new(zm_path())
-        .arg("help")
-        .arg("legacy")
-        .output()
-        .unwrap();
+    let help = Command::new(zm_path()).arg("help").arg("legacy").output().unwrap();
     assert_usage_failure("zm help legacy", &help);
     let stderr = String::from_utf8_lossy(&help.stderr);
     assert_contains(&stderr, "error: unknown help topic: legacy");
@@ -308,10 +282,7 @@ fn legacy_help_topic_and_command_aliases_are_rejected() {
 fn no_args_prints_help_successfully() {
     let output = Command::new(zm_path()).output().unwrap();
     assert_success("zm", &output);
-    assert!(
-        output.stderr.is_empty(),
-        "no-arg help should not emit stderr"
-    );
+    assert!(output.stderr.is_empty(), "no-arg help should not emit stderr");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_contains(&stdout, "Usage:");
@@ -322,12 +293,7 @@ fn no_args_prints_help_successfully() {
 
 #[test]
 fn color_always_styles_help_without_changing_text() {
-    let output = Command::new(zm_path())
-        .arg("--color")
-        .arg("always")
-        .arg("--help")
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("--color").arg("always").arg("--help").output().unwrap();
     assert_success("zm --color always --help", &output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_contains(&stdout, "\x1b[");
@@ -340,32 +306,17 @@ fn color_always_styles_help_without_changing_text() {
 
 #[test]
 fn color_modes_and_no_color_env_control_help_styling() {
-    let never = Command::new(zm_path())
-        .arg("--color")
-        .arg("never")
-        .arg("--help")
-        .output()
-        .unwrap();
+    let never = Command::new(zm_path()).arg("--color").arg("never").arg("--help").output().unwrap();
     assert_success("zm --color never --help", &never);
     assert_not_contains(&String::from_utf8_lossy(&never.stdout), "\x1b[");
 
-    let no_color_auto = Command::new(zm_path())
-        .env("NO_COLOR", "1")
-        .arg("--color")
-        .arg("auto")
-        .arg("--help")
-        .output()
-        .unwrap();
+    let no_color_auto =
+        Command::new(zm_path()).env("NO_COLOR", "1").arg("--color").arg("auto").arg("--help").output().unwrap();
     assert_success("NO_COLOR=1 zm --color auto --help", &no_color_auto);
     assert_not_contains(&String::from_utf8_lossy(&no_color_auto.stdout), "\x1b[");
 
-    let no_color_always = Command::new(zm_path())
-        .env("NO_COLOR", "1")
-        .arg("--color")
-        .arg("always")
-        .arg("--help")
-        .output()
-        .unwrap();
+    let no_color_always =
+        Command::new(zm_path()).env("NO_COLOR", "1").arg("--color").arg("always").arg("--help").output().unwrap();
     assert_success("NO_COLOR=1 zm --color always --help", &no_color_always);
     assert_contains(&String::from_utf8_lossy(&no_color_always.stdout), "\x1b[");
 }
@@ -373,11 +324,7 @@ fn color_modes_and_no_color_env_control_help_styling() {
 #[test]
 fn every_public_command_has_targeted_help() {
     for (command, required) in COMMAND_HELP_CASES {
-        let direct = Command::new(zm_path())
-            .arg(command)
-            .arg("--help")
-            .output()
-            .unwrap();
+        let direct = Command::new(zm_path()).arg(command).arg("--help").output().unwrap();
         assert_success(&format!("zm {command} --help"), &direct);
         assert!(direct.stderr.is_empty(), "help should not emit stderr");
         let direct_stdout = String::from_utf8_lossy(&direct.stdout);
@@ -385,34 +332,21 @@ fn every_public_command_has_targeted_help() {
             assert_contains(&direct_stdout, needle);
         }
 
-        let help_command = Command::new(zm_path())
-            .arg("help")
-            .arg(command)
-            .output()
-            .unwrap();
+        let help_command = Command::new(zm_path()).arg("help").arg(command).output().unwrap();
         assert_success(&format!("zm help {command}"), &help_command);
-        assert_eq!(
-            direct.stdout, help_command.stdout,
-            "zm help {command} should match zm {command} --help"
-        );
+        assert_eq!(direct.stdout, help_command.stdout, "zm help {command} should match zm {command} --help");
     }
 }
 
 #[test]
 fn me_has_targeted_help_through_both_navigation_paths() {
-    let direct = Command::new(zm_path())
-        .args(["me", "--help"])
-        .output()
-        .unwrap();
+    let direct = Command::new(zm_path()).args(["me", "--help"]).output().unwrap();
     assert_success("zm me --help", &direct);
     let stdout = String::from_utf8_lossy(&direct.stdout);
     assert_contains(&stdout, "Show the local TZAP session summary");
     assert_contains(&stdout, "zm me [options]");
 
-    let help = Command::new(zm_path())
-        .args(["help", "me"])
-        .output()
-        .unwrap();
+    let help = Command::new(zm_path()).args(["help", "me"]).output().unwrap();
     assert_success("zm help me", &help);
     assert_eq!(direct.stdout, help.stdout);
 }
@@ -443,9 +377,7 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
         assert_not_contains(COMPLETION_ZSH, legacy);
     }
 
-    for command in [
-        "auth", "me", "cert", "device", "sign", "verify", "contact", "share",
-    ] {
+    for command in ["auth", "me", "cert", "device", "sign", "verify", "contact", "share"] {
         assert_contains(COMPLETION_BASH, command);
         assert_contains(COMPLETION_FISH, command);
         assert_contains(COMPLETION_POWERSHELL, command);
@@ -493,12 +425,7 @@ fn completion_files_cover_public_commands_and_hide_legacy_commands() {
 
 #[test]
 fn static_completion_files_capture_navigation_contract() {
-    for completion in [
-        COMPLETION_BASH,
-        COMPLETION_FISH,
-        COMPLETION_POWERSHELL,
-        COMPLETION_ZSH,
-    ] {
+    for completion in [COMPLETION_BASH, COMPLETION_FISH, COMPLETION_POWERSHELL, COMPLETION_ZSH] {
         assert_contains(completion, "create");
         assert_contains(completion, "volume-size");
         assert_contains(completion, "tzap");
@@ -585,15 +512,9 @@ run_case list_files zm list ""
     assert_contains(&stdout, "--tree");
     assert_contains(&stdout, "create_options: --help");
     assert_contains(&stdout, "--exclude-from");
-    assert_contains(
-        &stdout,
-        "auth_commands: login callback status forget account\n",
-    );
+    assert_contains(&stdout, "auth_commands: login callback status forget account\n");
     assert_contains(&stdout, "cert_commands: list enroll renew revoke\n");
-    assert_contains(
-        &stdout,
-        "contact_commands: keygen export import list remove\n",
-    );
+    assert_contains(&stdout, "contact_commands: keygen export import list remove\n");
     assert_contains(&stdout, "auth_options: --help");
     assert_contains(&stdout, "completion_shells: bash zsh fish powershell\n");
     assert_contains(&stdout, "list_files: archive.zip\n");
@@ -611,16 +532,9 @@ fn completions_command_prints_packaged_completion_scripts() {
         ("fish", COMPLETION_FISH),
         ("powershell", COMPLETION_POWERSHELL),
     ] {
-        let output = Command::new(zm_path())
-            .arg("completions")
-            .arg(shell)
-            .output()
-            .unwrap();
+        let output = Command::new(zm_path()).arg("completions").arg(shell).output().unwrap();
         assert_success(&format!("zm completions {shell}"), &output);
-        assert!(
-            output.stderr.is_empty(),
-            "completion output should not use stderr"
-        );
+        assert!(output.stderr.is_empty(), "completion output should not use stderr");
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
 }
@@ -635,12 +549,7 @@ fn release_packaging_includes_completion_files() {
 
 #[test]
 fn release_packaging_generates_third_party_notices() {
-    for required in [
-        "generate-third-party-notices.py",
-        "THIRD_PARTY_NOTICES.md",
-        "third-party-licenses",
-        "NOTICE",
-    ] {
+    for required in ["generate-third-party-notices.py", "THIRD_PARTY_NOTICES.md", "third-party-licenses", "NOTICE"] {
         assert_contains(PACKAGE_RELEASE_SH, required);
         assert_contains(CI_WINDOWS_PS1, required);
     }
@@ -743,12 +652,7 @@ fn release_validation_artifacts_are_declared() {
         assert_contains(RELEASE_WORKFLOW, required);
     }
 
-    for required in [
-        "otool -L",
-        "readelf -d",
-        "no ELF NEEDED entries",
-        "zm-$TARGET.deps.txt",
-    ] {
+    for required in ["otool -L", "readelf -d", "no ELF NEEDED entries", "zm-$TARGET.deps.txt"] {
         assert_contains(RUNTIME_DEPS_SH, required);
     }
 
@@ -854,12 +758,9 @@ fn linux_release_artifacts_are_static_tarballs() {
         assert_contains(RELEASE_WORKFLOW, required);
     }
 
-    for forbidden in [
-        "scripts/package-deb.sh",
-        "deb_arch:",
-        "release-artifacts/*.deb",
-        "zmanager-cli-${{ matrix.deb_arch }}-deb",
-    ] {
+    for forbidden in
+        ["scripts/package-deb.sh", "deb_arch:", "release-artifacts/*.deb", "zmanager-cli-${{ matrix.deb_arch }}-deb"]
+    {
         assert_not_contains(RELEASE_WORKFLOW, forbidden);
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
@@ -891,10 +792,9 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
         assert_contains(&release_package_job, required);
     }
 
-    for required in [
-        "name: Linux x86_64\n            os: ubuntu-22.04",
-        "name: Linux ARM64\n            os: ubuntu-22.04-arm",
-    ] {
+    for required in
+        ["name: Linux x86_64\n            os: ubuntu-22.04", "name: Linux ARM64\n            os: ubuntu-22.04-arm"]
+    {
         assert_contains(&ci_test_job, required);
     }
 
@@ -903,10 +803,7 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
         assert_not_contains(&ci_test_job, newer_or_floating_linux_runner);
     }
 
-    assert_contains(
-        &release_workflow,
-        "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-22.04",
-    );
+    assert_contains(&release_workflow, "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-22.04");
     assert_not_contains(&release_workflow, "ubuntu-latest");
     assert_not_contains(&ci_workflow, "ubuntu-latest");
 }
@@ -943,40 +840,26 @@ fn macos_ci_and_release_builds_set_deployment_target() {
 fn workflow_section_helpers_tolerate_windows_line_endings() {
     let workflow = "jobs:\r\n  package:\r\n    runs-on: ubuntu-22.04\r\n  publish:\r\n";
 
-    assert_contains(
-        &section_between(workflow, "  package:\n", "\n  publish:\n"),
-        "runs-on: ubuntu-22.04",
-    );
+    assert_contains(&section_between(workflow, "  package:\n", "\n  publish:\n"), "runs-on: ubuntu-22.04");
 }
 
 #[test]
 fn command_usage_errors_point_to_targeted_help() {
-    let unknown = Command::new(zm_path())
-        .arg("create")
-        .arg("--excldue")
-        .output()
-        .unwrap();
+    let unknown = Command::new(zm_path()).arg("create").arg("--excldue").output().unwrap();
     assert_usage_failure("zm create --excldue", &unknown);
     let stderr = String::from_utf8_lossy(&unknown.stderr);
     assert_contains(&stderr, "error: unknown option '--excldue' for 'zm create'");
     assert_contains(&stderr, "Did you mean '--exclude'?");
     assert_contains(&stderr, "Try 'zm create --help' for usage.");
 
-    let missing_source = Command::new(zm_path())
-        .arg("create")
-        .arg("out.zip")
-        .output()
-        .unwrap();
+    let missing_source = Command::new(zm_path()).arg("create").arg("out.zip").output().unwrap();
     assert_usage_failure("zm create out.zip", &missing_source);
     let stderr = String::from_utf8_lossy(&missing_source.stderr);
     assert_contains(&stderr, "error: missing source path");
     assert_contains(&stderr, "Usage:");
     assert_contains(&stderr, "zm create <archive> <paths...>");
     assert_contains(&stderr, "Try 'zm create --help' for examples.");
-    assert!(
-        !stderr.contains("Legacy development commands"),
-        "usage errors should not dump legacy help\n{stderr}"
-    );
+    assert!(!stderr.contains("Legacy development commands"), "usage errors should not dump legacy help\n{stderr}");
 }
 
 fn help_output(args: &[&str]) -> String {
@@ -1005,12 +888,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn command_available(command: &str) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
+    Command::new(command).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok()
 }
 
 fn assert_success(label: &str, output: &std::process::Output) {
@@ -1033,17 +911,11 @@ fn assert_usage_failure(label: &str, output: &std::process::Output) {
 }
 
 fn assert_contains(haystack: &str, needle: &str) {
-    assert!(
-        haystack.contains(needle),
-        "expected output to contain {needle:?}\n{haystack}"
-    );
+    assert!(haystack.contains(needle), "expected output to contain {needle:?}\n{haystack}");
 }
 
 fn assert_not_contains(haystack: &str, needle: &str) {
-    assert!(
-        !haystack.contains(needle),
-        "expected output not to contain {needle:?}\n{haystack}"
-    );
+    assert!(!haystack.contains(needle), "expected output not to contain {needle:?}\n{haystack}");
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -1070,12 +942,9 @@ fn normalize_newlines(input: &str) -> String {
 
 fn section_between(haystack: &str, start: &str, end: &str) -> String {
     let normalized = normalize_newlines(haystack);
-    let start_index = normalized
-        .find(start)
-        .unwrap_or_else(|| panic!("section start not found: {start:?}"));
+    let start_index = normalized.find(start).unwrap_or_else(|| panic!("section start not found: {start:?}"));
     let section_start = start_index + start.len();
-    let relative_end = normalized[section_start..]
-        .find(end)
-        .unwrap_or_else(|| panic!("section end not found: {end:?}"));
+    let relative_end =
+        normalized[section_start..].find(end).unwrap_or_else(|| panic!("section end not found: {end:?}"));
     normalized[section_start..section_start + relative_end].to_owned()
 }

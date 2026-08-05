@@ -47,10 +47,7 @@ mod tests {
         });
 
         let canonical = canonicalize_json_bytes(&payload).unwrap();
-        assert_eq!(
-            String::from_utf8(canonical).unwrap(),
-            r#"{"Z":true,"a":"ascii","é":"unicode key","😀":1}"#
-        );
+        assert_eq!(String::from_utf8(canonical).unwrap(), r#"{"Z":true,"a":"ascii","é":"unicode key","😀":1}"#);
     }
 
     #[test]
@@ -65,10 +62,7 @@ mod tests {
         });
 
         let canonical = canonicalize_json_bytes(&payload).unwrap();
-        assert_eq!(
-            String::from_utf8(canonical).unwrap(),
-            r#"{"a":{"a":1,"b":2},"m":"middle","z":"last"}"#
-        );
+        assert_eq!(String::from_utf8(canonical).unwrap(), r#"{"a":{"a":1,"b":2},"m":"middle","z":"last"}"#);
     }
 
     #[test]
@@ -79,10 +73,7 @@ mod tests {
         });
 
         let canonical = canonicalize_json_bytes(&payload).unwrap();
-        assert_eq!(
-            String::from_utf8(canonical).unwrap(),
-            "{\"\u{20BB7}\":2,\"\u{FFA5}\":1}"
-        );
+        assert_eq!(String::from_utf8(canonical).unwrap(), "{\"\u{20BB7}\":2,\"\u{FFA5}\":1}");
     }
 
     #[test]
@@ -117,13 +108,7 @@ mod tests {
         let payload = json!({"a": 1, "b": 2});
 
         let digest = canonical_sha256_digest(&payload).unwrap();
-        assert_eq!(
-            digest,
-            "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
-        );
-        assert_eq!(
-            digest.len(),
-            trust::SHA256_IDENTIFIER_PREFIX.len() + trust::SHA256_IDENTIFIER_HEX_LENGTH
-        );
+        assert_eq!(digest, "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777");
+        assert_eq!(digest.len(), trust::SHA256_IDENTIFIER_PREFIX.len() + trust::SHA256_IDENTIFIER_HEX_LENGTH);
     }
 }

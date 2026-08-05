@@ -59,8 +59,7 @@ const LOCAL_BUNDLED_SOURCE_PATHS: [&str; 2] = ["vendor/unrar", "../../vendor/unr
 
 const WINDOWS_SYSTEM_LIBS: &[&str] = &["advapi32", "shell32", "shlwapi", "powrprof", "psapi"];
 
-const SYSTEM_CPU_FEATURE_NEEDLE: &str =
-    "#elif defined(__GNUC__)\n  if (__builtin_cpu_supports(\"avx2\"))";
+const SYSTEM_CPU_FEATURE_NEEDLE: &str = "#elif defined(__GNUC__)\n  if (__builtin_cpu_supports(\"avx2\"))";
 const SYSTEM_CPU_FEATURE_REPLACEMENT: &str = concat!(
     "#elif defined(ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH)\n",
     "  // Some embedded x86_64 builds do not provide GCC's CPU feature\n",
@@ -70,8 +69,7 @@ const SYSTEM_CPU_FEATURE_REPLACEMENT: &str = concat!(
     "  if (__builtin_cpu_supports(\"avx2\"))",
 );
 
-const RIJNDAEL_CPU_FEATURE_NEEDLE: &str =
-    "#elif defined(__GNUC__)\n  AES_NI=__builtin_cpu_supports(\"aes\");";
+const RIJNDAEL_CPU_FEATURE_NEEDLE: &str = "#elif defined(__GNUC__)\n  AES_NI=__builtin_cpu_supports(\"aes\");";
 const RIJNDAEL_CPU_FEATURE_REPLACEMENT: &str = concat!(
     "#elif defined(ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH)\n",
     "  // See crates/zmanager-unrar/README.md. Avoid depending on GCC's\n",
@@ -101,8 +99,7 @@ struct SourcePatch {
 }
 
 fn main() {
-    let manifest_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let mut unrar_dir = None;
     for candidate in LOCAL_BUNDLED_SOURCE_PATHS {
@@ -134,45 +131,25 @@ fn main() {
 
     let target_os = target_os();
     let target_arch = target_arch();
-    let use_portable_cpu_dispatch =
-        target_arch == "x86_64" && (target_os == "macos" || target_env() == "musl");
+    let use_portable_cpu_dispatch = target_arch == "x86_64" && (target_os == "macos" || target_env() == "musl");
     if use_portable_cpu_dispatch {
         build.define("ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH", None);
     }
 
     for source in UNRAR_SOURCES {
-        let build_source = copy_build_source(
-            &unrar_dir,
-            &build_source_dir,
-            source,
-            use_portable_cpu_dispatch,
-        );
+        let build_source = copy_build_source(&unrar_dir, &build_source_dir, source, use_portable_cpu_dispatch);
         build.file(build_source);
-        println!(
-            "cargo:rerun-if-changed={}",
-            unrar_dir.join(source).display()
-        );
+        println!("cargo:rerun-if-changed={}", unrar_dir.join(source).display());
     }
     if target_os == "windows" {
         for source in WINDOWS_UNRAR_SOURCES {
-            let build_source = copy_build_source(
-                &unrar_dir,
-                &build_source_dir,
-                source,
-                use_portable_cpu_dispatch,
-            );
+            let build_source = copy_build_source(&unrar_dir, &build_source_dir, source, use_portable_cpu_dispatch);
             build.file(build_source);
-            println!(
-                "cargo:rerun-if-changed={}",
-                unrar_dir.join(source).display()
-            );
+            println!("cargo:rerun-if-changed={}", unrar_dir.join(source).display());
         }
     }
     build.file(manifest_dir.join("cpp/zmanager_unrar_bridge.cpp"));
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir.join("cpp/zmanager_unrar_bridge.cpp").display()
-    );
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("cpp/zmanager_unrar_bridge.cpp").display());
 
     build.compile("zmanager_unrar");
 
@@ -209,13 +186,8 @@ fn copy_build_source(
 
     if use_portable_cpu_dispatch {
         let mut contents = None;
-        for patch in PORTABLE_CPU_DISPATCH_PATCHES
-            .iter()
-            .filter(|patch| patch.file_name == source)
-        {
-            let patched = contents
-                .take()
-                .unwrap_or_else(|| fs::read_to_string(&original).expect("read UnRAR source"));
+        for patch in PORTABLE_CPU_DISPATCH_PATCHES.iter().filter(|patch| patch.file_name == source) {
+            let patched = contents.take().unwrap_or_else(|| fs::read_to_string(&original).expect("read UnRAR source"));
             contents = Some(apply_source_patch(source, &patched, patch));
         }
 

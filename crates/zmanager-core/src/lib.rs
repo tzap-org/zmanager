@@ -37,6 +37,7 @@ pub mod tar_gz_backend;
 pub mod tar_zst_backend;
 pub mod trust;
 pub mod tzap_backend;
+pub mod tzap_service;
 pub mod x509_format;
 pub mod zip_backend;
 
@@ -69,11 +70,7 @@ impl HealthReport {
 /// Runs a lightweight engine health check.
 #[must_use]
 pub fn healthcheck() -> HealthReport {
-    HealthReport {
-        engine: ENGINE_NAME,
-        version: env!("CARGO_PKG_VERSION"),
-        ready: true,
-    }
+    HealthReport { engine: ENGINE_NAME, version: env!("CARGO_PKG_VERSION"), ready: true }
 }
 
 #[cfg(test)]

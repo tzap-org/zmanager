@@ -4,9 +4,7 @@
 mod tests {
     use std::fs;
 
-    use zmanager_apple_archive::{
-        ArchiveReader, ArchiveWriter, CompressionAlgorithm, CreateOptions, EntryMetadata,
-    };
+    use zmanager_apple_archive::{ArchiveReader, ArchiveWriter, CompressionAlgorithm, CreateOptions, EntryMetadata};
 
     #[test]
     fn test_password_roundtrip() {
@@ -20,16 +18,11 @@ mod tests {
         {
             let mut writer = ArchiveWriter::create_encrypted(
                 &temp_path,
-                CreateOptions {
-                    compression: CompressionAlgorithm::Lzfse,
-                    ..Default::default()
-                },
+                CreateOptions { compression: CompressionAlgorithm::Lzfse, ..Default::default() },
                 password,
             )
             .expect("create encrypted writer");
-            writer
-                .append_directory("secret_dir", EntryMetadata::default())
-                .expect("append directory");
+            writer.append_directory("secret_dir", EntryMetadata::default()).expect("append directory");
             writer.finish().expect("finish writer");
         }
 
@@ -40,8 +33,7 @@ mod tests {
 
         // Read back with correct password
         {
-            let mut reader =
-                ArchiveReader::open_encrypted(&temp_path, password).expect("open encrypted reader");
+            let mut reader = ArchiveReader::open_encrypted(&temp_path, password).expect("open encrypted reader");
             let entry = reader.next_entry().expect("read entry").expect("got entry");
             assert_eq!(entry.path(), "secret_dir");
         }
@@ -50,10 +42,7 @@ mod tests {
         {
             let bad_password = b"wrong_password";
             let reader_result = ArchiveReader::open_encrypted(&temp_path, bad_password);
-            assert!(
-                reader_result.is_err(),
-                "should fail to open with wrong password"
-            );
+            assert!(reader_result.is_err(), "should fail to open with wrong password");
         }
 
         let _ = fs::remove_file(&temp_path);

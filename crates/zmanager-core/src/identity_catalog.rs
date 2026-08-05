@@ -101,11 +101,8 @@ impl std::error::Error for TzapSecretStoreError {}
 /// Purpose-specific secure material interface. Implementations must not fall
 /// back to a plaintext file when the native store is unavailable or locked.
 pub trait TzapSecretMaterialStore {
-    fn put(
-        &mut self,
-        purpose: TzapSecretPurpose,
-        material: SecretBytes,
-    ) -> Result<TzapSecretRef, TzapSecretStoreError>;
+    fn put(&mut self, purpose: TzapSecretPurpose, material: SecretBytes)
+    -> Result<TzapSecretRef, TzapSecretStoreError>;
 
     /// Stores material under a caller-generated reference. This is used by
     /// crash-recoverable catalog transactions: the public catalog can record
@@ -124,11 +121,7 @@ pub trait TzapSecretMaterialStore {
         reference: &TzapSecretRef,
     ) -> Result<SecretBytes, TzapSecretStoreError>;
 
-    fn delete(
-        &mut self,
-        purpose: TzapSecretPurpose,
-        reference: &TzapSecretRef,
-    ) -> Result<(), TzapSecretStoreError>;
+    fn delete(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<(), TzapSecretStoreError>;
 }
 
 #[derive(Debug, Default)]
@@ -178,22 +171,14 @@ impl TzapSecretMaterialStore for InMemoryTzapSecretMaterialStore {
         self.values
             .get(&(purpose, reference.clone()))
             .cloned()
-            .ok_or_else(|| TzapSecretStoreError::Missing {
-                reference: reference.clone(),
-            })
+            .ok_or_else(|| TzapSecretStoreError::Missing { reference: reference.clone() })
     }
 
-    fn delete(
-        &mut self,
-        purpose: TzapSecretPurpose,
-        reference: &TzapSecretRef,
-    ) -> Result<(), TzapSecretStoreError> {
+    fn delete(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<(), TzapSecretStoreError> {
         self.values
             .remove(&(purpose, reference.clone()))
             .map(|_| ())
-            .ok_or_else(|| TzapSecretStoreError::Missing {
-                reference: reference.clone(),
-            })
+            .ok_or_else(|| TzapSecretStoreError::Missing { reference: reference.clone() })
     }
 }
 
@@ -299,57 +284,31 @@ impl TzapIdentityCatalog {
 
     pub fn validate(&self) -> Result<(), TzapIdentityCatalogError> {
         if self.schema_version != PUBLIC_CATALOG_SCHEMA_VERSION {
-            return Err(TzapIdentityCatalogError::InvalidCatalog {
-                field: "schema_version",
-            });
+            return Err(TzapIdentityCatalogError::InvalidCatalog { field: "schema_version" });
         }
         if self.catalog_id.is_empty() {
-            return Err(TzapIdentityCatalogError::InvalidCatalog {
-                field: "catalog_id",
-            });
+            return Err(TzapIdentityCatalogError::InvalidCatalog { field: "catalog_id" });
         }
-        validate_unique(
-            "signing_identities.id",
-            self.signing_identities.iter().map(|v| v.id.as_str()),
-        )?;
-        validate_unique(
-            "recipient_keys.id",
-            self.recipient_keys.iter().map(|v| v.id.as_str()),
-        )?;
-        validate_unique(
-            "contacts.contact_id",
-            self.contacts.iter().map(|v| v.contact_id.as_str()),
-        )?;
+        validate_unique("signing_identities.id", self.signing_identities.iter().map(|v| v.id.as_str()))?;
+        validate_unique("recipient_keys.id", self.recipient_keys.iter().map(|v| v.id.as_str()))?;
+        validate_unique("contacts.contact_id", self.contacts.iter().map(|v| v.contact_id.as_str()))?;
         if let Some(default_id) = &self.default_signing_identity_id
-            && !self
-                .signing_identities
-                .iter()
-                .any(|record| &record.id == default_id)
+            && !self.signing_identities.iter().any(|record| &record.id == default_id)
         {
-            return Err(TzapIdentityCatalogError::InvalidCatalog {
-                field: "default_signing_identity_id",
-            });
+            return Err(TzapIdentityCatalogError::InvalidCatalog { field: "default_signing_identity_id" });
         }
         for record in &self.signing_identities {
             validate_non_empty("signing_identities.id", &record.id)?;
-            validate_non_empty(
-                "signing_identities.signing_key_ref",
-                record.signing_key_ref.as_str(),
-            )?;
+            validate_non_empty("signing_identities.signing_key_ref", record.signing_key_ref.as_str())?;
             validate_non_empty("signing_identities.lifecycle", &record.lifecycle)?;
         }
         for record in &self.recipient_keys {
             validate_non_empty("recipient_keys.id", &record.id)?;
             validate_non_empty("recipient_keys.algorithm", &record.algorithm)?;
             validate_non_empty("recipient_keys.fingerprint", &record.fingerprint)?;
-            validate_non_empty(
-                "recipient_keys.private_key_ref",
-                record.private_key_ref.as_str(),
-            )?;
+            validate_non_empty("recipient_keys.private_key_ref", record.private_key_ref.as_str())?;
             if record.public_key_der.is_empty() {
-                return Err(TzapIdentityCatalogError::InvalidCatalog {
-                    field: "recipient_keys.public_key_der",
-                });
+                return Err(TzapIdentityCatalogError::InvalidCatalog { field: "recipient_keys.public_key_der" });
             }
         }
         Ok(())
@@ -357,10 +316,7 @@ impl TzapIdentityCatalog {
 }
 
 pub trait TzapIdentityCatalogStore {
-    fn load_catalog(
-        &self,
-        account_key: &str,
-    ) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError>;
+    fn load_catalog(&self, account_key: &str) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError>;
     fn save_catalog(
         &mut self,
         account_key: &str,
@@ -383,10 +339,7 @@ impl InMemoryTzapIdentityCatalogStore {
 }
 
 impl TzapIdentityCatalogStore for InMemoryTzapIdentityCatalogStore {
-    fn load_catalog(
-        &self,
-        account_key: &str,
-    ) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError> {
+    fn load_catalog(&self, account_key: &str) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError> {
         Ok(self.catalogs.get(account_key).cloned())
     }
 
@@ -399,10 +352,7 @@ impl TzapIdentityCatalogStore for InMemoryTzapIdentityCatalogStore {
         catalog.validate()?;
         let actual = self.catalogs.get(account_key).map(|value| value.revision);
         if expected_revision != actual {
-            return Err(TzapIdentityCatalogError::RevisionConflict {
-                expected: expected_revision,
-                actual,
-            });
+            return Err(TzapIdentityCatalogError::RevisionConflict { expected: expected_revision, actual });
         }
         self.catalogs.insert(account_key.to_owned(), catalog);
         Ok(())
@@ -427,17 +377,12 @@ impl FileTzapIdentityCatalogStore {
 
     fn catalog_path(&self, account_key: &str) -> Result<PathBuf, TzapIdentityCatalogError> {
         validate_account_key(account_key)?;
-        Ok(self
-            .root
-            .join(format!("{account_key}{PUBLIC_CATALOG_FILE_SUFFIX}")))
+        Ok(self.root.join(format!("{account_key}{PUBLIC_CATALOG_FILE_SUFFIX}")))
     }
 }
 
 impl TzapIdentityCatalogStore for FileTzapIdentityCatalogStore {
-    fn load_catalog(
-        &self,
-        account_key: &str,
-    ) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError> {
+    fn load_catalog(&self, account_key: &str) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError> {
         let path = self.catalog_path(account_key)?;
         if !path.exists() {
             return Ok(None);
@@ -458,26 +403,19 @@ impl TzapIdentityCatalogStore for FileTzapIdentityCatalogStore {
         catalog.validate()?;
         fs::create_dir_all(&self.root)?;
         let lock_path = path.with_extension("lock");
-        let _lock = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    TzapIdentityCatalogError::ConcurrentWrite
-                } else {
-                    error.into()
-                }
-            })?;
+        let _lock = fs::OpenOptions::new().write(true).create_new(true).open(&lock_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                TzapIdentityCatalogError::ConcurrentWrite
+            } else {
+                error.into()
+            }
+        })?;
         // Check the revision while the lock is held so no writer can commit
         // between validation and the atomic replacement below.
         let actual = self.load_catalog(account_key)?.map(|value| value.revision);
         if expected_revision != actual {
             let _ = fs::remove_file(&lock_path);
-            return Err(TzapIdentityCatalogError::RevisionConflict {
-                expected: expected_revision,
-                actual,
-            });
+            return Err(TzapIdentityCatalogError::RevisionConflict { expected: expected_revision, actual });
         }
         let result = write_catalog_atomically(&path, &catalog);
         let _ = fs::remove_file(lock_path);
@@ -497,13 +435,8 @@ impl TzapIdentityCatalogStore for FileTzapIdentityCatalogStore {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TzapIdentityCatalogError {
     InvalidAccountKey,
-    InvalidCatalog {
-        field: &'static str,
-    },
-    RevisionConflict {
-        expected: Option<u64>,
-        actual: Option<u64>,
-    },
+    InvalidCatalog { field: &'static str },
+    RevisionConflict { expected: Option<u64>, actual: Option<u64> },
     ConcurrentWrite,
     Io(io::ErrorKind),
     Json(String),
@@ -518,10 +451,9 @@ impl fmt::Display for TzapIdentityCatalogError {
             Self::InvalidCatalog { field } => {
                 write!(f, "identity catalog field is invalid: {field}")
             }
-            Self::RevisionConflict { expected, actual } => write!(
-                f,
-                "identity catalog revision conflict (expected {expected:?}, actual {actual:?})"
-            ),
+            Self::RevisionConflict { expected, actual } => {
+                write!(f, "identity catalog revision conflict (expected {expected:?}, actual {actual:?})")
+            }
             Self::ConcurrentWrite => f.write_str("identity catalog is already being updated"),
             Self::Io(kind) => write!(f, "identity catalog I/O failed: {kind:?}"),
             Self::Json(message) => write!(f, "identity catalog JSON is invalid: {message}"),
@@ -576,10 +508,8 @@ pub fn migrate_legacy_inventory(
     now_unix_seconds: u64,
 ) -> Result<TzapLegacyMigrationReport, TzapIdentityCatalogError> {
     if let Some(mut catalog) = catalog_store.load_catalog(account_key)? {
-        let has_pending_migration = catalog
-            .pending_mutations
-            .iter()
-            .any(|mutation| mutation.starts_with("legacy-migration-"));
+        let has_pending_migration =
+            catalog.pending_mutations.iter().any(|mutation| mutation.starts_with("legacy-migration-"));
         if has_pending_migration {
             // A catalog is written before its secrets during migration. On a
             // restart, retry the same references from the intact legacy file
@@ -593,27 +523,18 @@ pub fn migrate_legacy_inventory(
             let signing_by_certificate = inventory
                 .enrolled_certificates
                 .iter()
-                .map(|record| {
-                    (
-                        record.certificate_id.as_str(),
-                        record.signing_key_id.as_str(),
-                    )
-                })
+                .map(|record| (record.certificate_id.as_str(), record.signing_key_id.as_str()))
                 .collect::<HashMap<_, _>>();
             for identity in &catalog.signing_identities {
                 if matches!(
                     secret_store.resolve(TzapSecretPurpose::SigningKey, &identity.signing_key_ref),
                     Err(TzapSecretStoreError::Missing { .. })
                 ) {
-                    let key_id = signing_by_certificate
-                        .get(identity.id.as_str())
-                        .copied()
-                        .unwrap_or(identity.id.as_str());
-                    let material = signing_by_id.get(key_id).ok_or(
-                        TzapIdentityCatalogError::InvalidCatalog {
-                            field: "legacy_migration.signing_key_ref",
-                        },
-                    )?;
+                    let key_id =
+                        signing_by_certificate.get(identity.id.as_str()).copied().unwrap_or(identity.id.as_str());
+                    let material = signing_by_id.get(key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog {
+                        field: "legacy_migration.signing_key_ref",
+                    })?;
                     secret_store.put_at(
                         TzapSecretPurpose::SigningKey,
                         &identity.signing_key_ref,
@@ -631,16 +552,11 @@ pub fn migrate_legacy_inventory(
                     secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref),
                     Err(TzapSecretStoreError::Missing { .. })
                 ) {
-                    let material = recipient_by_id.get(key.id.as_str()).ok_or(
-                        TzapIdentityCatalogError::InvalidCatalog {
+                    let material =
+                        recipient_by_id.get(key.id.as_str()).ok_or(TzapIdentityCatalogError::InvalidCatalog {
                             field: "legacy_migration.recipient_key_ref",
-                        },
-                    )?;
-                    secret_store.put_at(
-                        TzapSecretPurpose::RecipientKey,
-                        &key.private_key_ref,
-                        (*material).clone(),
-                    )?;
+                        })?;
+                    secret_store.put_at(TzapSecretPurpose::RecipientKey, &key.private_key_ref, (*material).clone())?;
                 }
             }
             for identity in &catalog.signing_identities {
@@ -649,9 +565,7 @@ pub fn migrate_legacy_inventory(
             for key in &catalog.recipient_keys {
                 secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
             }
-            catalog
-                .pending_mutations
-                .retain(|mutation| !mutation.starts_with("legacy-migration-"));
+            catalog.pending_mutations.retain(|mutation| !mutation.starts_with("legacy-migration-"));
             let expected_revision = catalog.revision;
             catalog.revision = catalog.revision.saturating_add(1);
             catalog_store.save_catalog(account_key, Some(expected_revision), catalog.clone())?;
@@ -672,10 +586,7 @@ pub fn migrate_legacy_inventory(
     let mut signing_refs = HashMap::new();
     let mut recipient_refs = HashMap::new();
     for record in &inventory.device_signing_keys {
-        verify_private_matches_fingerprint(
-            &record.private_key_der,
-            &record.public_key_fingerprint,
-        )?;
+        verify_private_matches_fingerprint(&record.private_key_der, &record.public_key_fingerprint)?;
         signing_refs.insert(record.key_id.clone(), TzapSecretRef::generate());
     }
     for record in &inventory.recipient_encryption_keys {
@@ -688,9 +599,7 @@ pub fn migrate_legacy_inventory(
         for certificate in &inventory.enrolled_certificates {
             let signing_key_ref = signing_refs
                 .get(&certificate.signing_key_id)
-                .ok_or(TzapIdentityCatalogError::InvalidCatalog {
-                    field: "enrolled_certificates.signing_key_id",
-                })?
+                .ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "enrolled_certificates.signing_key_id" })?
                 .clone();
             certificate_key_ids.insert(certificate.signing_key_id.clone());
             signing_identities.push(TzapPublicSigningIdentityRecord {
@@ -733,10 +642,7 @@ pub fn migrate_legacy_inventory(
                     public_device_id: None,
                     assurance_level: None,
                     sign_device_id: None,
-                    signing_key_ref: signing_refs
-                        .get(&key.key_id)
-                        .expect("signing ref inserted above")
-                        .clone(),
+                    signing_key_ref: signing_refs.get(&key.key_id).expect("signing ref inserted above").clone(),
                     lifecycle: "pending".to_owned(),
                 });
             }
@@ -751,10 +657,7 @@ pub fn migrate_legacy_inventory(
                 algorithm: key.algorithm.clone(),
                 public_key_der: key.public_key_der.clone(),
                 fingerprint: key.public_key_fingerprint.clone(),
-                private_key_ref: recipient_refs
-                    .get(&key.key_id)
-                    .expect("recipient ref inserted above")
-                    .clone(),
+                private_key_ref: recipient_refs.get(&key.key_id).expect("recipient ref inserted above").clone(),
                 lifecycle: "active".to_owned(),
                 created_at_unix_seconds: key.created_at_unix_seconds,
                 retired_at_unix_seconds: None,
@@ -773,16 +676,12 @@ pub fn migrate_legacy_inventory(
                     .get("recipient_public_key")
                     .and_then(Value::as_str)
                     .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
-                    .ok_or(TzapIdentityCatalogError::InvalidCatalog {
-                        field: "contacts.recipient_public_key",
-                    })?;
+                    .ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "contacts.recipient_public_key" })?;
                 Ok::<_, TzapIdentityCatalogError>(TzapPublicContactRecord {
                     contact_id: contact.contact_id.clone(),
                     display_name: contact.display_name.clone(),
                     signing_certificate_sha256: contact.signing_certificate_sha256.clone(),
-                    recipient_public_key_fingerprint: contact
-                        .recipient_public_key_fingerprint
-                        .clone(),
+                    recipient_public_key_fingerprint: contact.recipient_public_key_fingerprint.clone(),
                     recipient_public_key_der,
                     trust_source: format!("{:?}", contact.trust_anchor_type),
                     verification_state: contact.verification_state.as_str().to_owned(),
@@ -816,35 +715,27 @@ pub fn migrate_legacy_inventory(
         for record in &inventory.device_signing_keys {
             secret_store.put_at(
                 TzapSecretPurpose::SigningKey,
-                signing_refs
-                    .get(&record.key_id)
-                    .expect("reference generated"),
+                signing_refs.get(&record.key_id).expect("reference generated"),
                 record.private_key_der.clone(),
             )?;
         }
         for record in &inventory.recipient_encryption_keys {
             secret_store.put_at(
                 TzapSecretPurpose::RecipientKey,
-                recipient_refs
-                    .get(&record.key_id)
-                    .expect("reference generated"),
+                recipient_refs.get(&record.key_id).expect("reference generated"),
                 record.private_key_der.clone(),
             )?;
         }
-        let mut committed = catalog_store.load_catalog(account_key)?.ok_or(
-            TzapIdentityCatalogError::InvalidCatalog {
-                field: "migration.catalog",
-            },
-        )?;
+        let mut committed = catalog_store
+            .load_catalog(account_key)?
+            .ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.catalog" })?;
         for identity in &committed.signing_identities {
             secret_store.resolve(TzapSecretPurpose::SigningKey, &identity.signing_key_ref)?;
         }
         for key in &committed.recipient_keys {
             secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
         }
-        committed
-            .pending_mutations
-            .retain(|mutation| mutation != &migration_marker);
+        committed.pending_mutations.retain(|mutation| mutation != &migration_marker);
         let expected_revision = committed.revision;
         committed.revision = committed.revision.saturating_add(1);
         catalog_store.save_catalog(account_key, Some(expected_revision), committed)?;
@@ -853,9 +744,7 @@ pub fn migrate_legacy_inventory(
 
     result?;
 
-    let catalog = catalog_store
-        .load_catalog(account_key)?
-        .expect("catalog was written before migration completed");
+    let catalog = catalog_store.load_catalog(account_key)?.expect("catalog was written before migration completed");
     Ok(TzapLegacyMigrationReport {
         migrated: true,
         signing_identity_count: catalog.signing_identities.len(),
@@ -867,22 +756,13 @@ fn verify_private_matches_fingerprint(
     private_key: &SecretBytes,
     expected_fingerprint: &str,
 ) -> Result<(), TzapIdentityCatalogError> {
-    let key =
-        openssl::pkey::PKey::private_key_from_der(private_key.expose_secret()).map_err(|_| {
-            TzapIdentityCatalogError::InvalidCatalog {
-                field: "private_key_der",
-            }
-        })?;
+    let key = openssl::pkey::PKey::private_key_from_der(private_key.expose_secret())
+        .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
     let public_der =
-        key.public_key_to_der()
-            .map_err(|_| TzapIdentityCatalogError::InvalidCatalog {
-                field: "private_key_der",
-            })?;
+        key.public_key_to_der().map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
     let digest: [u8; 32] = Sha256::digest(public_der).into();
     if crate::trust::format_spki_sha256(&digest) != expected_fingerprint {
-        return Err(TzapIdentityCatalogError::InvalidCatalog {
-            field: "private_key_public_key_match",
-        });
+        return Err(TzapIdentityCatalogError::InvalidCatalog { field: "private_key_public_key_match" });
     }
     Ok(())
 }
@@ -891,29 +771,17 @@ fn verify_private_matches_public_key(
     private_key: &SecretBytes,
     public_key_der: &[u8],
 ) -> Result<(), TzapIdentityCatalogError> {
-    let key =
-        openssl::pkey::PKey::private_key_from_der(private_key.expose_secret()).map_err(|_| {
-            TzapIdentityCatalogError::InvalidCatalog {
-                field: "private_key_der",
-            }
-        })?;
+    let key = openssl::pkey::PKey::private_key_from_der(private_key.expose_secret())
+        .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
     let derived =
-        key.public_key_to_der()
-            .map_err(|_| TzapIdentityCatalogError::InvalidCatalog {
-                field: "private_key_der",
-            })?;
+        key.public_key_to_der().map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
     if derived != public_key_der {
-        return Err(TzapIdentityCatalogError::InvalidCatalog {
-            field: "private_key_public_key_match",
-        });
+        return Err(TzapIdentityCatalogError::InvalidCatalog { field: "private_key_public_key_match" });
     }
     Ok(())
 }
 
-fn write_catalog_atomically(
-    path: &Path,
-    catalog: &TzapIdentityCatalog,
-) -> Result<(), TzapIdentityCatalogError> {
+fn write_catalog_atomically(path: &Path, catalog: &TzapIdentityCatalog) -> Result<(), TzapIdentityCatalogError> {
     let bytes = serde_json::to_vec_pretty(catalog)?;
     let mut temporary = path.to_path_buf();
     temporary.set_extension(format!("tmp-{}", std::process::id()));
@@ -951,22 +819,14 @@ fn replace_catalog_file(temporary: &Path, path: &Path) -> Result<(), TzapIdentit
 #[allow(unsafe_code)]
 fn replace_catalog_file(temporary: &Path, path: &Path) -> Result<(), TzapIdentityCatalogError> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW};
 
     let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
     let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // MoveFileExW with REPLACE_EXISTING is the Windows equivalent of an
     // atomic rename-over-existing-file. WRITE_THROUGH ensures the rename is
     // flushed before the call returns.
-    let result = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
+    let result = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
     if result == 0 {
         return Err(io::Error::last_os_error().into());
     }
@@ -988,11 +848,7 @@ fn validate_account_key(value: &str) -> Result<(), TzapIdentityCatalogError> {
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), TzapIdentityCatalogError> {
-    if value.is_empty() {
-        Err(TzapIdentityCatalogError::InvalidCatalog { field })
-    } else {
-        Ok(())
-    }
+    if value.is_empty() { Err(TzapIdentityCatalogError::InvalidCatalog { field }) } else { Ok(()) }
 }
 
 fn validate_unique<'a>(
@@ -1012,8 +868,7 @@ fn validate_unique<'a>(
 mod tests {
     use super::*;
     use crate::device_identity::{
-        TzapDeviceCsrOptions, generate_device_signing_key_and_csr,
-        generate_recipient_encryption_key,
+        TzapDeviceCsrOptions, generate_device_signing_key_and_csr, generate_recipient_encryption_key,
     };
     use crate::local_identity_store::{
         InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord, TzapLocalIdentityInventory,
@@ -1036,9 +891,7 @@ mod tests {
         let mut store = FileTzapIdentityCatalogStore::new(&root);
         let mut catalog = TzapIdentityCatalog::empty();
         catalog.revision = 1;
-        store
-            .save_catalog("default", None, catalog.clone())
-            .unwrap();
+        store.save_catalog("default", None, catalog.clone()).unwrap();
         assert!(matches!(
             store.save_catalog("default", None, catalog.clone()),
             Err(TzapIdentityCatalogError::RevisionConflict { .. })
@@ -1053,18 +906,14 @@ mod tests {
         {
             let path = root.join(format!("default{PUBLIC_CATALOG_FILE_SUFFIX}"));
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
+            assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn migration_moves_private_material_and_is_idempotent() {
-        let signing =
-            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+        let signing = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
         let recipient = generate_recipient_encryption_key().unwrap();
         let mut legacy = InMemoryTzapLocalIdentityStore::new();
         legacy
@@ -1093,61 +942,28 @@ mod tests {
             .unwrap();
         let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let report =
-            migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let report = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
         assert!(report.migrated);
         assert_eq!(report.signing_identity_count, 1);
         assert_eq!(report.recipient_key_count, 1);
-        let second =
-            migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
+        let second = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
         assert!(!second.migrated);
         let catalog = catalogs.load_catalog("default").unwrap().unwrap();
-        assert!(
-            !serde_json::to_string(&catalog)
-                .unwrap()
-                .contains("private_key_der")
-        );
+        assert!(!serde_json::to_string(&catalog).unwrap().contains("private_key_der"));
         let signing_ref = catalog.signing_identities[0].signing_key_ref.clone();
         let recipient_ref = catalog.recipient_keys[0].private_key_ref.clone();
-        secrets
-            .delete(TzapSecretPurpose::SigningKey, &signing_ref)
-            .unwrap();
-        secrets
-            .delete(TzapSecretPurpose::RecipientKey, &recipient_ref)
-            .unwrap();
+        secrets.delete(TzapSecretPurpose::SigningKey, &signing_ref).unwrap();
+        secrets.delete(TzapSecretPurpose::RecipientKey, &recipient_ref).unwrap();
         let mut interrupted = catalog.clone();
-        interrupted
-            .pending_mutations
-            .push("legacy-migration-interrupted".to_owned());
+        interrupted.pending_mutations.push("legacy-migration-interrupted".to_owned());
         let expected_revision = interrupted.revision;
         interrupted.revision += 1;
-        catalogs
-            .save_catalog("default", Some(expected_revision), interrupted)
-            .unwrap();
-        let recovered =
-            migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
+        catalogs.save_catalog("default", Some(expected_revision), interrupted).unwrap();
+        let recovered = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
         assert!(recovered.migrated);
-        assert!(
-            secrets
-                .resolve(TzapSecretPurpose::SigningKey, &signing_ref)
-                .is_ok()
-        );
-        assert!(
-            secrets
-                .resolve(TzapSecretPurpose::RecipientKey, &recipient_ref)
-                .is_ok()
-        );
-        assert!(
-            catalogs
-                .load_catalog("default")
-                .unwrap()
-                .unwrap()
-                .pending_mutations
-                .is_empty()
-        );
+        assert!(secrets.resolve(TzapSecretPurpose::SigningKey, &signing_ref).is_ok());
+        assert!(secrets.resolve(TzapSecretPurpose::RecipientKey, &recipient_ref).is_ok());
+        assert!(catalogs.load_catalog("default").unwrap().unwrap().pending_mutations.is_empty());
     }
 }

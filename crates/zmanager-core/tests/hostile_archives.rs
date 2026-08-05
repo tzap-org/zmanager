@@ -16,42 +16,15 @@ use zmanager_core::zip_backend::{ZipBackendError, extract_zip, list_zip};
 fn zip_hostile_fixtures_are_rejected() {
     let temp = TestDir::new("zip_hostile_fixtures_are_rejected");
     let cases = [
-        (
-            "traversal.zip",
-            zip_file_case(temp.path("traversal.zip"), "../escape.txt", b"owned"),
-        ),
-        (
-            "absolute.zip",
-            zip_file_case(
-                temp.path("absolute.zip"),
-                "/tmp/zmanager-escape.txt",
-                b"owned",
-            ),
-        ),
-        (
-            "duplicate.zip",
-            zip_two_file_case(temp.path("duplicate.zip"), "dup/./file.txt", "dup/file.txt"),
-        ),
-        (
-            "case-collision.zip",
-            zip_two_file_case(temp.path("case-collision.zip"), "Readme.txt", "README.txt"),
-        ),
-        (
-            "symlink-escape.zip",
-            zip_raw_symlink_case(
-                temp.path("symlink-escape.zip"),
-                "link.txt",
-                "../outside.txt",
-            ),
-        ),
+        ("traversal.zip", zip_file_case(temp.path("traversal.zip"), "../escape.txt", b"owned")),
+        ("absolute.zip", zip_file_case(temp.path("absolute.zip"), "/tmp/zmanager-escape.txt", b"owned")),
+        ("duplicate.zip", zip_two_file_case(temp.path("duplicate.zip"), "dup/./file.txt", "dup/file.txt")),
+        ("case-collision.zip", zip_two_file_case(temp.path("case-collision.zip"), "Readme.txt", "README.txt")),
+        ("symlink-escape.zip", zip_raw_symlink_case(temp.path("symlink-escape.zip"), "link.txt", "../outside.txt")),
     ];
 
     for (name, archive) in cases {
-        let error = extract_zip(
-            &archive,
-            temp.path(format!("out-{name}")),
-            ExtractionPolicy::default(),
-        );
+        let error = extract_zip(&archive, temp.path(format!("out-{name}")), ExtractionPolicy::default());
         assert!(error.is_err(), "{name} should be rejected");
     }
 
@@ -62,28 +35,13 @@ fn zip_hostile_fixtures_are_rejected() {
 fn tar_zst_hostile_fixtures_are_rejected() {
     let temp = TestDir::new("tar_zst_hostile_fixtures_are_rejected");
     let cases = [
-        raw_tar_zst_case(
-            temp.path("traversal.tar.zst"),
-            &[RawTarEntry::file("../escape.txt", b"owned")],
-        ),
-        raw_tar_zst_case(
-            temp.path("absolute.tar.zst"),
-            &[RawTarEntry::file("/tmp/zmanager-escape.txt", b"owned")],
-        ),
-        raw_tar_zst_case(
-            temp.path("symlink.tar.zst"),
-            &[RawTarEntry::symlink("link.txt", "../outside.txt")],
-        ),
-        raw_tar_zst_case(
-            temp.path("hardlink.tar.zst"),
-            &[RawTarEntry::hardlink("link.txt", "../outside.txt")],
-        ),
+        raw_tar_zst_case(temp.path("traversal.tar.zst"), &[RawTarEntry::file("../escape.txt", b"owned")]),
+        raw_tar_zst_case(temp.path("absolute.tar.zst"), &[RawTarEntry::file("/tmp/zmanager-escape.txt", b"owned")]),
+        raw_tar_zst_case(temp.path("symlink.tar.zst"), &[RawTarEntry::symlink("link.txt", "../outside.txt")]),
+        raw_tar_zst_case(temp.path("hardlink.tar.zst"), &[RawTarEntry::hardlink("link.txt", "../outside.txt")]),
         raw_tar_zst_case(
             temp.path("case.tar.zst"),
-            &[
-                RawTarEntry::file("Readme.txt", b"one"),
-                RawTarEntry::file("README.txt", b"two"),
-            ],
+            &[RawTarEntry::file("Readme.txt", b"one"), RawTarEntry::file("README.txt", b"two")],
         ),
     ];
 
@@ -101,17 +59,10 @@ fn sevenz_hostile_fixture_is_rejected() {
     let archive = temp.path("traversal.7z");
     let output = File::create(&archive).unwrap();
     let mut writer = ArchiveWriter::new(output).unwrap();
-    writer
-        .push_archive_entry(ArchiveEntry::new_file("../escape.txt"), Some(&b"owned"[..]))
-        .unwrap();
+    writer.push_archive_entry(ArchiveEntry::new_file("../escape.txt"), Some(&b"owned"[..])).unwrap();
     writer.finish().unwrap();
 
-    let error = extract_7z(
-        &archive,
-        temp.path("out"),
-        None,
-        ExtractionPolicy::default(),
-    );
+    let error = extract_7z(&archive, temp.path("out"), None, ExtractionPolicy::default());
 
     assert!(error.is_err());
     assert!(!temp.path("escape.txt").exists());
@@ -121,28 +72,13 @@ fn sevenz_hostile_fixture_is_rejected() {
 fn libarchive_tar_hostile_fixtures_are_rejected() {
     let temp = TestDir::new("libarchive_tar_hostile_fixtures_are_rejected");
     let cases = [
-        raw_tar_case(
-            temp.path("traversal.tar"),
-            &[RawTarEntry::file("../escape.txt", b"owned")],
-        ),
-        raw_tar_case(
-            temp.path("absolute.tar"),
-            &[RawTarEntry::file("/tmp/zmanager-escape.txt", b"owned")],
-        ),
-        raw_tar_case(
-            temp.path("symlink.tar"),
-            &[RawTarEntry::symlink("link.txt", "../outside.txt")],
-        ),
-        raw_tar_case(
-            temp.path("hardlink.tar"),
-            &[RawTarEntry::hardlink("link.txt", "../outside.txt")],
-        ),
+        raw_tar_case(temp.path("traversal.tar"), &[RawTarEntry::file("../escape.txt", b"owned")]),
+        raw_tar_case(temp.path("absolute.tar"), &[RawTarEntry::file("/tmp/zmanager-escape.txt", b"owned")]),
+        raw_tar_case(temp.path("symlink.tar"), &[RawTarEntry::symlink("link.txt", "../outside.txt")]),
+        raw_tar_case(temp.path("hardlink.tar"), &[RawTarEntry::hardlink("link.txt", "../outside.txt")]),
         raw_tar_case(
             temp.path("case.tar"),
-            &[
-                RawTarEntry::file("Readme.txt", b"one"),
-                RawTarEntry::file("README.txt", b"two"),
-            ],
+            &[RawTarEntry::file("Readme.txt", b"one"), RawTarEntry::file("README.txt", b"two")],
         ),
     ];
 
@@ -166,39 +102,12 @@ fn truncated_and_corrupt_archives_fail_closed() {
     fs::write(temp.path("corrupt.7z"), b"not a 7z archive").unwrap();
     fs::write(temp.path("corrupt.tar"), b"not a tar archive").unwrap();
 
+    assert!(extract_zip(&truncated_zip, temp.path("zip-out"), ExtractionPolicy::default()).is_err());
     assert!(
-        extract_zip(
-            &truncated_zip,
-            temp.path("zip-out"),
-            ExtractionPolicy::default()
-        )
-        .is_err()
+        extract_tar_zst(temp.path("corrupt.tar.zst"), temp.path("tar-zst-out"), ExtractionPolicy::default()).is_err()
     );
-    assert!(
-        extract_tar_zst(
-            temp.path("corrupt.tar.zst"),
-            temp.path("tar-zst-out"),
-            ExtractionPolicy::default()
-        )
-        .is_err()
-    );
-    assert!(
-        extract_7z(
-            temp.path("corrupt.7z"),
-            temp.path("seven-out"),
-            None,
-            ExtractionPolicy::default()
-        )
-        .is_err()
-    );
-    assert!(
-        extract_archive(
-            temp.path("corrupt.tar"),
-            temp.path("tar-out"),
-            ExtractionPolicy::default()
-        )
-        .is_err()
-    );
+    assert!(extract_7z(temp.path("corrupt.7z"), temp.path("seven-out"), None, ExtractionPolicy::default()).is_err());
+    assert!(extract_archive(temp.path("corrupt.tar"), temp.path("tar-out"), ExtractionPolicy::default()).is_err());
 }
 
 #[test]
@@ -210,36 +119,21 @@ fn zip_bomb_and_nested_archive_fixtures_are_listed_without_extraction() {
     let file = File::create(&archive).unwrap();
     let mut writer = ZipWriter::new(file);
     writer
-        .start_file(
-            "bomb.bin",
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-        )
+        .start_file("bomb.bin", SimpleFileOptions::default().compression_method(CompressionMethod::Deflated))
         .unwrap();
     writer.write_all(&repeated).unwrap();
     writer
-        .start_file(
-            "nested/inner.zip",
-            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
-        )
+        .start_file("nested/inner.zip", SimpleFileOptions::default().compression_method(CompressionMethod::Stored))
         .unwrap();
     writer.write_all(&inner_zip).unwrap();
     writer.finish().unwrap();
 
     let listing = list_zip(&archive).unwrap();
-    let bomb = listing
-        .entries
-        .iter()
-        .find(|entry| entry.name == "bomb.bin")
-        .unwrap();
+    let bomb = listing.entries.iter().find(|entry| entry.name == "bomb.bin").unwrap();
 
     assert!(bomb.size >= u64::try_from(repeated.len()).unwrap());
     assert!(bomb.compressed_size < bomb.size / 10);
-    assert!(
-        listing
-            .entries
-            .iter()
-            .any(|entry| entry.name == "nested/inner.zip")
-    );
+    assert!(listing.entries.iter().any(|entry| entry.name == "nested/inner.zip"));
 }
 
 #[test]
@@ -250,39 +144,25 @@ fn zip_extraction_rejects_entries_above_expansion_ratio_limit() {
     let file = File::create(&archive).unwrap();
     let mut writer = ZipWriter::new(file);
     writer
-        .start_file(
-            "bomb.bin",
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-        )
+        .start_file("bomb.bin", SimpleFileOptions::default().compression_method(CompressionMethod::Deflated))
         .unwrap();
     writer.write_all(&repeated).unwrap();
     writer.finish().unwrap();
     let policy = ExtractionPolicy {
-        limits: ExtractionLimits {
-            max_expanded_bytes: None,
-            max_entry_expansion_ratio: Some(10),
-        },
+        limits: ExtractionLimits { max_expanded_bytes: None, max_entry_expansion_ratio: Some(10) },
         ..ExtractionPolicy::default()
     };
 
     let error = extract_zip(&archive, temp.path("out"), policy).unwrap_err();
 
-    assert!(matches!(
-        error,
-        ZipBackendError::Safety(ExtractionSafetyError::ExpansionRatioLimitExceeded { .. })
-    ));
+    assert!(matches!(error, ZipBackendError::Safety(ExtractionSafetyError::ExpansionRatioLimitExceeded { .. })));
     assert!(!temp.path("out/bomb.bin").exists());
 }
 
 fn zip_file_case(archive: PathBuf, entry_path: &str, contents: &[u8]) -> PathBuf {
     let file = File::create(&archive).unwrap();
     let mut writer = ZipWriter::new(file);
-    writer
-        .start_file(
-            entry_path,
-            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
-        )
-        .unwrap();
+    writer.start_file(entry_path, SimpleFileOptions::default().compression_method(CompressionMethod::Stored)).unwrap();
     writer.write_all(contents).unwrap();
     writer.finish().unwrap();
     archive
@@ -292,12 +172,7 @@ fn zip_two_file_case(archive: PathBuf, first: &str, second: &str) -> PathBuf {
     let file = File::create(&archive).unwrap();
     let mut writer = ZipWriter::new(file);
     for entry in [first, second] {
-        writer
-            .start_file(
-                entry,
-                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
-            )
-            .unwrap();
+        writer.start_file(entry, SimpleFileOptions::default().compression_method(CompressionMethod::Stored)).unwrap();
         writer.write_all(b"duplicate").unwrap();
     }
     writer.finish().unwrap();
@@ -314,14 +189,8 @@ fn zip_raw_symlink_case(archive: PathBuf, entry_path: &str, target: &str) -> Pat
     write_zip_local_file(&mut file, name, contents, crc, size);
     let central_directory_offset = u32::try_from(file.stream_position().unwrap()).unwrap();
     write_zip_central_file(&mut file, name, crc, size, 0, 0o120_777 << 16);
-    let central_directory_size =
-        u32::try_from(file.stream_position().unwrap()).unwrap() - central_directory_offset;
-    write_zip_end_of_central_directory(
-        &mut file,
-        1,
-        central_directory_size,
-        central_directory_offset,
-    );
+    let central_directory_size = u32::try_from(file.stream_position().unwrap()).unwrap() - central_directory_offset;
+    write_zip_end_of_central_directory(&mut file, 1, central_directory_size, central_directory_offset);
     archive
 }
 
@@ -408,9 +277,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 fn nested_zip_bytes() -> Vec<u8> {
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
-    writer
-        .start_file("inner.txt", SimpleFileOptions::default())
-        .unwrap();
+    writer.start_file("inner.txt", SimpleFileOptions::default()).unwrap();
     writer.write_all(b"nested").unwrap();
     writer.finish().unwrap().into_inner()
 }
@@ -492,24 +359,15 @@ struct RawTarEntry<'a> {
 
 impl<'a> RawTarEntry<'a> {
     fn file(path: &'a str, contents: &'a [u8]) -> Self {
-        Self {
-            path,
-            kind: RawTarEntryKind::File(contents),
-        }
+        Self { path, kind: RawTarEntryKind::File(contents) }
     }
 
     fn symlink(path: &'a str, target: &'a str) -> Self {
-        Self {
-            path,
-            kind: RawTarEntryKind::Symlink(target),
-        }
+        Self { path, kind: RawTarEntryKind::Symlink(target) }
     }
 
     fn hardlink(path: &'a str, target: &'a str) -> Self {
-        Self {
-            path,
-            kind: RawTarEntryKind::Hardlink(target),
-        }
+        Self { path, kind: RawTarEntryKind::Hardlink(target) }
     }
 }
 
@@ -526,12 +384,8 @@ struct TestDir {
 
 impl TestDir {
     fn new(name: &str) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 
         Self { root }

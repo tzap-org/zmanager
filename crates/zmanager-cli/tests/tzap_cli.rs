@@ -13,15 +13,7 @@ fn auth_login_callback_status_and_forget_keep_session_secret_out_of_output() {
     let state_dir = temp.path("state");
 
     let login = zm()
-        .args([
-            "auth",
-            "login",
-            "--environment",
-            "local",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
+        .args(["auth", "login", "--environment", "local", "--state-dir", state_dir.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert_success("auth login", &login);
@@ -60,31 +52,13 @@ fn auth_login_callback_status_and_forget_keep_session_secret_out_of_output() {
     assert!(!callback_stdout.contains("secret-token"));
     assert_owner_only_file(state_dir.join("auth-session.json"));
 
-    let status = zm()
-        .args([
-            "auth",
-            "status",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let status = zm().args(["auth", "status", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("auth status", &status);
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(status_stdout.contains("\"authenticated\":true"));
     assert!(!status_stdout.contains("secret-token"));
 
-    let forget = zm()
-        .args([
-            "auth",
-            "forget",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let forget = zm().args(["auth", "forget", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("auth forget", &forget);
     assert!(String::from_utf8_lossy(&forget.stdout).contains("\"forgotten\":true"));
 }
@@ -95,15 +69,7 @@ fn auth_callback_fails_when_session_cannot_be_persisted() {
     let state_dir = temp.path("state");
 
     let login = zm()
-        .args([
-            "auth",
-            "login",
-            "--environment",
-            "local",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
+        .args(["auth", "login", "--environment", "local", "--state-dir", state_dir.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert_success("auth login", &login);
@@ -149,47 +115,17 @@ fn cert_enroll_uses_local_fake_service_and_updates_inventory() {
     let state_dir = temp.path("state");
     sign_in_with_fake_relay(&temp, &state_dir);
 
-    let list = zm()
-        .args([
-            "cert",
-            "list",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let list = zm().args(["cert", "list", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("cert list", &list);
-    assert_eq!(
-        String::from_utf8_lossy(&list.stdout).trim(),
-        "{\"certificates\":[]}"
-    );
+    assert_eq!(String::from_utf8_lossy(&list.stdout).trim(), "{\"certificates\":[]}");
 
-    let enroll = zm()
-        .args([
-            "cert",
-            "enroll",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let enroll = zm().args(["cert", "enroll", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("cert enroll", &enroll);
     let stdout = String::from_utf8_lossy(&enroll.stdout);
     assert!(stdout.contains("\"operation\":\"cert_enroll\""));
     assert!(stdout.contains("\"certificate_id\""));
 
-    let list = zm()
-        .args([
-            "cert",
-            "list",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let list = zm().args(["cert", "list", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("cert list after enroll", &list);
     let stdout = String::from_utf8_lossy(&list.stdout);
     assert!(stdout.contains("\"certificates\":[{"));
@@ -275,28 +211,13 @@ fn verify_accepts_custom_trust_root_certificate_file() {
     let state_dir = temp.path("state");
     sign_in_with_fake_relay(&temp, &state_dir);
 
-    let enroll = zm()
-        .args([
-            "cert",
-            "enroll",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let enroll = zm().args(["cert", "enroll", "--state-dir", state_dir.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("cert enroll", &enroll);
     let enroll_json: serde_json::Value = serde_json::from_slice(&enroll.stdout).unwrap();
-    let certificate_id = enroll_json["certificate"]["certificate_id"]
-        .as_str()
-        .unwrap();
+    let certificate_id = enroll_json["certificate"]["certificate_id"].as_str().unwrap();
     let payload = temp.path("payload.json");
     let envelope = temp.path("envelope.json");
-    fs::write(
-        &payload,
-        br#"{"tzap_payload_version":1,"title":"Root cert verification"}"#,
-    )
-    .unwrap();
+    fs::write(&payload, br#"{"tzap_payload_version":1,"title":"Root cert verification"}"#).unwrap();
     let sign = zm()
         .args([
             "sign",
@@ -314,24 +235,14 @@ fn verify_accepts_custom_trust_root_certificate_file() {
     assert_success("sign", &sign);
 
     let inventory: serde_json::Value =
-        serde_json::from_slice(&fs::read(state_dir.join("default.identity.json")).unwrap())
-            .unwrap();
-    let root_der = base64url_decode(
-        inventory["enrolled_certificates"][0]["intermediate_chain_der"][1]
-            .as_str()
-            .unwrap(),
-    );
+        serde_json::from_slice(&fs::read(state_dir.join("default.identity.json")).unwrap()).unwrap();
+    let root_der =
+        base64url_decode(inventory["enrolled_certificates"][0]["intermediate_chain_der"][1].as_str().unwrap());
     let root_path = temp.path("root.der");
     fs::write(&root_path, root_der).unwrap();
 
     let verify = zm()
-        .args([
-            "verify",
-            envelope.to_str().unwrap(),
-            "--custom-trust-root-cert",
-            root_path.to_str().unwrap(),
-            "--json",
-        ])
+        .args(["verify", envelope.to_str().unwrap(), "--custom-trust-root-cert", root_path.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert_success("verify with root cert", &verify);
@@ -346,10 +257,7 @@ fn verify_json_reports_invalid_without_claiming_official_validity() {
     let envelope = temp.path("bad-envelope.json");
     fs::write(&envelope, br#"{"not":"a tzap envelope"}"#).unwrap();
 
-    let output = zm()
-        .args(["verify", envelope.to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let output = zm().args(["verify", envelope.to_str().unwrap(), "--json"]).output().unwrap();
     assert_failure("verify", &output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"state\":\"invalid\""));
@@ -381,19 +289,14 @@ fn base64url_decode(value: &str) -> Vec<u8> {
 }
 
 fn request_is_complete(request: &[u8]) -> bool {
-    let Some(header_end) = request
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| position + 4)
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n").map(|position| position + 4)
     else {
         return false;
     };
     let headers = String::from_utf8_lossy(&request[..header_end]);
     let content_length = headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse::<usize>().ok())
-            .flatten()
+        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
     });
     content_length.is_none_or(|length| request.len() >= header_end + length)
 }
@@ -417,15 +320,7 @@ fn zm_path() -> PathBuf {
 
 fn sign_in_with_fake_relay(temp: &TestDir, state_dir: &std::path::Path) {
     let login = zm()
-        .args([
-            "auth",
-            "login",
-            "--environment",
-            "local",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "--json",
-        ])
+        .args(["auth", "login", "--environment", "local", "--state-dir", state_dir.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert_success("auth login", &login);
@@ -490,10 +385,7 @@ struct TestDir {
 
 impl TestDir {
     fn new(label: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = env::temp_dir().join(format!("{label}-{}-{unique}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         Self { path }

@@ -11,9 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zmanager_core::auth_client::TzapSessionStore as _;
 use zmanager_core::jobs::{CancellationToken, JobContext, JobEvent, JobKind};
 use zmanager_core::local_identity_store::TzapLocalIdentityStore as _;
-use zmanager_core::safety::{
-    OverwriteConflict, OverwriteDecision, OverwritePolicy, OverwriteResolver,
-};
+use zmanager_core::safety::{OverwriteConflict, OverwriteDecision, OverwritePolicy, OverwriteResolver};
 use zmanager_core::secrets::SecretString;
 
 const PROGRESS_PREFIX: &str = "progress";
@@ -562,9 +560,7 @@ const APPLE_ARCHIVE_FORMAT_ALIASES: &[&str] = &[FORMAT_APPLE_ARCHIVE, "apple-arc
 const TGZ_FORMAT_ALIASES: &[&str] = &[FORMAT_TGZ, "tar.gz", "gz"];
 
 const ZIP_CREATE_EXTENSIONS: &[&str] = &[".zip"];
-const ZIP_FAMILY_EXTENSIONS: &[&str] = &[
-    ".zip", ".zipx", ".jar", ".war", ".ipa", ".apk", ".appx", ".xpi",
-];
+const ZIP_FAMILY_EXTENSIONS: &[&str] = &[".zip", ".zipx", ".jar", ".war", ".ipa", ".apk", ".appx", ".xpi"];
 const TAR_ZST_EXTENSIONS: &[&str] = &[".tar.zst", ".tzst"];
 const TZAP_EXTENSIONS: &[&str] = &[".tzap"];
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -582,67 +578,25 @@ struct FormatDescriptor {
 }
 
 const CREATE_FORMATS: &[FormatDescriptor] = &[
-    FormatDescriptor {
-        name: FORMAT_ZIP,
-        extensions: ZIP_CREATE_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TAR_ZST,
-        extensions: TAR_ZST_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TZAP,
-        extensions: TZAP_EXTENSIONS,
-    },
+    FormatDescriptor { name: FORMAT_ZIP, extensions: ZIP_CREATE_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TAR_ZST, extensions: TAR_ZST_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TZAP, extensions: TZAP_EXTENSIONS },
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    FormatDescriptor {
-        name: FORMAT_APPLE_ARCHIVE,
-        extensions: APPLE_ARCHIVE_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_SEVEN_Z,
-        extensions: SEVEN_Z_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TGZ,
-        extensions: TGZ_EXTENSIONS,
-    },
+    FormatDescriptor { name: FORMAT_APPLE_ARCHIVE, extensions: APPLE_ARCHIVE_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_SEVEN_Z, extensions: SEVEN_Z_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TGZ, extensions: TGZ_EXTENSIONS },
 ];
 
 const EXTRACT_FORMATS: &[FormatDescriptor] = &[
-    FormatDescriptor {
-        name: FORMAT_ZIP,
-        extensions: ZIP_FAMILY_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TAR_ZST,
-        extensions: TAR_ZST_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TZAP,
-        extensions: TZAP_EXTENSIONS,
-    },
+    FormatDescriptor { name: FORMAT_ZIP, extensions: ZIP_FAMILY_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TAR_ZST, extensions: TAR_ZST_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TZAP, extensions: TZAP_EXTENSIONS },
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    FormatDescriptor {
-        name: FORMAT_APPLE_ARCHIVE,
-        extensions: APPLE_ARCHIVE_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_SEVEN_Z,
-        extensions: SEVEN_Z_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_TGZ,
-        extensions: TGZ_EXTENSIONS,
-    },
-    FormatDescriptor {
-        name: FORMAT_RAW_STREAM,
-        extensions: zmanager_core::raw_stream_backend::RAW_STREAM_SUFFIXES,
-    },
-    FormatDescriptor {
-        name: FORMAT_LIBARCHIVE,
-        extensions: LIBARCHIVE_FALLBACK_EXTENSIONS,
-    },
+    FormatDescriptor { name: FORMAT_APPLE_ARCHIVE, extensions: APPLE_ARCHIVE_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_SEVEN_Z, extensions: SEVEN_Z_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_TGZ, extensions: TGZ_EXTENSIONS },
+    FormatDescriptor { name: FORMAT_RAW_STREAM, extensions: zmanager_core::raw_stream_backend::RAW_STREAM_SUFFIXES },
+    FormatDescriptor { name: FORMAT_LIBARCHIVE, extensions: LIBARCHIVE_FALLBACK_EXTENSIONS },
 ];
 
 #[must_use]
@@ -732,19 +686,11 @@ impl ProgressReporter {
         let stderr_is_terminal = io::stderr().is_terminal();
         let enabled = global.is_some_and(|global| {
             matches!(global.progress, OutputMode::Always)
-                || matches!(global.progress, OutputMode::Auto)
-                    && !global.quiet
-                    && stderr_is_terminal
+                || matches!(global.progress, OutputMode::Auto) && !global.quiet && stderr_is_terminal
         });
         let color = global.map_or(OutputMode::Never, |global| global.color);
 
-        Self {
-            enabled,
-            color,
-            total_bytes: None,
-            last_percent: None,
-            last_reported_bytes: 0,
-        }
+        Self { enabled, color, total_bytes: None, last_percent: None, last_reported_bytes: 0 }
     }
 
     fn emit(&mut self, event: JobEvent) {
@@ -758,19 +704,15 @@ impl ProgressReporter {
                 self.last_percent = None;
                 self.last_reported_bytes = 0;
                 match total_bytes {
-                    Some(total_bytes) => self.emit_line(format_args!(
-                        "{} started ({total_bytes} bytes)",
-                        progress_job_label(kind)
-                    )),
+                    Some(total_bytes) => {
+                        self.emit_line(format_args!("{} started ({total_bytes} bytes)", progress_job_label(kind)))
+                    }
                     None => {
                         self.emit_line(format_args!("{} started", progress_job_label(kind)));
                     }
                 }
             }
-            JobEvent::BytesProcessed {
-                total_bytes_processed,
-                ..
-            } => {
+            JobEvent::BytesProcessed { total_bytes_processed, .. } => {
                 if let Some(total_bytes) = self.total_bytes {
                     self.emit_percent(total_bytes_processed, total_bytes);
                 } else {
@@ -797,28 +739,18 @@ impl ProgressReporter {
     fn emit_line(&self, message: std::fmt::Arguments<'_>) {
         output::stderr_line(
             self.color,
-            format_args!(
-                "{}: {message}",
-                output::styled(StyleRole::Progress, format_args!("{PROGRESS_PREFIX}"))
-            ),
+            format_args!("{}: {message}", output::styled(StyleRole::Progress, format_args!("{PROGRESS_PREFIX}"))),
         );
     }
 
     fn emit_percent(&mut self, total_bytes_processed: u64, total_bytes: u64) {
-        let percent = total_bytes_processed
-            .saturating_mul(100)
-            .checked_div(total_bytes)
-            .unwrap_or(100)
-            .clamp(1, 100);
+        let percent = total_bytes_processed.saturating_mul(100).checked_div(total_bytes).unwrap_or(100).clamp(1, 100);
 
-        let should_emit = self
-            .last_percent
-            .is_none_or(|last| percent == 100 || percent >= last + PROGRESS_PERCENT_STEP);
+        let should_emit =
+            self.last_percent.is_none_or(|last| percent == 100 || percent >= last + PROGRESS_PERCENT_STEP);
         if should_emit {
             self.last_percent = Some(percent);
-            self.emit_line(format_args!(
-                "{percent}% ({total_bytes_processed}/{total_bytes} bytes)"
-            ));
+            self.emit_line(format_args!("{percent}% ({total_bytes_processed}/{total_bytes} bytes)"));
         }
     }
 
@@ -866,11 +798,7 @@ where
     W: io::Write,
 {
     fn new(input: R, output: W) -> Self {
-        Self {
-            input,
-            output,
-            replace_all: false,
-        }
+        Self { input, output, replace_all: false }
     }
 
     fn read_decision(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
@@ -1137,10 +1065,7 @@ struct GenericEntry {
     metadata_diagnostics: Vec<String>,
 }
 
-fn peel_leading_global_options(
-    args: &mut Vec<String>,
-    global: &mut GlobalOptions,
-) -> Result<(), String> {
+fn peel_leading_global_options(args: &mut Vec<String>, global: &mut GlobalOptions) -> Result<(), String> {
     let mut consumed = 0usize;
     while consumed < args.len() {
         match args[consumed].as_str() {
@@ -1176,12 +1101,9 @@ fn peel_leading_global_options(
 }
 
 fn has_classic_action(args: &[String]) -> bool {
-    expand_short_options(args).iter().any(|arg| {
-        matches!(
-            arg.as_str(),
-            "-c" | "--create" | "-x" | "--extract" | "-t" | "--list" | "-T" | "--test"
-        )
-    })
+    expand_short_options(args)
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-c" | "--create" | "-x" | "--extract" | "-t" | "--list" | "-T" | "--test"))
 }
 
 fn run_classic_command(args: &[String], global: GlobalOptions) -> ExitCode {
@@ -1234,12 +1156,7 @@ fn expand_short_options(args: &[String]) -> Vec<String> {
         }
 
         let chars = arg[1..].chars().collect::<Vec<_>>();
-        if chars.iter().all(|ch| {
-            matches!(
-                ch,
-                'c' | 'x' | 't' | 'T' | 'f' | 'r' | 'j' | 'y' | 'X' | '0'..='9'
-            )
-        }) {
+        if chars.iter().all(|ch| matches!(ch, 'c' | 'x' | 't' | 'T' | 'f' | 'r' | 'j' | 'y' | 'X' | '0'..='9')) {
             expanded.extend(chars.into_iter().map(|ch| format!("-{ch}")));
         } else {
             expanded.push(arg.clone());
@@ -1250,9 +1167,7 @@ fn expand_short_options(args: &[String]) -> Vec<String> {
 }
 
 fn wants_help(args: &[String]) -> bool {
-    args.iter()
-        .take_while(|arg| arg.as_str() != "--")
-        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| matches!(arg.as_str(), "-h" | "--help"))
 }
 
 fn help_command(args: &[String], global: &GlobalOptions) -> ExitCode {
@@ -1268,10 +1183,7 @@ fn help_command(args: &[String], global: &GlobalOptions) -> ExitCode {
     let topic = &args[0];
     let Some(help) = command_help(topic) else {
         print_error_line(global, format_args!("error: unknown help topic: {topic}"));
-        output::stderr_line(
-            global.color,
-            format_args!("Try 'zm --help' for available commands."),
-        );
+        output::stderr_line(global.color, format_args!("Try 'zm --help' for available commands."));
         return ExitCode::from(2);
     };
     print_help_stdout(help, global);
@@ -1309,10 +1221,7 @@ fn print_help_stderr(help: &str, global: &GlobalOptions) {
 }
 
 fn print_error_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
-    output::stderr_line(
-        global.color,
-        format_args!("{}", output::styled(StyleRole::Error, message)),
-    );
+    output::stderr_line(global.color, format_args!("{}", output::styled(StyleRole::Error, message)));
 }
 
 fn print_optional_error_line(global: Option<&GlobalOptions>, message: std::fmt::Arguments<'_>) {
@@ -1329,24 +1238,15 @@ fn usage_failure(global: &GlobalOptions, message: std::fmt::Arguments<'_>) -> Ex
 }
 
 fn print_success_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
-    output::stdout_line(
-        global.color,
-        format_args!("{}", output::styled(StyleRole::Success, message)),
-    );
+    output::stdout_line(global.color, format_args!("{}", output::styled(StyleRole::Success, message)));
 }
 
 fn print_warning_stdout(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
-    output::stdout_line(
-        global.color,
-        format_args!("{}", output::styled(StyleRole::Warning, message)),
-    );
+    output::stdout_line(global.color, format_args!("{}", output::styled(StyleRole::Warning, message)));
 }
 
 fn print_warning_stderr(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
-    output::stderr_line(
-        global.color,
-        format_args!("{}", output::styled(StyleRole::Warning, message)),
-    );
+    output::stderr_line(global.color, format_args!("{}", output::styled(StyleRole::Warning, message)));
 }
 
 fn new_formats_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -1379,10 +1279,7 @@ fn print_format_descriptors_json(formats: &[FormatDescriptor]) {
         if index > 0 {
             print!(",");
         }
-        print!(
-            "{{\"format\":\"{}\",\"extensions\":",
-            json_escape(format.name)
-        );
+        print!("{{\"format\":\"{}\",\"extensions\":", json_escape(format.name));
         print_string_array_json(format.extensions);
         print!("}}");
     }
@@ -1401,13 +1298,7 @@ fn print_string_array_json(values: &[&str]) {
 }
 
 fn print_formats_table(global: &GlobalOptions) {
-    output::stdout_line(
-        global.color,
-        format_args!(
-            "{}",
-            output::styled(StyleRole::Heading, format_args!("Create:"))
-        ),
-    );
+    output::stdout_line(global.color, format_args!("{}", output::styled(StyleRole::Heading, format_args!("Create:"))));
     for format in CREATE_FORMATS {
         let padding = " ".repeat(9usize.saturating_sub(format.name.len()));
         output::stdout_line(
@@ -1421,13 +1312,7 @@ fn print_formats_table(global: &GlobalOptions) {
         );
     }
     output::stdout_line(global.color, format_args!(""));
-    output::stdout_line(
-        global.color,
-        format_args!(
-            "{}",
-            output::styled(StyleRole::Heading, format_args!("Extract:"))
-        ),
-    );
+    output::stdout_line(global.color, format_args!("{}", output::styled(StyleRole::Heading, format_args!("Extract:"))));
     for format in EXTRACT_FORMATS {
         let padding = " ".repeat(9usize.saturating_sub(format.name.len()));
         if format.name == FORMAT_LIBARCHIVE {
@@ -1482,17 +1367,10 @@ fn doctor_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             report.ready
         );
     } else {
-        let role = if report.ready {
-            StyleRole::Success
-        } else {
-            StyleRole::Warning
-        };
+        let role = if report.ready { StyleRole::Success } else { StyleRole::Warning };
         output::stdout_line(
             global.color,
-            format_args!(
-                "{}",
-                output::styled(role, format_args!("{}", report.summary()))
-            ),
+            format_args!("{}", output::styled(role, format_args!("{}", report.summary()))),
         );
     }
     ExitCode::SUCCESS
@@ -1520,11 +1398,7 @@ fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 index += 1;
             }
             _ if arg.starts_with('-') => {
-                return command_usage_error(
-                    "completions",
-                    &format!("unknown completions option: {arg}"),
-                    &global,
-                );
+                return command_usage_error("completions", &format!("unknown completions option: {arg}"), &global);
             }
             _ if shell.is_none() => {
                 shell = Some(arg.as_str());
@@ -1579,8 +1453,7 @@ impl Default for TzapCliContext {
     fn default() -> Self {
         Self {
             state_dir: default_tzap_state_dir(),
-            account_key: zmanager_core::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT
-                .to_owned(),
+            account_key: zmanager_core::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT.to_owned(),
         }
     }
 }
@@ -1617,9 +1490,7 @@ struct FileTzapSessionStore {
 
 impl FileTzapSessionStore {
     fn new(state_dir: &Path) -> Self {
-        Self {
-            path: state_dir.join(AUTH_SESSION_FILE),
-        }
+        Self { path: state_dir.join(AUTH_SESSION_FILE) }
     }
 }
 
@@ -1634,35 +1505,25 @@ impl zmanager_core::auth_client::TzapSessionStore for FileTzapSessionStore {
             root = json!({ "sessions": {} });
         }
         root["sessions"][account_key] = session_to_json(&session, true);
-        write_secret_json_file(&self.path, &root).map_err(|error| {
-            zmanager_core::auth_client::TzapAuthError::Storage {
-                message: format!("could not write {}: {error}", self.path.display()),
-            }
+        write_secret_json_file(&self.path, &root).map_err(|error| zmanager_core::auth_client::TzapAuthError::Storage {
+            message: format!("could not write {}: {error}", self.path.display()),
         })
     }
 
-    fn load_session(
-        &self,
-        account_key: &str,
-    ) -> Option<zmanager_core::auth_client::TzapSessionRecord> {
+    fn load_session(&self, account_key: &str) -> Option<zmanager_core::auth_client::TzapSessionRecord> {
         let root = read_json_file(&self.path)?;
         session_from_json(root.get("sessions")?.get(account_key)?).ok()
     }
 
-    fn clear_session(
-        &mut self,
-        account_key: &str,
-    ) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
+    fn clear_session(&mut self, account_key: &str) -> Result<(), zmanager_core::auth_client::TzapAuthError> {
         let Some(mut root) = read_json_file(&self.path) else {
             return Ok(());
         };
         if let Some(sessions) = root.get_mut("sessions").and_then(Value::as_object_mut) {
             sessions.remove(account_key);
         }
-        write_secret_json_file(&self.path, &root).map_err(|error| {
-            zmanager_core::auth_client::TzapAuthError::Storage {
-                message: format!("could not write {}: {error}", self.path.display()),
-            }
+        write_secret_json_file(&self.path, &root).map_err(|error| zmanager_core::auth_client::TzapAuthError::Storage {
+            message: format!("could not write {}: {error}", self.path.display()),
         })
     }
 }
@@ -1670,11 +1531,7 @@ impl zmanager_core::auth_client::TzapSessionStore for FileTzapSessionStore {
 fn auth_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) || args.is_empty() {
         print_help_stdout(AUTH_HELP, &global);
-        return if args.is_empty() {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
-        };
+        return if args.is_empty() { ExitCode::from(2) } else { ExitCode::SUCCESS };
     }
     match args[0].as_str() {
         "login" => auth_login_command(&args[1..], global),
@@ -1682,9 +1539,7 @@ fn auth_command(args: &[String], global: GlobalOptions) -> ExitCode {
         "status" => auth_status_command(&args[1..], global),
         "forget" => auth_forget_command(&args[1..], global),
         "account" => auth_account_command(&args[1..], global),
-        command => {
-            command_usage_error("auth", &format!("unknown auth command: {command}"), &global)
-        }
+        command => command_usage_error("auth", &format!("unknown auth command: {command}"), &global),
     }
 }
 
@@ -1700,8 +1555,7 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         match args[index].as_str() {
             "--print-url" => index += 1,
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -1713,21 +1567,15 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                     "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
-                        return command_usage_error(
-                            "auth",
-                            "environment must be local, staging, or prod",
-                            &global,
-                        );
+                        return command_usage_error("auth", "environment must be local, staging, or prod", &global);
                     }
                 };
             }
             "--auth-base-url" => {
-                endpoints.auth_base_url =
-                    Some(take_value_or_exit(args, &mut index, "--auth-base-url"));
+                endpoints.auth_base_url = Some(take_value_or_exit(args, &mut index, "--auth-base-url"));
             }
             "--account-base-url" => {
-                endpoints.account_base_url =
-                    Some(take_value_or_exit(args, &mut index, "--account-base-url"));
+                endpoints.account_base_url = Some(take_value_or_exit(args, &mut index, "--account-base-url"));
             }
             "--client-id" => {
                 endpoints.client_id = take_value_or_exit(args, &mut index, "--client-id");
@@ -1742,21 +1590,13 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 endpoints.org_id = Some(take_value_or_exit(args, &mut index, "--org-id"));
             }
             other => {
-                return command_usage_error(
-                    "auth",
-                    &format!("unknown auth option: {other}"),
-                    &global,
-                );
+                return command_usage_error("auth", &format!("unknown auth option: {other}"), &global);
             }
         }
     }
 
     let mut tracker = zmanager_core::auth_client::TzapOAuthStateTracker::new();
-    let pending = tracker.begin(
-        endpoints.provider_id.clone(),
-        endpoints.redirect_uri.clone(),
-        current_unix_seconds(),
-    );
+    let pending = tracker.begin(endpoints.provider_id.clone(), endpoints.redirect_uri.clone(), current_unix_seconds());
     let mut config = zmanager_core::auth_client::TzapHostedAuthLaunchConfig::for_environment(
         endpoints.environment,
         endpoints.client_id,
@@ -1785,9 +1625,7 @@ fn auth_login_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             "{{\"status\":\"pending\",\"launch_url\":\"{}\",\"state\":\"{}\",\"expires_at_unix_seconds\":{}}}",
             json_escape(&url),
             json_escape(&pending.state),
-            pending
-                .created_at_unix_seconds
-                .saturating_add(zmanager_core::auth_client::AUTH_HANDOFF_LIFETIME_SECONDS)
+            pending.created_at_unix_seconds.saturating_add(zmanager_core::auth_client::AUTH_HANDOFF_LIFETIME_SECONDS)
         );
     } else {
         println!("{url}");
@@ -1812,8 +1650,7 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -1836,11 +1673,7 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
                 relay_body_path = Some(take_value_or_exit(args, &mut index, "--relay-body"));
             }
             other => {
-                return command_usage_error(
-                    "auth",
-                    &format!("unknown auth option: {other}"),
-                    &global,
-                );
+                return command_usage_error("auth", &format!("unknown auth option: {other}"), &global);
             }
         }
     }
@@ -1853,14 +1686,10 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
     };
     let pending_metadata = load_pending_auth_metadata(&context.state_dir);
     if state.is_none() {
-        state = callback_url
-            .as_deref()
-            .and_then(|url| callback_url_parameter(url, "state"));
+        state = callback_url.as_deref().and_then(|url| callback_url_parameter(url, "state"));
     }
     if handoff_code.is_none() {
-        handoff_code = callback_url
-            .as_deref()
-            .and_then(|url| callback_url_parameter(url, "handoff_code"));
+        handoff_code = callback_url.as_deref().and_then(|url| callback_url_parameter(url, "handoff_code"));
     }
     let Some(state) = state else {
         return command_usage_error("auth", "missing --state or callback URL state", &global);
@@ -1879,9 +1708,8 @@ fn auth_callback_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         let exchange_base_url = auth_base_url
             .or(pending_metadata.auth_base_url)
             .unwrap_or_else(|| zmanager_core::auth_client::LOCAL_HOSTED_AUTH_BASE_URL.to_owned());
-        let exchange_client_id = client_id
-            .or(pending_metadata.client_id)
-            .unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
+        let exchange_client_id =
+            client_id.or(pending_metadata.client_id).unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
         match exchange_handoff_code(
             &exchange_base_url,
             &exchange_client_id,
@@ -1984,17 +1812,12 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
                     "staging" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Staging,
                     "prod" => zmanager_core::auth_client::TzapHostedAuthEnvironment::Prod,
                     _ => {
-                        return command_usage_error(
-                            "auth",
-                            "environment must be local, staging, or prod",
-                            &global,
-                        );
+                        return command_usage_error("auth", "environment must be local, staging, or prod", &global);
                     }
                 };
             }
             "--account-base-url" => {
-                endpoints.account_base_url =
-                    Some(take_value_or_exit(args, &mut index, "--account-base-url"));
+                endpoints.account_base_url = Some(take_value_or_exit(args, &mut index, "--account-base-url"));
             }
             "--client-id" => {
                 endpoints.client_id = take_value_or_exit(args, &mut index, "--client-id");
@@ -2003,11 +1826,7 @@ fn auth_account_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
                 endpoints.redirect_uri = take_value_or_exit(args, &mut index, "--redirect-uri");
             }
             other => {
-                return command_usage_error(
-                    "auth",
-                    &format!("unknown auth option: {other}"),
-                    &global,
-                );
+                return command_usage_error("auth", &format!("unknown auth option: {other}"), &global);
             }
         }
     }
@@ -2039,20 +1858,14 @@ fn me_command(args: &[String], global: GlobalOptions) -> ExitCode {
 fn cert_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) || args.is_empty() {
         print_help_stdout(CERT_HELP, &global);
-        return if args.is_empty() {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
-        };
+        return if args.is_empty() { ExitCode::from(2) } else { ExitCode::SUCCESS };
     }
     match args[0].as_str() {
         "list" => cert_list_command(&args[1..], global),
         "enroll" => cert_enroll_command(&args[1..], global),
         "renew" => cert_renew_command(&args[1..], global),
         "revoke" => cert_revoke_command(&args[1..], global),
-        command => {
-            command_usage_error("cert", &format!("unknown cert command: {command}"), &global)
-        }
+        command => command_usage_error("cert", &format!("unknown cert command: {command}"), &global),
     }
 }
 
@@ -2064,21 +1877,15 @@ fn cert_enroll_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if options.service_base_url.is_some() {
         return run_hosted_cert_enroll(&options, &global);
     }
-    run_fake_cert_operation(
-        "cert_enroll",
-        &options.context,
-        &global,
-        |store, session, options| {
-            zmanager_core::local_fake_tzap::enroll_local_fake_certificate(store, session, options)
-                .map(|certificate| {
-                    json!({
-                        "ok": true,
-                        "operation": "cert_enroll",
-                        "certificate": certificate_summary_value(&certificate),
-                    })
-                })
-        },
-    )
+    run_fake_cert_operation("cert_enroll", &options.context, &global, |store, session, options| {
+        zmanager_core::local_fake_tzap::enroll_local_fake_certificate(store, session, options).map(|certificate| {
+            json!({
+                "ok": true,
+                "operation": "cert_enroll",
+                "certificate": certificate_summary_value(&certificate),
+            })
+        })
+    })
 }
 
 fn cert_renew_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -2089,26 +1896,21 @@ fn cert_renew_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     if options.service_base_url.is_some() {
         return run_hosted_cert_renew(&options, &global);
     }
-    run_fake_cert_operation(
-        "cert_renew",
-        &options.context,
-        &global,
-        |store, session, fake_options| {
-            zmanager_core::local_fake_tzap::renew_local_fake_certificate(
-                store,
-                session,
-                fake_options,
-                &options.certificate_id,
-            )
-            .map(|certificate| {
-                json!({
-                    "ok": true,
-                    "operation": "cert_renew",
-                    "certificate": certificate_summary_value(&certificate),
-                })
+    run_fake_cert_operation("cert_renew", &options.context, &global, |store, session, fake_options| {
+        zmanager_core::local_fake_tzap::renew_local_fake_certificate(
+            store,
+            session,
+            fake_options,
+            &options.certificate_id,
+        )
+        .map(|certificate| {
+            json!({
+                "ok": true,
+                "operation": "cert_renew",
+                "certificate": certificate_summary_value(&certificate),
             })
-        },
-    )
+        })
+    })
 }
 
 fn cert_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -2116,26 +1918,17 @@ fn cert_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    run_fake_cert_operation(
-        "cert_revoke",
-        &context,
-        &global,
-        |store, session, options| {
-            zmanager_core::local_fake_tzap::revoke_local_fake_certificate(
-                store,
-                session,
-                options,
-                &certificate_id,
-            )
-            .map(|completion| {
+    run_fake_cert_operation("cert_revoke", &context, &global, |store, session, options| {
+        zmanager_core::local_fake_tzap::revoke_local_fake_certificate(store, session, options, &certificate_id).map(
+            |completion| {
                 json!({
                     "ok": true,
                     "operation": "cert_revoke",
                     "completion": retirement_completion_label(completion),
                 })
-            })
-        },
-    )
+            },
+        )
+    })
 }
 
 fn cert_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -2143,8 +1936,7 @@ fn cert_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         Ok(context) => context,
         Err(code) => return code,
     };
-    let store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     match store.load_inventory(&context.account_key) {
         Ok(inventory) => {
             if global.json {
@@ -2160,12 +1952,7 @@ fn cert_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 println!("no local certificates");
             } else {
                 for cert in inventory.enrolled_certificates {
-                    println!(
-                        "{} {} {}",
-                        cert.certificate_id,
-                        cert.state.as_str(),
-                        cert.certificate_sha256
-                    );
+                    println!("{} {} {}", cert.certificate_id, cert.state.as_str(), cert.certificate_sha256);
                 }
             }
             ExitCode::SUCCESS
@@ -2180,20 +1967,12 @@ fn cert_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
 fn device_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) || args.is_empty() {
         print_help_stdout(DEVICE_HELP, &global);
-        return if args.is_empty() {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
-        };
+        return if args.is_empty() { ExitCode::from(2) } else { ExitCode::SUCCESS };
     }
     match args[0].as_str() {
         "retire" => device_retire_command(&args[1..], global),
         "revoke" => device_revoke_command(&args[1..], global),
-        command => command_usage_error(
-            "device",
-            &format!("unknown device command: {command}"),
-            &global,
-        ),
+        command => command_usage_error("device", &format!("unknown device command: {command}"), &global),
     }
 }
 
@@ -2202,23 +1981,16 @@ fn device_retire_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         Ok(context) => context,
         Err(code) => return code,
     };
-    run_fake_cert_operation(
-        "device_retire",
-        &context,
-        &global,
-        |store, session, options| {
-            zmanager_core::local_fake_tzap::retire_local_fake_device(store, session, options).map(
-                |report| {
-                    json!({
-                        "ok": true,
-                        "operation": "device_retire",
-                        "completion": retirement_completion_label(report.completion),
-                        "attempted_sign_device_ids": report.attempted_sign_device_ids,
-                    })
-                },
-            )
-        },
-    )
+    run_fake_cert_operation("device_retire", &context, &global, |store, session, options| {
+        zmanager_core::local_fake_tzap::retire_local_fake_device(store, session, options).map(|report| {
+            json!({
+                "ok": true,
+                "operation": "device_retire",
+                "completion": retirement_completion_label(report.completion),
+                "attempted_sign_device_ids": report.attempted_sign_device_ids,
+            })
+        })
+    })
 }
 
 fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
@@ -2232,8 +2004,7 @@ fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2245,19 +2016,14 @@ fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode
                 service_base_url = Some(take_value_or_exit(args, &mut index, "--service-base-url"));
             }
             other => {
-                return command_usage_error(
-                    "device",
-                    &format!("unknown device option: {other}"),
-                    &global,
-                );
+                return command_usage_error("device", &format!("unknown device option: {other}"), &global);
             }
         }
     }
     let Some(sign_device_id) = sign_device_id else {
         return command_usage_error("device", "missing --device-id", &global);
     };
-    let sign_base_url = service_base_url
-        .unwrap_or_else(|| zmanager_core::auth_client::SIGN_TZAP_BASE_URL.to_owned());
+    let sign_base_url = service_base_url.unwrap_or_else(|| zmanager_core::auth_client::SIGN_TZAP_BASE_URL.to_owned());
     let session_store = FileTzapSessionStore::new(&context.state_dir);
     let Some(session) = session_store.load_session(&context.account_key) else {
         print_stable_tzap_error("device_revoke", MISSING_TZAP_SESSION, &global);
@@ -2309,8 +2075,7 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2319,23 +2084,13 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 certificate_id = Some(take_value_or_exit(args, &mut index, "--certificate-id"));
             }
             "--output" => {
-                output = Some(PathBuf::from(take_value_or_exit(
-                    args, &mut index, "--output",
-                )));
+                output = Some(PathBuf::from(take_value_or_exit(args, &mut index, "--output")));
             }
             "--claimed-signing-time" => {
-                claimed_signing_time = Some(take_value_or_exit(
-                    args,
-                    &mut index,
-                    "--claimed-signing-time",
-                ));
+                claimed_signing_time = Some(take_value_or_exit(args, &mut index, "--claimed-signing-time"));
             }
             value if value.starts_with('-') => {
-                return command_usage_error(
-                    "sign",
-                    &format!("unknown sign option: {value}"),
-                    &global,
-                );
+                return command_usage_error("sign", &format!("unknown sign option: {value}"), &global);
             }
             value if input.is_none() => {
                 input = Some(value.to_owned());
@@ -2360,8 +2115,7 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     let mut request = zmanager_core::document_signing::TzapDocumentSigningRequest::new(
         context.account_key,
         certificate_id,
@@ -2375,10 +2129,7 @@ fn sign_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             if global.json {
-                println!(
-                    "{{\"signed\":true,\"output\":\"{}\"}}",
-                    json_escape(&output.display().to_string())
-                );
+                println!("{{\"signed\":true,\"output\":\"{}\"}}", json_escape(&output.display().to_string()));
             } else {
                 print_success_line(&global, format_args!("signed {}", output.display()));
             }
@@ -2418,28 +2169,19 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 )));
             }
             "--status-response" => {
-                status_response_path =
-                    Some(take_value_or_exit(args, &mut index, "--status-response"));
+                status_response_path = Some(take_value_or_exit(args, &mut index, "--status-response"));
             }
             "--time" => {
                 let value = take_value_or_exit(args, &mut index, "--time");
                 verifier_time = match value.parse::<i64>() {
                     Ok(value) => value,
                     Err(_) => {
-                        return command_usage_error(
-                            "verify",
-                            "--time must be a unix timestamp",
-                            &global,
-                        );
+                        return command_usage_error("verify", "--time must be a unix timestamp", &global);
                     }
                 };
             }
             value if value.starts_with('-') => {
-                return command_usage_error(
-                    "verify",
-                    &format!("unknown verify option: {value}"),
-                    &global,
-                );
+                return command_usage_error("verify", &format!("unknown verify option: {value}"), &global);
             }
             value if input.is_none() => {
                 input = Some(value.to_owned());
@@ -2458,14 +2200,13 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let custom_root_certificates_der =
-        match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
-            Ok(certificates) => certificates,
-            Err(error) => {
-                print_error_line(&global, format_args!("verify failed: {error}"));
-                return ExitCode::FAILURE;
-            }
-        };
+    let custom_root_certificates_der = match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            print_error_line(&global, format_args!("verify failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
     let options = zmanager_core::document_verification::TzapOfflineVerificationOptions {
         verifier_time_unix_seconds: verifier_time,
         official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
@@ -2474,12 +2215,7 @@ fn verify_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         custom_trust_root_certificates_der: custom_root_certificates_der,
         certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
     };
-    let result = verify_document_bytes_with_optional_status(
-        &bytes,
-        &options,
-        status_response_path.as_deref(),
-        &global,
-    );
+    let result = verify_document_bytes_with_optional_status(&bytes, &options, status_response_path.as_deref(), &global);
     print_verification_result(&result, &global);
     if result.state == zmanager_core::trust::TzapVerificationState::Invalid {
         ExitCode::FAILURE
@@ -2494,9 +2230,7 @@ fn verify_document_bytes_with_optional_status(
     status_response_path: Option<&str>,
     global: &GlobalOptions,
 ) -> zmanager_core::document_verification::TzapDocumentVerificationResult {
-    let offline = zmanager_core::document_verification::verify_tzap_document_envelope_offline_json(
-        bytes, options,
-    );
+    let offline = zmanager_core::document_verification::verify_tzap_document_envelope_offline_json(bytes, options);
     let Some(status_response_path) = status_response_path else {
         return offline;
     };
@@ -2504,8 +2238,7 @@ fn verify_document_bytes_with_optional_status(
         return offline;
     }
 
-    let envelope = match zmanager_core::document_envelope::parse_tzap_document_envelope_json(bytes)
-    {
+    let envelope = match zmanager_core::document_envelope::parse_tzap_document_envelope_json(bytes) {
         Ok(envelope) => envelope,
         Err(error) => {
             return zmanager_core::document_verification::TzapDocumentVerificationResult {
@@ -2528,31 +2261,24 @@ fn verify_document_bytes_with_optional_status(
             };
         }
     };
-    let status =
-        match zmanager_core::status_client::TzapStatusResponse::from_json_value(&status_value) {
-            Ok(status) => status,
-            Err(error) => {
-                print_error_line(global, format_args!("verify status failed: {error}"));
-                return zmanager_core::document_verification::TzapDocumentVerificationResult {
-                    state: zmanager_core::trust::TzapVerificationState::Invalid,
-                    reason: Some(error.to_string()),
-                    ..offline
-                };
-            }
-        };
-    zmanager_core::status_client::verify_tzap_document_envelope_valid_now(
-        &envelope, options, &status,
-    )
+    let status = match zmanager_core::status_client::TzapStatusResponse::from_json_value(&status_value) {
+        Ok(status) => status,
+        Err(error) => {
+            print_error_line(global, format_args!("verify status failed: {error}"));
+            return zmanager_core::document_verification::TzapDocumentVerificationResult {
+                state: zmanager_core::trust::TzapVerificationState::Invalid,
+                reason: Some(error.to_string()),
+                ..offline
+            };
+        }
+    };
+    zmanager_core::status_client::verify_tzap_document_envelope_valid_now(&envelope, options, &status)
 }
 
 fn contact_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) || args.is_empty() {
         print_help_stdout(CONTACT_HELP, &global);
-        return if args.is_empty() {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
-        };
+        return if args.is_empty() { ExitCode::from(2) } else { ExitCode::SUCCESS };
     }
     match args[0].as_str() {
         "keygen" => contact_keygen_command(&args[1..], global),
@@ -2560,11 +2286,7 @@ fn contact_command(args: &[String], global: GlobalOptions) -> ExitCode {
         "remove" => contact_remove_command(&args[1..], global),
         "import" => contact_import_command(&args[1..], global),
         "export" => contact_export_command(&args[1..], global),
-        command => command_usage_error(
-            "contact",
-            &format!("unknown contact command: {command}"),
-            &global,
-        ),
+        command => command_usage_error("contact", &format!("unknown contact command: {command}"), &global),
     }
 }
 
@@ -2578,19 +2300,14 @@ fn contact_keygen_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             "--label" => label = take_value_or_exit(args, &mut index, "--label"),
             value => {
-                return command_usage_error(
-                    "contact",
-                    &format!("unknown contact keygen option: {value}"),
-                    &global,
-                );
+                return command_usage_error("contact", &format!("unknown contact keygen option: {value}"), &global);
             }
         }
     }
@@ -2612,8 +2329,7 @@ fn contact_keygen_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         created_at_unix_seconds: current_unix_seconds(),
         label: Some(label),
     };
-    let mut store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     let mut inventory = match store.load_inventory(&context.account_key) {
         Ok(inventory) => inventory,
         Err(error) => {
@@ -2628,10 +2344,7 @@ fn contact_keygen_command(args: &[String], mut global: GlobalOptions) -> ExitCod
     }
 
     if global.json {
-        println!(
-            "{{\"generated\":true,\"recipient_key_id\":\"{}\"}}",
-            json_escape(&key_id)
-        );
+        println!("{{\"generated\":true,\"recipient_key_id\":\"{}\"}}", json_escape(&key_id));
     } else {
         print_success_line(&global, format_args!("generated recipient key {key_id}"));
     }
@@ -2643,8 +2356,7 @@ fn contact_list_command(args: &[String], mut global: GlobalOptions) -> ExitCode 
         Ok(context) => context,
         Err(code) => return code,
     };
-    let store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     match store.load_inventory(&context.account_key) {
         Ok(inventory) => {
             if global.json {
@@ -2682,18 +2394,13 @@ fn contact_remove_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
             }
             value if value.starts_with('-') => {
-                return command_usage_error(
-                    "contact",
-                    &format!("unknown contact option: {value}"),
-                    &global,
-                );
+                return command_usage_error("contact", &format!("unknown contact option: {value}"), &global);
             }
             value if contact_id.is_none() => {
                 contact_id = Some(value.to_owned());
@@ -2705,22 +2412,17 @@ fn contact_remove_command(args: &[String], mut global: GlobalOptions) -> ExitCod
     let Some(contact_id) = contact_id else {
         return command_usage_error("contact", "missing contact id", &global);
     };
-    let mut store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     match store.load_inventory(&context.account_key) {
         Ok(mut inventory) => {
             let before = inventory.contacts.len();
-            inventory
-                .contacts
-                .retain(|contact| contact.contact_id != contact_id);
+            inventory.contacts.retain(|contact| contact.contact_id != contact_id);
             if let Err(error) = store.save_inventory(&context.account_key, inventory) {
                 print_error_line(&global, format_args!("contact remove failed: {error}"));
                 return ExitCode::FAILURE;
             }
-            let removed = before
-                > store
-                    .load_inventory(&context.account_key)
-                    .map_or(0, |inventory| inventory.contacts.len());
+            let removed =
+                before > store.load_inventory(&context.account_key).map_or(0, |inventory| inventory.contacts.len());
             if global.json {
                 println!("{{\"removed\":{removed}}}");
             } else if removed {
@@ -2750,8 +2452,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2771,11 +2472,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
                 )));
             }
             value if value.starts_with('-') => {
-                return command_usage_error(
-                    "contact",
-                    &format!("unknown contact option: {value}"),
-                    &global,
-                );
+                return command_usage_error("contact", &format!("unknown contact option: {value}"), &global);
             }
             value if input.is_none() => {
                 input = Some(value.to_owned());
@@ -2794,14 +2491,13 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
             return ExitCode::FAILURE;
         }
     };
-    let custom_root_certificates_der =
-        match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
-            Ok(certificates) => certificates,
-            Err(error) => {
-                print_error_line(&global, format_args!("contact import failed: {error}"));
-                return ExitCode::FAILURE;
-            }
-        };
+    let custom_root_certificates_der = match load_custom_root_certificates(&custom_root_cert_paths, &mut custom_roots) {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            print_error_line(&global, format_args!("contact import failed: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
     let options = zmanager_core::contact_card::TzapContactCardImportOptions {
         verifier_time_unix_seconds: current_unix_seconds().cast_signed(),
         official_root_pins: &zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS,
@@ -2810,8 +2506,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         custom_trust_root_certificates_der: custom_root_certificates_der,
         certificate_profile_options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
     };
-    let mut store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     match zmanager_core::contact_card::import_tzap_contact_card(
         &mut store,
         &context.account_key,
@@ -2823,10 +2518,7 @@ fn contact_import_command(args: &[String], mut global: GlobalOptions) -> ExitCod
             if global.json {
                 print_contact_json_line(&contact);
             } else {
-                print_success_line(
-                    &global,
-                    format_args!("imported contact {}", contact.display_name),
-                );
+                print_success_line(&global, format_args!("imported contact {}", contact.display_name));
             }
             ExitCode::SUCCESS
         }
@@ -2851,8 +2543,7 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2870,16 +2561,10 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
                 device_label = take_value_or_exit(args, &mut index, "--device-label");
             }
             "--output" => {
-                output = Some(PathBuf::from(take_value_or_exit(
-                    args, &mut index, "--output",
-                )));
+                output = Some(PathBuf::from(take_value_or_exit(args, &mut index, "--output")));
             }
             value => {
-                return command_usage_error(
-                    "contact",
-                    &format!("unknown contact option: {value}"),
-                    &global,
-                );
+                return command_usage_error("contact", &format!("unknown contact option: {value}"), &global);
             }
         }
     }
@@ -2895,8 +2580,7 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
     let Some(output) = output else {
         return command_usage_error("contact", "missing --output", &global);
     };
-    let store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     let request = zmanager_core::contact_card::TzapContactCardExportRequest {
         account_key: context.account_key,
         recipient_key_id,
@@ -2913,10 +2597,7 @@ fn contact_export_command(args: &[String], mut global: GlobalOptions) -> ExitCod
                 return ExitCode::FAILURE;
             }
             if global.json {
-                println!(
-                    "{{\"exported\":true,\"output\":\"{}\"}}",
-                    json_escape(&output.display().to_string())
-                );
+                println!("{{\"exported\":true,\"output\":\"{}\"}}", json_escape(&output.display().to_string()));
             } else {
                 print_success_line(&global, format_args!("exported {}", output.display()));
             }
@@ -2948,8 +2629,7 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         }
         match args[index].as_str() {
             "--state-dir" => {
-                context.state_dir =
-                    PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
+                context.state_dir = PathBuf::from(take_value_or_exit(args, &mut index, "--state-dir"));
             }
             "--account-key" => {
                 context.account_key = take_value_or_exit(args, &mut index, "--account-key");
@@ -2963,11 +2643,7 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 index += 1;
             }
             value if value.starts_with('-') => {
-                return command_usage_error(
-                    "share",
-                    &format!("unknown share option: {value}"),
-                    &global,
-                );
+                return command_usage_error("share", &format!("unknown share option: {value}"), &global);
             }
             value if archive.is_none() => {
                 archive = Some(PathBuf::from(value));
@@ -2988,20 +2664,15 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let Some(certificate_id) = certificate_id else {
         return command_usage_error("share", "missing --certificate-id", &global);
     };
-    let store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
-    let x509_signing = match local_tzap_x509_signing_options(
-        &store,
-        &context.account_key,
-        &certificate_id,
-        current_unix_seconds(),
-    ) {
-        Ok(signing) => signing,
-        Err(error) => {
-            print_stable_tzap_error("share", &error, &global);
-            return ExitCode::FAILURE;
-        }
-    };
+    let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let x509_signing =
+        match local_tzap_x509_signing_options(&store, &context.account_key, &certificate_id, current_unix_seconds()) {
+            Ok(signing) => signing,
+            Err(error) => {
+                print_stable_tzap_error("share", &error, &global);
+                return ExitCode::FAILURE;
+            }
+        };
     let recipients = match zmanager_core::contact_card::accepted_contact_recipients(
         &store,
         &context.account_key,
@@ -3014,14 +2685,8 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let recipient_warning_count = recipients
-        .iter()
-        .filter(|recipient| recipient.missing_status_caveat)
-        .count();
-    let recipient_public_keys = recipients
-        .into_iter()
-        .map(|recipient| recipient.recipient_public_key_der)
-        .collect();
+    let recipient_warning_count = recipients.iter().filter(|recipient| recipient.missing_status_caveat).count();
+    let recipient_public_keys = recipients.into_iter().map(|recipient| recipient.recipient_public_key_der).collect();
     let manifest = match plan_sources(&sources, false, false, false) {
         Ok(manifest) => manifest,
         Err(error) => {
@@ -3030,18 +2695,13 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
         }
     };
     if archive.exists() && !force {
-        print_error_line(
-            &global,
-            format_args!("share failed: destination exists: {}", archive.display()),
-        );
+        print_error_line(&global, format_args!("share failed: destination exists: {}", archive.display()));
         return ExitCode::FAILURE;
     }
     let token = CancellationToken::new();
     let mut progress = ProgressReporter::from_global(Some(&global));
     let options = zmanager_core::tzap_backend::TzapCreateOptions {
-        key_source: zmanager_core::tzap_backend::TzapKeySource::RecipientPublicKeys(
-            recipient_public_keys,
-        ),
+        key_source: zmanager_core::tzap_backend::TzapKeySource::RecipientPublicKeys(recipient_public_keys),
         level: 3,
         preserve_metadata: true,
         replace_existing: force,
@@ -3052,8 +2712,7 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     };
     let result = {
         let mut sink = |event| progress.emit(event);
-        let mut job_context =
-            JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
+        let mut job_context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
         let result = zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
             &manifest,
             &archive,
@@ -3079,15 +2738,10 @@ fn share_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
                 if recipient_warning_count > 0 {
                     print_error_line(
                         &global,
-                        format_args!(
-                            "{recipient_warning_count} recipient contact(s) have offline-only status caveats"
-                        ),
+                        format_args!("{recipient_warning_count} recipient contact(s) have offline-only status caveats"),
                     );
                 }
-                print_success_line(
-                    &global,
-                    format_args!("created shared tzap {}", archive.display()),
-                );
+                print_success_line(&global, format_args!("created shared tzap {}", archive.display()));
             }
             ExitCode::SUCCESS
         }
@@ -3104,19 +2758,14 @@ fn local_tzap_x509_signing_options(
     certificate_id: &str,
     now_unix_seconds: u64,
 ) -> Result<zmanager_core::tzap_backend::TzapX509SigningOptions, String> {
-    let inventory = store
-        .load_inventory(account_key)
-        .map_err(|error| error.to_string())?;
+    let inventory = store.load_inventory(account_key).map_err(|error| error.to_string())?;
     let certificate = inventory
         .enrolled_certificates
         .iter()
         .find(|record| record.certificate_id == certificate_id)
         .ok_or_else(|| format!("certificate not found: {certificate_id}"))?;
     if certificate.state != zmanager_core::local_identity_store::TzapLocalCertificateState::Active {
-        return Err(format!(
-            "certificate is not active: {}",
-            certificate.state.as_str()
-        ));
+        return Err(format!("certificate is not active: {}", certificate.state.as_str()));
     }
     if now_unix_seconds < certificate.not_before_unix_seconds {
         return Err("certificate is not yet valid".to_owned());
@@ -3124,11 +2773,7 @@ fn local_tzap_x509_signing_options(
     if now_unix_seconds >= certificate.not_after_unix_seconds {
         return Err("certificate is expired".to_owned());
     }
-    if inventory
-        .emergency_blocklist
-        .blocked_issuer_sha256
-        .contains(&certificate.issuer_certificate_sha256)
-    {
+    if inventory.emergency_blocklist.blocked_issuer_sha256.contains(&certificate.issuer_certificate_sha256) {
         return Err("certificate issuer is locally blocked".to_owned());
     }
     if inventory.certificate_status_cache.iter().any(|status| {
@@ -3142,13 +2787,11 @@ fn local_tzap_x509_signing_options(
         .iter()
         .find(|key| key.key_id == certificate.signing_key_id)
         .ok_or_else(|| "certificate signing key is missing".to_owned())?;
-    Ok(
-        zmanager_core::tzap_backend::TzapX509SigningOptions::InMemory {
-            signing_certificate: certificate.leaf_certificate_der.clone(),
-            signing_private_key: signing_key.private_key_der.clone(),
-            signing_chain: certificate.intermediate_chain_der.clone(),
-        },
-    )
+    Ok(zmanager_core::tzap_backend::TzapX509SigningOptions::InMemory {
+        signing_certificate: certificate.leaf_certificate_der.clone(),
+        signing_private_key: signing_key.private_key_der.clone(),
+        signing_chain: certificate.intermediate_chain_der.clone(),
+    })
 }
 
 fn parse_tzap_context_args(
@@ -3176,11 +2819,7 @@ fn parse_tzap_context_args(
                     .map_err(|error| command_usage_error(command, &error, global))?;
             }
             other => {
-                return Err(command_usage_error(
-                    command,
-                    &format!("unknown {command} option: {other}"),
-                    global,
-                ));
+                return Err(command_usage_error(command, &format!("unknown {command} option: {other}"), global));
             }
         }
     }
@@ -3217,20 +2856,12 @@ fn parse_cert_id_operation_args(
                 );
             }
             other => {
-                return Err(command_usage_error(
-                    command,
-                    &format!("unknown {command} option: {other}"),
-                    global,
-                ));
+                return Err(command_usage_error(command, &format!("unknown {command} option: {other}"), global));
             }
         }
     }
     let Some(certificate_id) = certificate_id else {
-        return Err(command_usage_error(
-            command,
-            "missing --certificate-id",
-            global,
-        ));
+        return Err(command_usage_error(command, "missing --certificate-id", global));
     };
     Ok((context, certificate_id))
 }
@@ -3301,42 +2932,22 @@ fn parse_hosted_cert_renew_args(
                 let value = take_value(args, &mut index, "--requested-validity-seconds")
                     .map_err(|error| command_usage_error("cert", &error, global))?;
                 options.requested_validity_seconds = value.parse::<u64>().map_err(|_| {
-                    command_usage_error(
-                        "cert",
-                        "--requested-validity-seconds must be an integer",
-                        global,
-                    )
+                    command_usage_error("cert", "--requested-validity-seconds must be an integer", global)
                 })?;
             }
             other => {
-                return Err(command_usage_error(
-                    "cert",
-                    &format!("unknown cert option: {other}"),
-                    global,
-                ));
+                return Err(command_usage_error("cert", &format!("unknown cert option: {other}"), global));
             }
         }
     }
     if options.certificate_id.is_empty() {
-        return Err(command_usage_error(
-            "cert",
-            "missing --certificate-id",
-            global,
-        ));
+        return Err(command_usage_error("cert", "missing --certificate-id", global));
     }
     if options.service_base_url.is_none() && !options.trusted_root_cert_paths.is_empty() {
-        return Err(command_usage_error(
-            "cert",
-            "--trusted-root-cert requires --service-base-url",
-            global,
-        ));
+        return Err(command_usage_error("cert", "--trusted-root-cert requires --service-base-url", global));
     }
     if options.service_base_url.is_none() && options.org_id.is_some() {
-        return Err(command_usage_error(
-            "cert",
-            "--org-id requires --service-base-url",
-            global,
-        ));
+        return Err(command_usage_error("cert", "--org-id requires --service-base-url", global));
     }
     Ok(options)
 }
@@ -3350,10 +2961,7 @@ struct CertEnrollOptions {
     requested_validity_seconds: u64,
 }
 
-fn parse_cert_enroll_args(
-    args: &[String],
-    global: &mut GlobalOptions,
-) -> Result<CertEnrollOptions, ExitCode> {
+fn parse_cert_enroll_args(args: &[String], global: &mut GlobalOptions) -> Result<CertEnrollOptions, ExitCode> {
     let mut options = CertEnrollOptions {
         context: TzapCliContext::default(),
         service_base_url: None,
@@ -3401,35 +3009,19 @@ fn parse_cert_enroll_args(
                 let value = take_value(args, &mut index, "--requested-validity-seconds")
                     .map_err(|error| command_usage_error("cert", &error, global))?;
                 options.requested_validity_seconds = value.parse::<u64>().map_err(|_| {
-                    command_usage_error(
-                        "cert",
-                        "--requested-validity-seconds must be an integer",
-                        global,
-                    )
+                    command_usage_error("cert", "--requested-validity-seconds must be an integer", global)
                 })?;
             }
             other => {
-                return Err(command_usage_error(
-                    "cert",
-                    &format!("unknown cert option: {other}"),
-                    global,
-                ));
+                return Err(command_usage_error("cert", &format!("unknown cert option: {other}"), global));
             }
         }
     }
     if options.service_base_url.is_none() && !options.trusted_root_cert_paths.is_empty() {
-        return Err(command_usage_error(
-            "cert",
-            "--trusted-root-cert requires --service-base-url",
-            global,
-        ));
+        return Err(command_usage_error("cert", "--trusted-root-cert requires --service-base-url", global));
     }
     if options.service_base_url.is_none() && options.org_id.is_some() {
-        return Err(command_usage_error(
-            "cert",
-            "--org-id requires --service-base-url",
-            global,
-        ));
+        return Err(command_usage_error("cert", "--org-id requires --service-base-url", global));
     }
     Ok(options)
 }
@@ -3439,11 +3031,7 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
         unreachable!("hosted enrollment checked by caller")
     };
     if options.trusted_root_cert_paths.is_empty() {
-        return command_usage_error(
-            "cert",
-            "hosted enrollment requires at least one --trusted-root-cert",
-            global,
-        );
+        return command_usage_error("cert", "hosted enrollment requires at least one --trusted-root-cert", global);
     }
     let session_store = FileTzapSessionStore::new(&options.context.state_dir);
     let Some(session) = session_store.load_session(&options.context.account_key) else {
@@ -3451,46 +3039,35 @@ fn run_hosted_cert_enroll(options: &CertEnrollOptions, global: &GlobalOptions) -
         return ExitCode::FAILURE;
     };
     let mut trusted_root_sha256 = Vec::new();
-    let trusted_root_der = match load_custom_root_certificates(
-        &options.trusted_root_cert_paths,
-        &mut trusted_root_sha256,
-    ) {
-        Ok(roots) => roots,
-        Err(error) => {
-            print_error_line(global, format_args!("cert enroll failed: {error}"));
-            return ExitCode::FAILURE;
-        }
-    };
+    let trusted_root_der =
+        match load_custom_root_certificates(&options.trusted_root_cert_paths, &mut trusted_root_sha256) {
+            Ok(roots) => roots,
+            Err(error) => {
+                print_error_line(global, format_args!("cert enroll failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+        };
 
-    let mut identity_store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
-        &options.context.state_dir,
-    );
+    let mut identity_store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&options.context.state_dir);
     let now_unix_seconds = current_unix_seconds();
     let request = zmanager_core::enrollment_client::TzapEnrollmentRequest {
         account_key: options.context.account_key.clone(),
-        org_id: options
-            .org_id
-            .clone()
-            .or_else(|| session.selected_org_id.clone()),
+        org_id: options.org_id.clone().or_else(|| session.selected_org_id.clone()),
         requested_validity_seconds: options.requested_validity_seconds,
         now_unix_seconds,
     };
-    let (signing_key, csr_der) = match create_and_store_staging_enrollment_key(
-        &mut identity_store,
-        &request,
-        now_unix_seconds,
-    ) {
-        Ok(material) => material,
-        Err(error) => {
-            print_error_line(global, format_args!("cert enroll failed: {error}"));
-            return ExitCode::FAILURE;
-        }
-    };
+    let (signing_key, csr_der) =
+        match create_and_store_staging_enrollment_key(&mut identity_store, &request, now_unix_seconds) {
+            Ok(material) => material,
+            Err(error) => {
+                print_error_line(global, format_args!("cert enroll failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+        };
     let transport = CliHttpJsonTransport;
-    let client = zmanager_core::enrollment_client::TzapEnrollmentClient::local_staging_server(
-        service_base_url,
-        &transport,
-    );
+    let client =
+        zmanager_core::enrollment_client::TzapEnrollmentClient::local_staging_server(service_base_url, &transport);
     let validator = CliTrustedEnrollmentCertificateValidator {
         trusted_root_sha256,
         trusted_root_der,
@@ -3533,11 +3110,7 @@ fn run_hosted_cert_renew(options: &HostedCertRenewOptions, global: &GlobalOption
         unreachable!("hosted renewal checked by caller")
     };
     if options.trusted_root_cert_paths.is_empty() {
-        return command_usage_error(
-            "cert",
-            "hosted renewal requires at least one --trusted-root-cert",
-            global,
-        );
+        return command_usage_error("cert", "hosted renewal requires at least one --trusted-root-cert", global);
     }
     let session_store = FileTzapSessionStore::new(&options.context.state_dir);
     let Some(session) = session_store.load_session(&options.context.account_key) else {
@@ -3545,58 +3118,42 @@ fn run_hosted_cert_renew(options: &HostedCertRenewOptions, global: &GlobalOption
         return ExitCode::FAILURE;
     };
     let mut trusted_root_sha256 = Vec::new();
-    let trusted_root_der = match load_custom_root_certificates(
-        &options.trusted_root_cert_paths,
-        &mut trusted_root_sha256,
-    ) {
-        Ok(roots) => roots,
-        Err(error) => {
-            print_error_line(global, format_args!("cert renew failed: {error}"));
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut identity_store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(
-        &options.context.state_dir,
-    );
+    let trusted_root_der =
+        match load_custom_root_certificates(&options.trusted_root_cert_paths, &mut trusted_root_sha256) {
+            Ok(roots) => roots,
+            Err(error) => {
+                print_error_line(global, format_args!("cert renew failed: {error}"));
+                return ExitCode::FAILURE;
+            }
+        };
+    let mut identity_store =
+        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&options.context.state_dir);
     let inventory = match identity_store.load_inventory(&options.context.account_key) {
         Ok(inventory) => inventory,
         Err(error) => {
-            print_error_line(
-                global,
-                format_args!("cert renew failed: cannot load identity store: {error}"),
-            );
+            print_error_line(global, format_args!("cert renew failed: cannot load identity store: {error}"));
             return ExitCode::FAILURE;
         }
     };
-    let previous_certificate = if let Some(certificate) = inventory
-        .enrolled_certificates
-        .iter()
-        .find(|record| record.certificate_id == options.certificate_id)
+    let previous_certificate = if let Some(certificate) =
+        inventory.enrolled_certificates.iter().find(|record| record.certificate_id == options.certificate_id)
     {
         certificate.clone()
     } else {
         print_error_line(
             global,
-            format_args!(
-                "cert renew failed: certificate {} not found locally",
-                options.certificate_id
-            ),
+            format_args!("cert renew failed: certificate {} not found locally", options.certificate_id),
         );
         return ExitCode::FAILURE;
     };
-    let signing_key = if let Some(record) = inventory
-        .device_signing_keys
-        .iter()
-        .find(|record| record.key_id == previous_certificate.signing_key_id)
+    let signing_key = if let Some(record) =
+        inventory.device_signing_keys.iter().find(|record| record.key_id == previous_certificate.signing_key_id)
     {
         record.clone()
     } else {
         print_error_line(
             global,
-            format_args!(
-                "cert renew failed: signing key {} not found",
-                previous_certificate.signing_key_id
-            ),
+            format_args!("cert renew failed: signing key {} not found", previous_certificate.signing_key_id),
         );
         return ExitCode::FAILURE;
     };
@@ -3606,31 +3163,24 @@ fn run_hosted_cert_renew(options: &HostedCertRenewOptions, global: &GlobalOption
     ) {
         Ok(csr) => csr,
         Err(error) => {
-            print_error_line(
-                global,
-                format_args!("cert renew failed: cannot generate CSR: {error}"),
-            );
+            print_error_line(global, format_args!("cert renew failed: cannot generate CSR: {error}"));
             return ExitCode::FAILURE;
         }
     };
     let now_unix_seconds = current_unix_seconds();
     let login_base_url = zmanager_core::auth_client::LOGIN_TZAP_BASE_URL;
     let transport = CliHttpJsonTransport;
-    let lifecycle =
-        zmanager_core::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(
-            service_base_url,
-            login_base_url,
-            &transport,
-        );
+    let lifecycle = zmanager_core::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(
+        service_base_url,
+        login_base_url,
+        &transport,
+    );
     let validator = CliTrustedEnrollmentCertificateValidator {
         trusted_root_sha256,
         trusted_root_der,
         options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
     };
-    let org_id = options
-        .org_id
-        .clone()
-        .or_else(|| session.selected_org_id.clone());
+    let org_id = options.org_id.clone().or_else(|| session.selected_org_id.clone());
     let renewal_request = zmanager_core::certificate_lifecycle::TzapRenewalRequest {
         account_key: options.context.account_key.clone(),
         previous_certificate_id: previous_certificate.certificate_id,
@@ -3677,23 +3227,12 @@ fn create_and_store_staging_enrollment_key(
     store: &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
     request: &zmanager_core::enrollment_client::TzapEnrollmentRequest,
     now_unix_seconds: u64,
-) -> Result<
-    (
-        zmanager_core::local_identity_store::TzapDeviceSigningKeyRecord,
-        Vec<u8>,
-    ),
-    String,
-> {
-    let mut inventory = store
-        .load_inventory(&request.account_key)
-        .map_err(|error| error.to_string())?;
+) -> Result<(zmanager_core::local_identity_store::TzapDeviceSigningKeyRecord, Vec<u8>), String> {
+    let mut inventory = store.load_inventory(&request.account_key).map_err(|error| error.to_string())?;
     let label = staging_enrollment_key_label(request.org_id.as_deref());
     if let Some(record) = inventory.device_signing_keys.iter().find(|record| {
         record.label.as_deref() == Some(label.as_str())
-            && !inventory
-                .enrolled_certificates
-                .iter()
-                .any(|certificate| certificate.signing_key_id == record.key_id)
+            && !inventory.enrolled_certificates.iter().any(|certificate| certificate.signing_key_id == record.key_id)
     }) {
         let csr_der = zmanager_core::device_identity::generate_device_csr_from_private_key(
             &record.private_key_der,
@@ -3715,9 +3254,7 @@ fn create_and_store_staging_enrollment_key(
         label: Some(label),
     };
     inventory.device_signing_keys.push(record.clone());
-    store
-        .save_inventory(&request.account_key, inventory)
-        .map_err(|error| error.to_string())?;
+    store.save_inventory(&request.account_key, inventory).map_err(|error| error.to_string())?;
     Ok((record, material.csr_der))
 }
 
@@ -3734,9 +3271,7 @@ struct CliTrustedEnrollmentCertificateValidator {
     options: zmanager_core::trust::TzapCertificateProfileOptions,
 }
 
-impl zmanager_core::enrollment_client::TzapEnrollmentCertificateValidator
-    for CliTrustedEnrollmentCertificateValidator
-{
+impl zmanager_core::enrollment_client::TzapEnrollmentCertificateValidator for CliTrustedEnrollmentCertificateValidator {
     fn validate_certificate_chain(
         &self,
         chain_der: &[Vec<u8>],
@@ -3744,26 +3279,15 @@ impl zmanager_core::enrollment_client::TzapEnrollmentCertificateValidator
         zmanager_core::trust::TzapCertificatePublicMetadata,
         zmanager_core::enrollment_client::TzapEnrollmentError,
     > {
-        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(
-            chain_der,
-            &self.options,
-        )
-        .map_err(|error| {
-            zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(
-                error.to_string(),
-            )
-        })?;
-        if !self
-            .trusted_root_sha256
-            .iter()
-            .any(|trusted| trusted == &validation.root_certificate_sha256)
-        {
-            return Err(
-                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
-                    "root certificate is not in the temporary trust store: {}",
-                    validation.root_certificate_sha256
-                )),
-            );
+        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(chain_der, &self.options)
+            .map_err(|error| {
+                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(error.to_string())
+            })?;
+        if !self.trusted_root_sha256.iter().any(|trusted| trusted == &validation.root_certificate_sha256) {
+            return Err(zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
+                "root certificate is not in the temporary trust store: {}",
+                validation.root_certificate_sha256
+            )));
         }
         Ok(validation.public_metadata)
     }
@@ -3772,10 +3296,7 @@ impl zmanager_core::enrollment_client::TzapEnrollmentCertificateValidator
         &self,
         chain_der: &[Vec<u8>],
     ) -> Result<
-        (
-            Vec<Vec<u8>>,
-            zmanager_core::trust::TzapCertificatePublicMetadata,
-        ),
+        (Vec<Vec<u8>>, zmanager_core::trust::TzapCertificatePublicMetadata),
         zmanager_core::enrollment_client::TzapEnrollmentError,
     > {
         let mut last_error = match self.validate_completed_chain(chain_der) {
@@ -3801,60 +3322,37 @@ impl CliTrustedEnrollmentCertificateValidator {
         &self,
         chain_der: &[Vec<u8>],
     ) -> Result<
-        (
-            Vec<Vec<u8>>,
-            zmanager_core::trust::TzapCertificatePublicMetadata,
-        ),
+        (Vec<Vec<u8>>, zmanager_core::trust::TzapCertificatePublicMetadata),
         zmanager_core::enrollment_client::TzapEnrollmentError,
     > {
-        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(
-            chain_der,
-            &self.options,
-        )
-        .map_err(|error| {
-            zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(
-                error.to_string(),
-            )
-        })?;
-        if !self
-            .trusted_root_sha256
-            .iter()
-            .any(|trusted| trusted == &validation.root_certificate_sha256)
-        {
-            return Err(
-                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
-                    "root certificate is not in the temporary trust store: {}",
-                    validation.root_certificate_sha256
-                )),
-            );
+        let validation = zmanager_core::trust::validate_custom_tzap_certificate_chain_der(chain_der, &self.options)
+            .map_err(|error| {
+                zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(error.to_string())
+            })?;
+        if !self.trusted_root_sha256.iter().any(|trusted| trusted == &validation.root_certificate_sha256) {
+            return Err(zmanager_core::enrollment_client::TzapEnrollmentError::CertificateChain(format!(
+                "root certificate is not in the temporary trust store: {}",
+                validation.root_certificate_sha256
+            )));
         }
         Ok((chain_der.to_vec(), validation.public_metadata))
     }
 }
 
-fn run_fake_cert_operation<F>(
-    operation: &str,
-    context: &TzapCliContext,
-    global: &GlobalOptions,
-    action: F,
-) -> ExitCode
+fn run_fake_cert_operation<F>(operation: &str, context: &TzapCliContext, global: &GlobalOptions, action: F) -> ExitCode
 where
     F: FnOnce(
         &mut zmanager_core::local_identity_store::FileTzapLocalIdentityStore,
         &zmanager_core::auth_client::TzapSessionRecord,
         &zmanager_core::local_fake_tzap::TzapLocalFakeServiceOptions,
-    ) -> Result<
-        serde_json::Value,
-        zmanager_core::local_fake_tzap::TzapLocalFakeServiceError,
-    >,
+    ) -> Result<serde_json::Value, zmanager_core::local_fake_tzap::TzapLocalFakeServiceError>,
 {
     let session_store = FileTzapSessionStore::new(&context.state_dir);
     let Some(session) = session_store.load_session(&context.account_key) else {
         print_stable_tzap_error(operation, MISSING_TZAP_SESSION, global);
         return ExitCode::FAILURE;
     };
-    let mut identity_store =
-        zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
+    let mut identity_store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&context.state_dir);
     let options = zmanager_core::local_fake_tzap::TzapLocalFakeServiceOptions {
         account_key: context.account_key.clone(),
         now_unix_seconds: current_unix_seconds(),
@@ -3926,9 +3424,7 @@ fn default_tzap_state_dir() -> PathBuf {
 }
 
 fn current_unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
 fn read_bytes_argument(path: &str) -> io::Result<Vec<u8>> {
@@ -3946,10 +3442,7 @@ fn read_json_argument(path: &str) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
-fn load_custom_root_certificates(
-    paths: &[PathBuf],
-    custom_roots: &mut Vec<String>,
-) -> Result<Vec<Vec<u8>>, String> {
+fn load_custom_root_certificates(paths: &[PathBuf], custom_roots: &mut Vec<String>) -> Result<Vec<Vec<u8>>, String> {
     paths
         .iter()
         .map(|path| {
@@ -3994,12 +3487,7 @@ fn write_secret_json_file(path: &Path, value: &Value) -> io::Result<()> {
 fn write_secret_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut file = fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(path)?;
     file.write_all(bytes)?;
     let mut permissions = file.metadata()?.permissions();
     permissions.set_mode(0o600);
@@ -4042,23 +3530,16 @@ fn load_pending_auth_metadata(state_dir: &Path) -> PendingAuthMetadata {
         return PendingAuthMetadata::default();
     };
     PendingAuthMetadata {
-        client_id: json_optional_string_field(&value, "client_id")
-            .ok()
-            .flatten(),
-        auth_base_url: json_optional_string_field(&value, "auth_base_url")
-            .ok()
-            .flatten(),
+        client_id: json_optional_string_field(&value, "client_id").ok().flatten(),
+        auth_base_url: json_optional_string_field(&value, "auth_base_url").ok().flatten(),
     }
 }
 
-fn load_pending_auth(
-    state_dir: &Path,
-) -> Result<zmanager_core::auth_client::TzapPendingAuthState, String> {
+fn load_pending_auth(state_dir: &Path) -> Result<zmanager_core::auth_client::TzapPendingAuthState, String> {
     let value = read_json_file(&state_dir.join(AUTH_PENDING_FILE))
         .ok_or_else(|| "no pending hosted-auth handoff".to_owned())?;
     let verifier = json_string_field(&value, "pkce_verifier")?;
-    let pkce = zmanager_core::auth_client::TzapPkcePair::from_verifier(&verifier)
-        .map_err(|error| error.to_string())?;
+    let pkce = zmanager_core::auth_client::TzapPkcePair::from_verifier(&verifier).map_err(|error| error.to_string())?;
     Ok(zmanager_core::auth_client::TzapPendingAuthState {
         state: json_string_field(&value, "state")?,
         provider_id: json_string_field(&value, "provider_id")?,
@@ -4088,11 +3569,7 @@ fn exchange_handoff_code(
     pkce_verifier: &str,
     handoff_code: &str,
 ) -> Result<Vec<u8>, String> {
-    let url = format!(
-        "{}{}",
-        auth_base_url.trim_end_matches('/'),
-        AUTH_SESSION_EXCHANGE_PATH
-    );
+    let url = format!("{}{}", auth_base_url.trim_end_matches('/'), AUTH_SESSION_EXCHANGE_PATH);
     let exchange = http_post_json(
         &url,
         &json!({
@@ -4108,23 +3585,13 @@ fn exchange_handoff_code(
     let session_id = json_string_field(&exchange, "session_id")?;
     let audience = json_string_field(&exchange, "audience")
         .unwrap_or_else(|_| zmanager_core::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
-    let expires_at_unix_seconds = exchange
-        .get("expires_at_unix_seconds")
-        .and_then(Value::as_u64)
-        .map_or_else(
-            || {
-                json_string_field(&exchange, "expires_at")
-                    .and_then(|expires_at| rfc3339_utc_to_unix_seconds(&expires_at))
-            },
-            Ok,
-        )?;
+    let expires_at_unix_seconds = exchange.get("expires_at_unix_seconds").and_then(Value::as_u64).map_or_else(
+        || json_string_field(&exchange, "expires_at").and_then(|expires_at| rfc3339_utc_to_unix_seconds(&expires_at)),
+        Ok,
+    )?;
     let identity_assurance = json_string_field(&exchange, "identity_assurance")
         .or_else(|_| json_string_field(&exchange, "identity_assurance_level"))
-        .unwrap_or_else(|_| {
-            zmanager_core::trust::TzapIdentityAssurance::OauthVerifiedEmail
-                .as_str()
-                .to_owned()
-        });
+        .unwrap_or_else(|_| zmanager_core::trust::TzapIdentityAssurance::OauthVerifiedEmail.as_str().to_owned());
     serde_json::to_vec(&json!({
         "status": "ok",
         "session": {
@@ -4142,10 +3609,7 @@ fn exchange_handoff_code(
 fn http_post_json(url: &str, body: &Value) -> Result<Value, String> {
     let response = http_json_request("POST", url, None, Some(body))?;
     if !(200..=299).contains(&response.status_code) {
-        return Err(format!(
-            "hosted auth exchange failed with HTTP {}",
-            response.status_code
-        ));
+        return Err(format!("hosted auth exchange failed with HTTP {}", response.status_code));
     }
     serde_json::from_slice(&response.body).map_err(|error| error.to_string())
 }
@@ -4157,10 +3621,7 @@ impl zmanager_core::auth_client::TzapAuthHttpTransport for CliHttpJsonTransport 
     fn send(
         &self,
         request: &zmanager_core::auth_client::TzapAuthHttpRequest,
-    ) -> Result<
-        zmanager_core::auth_client::TzapAuthHttpResponse,
-        zmanager_core::auth_client::TzapAuthError,
-    > {
+    ) -> Result<zmanager_core::auth_client::TzapAuthHttpResponse, zmanager_core::auth_client::TzapAuthError> {
         let method = match request.method {
             zmanager_core::auth_client::TzapAuthHttpMethod::Get => "GET",
             zmanager_core::auth_client::TzapAuthHttpMethod::Post => "POST",
@@ -4168,10 +3629,7 @@ impl zmanager_core::auth_client::TzapAuthHttpTransport for CliHttpJsonTransport 
         http_json_request(
             method,
             &request.url,
-            request
-                .bearer_token
-                .as_ref()
-                .map(zmanager_core::auth_client::TzapBearerToken::expose),
+            request.bearer_token.as_ref().map(zmanager_core::auth_client::TzapBearerToken::expose),
             request.body.as_ref(),
         )
         .map_err(|message| zmanager_core::auth_client::TzapAuthError::Transport { message })
@@ -4191,18 +3649,11 @@ fn http_json_request(
         .build()
         .map_err(|error| format!("could not initialize hosted HTTPS client: {error}"))?;
     let request = build_hosted_http_request(&client, method, url, bearer_token, body)?;
-    let response = client
-        .execute(request)
-        .map_err(|error| format!("hosted HTTPS request failed: {error}"))?;
+    let response = client.execute(request).map_err(|error| format!("hosted HTTPS request failed: {error}"))?;
     let status_code = response.status().as_u16();
-    let response_body = response
-        .bytes()
-        .map_err(|error| format!("could not read hosted HTTPS response: {error}"))?
-        .to_vec();
-    Ok(zmanager_core::auth_client::TzapAuthHttpResponse {
-        status_code,
-        body: response_body,
-    })
+    let response_body =
+        response.bytes().map_err(|error| format!("could not read hosted HTTPS response: {error}"))?.to_vec();
+    Ok(zmanager_core::auth_client::TzapAuthHttpResponse { status_code, body: response_body })
 }
 
 fn build_hosted_http_request(
@@ -4214,18 +3665,14 @@ fn build_hosted_http_request(
 ) -> Result<reqwest::blocking::Request, String> {
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|error| format!("invalid hosted HTTP method: {error}"))?;
-    let mut request = client
-        .request(method, url)
-        .header(reqwest::header::ACCEPT, "application/json");
+    let mut request = client.request(method, url).header(reqwest::header::ACCEPT, "application/json");
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
     }
     if let Some(body) = body {
         request = request.json(body);
     }
-    request
-        .build()
-        .map_err(|error| format!("invalid hosted HTTPS request: {error}"))
+    request.build().map_err(|error| format!("invalid hosted HTTPS request: {error}"))
 }
 
 fn percent_decode_url_component(value: &str) -> Result<String, String> {
@@ -4235,8 +3682,7 @@ fn percent_decode_url_component(value: &str) -> Result<String, String> {
     while index < bytes.len() {
         match bytes[index] {
             b'%' if index + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
-                    .map_err(|error| error.to_string())?;
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).map_err(|error| error.to_string())?;
                 output.push(u8::from_str_radix(hex, 16).map_err(|error| error.to_string())?);
                 index += 3;
             }
@@ -4254,12 +3700,8 @@ fn percent_decode_url_component(value: &str) -> Result<String, String> {
 }
 
 fn rfc3339_utc_to_unix_seconds(value: &str) -> Result<u64, String> {
-    let without_z = value
-        .strip_suffix('Z')
-        .ok_or_else(|| "expires_at must be a UTC RFC3339 timestamp".to_owned())?;
-    let (date, time) = without_z
-        .split_once('T')
-        .ok_or_else(|| "expires_at must include a date and time".to_owned())?;
+    let without_z = value.strip_suffix('Z').ok_or_else(|| "expires_at must be a UTC RFC3339 timestamp".to_owned())?;
+    let (date, time) = without_z.split_once('T').ok_or_else(|| "expires_at must include a date and time".to_owned())?;
     let mut date_parts = date.split('-');
     let year = parse_i64_part(date_parts.next(), "year")?;
     let month = parse_i64_part(date_parts.next(), "month")?;
@@ -4278,10 +3720,7 @@ fn rfc3339_utc_to_unix_seconds(value: &str) -> Result<u64, String> {
 }
 
 fn parse_i64_part(value: Option<&str>, field: &str) -> Result<i64, String> {
-    value
-        .ok_or_else(|| format!("expires_at is missing {field}"))?
-        .parse::<i64>()
-        .map_err(|error| error.to_string())
+    value.ok_or_else(|| format!("expires_at is missing {field}"))?.parse::<i64>().map_err(|error| error.to_string())
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -4294,10 +3733,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn session_to_json(
-    session: &zmanager_core::auth_client::TzapSessionRecord,
-    include_token: bool,
-) -> Value {
+fn session_to_json(session: &zmanager_core::auth_client::TzapSessionRecord, include_token: bool) -> Value {
     let mut value = json!({
         "audience": session.audience,
         "expires_at_unix_seconds": session.expires_at_unix_seconds,
@@ -4311,19 +3747,14 @@ fn session_to_json(
     value
 }
 
-fn session_from_json(
-    value: &Value,
-) -> Result<zmanager_core::auth_client::TzapSessionRecord, String> {
+fn session_from_json(value: &Value) -> Result<zmanager_core::auth_client::TzapSessionRecord, String> {
     let assurance = json_string_field(value, "identity_assurance")?;
     let identity_assurance = zmanager_core::trust::TzapIdentityAssurance::parse(&assurance)
         .ok_or_else(|| "invalid identity assurance".to_owned())?;
     Ok(zmanager_core::auth_client::TzapSessionRecord {
         audience: json_string_field(value, "audience")?,
-        access_token: zmanager_core::auth_client::TzapBearerToken::new(json_string_field(
-            value,
-            "access_token",
-        )?)
-        .map_err(|error| error.to_string())?,
+        access_token: zmanager_core::auth_client::TzapBearerToken::new(json_string_field(value, "access_token")?)
+            .map_err(|error| error.to_string())?,
         expires_at_unix_seconds: json_u64_field(value, "expires_at_unix_seconds")?,
         identity_assurance,
         selected_org_id: json_optional_string_field(value, "selected_org_id")?,
@@ -4339,10 +3770,7 @@ fn json_string_field(value: &Value, field: &'static str) -> Result<String, Strin
         .ok_or_else(|| format!("missing or invalid field: {field}"))
 }
 
-fn json_optional_string_field(
-    value: &Value,
-    field: &'static str,
-) -> Result<Option<String>, String> {
+fn json_optional_string_field(value: &Value, field: &'static str) -> Result<Option<String>, String> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
@@ -4351,16 +3779,10 @@ fn json_optional_string_field(
 }
 
 fn json_u64_field(value: &Value, field: &'static str) -> Result<u64, String> {
-    value
-        .get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("missing or invalid field: {field}"))
+    value.get(field).and_then(Value::as_u64).ok_or_else(|| format!("missing or invalid field: {field}"))
 }
 
-fn print_session_summary(
-    session: &zmanager_core::auth_client::TzapSessionRecord,
-    global: &GlobalOptions,
-) {
+fn print_session_summary(session: &zmanager_core::auth_client::TzapSessionRecord, global: &GlobalOptions) {
     let expired = session.is_expired_at(current_unix_seconds());
     if global.json {
         println!(
@@ -4374,24 +3796,15 @@ fn print_session_summary(
         );
     } else {
         let status = if expired { "expired" } else { "active" };
-        println!(
-            "{status} session for {} ({})",
-            session.audience,
-            session.identity_assurance.as_str()
-        );
+        println!("{status} session for {} ({})", session.audience, session.identity_assurance.as_str());
     }
 }
 
 fn optional_json_string(value: Option<&str>) -> String {
-    value.map_or_else(
-        || "null".to_owned(),
-        |value| format!("\"{}\"", json_escape(value)),
-    )
+    value.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", json_escape(value)))
 }
 
-fn print_certificate_json(
-    cert: &zmanager_core::local_identity_store::TzapEnrolledCertificateRecord,
-) {
+fn print_certificate_json(cert: &zmanager_core::local_identity_store::TzapEnrolledCertificateRecord) {
     print!(
         "{{\"certificate_id\":\"{}\",\"certificate_sha256\":\"{}\",\"state\":\"{}\",\"not_before_unix_seconds\":{},\"not_after_unix_seconds\":{},\"public_signer_id\":\"{}\",\"public_org_id\":{},\"public_device_id\":\"{}\",\"assurance_level\":\"{}\"}}",
         json_escape(&cert.certificate_id),
@@ -4419,11 +3832,7 @@ fn print_verification_result(
             optional_json_string(result.root_certificate_sha256.as_deref())
         );
     } else {
-        println!(
-            "{} ({})",
-            result.state.as_str(),
-            result.trust_anchor_type.as_str()
-        );
+        println!("{} ({})", result.state.as_str(), result.trust_anchor_type.as_str());
         if let Some(reason) = &result.reason {
             println!("{reason}");
         }
@@ -4552,9 +3961,7 @@ fn parse_create_request(
                 request.exclude.push(take_value(args, &mut index, arg)?);
             }
             "--exclude-from" => {
-                request
-                    .exclude_from
-                    .push(PathBuf::from(take_value(args, &mut index, arg)?));
+                request.exclude_from.push(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--store" => {
                 request.compression = zmanager_core::zip_backend::ZipCompression::Store;
@@ -4601,24 +4008,19 @@ fn parse_create_request(
                 index += 1;
             }
             "--volume-size" => {
-                request.volume_size =
-                    Some(parse_volume_size(&take_value(args, &mut index, arg)?, arg)?);
+                request.volume_size = Some(parse_volume_size(&take_value(args, &mut index, arg)?, arg)?);
             }
             "--recipient-cert" => {
-                request.tzap_recipient_cert =
-                    Some(PathBuf::from(take_value(args, &mut index, arg)?));
+                request.tzap_recipient_cert = Some(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--signing-cert" => {
                 request.tzap_signing_cert = Some(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--signing-private-key" => {
-                request.tzap_signing_private_key =
-                    Some(PathBuf::from(take_value(args, &mut index, arg)?));
+                request.tzap_signing_private_key = Some(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--signing-chain" => {
-                request
-                    .tzap_signing_chain
-                    .push(PathBuf::from(take_value(args, &mut index, arg)?));
+                request.tzap_signing_chain.push(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--dry-run" => {
                 request.dry_run = true;
@@ -4638,11 +4040,7 @@ fn parse_create_request(
         }
     }
 
-    append_files_from(
-        &mut request.sources,
-        &request.files_from,
-        request.null_paths,
-    )?;
+    append_files_from(&mut request.sources, &request.files_from, request.null_paths)?;
     if request.stdin_paths {
         append_stdin_paths(&mut request.sources, request.null_paths)?;
     }
@@ -4667,15 +4065,10 @@ fn push_create_positional(request: &mut CreateRequest, value: &str, current_dir:
 
 #[allow(clippy::too_many_lines)]
 fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCode {
-    let Some(format) = request
-        .format
-        .or_else(|| infer_create_format(&request.archive))
-    else {
+    let Some(format) = request.format.or_else(|| infer_create_format(&request.archive)) else {
         print_error_line(
             global,
-            format_args!(
-                "could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z|tgz>"
-            ),
+            format_args!("could not infer archive format; pass --format <zip|tar.zst|tzap|aar|7z|tgz>"),
         );
         return ExitCode::from(2);
     };
@@ -4691,26 +4084,15 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     };
     let follow_symlinks = follow_symlinks_for_create(format, request);
     if request.follow_symlinks && request.preserve_symlinks {
-        print_error_line(
-            global,
-            format_args!("create failed: --follow-symlinks conflicts with --preserve-symlinks"),
-        );
+        print_error_line(global, format_args!("create failed: --follow-symlinks conflicts with --preserve-symlinks"));
         return ExitCode::from(2);
     }
 
-    let manifest = match plan_sources(
-        &request.sources,
-        request.clean,
-        request.no_ignore,
-        follow_symlinks,
-    ) {
+    let manifest = match plan_sources(&request.sources, request.clean, request.no_ignore, follow_symlinks) {
         Ok(mut manifest) => {
-            if let Err(error) = apply_manifest_filters(
-                &mut manifest,
-                &request.include,
-                &request.exclude,
-                &request.exclude_from,
-            ) {
+            if let Err(error) =
+                apply_manifest_filters(&mut manifest, &request.include, &request.exclude, &request.exclude_from)
+            {
                 print_error_line(global, format_args!("create failed: {error}"));
                 return ExitCode::FAILURE;
             }
@@ -4720,10 +4102,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 print_error_line(global, format_args!("create failed: {error}"));
                 return ExitCode::FAILURE;
             }
-            if format == ArchiveFormat::SevenZ
-                && request.preserve_symlinks
-                && manifest_has_symlinks(&manifest)
-            {
+            if format == ArchiveFormat::SevenZ && request.preserve_symlinks && manifest_has_symlinks(&manifest) {
                 print_error_line(
                     global,
                     format_args!(
@@ -4753,10 +4132,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     if destination.exists() && !request.force {
         print_error_line(
             global,
-            format_args!(
-                "create failed: destination exists: {}; pass --force to replace it",
-                destination.display()
-            ),
+            format_args!("create failed: destination exists: {}; pass --force to replace it", destination.display()),
         );
         return ExitCode::FAILURE;
     }
@@ -4767,27 +4143,14 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         && !parent.as_os_str().is_empty()
         && let Err(error) = fs::create_dir_all(parent)
     {
-        print_error_line(
-            global,
-            format_args!(
-                "create failed: failed to create {}: {error}",
-                parent.display()
-            ),
-        );
+        print_error_line(global, format_args!("create failed: failed to create {}: {error}", parent.display()));
         return ExitCode::FAILURE;
     }
 
     let mut progress = ProgressReporter::from_global(Some(global));
-    progress.emit(JobEvent::Started {
-        kind: create_progress_kind(format),
-        total_bytes: Some(manifest.total_bytes),
-    });
+    progress.emit(JobEvent::Started { kind: create_progress_kind(format), total_bytes: Some(manifest.total_bytes) });
     let token = CancellationToken::new();
-    let create_destination = if split_output {
-        destination.as_path()
-    } else {
-        temp.as_path()
-    };
+    let create_destination = if split_output { destination.as_path() } else { temp.as_path() };
     let backend_replace_existing = split_output && request.force;
 
     let result = match format {
@@ -4809,11 +4172,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new_with_progress_total(
-                    &token,
-                    &mut sink,
-                    Some(manifest.total_bytes),
-                );
+                let mut context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
                 let result = zmanager_core::zip_backend::create_zip_from_manifest_with_context(
                     &manifest,
                     create_destination,
@@ -4846,26 +4205,21 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         }
         ArchiveFormat::TarZst => {
             let options = zmanager_core::tar_zst_backend::TarZstdCreateOptions {
-                level: request.level.unwrap_or_else(|| {
-                    zmanager_core::tar_zst_backend::TarZstdCreateOptions::default().level
-                }),
+                level: request
+                    .level
+                    .unwrap_or_else(|| zmanager_core::tar_zst_backend::TarZstdCreateOptions::default().level),
                 preserve_metadata: !request.no_metadata,
                 ..zmanager_core::tar_zst_backend::TarZstdCreateOptions::default()
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new_with_progress_total(
-                    &token,
-                    &mut sink,
-                    Some(manifest.total_bytes),
+                let mut context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
+                let result = zmanager_core::tar_zst_backend::create_tar_zst_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
                 );
-                let result =
-                    zmanager_core::tar_zst_backend::create_tar_zst_from_manifest_with_context(
-                        &manifest,
-                        &temp,
-                        &options,
-                        &mut context,
-                    );
                 context.flush_progress();
                 result
             };
@@ -4893,26 +4247,21 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         }
         ArchiveFormat::Tgz => {
             let options = zmanager_core::tar_gz_backend::TarGzCreateOptions {
-                level: request.level.unwrap_or_else(|| {
-                    zmanager_core::tar_gz_backend::TarGzCreateOptions::default().level
-                }),
+                level: request
+                    .level
+                    .unwrap_or_else(|| zmanager_core::tar_gz_backend::TarGzCreateOptions::default().level),
                 preserve_metadata: !request.no_metadata,
                 replace_existing: backend_replace_existing,
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new_with_progress_total(
-                    &token,
-                    &mut sink,
-                    Some(manifest.total_bytes),
+                let mut context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
+                let result = zmanager_core::tar_gz_backend::create_tar_gz_from_manifest_with_context(
+                    &manifest,
+                    &temp,
+                    &options,
+                    &mut context,
                 );
-                let result =
-                    zmanager_core::tar_gz_backend::create_tar_gz_from_manifest_with_context(
-                        &manifest,
-                        &temp,
-                        &options,
-                        &mut context,
-                    );
                 context.flush_progress();
                 result
             };
@@ -4940,9 +4289,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         ArchiveFormat::Tzap => {
             let uses_secret_key = password.is_some() || request.tzap_recipient_cert.is_some();
             let key_source = if let Some(recipient_certificate) = &request.tzap_recipient_cert {
-                zmanager_core::tzap_backend::TzapKeySource::RecipientCertificate(
-                    recipient_certificate.clone(),
-                )
+                zmanager_core::tzap_backend::TzapKeySource::RecipientCertificate(recipient_certificate.clone())
             } else {
                 password.map_or(
                     zmanager_core::tzap_backend::TzapKeySource::NoPassword,
@@ -4970,11 +4317,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new_with_progress_total(
-                    &token,
-                    &mut sink,
-                    Some(manifest.total_bytes),
-                );
+                let mut context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
                 let result = zmanager_core::tzap_backend::create_tzap_from_manifest_with_context(
                     &manifest,
                     create_destination,
@@ -5023,11 +4366,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             };
             let result = {
                 let mut sink = |event| progress.emit(event);
-                let mut context = JobContext::new_with_progress_total(
-                    &token,
-                    &mut sink,
-                    Some(manifest.total_bytes),
-                );
+                let mut context = JobContext::new_with_progress_total(&token, &mut sink, Some(manifest.total_bytes));
                 let result = zmanager_core::apple_archive_backend::create_apple_archive_from_manifest_with_context(
                     &manifest,
                     &temp,
@@ -5069,43 +4408,36 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 volume_size: request.volume_size,
                 ..zmanager_core::sevenz_backend::SevenZCreateOptions::default()
             };
-            zmanager_core::sevenz_backend::create_7z_from_manifest(
-                &manifest,
-                create_destination,
-                &options,
-            )
-            .map(|report| CreateOutcome {
-                summary: format!(
-                    "created 7z: {} entries, {} bytes, solid {}, threads {:?}, encrypted {}, {} warnings",
-                    report.written_entries,
-                    report.written_bytes,
-                    report.solid,
-                    report.threads,
-                    report.encrypted,
-                    report.warnings.len()
-                ),
-                format: FORMAT_SEVEN_Z,
-                backend: FORMAT_SEVEN_Z,
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-                warnings: report.warnings.len(),
-                encrypted: Some(report.encrypted),
-                solid: Some(report.solid),
-                volume_size: report.volume_size,
-                volume_count: report.volume_count,
-            })
-            .map_err(|error| error.to_string())
+            zmanager_core::sevenz_backend::create_7z_from_manifest(&manifest, create_destination, &options)
+                .map(|report| CreateOutcome {
+                    summary: format!(
+                        "created 7z: {} entries, {} bytes, solid {}, threads {:?}, encrypted {}, {} warnings",
+                        report.written_entries,
+                        report.written_bytes,
+                        report.solid,
+                        report.threads,
+                        report.encrypted,
+                        report.warnings.len()
+                    ),
+                    format: FORMAT_SEVEN_Z,
+                    backend: FORMAT_SEVEN_Z,
+                    entries: report.written_entries,
+                    bytes: report.written_bytes,
+                    warnings: report.warnings.len(),
+                    encrypted: Some(report.encrypted),
+                    solid: Some(report.solid),
+                    volume_size: report.volume_size,
+                    volume_count: report.volume_count,
+                })
+                .map_err(|error| error.to_string())
         }
     };
 
     match result {
         Ok(outcome) => {
-            if !split_output && let Err(error) = publish_archive(&temp, &destination, request.force)
-            {
+            if !split_output && let Err(error) = publish_archive(&temp, &destination, request.force) {
                 let _ = fs::remove_file(&temp);
-                progress.emit(JobEvent::Failed {
-                    message: error.to_string(),
-                });
+                progress.emit(JobEvent::Failed { message: error.to_string() });
                 print_error_line(
                     global,
                     format_args!(
@@ -5116,22 +4448,12 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
                 );
                 return ExitCode::FAILURE;
             }
-            progress.emit(JobEvent::Completed {
-                entries: outcome.entries,
-                bytes: outcome.bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: outcome.entries, bytes: outcome.bytes });
             print_create_summary(&destination, &outcome, global);
             if request.test_after {
-                let archive = create_test_archive_path(&destination, format, split_output)
-                    .to_string_lossy()
-                    .into_owned();
-                return run_test_request(
-                    &TestRequest {
-                        archive,
-                        ..TestRequest::default()
-                    },
-                    global,
-                );
+                let archive =
+                    create_test_archive_path(&destination, format, split_output).to_string_lossy().into_owned();
+                return run_test_request(&TestRequest { archive, ..TestRequest::default() }, global);
             }
             ExitCode::SUCCESS
         }
@@ -5139,9 +4461,7 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
             if !split_output {
                 let _ = fs::remove_file(&temp);
             }
-            progress.emit(JobEvent::Failed {
-                message: error.clone(),
-            });
+            progress.emit(JobEvent::Failed { message: error.clone() });
             print_error_line(global, format_args!("create failed: {error}"));
             ExitCode::FAILURE
         }
@@ -5156,10 +4476,7 @@ fn create_stream(
     global: &GlobalOptions,
 ) -> ExitCode {
     if format != ArchiveFormat::Zip {
-        print_error_line(
-            global,
-            format_args!("create failed: stdout output is currently supported only for ZIP"),
-        );
+        print_error_line(global, format_args!("create failed: stdout output is currently supported only for ZIP"));
         return ExitCode::from(2);
     }
 
@@ -5179,11 +4496,7 @@ fn create_stream(
         volume_size: None,
     };
     let stdout = io::stdout();
-    match zmanager_core::zip_backend::create_zip_stream_from_manifest(
-        manifest,
-        stdout.lock(),
-        &options,
-    ) {
+    match zmanager_core::zip_backend::create_zip_stream_from_manifest(manifest, stdout.lock(), &options) {
         Ok((_output, report)) => {
             output::stderr_line(
                 global.color,
@@ -5211,22 +4524,16 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
             return Err("recipient certificates are supported only for TZAP archives".to_owned());
         }
         if request.encrypt || request.password_stdin {
-            return Err(
-                "--recipient-cert cannot be combined with --encrypt or --password-stdin".to_owned(),
-            );
+            return Err("--recipient-cert cannot be combined with --encrypt or --password-stdin".to_owned());
         }
         if request.tzap_signing_cert.is_some()
             || request.tzap_signing_private_key.is_some()
             || !request.tzap_signing_chain.is_empty()
         {
-            return Err(
-                "--recipient-cert cannot be combined with X.509 signing options".to_owned(),
-            );
+            return Err("--recipient-cert cannot be combined with X.509 signing options".to_owned());
         }
         if request.volume_size.is_some() {
-            return Err(
-                "--recipient-cert is supported only for single-volume TZAP create".to_owned(),
-            );
+            return Err("--recipient-cert is supported only for single-volume TZAP create".to_owned());
         }
     }
 
@@ -5237,18 +4544,13 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
         if format != ArchiveFormat::Tzap {
             return Err("certificate signing is supported only for TZAP archives".to_owned());
         }
-        match (
-            request.tzap_signing_cert.as_ref(),
-            request.tzap_signing_private_key.as_ref(),
-        ) {
+        match (request.tzap_signing_cert.as_ref(), request.tzap_signing_private_key.as_ref()) {
             (Some(_), Some(_)) => {}
             (None, None) if !request.tzap_signing_chain.is_empty() => {
                 return Err("--signing-chain requires --signing-cert".to_owned());
             }
             _ => {
-                return Err(
-                    "--signing-cert and --signing-private-key must be used together".to_owned(),
-                );
+                return Err("--signing-cert and --signing-private-key must be used together".to_owned());
             }
         }
     }
@@ -5267,9 +4569,7 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             ArchiveFormat::AppleArchive => {}
             ArchiveFormat::TarZst | ArchiveFormat::Tgz => {
-                return Err(
-                    "--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned(),
-                );
+                return Err("--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned());
             }
         }
     }
@@ -5283,32 +4583,22 @@ fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Re
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             (ArchiveFormat::AppleArchive, "lzfse" | "lz4" | "zlib" | "lzma" | "raw") => {}
             _ => {
-                return Err(format!(
-                    "unsupported method for selected archive format: {method}"
-                ));
+                return Err(format!("unsupported method for selected archive format: {method}"));
             }
         }
     }
 
     if let Some(level) = request.level {
         match format {
-            ArchiveFormat::Zip
-            | ArchiveFormat::SevenZ
-            | ArchiveFormat::Tzap
-            | ArchiveFormat::Tgz
+            ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap | ArchiveFormat::Tgz
                 if !(0..=9).contains(&level) =>
             {
-                return Err(format!(
-                    "unsupported compression level for selected archive format: {level}"
-                ));
+                return Err(format!("unsupported compression level for selected archive format: {level}"));
             }
             ArchiveFormat::Zip
-                if request.compression == zmanager_core::zip_backend::ZipCompression::Store
-                    && level != 0 =>
+                if request.compression == zmanager_core::zip_backend::ZipCompression::Store && level != 0 =>
             {
-                return Err(format!(
-                    "cannot combine ZIP store compression with compression level {level}"
-                ));
+                return Err(format!("cannot combine ZIP store compression with compression level {level}"));
             }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             ArchiveFormat::AppleArchive => {
@@ -5334,9 +4624,7 @@ fn apple_archive_compression(
         Some("zlib") => Ok(AppleArchiveCompression::Zlib),
         Some("lzma") => Ok(AppleArchiveCompression::Lzma),
         Some("raw") => Ok(AppleArchiveCompression::None),
-        Some(method) => Err(format!(
-            "unsupported method for selected archive format: {method}"
-        )),
+        Some(method) => Err(format!("unsupported method for selected archive format: {method}")),
     }
 }
 
@@ -5356,17 +4644,13 @@ fn zip_compression_options(
         return Ok((compression, None));
     };
     if !(0..=9).contains(&level) {
-        return Err(format!(
-            "unsupported compression level for selected archive format: {level}"
-        ));
+        return Err(format!("unsupported compression level for selected archive format: {level}"));
     }
     if compression == zmanager_core::zip_backend::ZipCompression::Store {
         if level == 0 {
             return Ok((compression, None));
         }
-        return Err(format!(
-            "cannot combine ZIP store compression with compression level {level}"
-        ));
+        return Err(format!("cannot combine ZIP store compression with compression level {level}"));
     }
     if level == 0 {
         return Ok((zmanager_core::zip_backend::ZipCompression::Store, None));
@@ -5382,10 +4666,7 @@ fn sevenz_level(request: &CreateRequest) -> Option<u32> {
 fn follow_symlinks_for_create(format: ArchiveFormat, request: &CreateRequest) -> bool {
     request.follow_symlinks
         || (!request.preserve_symlinks
-            && matches!(
-                format,
-                ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap
-            ))
+            && matches!(format, ArchiveFormat::Zip | ArchiveFormat::SevenZ | ArchiveFormat::Tzap))
 }
 
 fn create_password(
@@ -5397,20 +4678,14 @@ fn create_password(
         return Ok(None);
     }
     if matches!(format, ArchiveFormat::TarZst | ArchiveFormat::Tgz) {
-        print_error_line(
-            global,
-            format_args!("encryption is not supported for this archive format"),
-        );
+        print_error_line(global, format_args!("encryption is not supported for this archive format"));
         return Err(ExitCode::from(2));
     }
     if request.password_stdin {
         return prompt_password_from_stdin(Some(global)).map(Some);
     }
     if global.no_password_prompt {
-        print_error_line(
-            global,
-            format_args!("password prompt disabled; use --password-stdin"),
-        );
+        print_error_line(global, format_args!("password prompt disabled; use --password-stdin"));
         return Err(ExitCode::from(2));
     }
     if global.quiet || !io::stdin().is_terminal() {
@@ -5590,35 +4865,23 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
         if !is_deb_archive(&request.archive) {
             return usage_failure(
                 global,
-                format_args!(
-                    "extract failed: --extract-nested is currently supported only for .deb packages"
-                ),
+                format_args!("extract failed: --extract-nested is currently supported only for .deb packages"),
             );
         }
-        let destination = request
-            .destination
-            .unwrap_or_else(|| default_extract_destination(&request.archive));
+        let destination = request.destination.unwrap_or_else(|| default_extract_destination(&request.archive));
         return run_deb_nested_extract(&request.archive, &destination, policy, global);
     }
-    if let Some(format) =
-        zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
-    {
+    if let Some(format) = zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive) {
         if request.password_stdin {
             return usage_failure(
                 global,
-                format_args!(
-                    "extract failed: raw streams are not encrypted; remove --password-stdin"
-                ),
+                format_args!("extract failed: raw streams are not encrypted; remove --password-stdin"),
             );
         }
-        let destination = request
-            .destination
-            .unwrap_or_else(|| default_raw_stream_destination(&request.archive));
+        let destination = request.destination.unwrap_or_else(|| default_raw_stream_destination(&request.archive));
         return run_raw_stream_extract(&request.archive, format, &destination, policy, global);
     }
-    let destination = request
-        .destination
-        .unwrap_or_else(|| default_extract_destination(&request.archive));
+    let destination = request.destination.unwrap_or_else(|| default_extract_destination(&request.archive));
     if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "ZIP", global) {
             Ok(password) => password,
@@ -5650,13 +4913,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Ok(password) => password,
             Err(code) => return code,
         };
-        run_rar_extract_with_policy(
-            request.archive,
-            destination,
-            policy,
-            password.as_deref(),
-            Some(global),
-        )
+        run_rar_extract_with_policy(request.archive, destination, policy, password.as_deref(), Some(global))
     } else if is_tar_zst_archive(&request.archive) {
         run_tar_zst_extract_with_policy(request.archive, destination, policy, Some(global))
     } else if is_apple_archive(&request.archive) {
@@ -5664,13 +4921,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Ok(password) => password,
             Err(code) => return code,
         };
-        run_apple_archive_extract_with_policy(
-            request.archive,
-            destination,
-            policy,
-            password.as_deref(),
-            Some(global),
-        )
+        run_apple_archive_extract_with_policy(request.archive, destination, policy, password.as_deref(), Some(global))
     } else if is_tzap_archive(&request.archive) {
         let password = match read_optional_password_stdin(request.password_stdin, "TZAP", global) {
             Ok(password) => password,
@@ -5690,18 +4941,11 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             Some(global),
         )
     } else {
-        let password = match read_optional_password_stdin(request.password_stdin, "archive", global)
-        {
+        let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
-        run_libarchive_extract_with_policy(
-            request.archive,
-            destination,
-            policy,
-            password.as_deref(),
-            Some(global),
-        )
+        run_libarchive_extract_with_policy(request.archive, destination, policy, password.as_deref(), Some(global))
     }
 }
 
@@ -5781,26 +5025,18 @@ fn run_raw_stream_extract(
 #[allow(clippy::too_many_lines)]
 fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> ExitCode {
     if request.extract_nested {
-        print_error_line(
-            global,
-            format_args!("extract failed: --extract-nested cannot be combined with --to-stdout"),
-        );
+        print_error_line(global, format_args!("extract failed: --extract-nested cannot be combined with --to-stdout"));
         return ExitCode::from(2);
     }
     if request.destination.is_some() {
         print_error_line(
             global,
-            format_args!(
-                "extract failed: --to-stdout cannot be combined with an extraction directory"
-            ),
+            format_args!("extract failed: --to-stdout cannot be combined with an extraction directory"),
         );
         return ExitCode::from(2);
     }
     if request.strip_components > 0 {
-        print_error_line(
-            global,
-            format_args!("extract failed: --strip-components is not meaningful with --to-stdout"),
-        );
+        print_error_line(global, format_args!("extract failed: --strip-components is not meaningful with --to-stdout"));
         return ExitCode::from(2);
     }
 
@@ -5831,15 +5067,11 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 }
                 ExitCode::SUCCESS
             }
-            Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired)
-                if password.is_none() =>
-            {
+            Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired) if password.is_none() => {
                 if global.no_password_prompt {
                     print_error_line(
                         global,
-                        format_args!(
-                            "extract to stdout failed: password required and prompts are disabled"
-                        ),
+                        format_args!("extract to stdout failed: password required and prompts are disabled"),
                     );
                     return ExitCode::from(2);
                 }
@@ -5847,10 +5079,7 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                     Ok(password) => password,
                     Err(code) => return code,
                 };
-                let retry = ExtractRequest {
-                    password_stdin: false,
-                    ..request
-                };
+                let retry = ExtractRequest { password_stdin: false, ..request };
                 match zmanager_core::zip_backend::copy_zip_files_to_writer(
                     &retry.archive,
                     Some(password.expose_secret()),
@@ -5921,15 +5150,11 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                 }
                 ExitCode::SUCCESS
             }
-            Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired)
-                if password.is_none() =>
-            {
+            Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired) if password.is_none() => {
                 if global.no_password_prompt {
                     print_error_line(
                         global,
-                        format_args!(
-                            "extract to stdout failed: password required and prompts are disabled"
-                        ),
+                        format_args!("extract to stdout failed: password required and prompts are disabled"),
                     );
                     return ExitCode::from(2);
                 }
@@ -5937,10 +5162,7 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
                     Ok(password) => password,
                     Err(code) => return code,
                 };
-                let retry = ExtractRequest {
-                    password_stdin: false,
-                    ..request
-                };
+                let retry = ExtractRequest { password_stdin: false, ..request };
                 match zmanager_core::sevenz_backend::copy_7z_files_to_writer(
                     &retry.archive,
                     Some(password.expose_secret()),
@@ -6013,25 +5235,17 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             &mut stdout,
             global,
         )
-    } else if let Some(format) =
-        zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
-    {
+    } else if let Some(format) = zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive) {
         if request.password_stdin {
             print_error_line(
                 global,
-                format_args!(
-                    "extract to stdout failed: raw streams are not encrypted; remove --password-stdin"
-                ),
+                format_args!("extract to stdout failed: raw streams are not encrypted; remove --password-stdin"),
             );
             return ExitCode::from(2);
         }
-        let Some(output_name) =
-            zmanager_core::raw_stream_backend::output_name_for_raw_stream(&request.archive, format)
+        let Some(output_name) = zmanager_core::raw_stream_backend::output_name_for_raw_stream(&request.archive, format)
         else {
-            print_error_line(
-                global,
-                format_args!("extract to stdout failed: could not derive raw stream output name"),
-            );
+            print_error_line(global, format_args!("extract to stdout failed: could not derive raw stream output name"));
             return ExitCode::FAILURE;
         };
         if !entry_selected(&output_name, &request.include, &request.exclude) {
@@ -6046,11 +5260,7 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             }
             return ExitCode::SUCCESS;
         }
-        match zmanager_core::raw_stream_backend::copy_raw_stream_to_writer(
-            &request.archive,
-            format,
-            &mut stdout,
-        ) {
+        match zmanager_core::raw_stream_backend::copy_raw_stream_to_writer(&request.archive, format, &mut stdout) {
             Ok(written_bytes) => {
                 if global.verbose > 0 && !global.quiet {
                     output::stderr_line(
@@ -6069,8 +5279,7 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
             }
         }
     } else {
-        let password = match read_optional_password_stdin(request.password_stdin, "archive", global)
-        {
+        let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
             Ok(password) => password,
             Err(code) => return code,
         };
@@ -6103,23 +5312,17 @@ fn run_extract_to_stdout(request: ExtractRequest, global: &GlobalOptions) -> Exi
     }
 }
 
-fn parse_tzap_restore_policy(
-    value: &str,
-) -> Result<zmanager_core::tzap_backend::TzapRestorePolicy, String> {
+fn parse_tzap_restore_policy(value: &str) -> Result<zmanager_core::tzap_backend::TzapRestorePolicy, String> {
     match value {
         "content" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::Content),
         "portable" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::Portable),
         "same-os" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::SameOs),
         "system" => Ok(zmanager_core::tzap_backend::TzapRestorePolicy::System),
-        _ => Err(format!(
-            "unsupported TZAP restore policy: {value}; expected content, portable, same-os, or system"
-        )),
+        _ => Err(format!("unsupported TZAP restore policy: {value}; expected content, portable, same-os, or system")),
     }
 }
 
-fn extraction_policy(
-    request: &ExtractRequest,
-) -> Result<zmanager_core::safety::ExtractionPolicy, String> {
+fn extraction_policy(request: &ExtractRequest) -> Result<zmanager_core::safety::ExtractionPolicy, String> {
     let overwrite = match request.overwrite.as_deref().unwrap_or("never") {
         "never" => OverwritePolicy::Refuse,
         "always" => OverwritePolicy::Replace,
@@ -6159,11 +5362,7 @@ fn new_list_command_from_expanded(args: &[String], mut global: GlobalOptions) ->
     }
 }
 
-fn parse_list_request(
-    args: &[String],
-    global: &mut GlobalOptions,
-    request: &mut ListRequest,
-) -> Result<(), String> {
+fn parse_list_request(args: &[String], global: &mut GlobalOptions, request: &mut ListRequest) -> Result<(), String> {
     let mut index = 0usize;
     let mut positional = Vec::new();
     while index < args.len() {
@@ -6232,40 +5431,26 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
     ) {
         return code;
     }
-    if request.password_stdin
-        && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
+    if request.password_stdin && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
-        print_error_line(
-            global,
-            format_args!("list failed: raw streams are not encrypted; remove --password-stdin"),
-        );
+        print_error_line(global, format_args!("list failed: raw streams are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
     if is_apple_archive(&request.archive) && request.password_stdin {
-        print_error_line(
-            global,
-            format_args!("list failed: AAR archives are not encrypted; remove --password-stdin"),
-        );
+        print_error_line(global, format_args!("list failed: AAR archives are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
     let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
         Ok(password) => password,
         Err(code) => return code,
     };
-    match list_entries_with_password(
-        &request.archive,
-        password.as_deref(),
-        request.recipient_key.as_deref(),
-    ) {
+    match list_entries_with_password(&request.archive, password.as_deref(), request.recipient_key.as_deref()) {
         Ok(mut entries) => {
             filter_entries(&mut entries, &request.include, &request.exclude);
             if !global.quiet {
                 for entry in &entries {
                     for diagnostic in &entry.metadata_diagnostics {
-                        print_warning_stderr(
-                            global,
-                            format_args!("metadata {}: {diagnostic}", entry.name),
-                        );
+                        print_warning_stderr(global, format_args!("metadata {}: {diagnostic}", entry.name));
                     }
                 }
             }
@@ -6294,13 +5479,9 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
                         format_args!(
                             "{}\t{}\t{}\t{}\t{}\t{}",
                             output::styled(StyleRole::Label, format_args!("{}", entry.kind)),
-                            entry
-                                .mode
-                                .map_or_else(|| "-".to_owned(), |mode| format!("{mode:04o}")),
+                            entry.mode.map_or_else(|| "-".to_owned(), |mode| format!("{mode:04o}")),
                             entry.size,
-                            entry
-                                .compressed_size
-                                .map_or_else(|| "-".to_owned(), |size| size.to_string()),
+                            entry.compressed_size.map_or_else(|| "-".to_owned(), |size| size.to_string()),
                             entry.modified.as_deref().unwrap_or("-"),
                             output::styled(StyleRole::Path, format_args!("{}", entry.name))
                         ),
@@ -6349,11 +5530,7 @@ fn new_test_command_from_expanded(args: &[String], mut global: GlobalOptions) ->
     }
 }
 
-fn parse_test_request(
-    args: &[String],
-    global: &mut GlobalOptions,
-    request: &mut TestRequest,
-) -> Result<(), String> {
+fn parse_test_request(args: &[String], global: &mut GlobalOptions, request: &mut TestRequest) -> Result<(), String> {
     let mut index = 0usize;
     let mut positional = Vec::new();
     while index < args.len() {
@@ -6378,9 +5555,7 @@ fn parse_test_request(
                 index += 1;
             }
             "--trusted-ca-cert" => {
-                request
-                    .trusted_ca_certs
-                    .push(PathBuf::from(take_value(args, &mut index, arg)?));
+                request.trusted_ca_certs.push(PathBuf::from(take_value(args, &mut index, arg)?));
             }
             "--trusted-system-roots" => {
                 request.trusted_system_roots = true;
@@ -6411,10 +5586,7 @@ fn parse_test_request(
 #[allow(clippy::too_many_lines)]
 fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     if request.public_no_key && !is_tzap_archive(&request.archive) {
-        return usage_failure(
-            global,
-            format_args!("test failed: --public-no-key is supported only for TZAP archives"),
-        );
+        return usage_failure(global, format_args!("test failed: --public-no-key is supported only for TZAP archives"));
     }
     if let Some(code) = validate_recipient_key_open_option(
         "test",
@@ -6452,20 +5624,13 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     if request.public_no_key {
         return run_tzap_public_no_key_test(&request.archive, request, global);
     }
-    if request.password_stdin
-        && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
+    if request.password_stdin && zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive).is_some()
     {
-        print_error_line(
-            global,
-            format_args!("test failed: raw streams are not encrypted; remove --password-stdin"),
-        );
+        print_error_line(global, format_args!("test failed: raw streams are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
     if is_apple_archive(&request.archive) && request.password_stdin {
-        print_error_line(
-            global,
-            format_args!("test failed: AAR archives are not encrypted; remove --password-stdin"),
-        );
+        print_error_line(global, format_args!("test failed: AAR archives are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
     let password = match read_optional_password_stdin(request.password_stdin, "archive", global) {
@@ -6474,13 +5639,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     };
 
     if is_zip_family_archive(&request.archive) && !is_split_zip_archive_path(&request.archive) {
-        return run_zip_test_new(
-            &request.archive,
-            password.as_deref(),
-            &request.include,
-            &request.exclude,
-            global,
-        );
+        return run_zip_test_new(&request.archive, password.as_deref(), &request.include, &request.exclude, global);
     }
     if is_split_zip_archive_path(&request.archive) {
         return run_libarchive_data_test_new(
@@ -6492,9 +5651,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             global,
         );
     }
-    if let Some(format) =
-        zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive)
-    {
+    if let Some(format) = zmanager_core::raw_stream_backend::detect_raw_stream_format(&request.archive) {
         if password.is_some() {
             print_error_line(
                 global,
@@ -6502,13 +5659,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        return run_raw_stream_test(
-            &request.archive,
-            format,
-            &request.include,
-            &request.exclude,
-            global,
-        );
+        return run_raw_stream_test(&request.archive, format, &request.include, &request.exclude, global);
     }
     if is_tar_zst_archive(&request.archive) {
         return run_tar_zst_test_new(&request.archive, &request.include, &request.exclude, global);
@@ -6523,13 +5674,7 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
         );
     }
     if is_7z_archive(&request.archive) {
-        return run_7z_test_new(
-            &request.archive,
-            password.as_deref(),
-            &request.include,
-            &request.exclude,
-            global,
-        );
+        return run_7z_test_new(&request.archive, password.as_deref(), &request.include, &request.exclude, global);
     }
     if is_tzap_archive(&request.archive) {
         return run_tzap_test_new(
@@ -6556,18 +5701,11 @@ fn run_test_request(request: &TestRequest, global: &GlobalOptions) -> ExitCode {
                     json_escape(&request.archive)
                 );
             } else if skipped_entries == 0 {
-                print_success_line(
-                    global,
-                    format_args!("archive readable: {} entries", entries.len()),
-                );
+                print_success_line(global, format_args!("archive readable: {} entries", entries.len()));
             } else {
                 print_success_line(
                     global,
-                    format_args!(
-                        "archive readable: {} entries, {} skipped",
-                        entries.len(),
-                        skipped_entries
-                    ),
+                    format_args!("archive readable: {} entries, {} skipped", entries.len(), skipped_entries),
                 );
             }
             ExitCode::SUCCESS
@@ -6584,16 +5722,10 @@ fn test_request_has_x509_trust(request: &TestRequest) -> bool {
 }
 
 fn tzap_default_volume_loss_tolerance(volume_size: Option<u64>) -> u8 {
-    if volume_size.is_some() {
-        TZAP_SPLIT_VOLUME_LOSS_TOLERANCE
-    } else {
-        TZAP_SINGLE_VOLUME_LOSS_TOLERANCE
-    }
+    if volume_size.is_some() { TZAP_SPLIT_VOLUME_LOSS_TOLERANCE } else { TZAP_SINGLE_VOLUME_LOSS_TOLERANCE }
 }
 
-fn test_request_x509_trust(
-    request: &TestRequest,
-) -> zmanager_core::tzap_backend::TzapX509TrustOptions {
+fn test_request_x509_trust(request: &TestRequest) -> zmanager_core::tzap_backend::TzapX509TrustOptions {
     zmanager_core::tzap_backend::TzapX509TrustOptions {
         trusted_ca_certificates: request.trusted_ca_certs.clone(),
         trusted_system_roots: request.trusted_system_roots,
@@ -6601,12 +5733,7 @@ fn test_request_x509_trust(
     }
 }
 
-fn run_tar_zst_test_new(
-    archive: &str,
-    includes: &[String],
-    excludes: &[String],
-    global: &GlobalOptions,
-) -> ExitCode {
+fn run_tar_zst_test_new(archive: &str, includes: &[String], excludes: &[String], global: &GlobalOptions) -> ExitCode {
     let mut sink = io::sink();
     match zmanager_core::tar_zst_backend::copy_tar_zst_files_to_writer(
         archive,
@@ -6738,11 +5865,7 @@ fn run_tzap_test_new(
     }
 }
 
-fn run_tzap_public_no_key_test(
-    archive: &str,
-    request: &TestRequest,
-    global: &GlobalOptions,
-) -> ExitCode {
+fn run_tzap_public_no_key_test(archive: &str, request: &TestRequest, global: &GlobalOptions) -> ExitCode {
     let trust = test_request_x509_trust(request);
     match zmanager_core::tzap_backend::verify_tzap_x509_public_no_key(archive, &trust) {
         Ok(report) => {
@@ -6764,19 +5887,11 @@ fn run_libarchive_data_test_new(
     format: &str,
     global: &GlobalOptions,
 ) -> ExitCode {
-    match zmanager_core::libarchive_backend::test_archive_with_password_filter(
-        archive,
-        password,
-        |name| entry_selected(name, includes, excludes),
-    ) {
+    match zmanager_core::libarchive_backend::test_archive_with_password_filter(archive, password, |name| {
+        entry_selected(name, includes, excludes)
+    }) {
         Ok(report) => {
-            print_data_test_success(
-                format,
-                report.tested_entries,
-                report.skipped_entries,
-                report.tested_bytes,
-                global,
-            );
+            print_data_test_success(format, report.tested_entries, report.skipped_entries, report.tested_bytes, global);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -6802,32 +5917,20 @@ fn print_data_test_success(
             skipped_entries
         );
     } else if skipped_entries == 0 {
-        print_success_line(
-            global,
-            format_args!("{format} test ok: {tested_entries} entries, {bytes} bytes"),
-        );
+        print_success_line(global, format_args!("{format} test ok: {tested_entries} entries, {bytes} bytes"));
     } else {
         print_success_line(
             global,
-            format_args!(
-                "{format} test ok: {tested_entries} entries, {skipped_entries} skipped, {bytes} bytes"
-            ),
+            format_args!("{format} test ok: {tested_entries} entries, {skipped_entries} skipped, {bytes} bytes"),
         );
     }
 }
 
-fn print_tzap_test_success(
-    report: &zmanager_core::tzap_backend::TzapTestReport,
-    global: &GlobalOptions,
-) {
+fn print_tzap_test_success(report: &zmanager_core::tzap_backend::TzapTestReport, global: &GlobalOptions) {
     if global.json {
         print!(
             "{{\"status\":\"ok\",\"format\":\"{}\",\"entries\":{},\"tested_entries\":{},\"skipped_entries\":{},\"bytes\":{}",
-            FORMAT_TZAP,
-            report.entries,
-            report.tested_entries,
-            report.skipped_entries,
-            report.tested_bytes
+            FORMAT_TZAP, report.entries, report.tested_entries, report.skipped_entries, report.tested_bytes
         );
         if let Some(root_auth) = &report.x509_root_auth {
             print!(",\"root_auth\":");
@@ -6866,23 +5969,15 @@ fn print_tzap_public_no_key_success(
     } else {
         print_success_line(
             global,
-            format_args!(
-                "{FORMAT_TZAP} test ok: public no-key, {} data blocks",
-                root_auth.total_data_block_count
-            ),
+            format_args!("{FORMAT_TZAP} test ok: public no-key, {} data blocks", root_auth.total_data_block_count),
         );
         print_tzap_x509_root_auth_text(root_auth, true, global);
         print_tzap_x509_diagnostics_text(root_auth, "public-no-key", global);
     }
 }
 
-fn print_tzap_x509_root_auth_json(
-    root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport,
-) {
-    let status = root_auth
-        .diagnostics
-        .first()
-        .map_or("root_auth_content_verified", String::as_str);
+fn print_tzap_x509_root_auth_json(root_auth: &zmanager_core::tzap_backend::TzapX509VerificationReport) {
+    let status = root_auth.diagnostics.first().map_or("root_auth_content_verified", String::as_str);
     print!("{{\"status\":\"{}\",\"diagnostics\":", json_escape(status));
     print_json_string_array(&root_auth.diagnostics);
     print!(
@@ -6916,31 +6011,12 @@ fn print_tzap_x509_root_auth_text(
     public_no_key: bool,
     global: &GlobalOptions,
 ) {
-    let mode = if public_no_key {
-        "public-no-key x509"
-    } else {
-        "x509"
-    };
-    print_success_line(
-        global,
-        format_args!(
-            "root-auth: OK {mode} {}",
-            hex_lower(&root_auth.archive_root)
-        ),
-    );
-    print_success_line(
-        global,
-        format_args!("root-auth signer: {}", root_auth.subject),
-    );
-    print_success_line(
-        global,
-        format_args!("root-auth issuer: {}", root_auth.issuer),
-    );
+    let mode = if public_no_key { "public-no-key x509" } else { "x509" };
+    print_success_line(global, format_args!("root-auth: OK {mode} {}", hex_lower(&root_auth.archive_root)));
+    print_success_line(global, format_args!("root-auth signer: {}", root_auth.subject));
+    print_success_line(global, format_args!("root-auth issuer: {}", root_auth.issuer));
     if let Some(trust_anchor) = &root_auth.trust_anchor_subject {
-        print_success_line(
-            global,
-            format_args!("root-auth trust-anchor: {trust_anchor}"),
-        );
+        print_success_line(global, format_args!("root-auth trust-anchor: {trust_anchor}"));
     }
     print_tzap_x509_diagnostics_text(root_auth, "root-auth", global);
 }
@@ -6973,9 +6049,8 @@ fn run_raw_stream_test(
     excludes: &[String],
     global: &GlobalOptions,
 ) -> ExitCode {
-    let output_name =
-        zmanager_core::raw_stream_backend::output_name_for_raw_stream(archive, format)
-            .unwrap_or_else(|| archive.to_owned());
+    let output_name = zmanager_core::raw_stream_backend::output_name_for_raw_stream(archive, format)
+        .unwrap_or_else(|| archive.to_owned());
     if !entry_selected(&output_name, includes, excludes) {
         if global.json {
             println!(
@@ -6983,10 +6058,7 @@ fn run_raw_stream_test(
                 json_escape(archive)
             );
         } else {
-            print_success_line(
-                global,
-                format_args!("archive readable: 0 entries, 1 skipped"),
-            );
+            print_success_line(global, format_args!("archive readable: 0 entries, 1 skipped"));
         }
         return ExitCode::SUCCESS;
     }
@@ -6998,10 +6070,7 @@ fn run_raw_stream_test(
                     json_escape(archive)
                 );
             } else {
-                print_success_line(
-                    global,
-                    format_args!("archive readable: 1 entry, {bytes} bytes"),
-                );
+                print_success_line(global, format_args!("archive readable: 1 entry, {bytes} bytes"));
             }
             ExitCode::SUCCESS
         }
@@ -7026,18 +6095,12 @@ fn run_zip_test_new(
             if global.json {
                 println!(
                     "{{\"status\":\"ok\",\"entries\":{},\"tested_entries\":{},\"skipped_entries\":{},\"bytes\":{}}}",
-                    report.tested_entries,
-                    report.tested_entries,
-                    report.skipped_entries,
-                    report.tested_bytes
+                    report.tested_entries, report.tested_entries, report.skipped_entries, report.tested_bytes
                 );
             } else if report.skipped_entries == 0 {
                 print_success_line(
                     global,
-                    format_args!(
-                        "zip test ok: {} entries, {} bytes",
-                        report.tested_entries, report.tested_bytes
-                    ),
+                    format_args!("zip test ok: {} entries, {} bytes", report.tested_entries, report.tested_bytes),
                 );
             } else {
                 print_success_line(
@@ -7050,27 +6113,16 @@ fn run_zip_test_new(
             }
             ExitCode::SUCCESS
         }
-        Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired)
-            if password.is_none() =>
-        {
+        Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired) if password.is_none() => {
             if global.no_password_prompt {
-                print_error_line(
-                    global,
-                    format_args!("zip test failed: password required and prompts are disabled"),
-                );
+                print_error_line(global, format_args!("zip test failed: password required and prompts are disabled"));
                 return ExitCode::from(2);
             }
             let password = match prompt_password("ZIP password: ") {
                 Ok(password) => password,
                 Err(code) => return code,
             };
-            run_zip_test_new(
-                archive,
-                Some(password.expose_secret()),
-                includes,
-                excludes,
-                global,
-            )
+            run_zip_test_new(archive, Some(password.expose_secret()), includes, excludes, global)
         }
         Err(error) => {
             print_error_line(global, format_args!("zip test failed: {error}"));
@@ -7093,11 +6145,7 @@ fn new_plan_command(args: &[String], global: GlobalOptions) -> ExitCode {
     }
 }
 
-fn parse_plan_request(
-    args: &[String],
-    global: &mut GlobalOptions,
-    request: &mut PlanRequest,
-) -> Result<(), String> {
+fn parse_plan_request(args: &[String], global: &mut GlobalOptions, request: &mut PlanRequest) -> Result<(), String> {
     let mut index = 0usize;
     let mut current_dir: Option<PathBuf> = None;
     while index < args.len() {
@@ -7131,31 +6179,21 @@ fn parse_plan_request(
             }
             "-i" | "--include" => request.include.push(take_value(args, &mut index, arg)?),
             "--exclude" => request.exclude.push(take_value(args, &mut index, arg)?),
-            "--exclude-from" => request
-                .exclude_from
-                .push(PathBuf::from(take_value(args, &mut index, arg)?)),
+            "--exclude-from" => request.exclude_from.push(PathBuf::from(take_value(args, &mut index, arg)?)),
             "--" => {
                 for value in &args[index + 1..] {
-                    request
-                        .sources
-                        .push(resolve_input_path(value, current_dir.as_deref()));
+                    request.sources.push(resolve_input_path(value, current_dir.as_deref()));
                 }
                 break;
             }
             _ if arg.starts_with('-') => return Err(format!("unknown plan option: {arg}")),
             _ => {
-                request
-                    .sources
-                    .push(resolve_input_path(arg, current_dir.as_deref()));
+                request.sources.push(resolve_input_path(arg, current_dir.as_deref()));
                 index += 1;
             }
         }
     }
-    append_files_from(
-        &mut request.sources,
-        &request.files_from,
-        request.null_paths,
-    )?;
+    append_files_from(&mut request.sources, &request.files_from, request.null_paths)?;
     if request.stdin_paths {
         append_stdin_paths(&mut request.sources, request.null_paths)?;
     }
@@ -7168,12 +6206,9 @@ fn parse_plan_request(
 fn run_plan_request(request: &PlanRequest, global: &GlobalOptions) -> ExitCode {
     match plan_sources(&request.sources, request.clean, request.no_ignore, false) {
         Ok(mut manifest) => {
-            if let Err(error) = apply_manifest_filters(
-                &mut manifest,
-                &request.include,
-                &request.exclude,
-                &request.exclude_from,
-            ) {
+            if let Err(error) =
+                apply_manifest_filters(&mut manifest, &request.include, &request.exclude, &request.exclude_from)
+            {
                 print_error_line(global, format_args!("plan failed: {error}"));
                 return ExitCode::FAILURE;
             }
@@ -7187,11 +6222,7 @@ fn run_plan_request(request: &PlanRequest, global: &GlobalOptions) -> ExitCode {
     }
 }
 
-fn parse_global_option(
-    args: &[String],
-    index: &mut usize,
-    global: &mut GlobalOptions,
-) -> Result<bool, String> {
+fn parse_global_option(args: &[String], index: &mut usize, global: &mut GlobalOptions) -> Result<bool, String> {
     match args[*index].as_str() {
         "--json" => global.json = true,
         "-q" | "--quiet" => global.quiet = true,
@@ -7220,9 +6251,7 @@ fn parse_output_mode(value: &str, option: &str) -> Result<OutputMode, String> {
         "auto" => Ok(OutputMode::Auto),
         "always" => Ok(OutputMode::Always),
         "never" => Ok(OutputMode::Never),
-        _ => Err(format!(
-            "invalid value for {option}: {value}; expected auto, always, or never"
-        )),
+        _ => Err(format!("invalid value for {option}: {value}; expected auto, always, or never")),
     }
 }
 
@@ -7243,15 +6272,11 @@ fn take_value(args: &[String], index: &mut usize, option: &str) -> Result<String
 }
 
 fn parse_i32(value: &str, option: &str) -> Result<i32, String> {
-    value
-        .parse::<i32>()
-        .map_err(|_| format!("invalid integer for {option}: {value}"))
+    value.parse::<i32>().map_err(|_| format!("invalid integer for {option}: {value}"))
 }
 
 fn parse_usize(value: &str, option: &str) -> Result<usize, String> {
-    value
-        .parse::<usize>()
-        .map_err(|_| format!("invalid integer for {option}: {value}"))
+    value.parse::<usize>().map_err(|_| format!("invalid integer for {option}: {value}"))
 }
 
 fn parse_volume_size(value: &str, option: &str) -> Result<u64, String> {
@@ -7260,20 +6285,14 @@ fn parse_volume_size(value: &str, option: &str) -> Result<u64, String> {
         return Err(format!("invalid size for {option}: {value}"));
     }
 
-    let split_at = trimmed
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(trimmed.len());
+    let split_at = trimmed.find(|character: char| !character.is_ascii_digit()).unwrap_or(trimmed.len());
     let (digits, unit) = trimmed.split_at(split_at);
     if digits.is_empty() {
         return Err(format!("invalid size for {option}: {value}"));
     }
-    let amount = digits
-        .parse::<u64>()
-        .map_err(|_| format!("invalid size for {option}: {value}"))?;
+    let amount = digits.parse::<u64>().map_err(|_| format!("invalid size for {option}: {value}"))?;
     if amount == 0 {
-        return Err(format!(
-            "invalid size for {option}: size must be greater than zero"
-        ));
+        return Err(format!("invalid size for {option}: size must be greater than zero"));
     }
 
     let multiplier = match unit.to_ascii_lowercase().as_str() {
@@ -7285,9 +6304,7 @@ fn parse_volume_size(value: &str, option: &str) -> Result<u64, String> {
         _ => return Err(format!("invalid size unit for {option}: {value}")),
     };
 
-    amount
-        .checked_mul(multiplier)
-        .ok_or_else(|| format!("size for {option} is too large: {value}"))
+    amount.checked_mul(multiplier).ok_or_else(|| format!("size for {option} is too large: {value}"))
 }
 
 fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
@@ -7305,11 +6322,7 @@ fn parse_archive_format(raw: &str) -> Result<ArchiveFormat, String> {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn infer_apple_archive_create_format(path: &str) -> Option<ArchiveFormat> {
-    if is_apple_archive(path) {
-        Some(ArchiveFormat::AppleArchive)
-    } else {
-        None
-    }
+    if is_apple_archive(path) { Some(ArchiveFormat::AppleArchive) } else { None }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
@@ -7349,17 +6362,12 @@ fn resolve_input_path(value: &str, current_dir: Option<&Path>) -> PathBuf {
     }
 }
 
-fn append_files_from(
-    sources: &mut Vec<PathBuf>,
-    files_from: &[String],
-    null_paths: bool,
-) -> Result<(), String> {
+fn append_files_from(sources: &mut Vec<PathBuf>, files_from: &[String], null_paths: bool) -> Result<(), String> {
     for list in files_from {
         if list == "-" {
             append_stdin_paths(sources, null_paths)?;
         } else {
-            let bytes =
-                fs::read(list).map_err(|error| format!("failed to read {list}: {error}"))?;
+            let bytes = fs::read(list).map_err(|error| format!("failed to read {list}: {error}"))?;
             append_path_bytes(sources, &bytes, null_paths)?;
         }
     }
@@ -7374,23 +6382,17 @@ fn append_stdin_paths(sources: &mut Vec<PathBuf>, null_paths: bool) -> Result<()
     append_path_bytes(sources, &bytes, null_paths)
 }
 
-fn append_path_bytes(
-    sources: &mut Vec<PathBuf>,
-    bytes: &[u8],
-    null_paths: bool,
-) -> Result<(), String> {
+fn append_path_bytes(sources: &mut Vec<PathBuf>, bytes: &[u8], null_paths: bool) -> Result<(), String> {
     if null_paths {
         for part in bytes.split(|byte| *byte == 0) {
             if part.is_empty() {
                 continue;
             }
-            let value = std::str::from_utf8(part)
-                .map_err(|error| format!("path list is not valid UTF-8: {error}"))?;
+            let value = std::str::from_utf8(part).map_err(|error| format!("path list is not valid UTF-8: {error}"))?;
             sources.push(PathBuf::from(value));
         }
     } else {
-        let value = std::str::from_utf8(bytes)
-            .map_err(|error| format!("path list is not valid UTF-8: {error}"))?;
+        let value = std::str::from_utf8(bytes).map_err(|error| format!("path list is not valid UTF-8: {error}"))?;
         for line in value.lines().filter(|line| !line.is_empty()) {
             sources.push(PathBuf::from(line));
         }
@@ -7419,10 +6421,7 @@ fn plan_sources(
 }
 
 fn manifest_has_symlinks(manifest: &zmanager_core::manifest::ArchiveManifest) -> bool {
-    manifest
-        .entries
-        .iter()
-        .any(|entry| entry.file_type == zmanager_core::manifest::ManifestFileType::Symlink)
+    manifest.entries.iter().any(|entry| entry.file_type == zmanager_core::manifest::ManifestFileType::Symlink)
 }
 
 fn apply_manifest_filters(
@@ -7433,8 +6432,8 @@ fn apply_manifest_filters(
 ) -> Result<(), String> {
     let mut exclude_patterns = excludes.to_vec();
     for file in exclude_from {
-        let contents = fs::read_to_string(file)
-            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let contents =
+            fs::read_to_string(file).map_err(|error| format!("failed to read {}: {error}", file.display()))?;
         exclude_patterns.extend(
             contents
                 .lines()
@@ -7444,9 +6443,7 @@ fn apply_manifest_filters(
         );
     }
 
-    manifest
-        .entries
-        .retain(|entry| entry_selected(&entry.archive_path, includes, &exclude_patterns));
+    manifest.entries.retain(|entry| entry_selected(&entry.archive_path, includes, &exclude_patterns));
     manifest.total_bytes = manifest
         .entries
         .iter()
@@ -7465,23 +6462,14 @@ fn apply_junk_paths(manifest: &mut zmanager_core::manifest::ArchiveManifest) -> 
             continue;
         }
 
-        let Some(name) = entry
-            .archive_path
-            .trim_end_matches('/')
-            .rsplit('/')
-            .find(|part| !part.is_empty())
-            .map(ToOwned::to_owned)
+        let Some(name) =
+            entry.archive_path.trim_end_matches('/').rsplit('/').find(|part| !part.is_empty()).map(ToOwned::to_owned)
         else {
-            return Err(format!(
-                "cannot derive junk path for archive entry {}",
-                entry.archive_path
-            ));
+            return Err(format!("cannot derive junk path for archive entry {}", entry.archive_path));
         };
         let source_path = entry.source_path.display().to_string();
         if let Some(previous) = seen.insert(name.clone(), source_path.clone()) {
-            return Err(format!(
-                "duplicate junk path {name}: {previous} and {source_path} both flatten to {name}"
-            ));
+            return Err(format!("duplicate junk path {name}: {previous} and {source_path} both flatten to {name}"));
         }
         entry.archive_path = name;
         flattened.push(entry);
@@ -7509,8 +6497,7 @@ fn wildcard_matches(pattern: &[u8], value: &[u8]) -> bool {
         return value.is_empty();
     }
     if pattern[0] == b'*' {
-        return wildcard_matches(&pattern[1..], value)
-            || (!value.is_empty() && wildcard_matches(pattern, &value[1..]));
+        return wildcard_matches(&pattern[1..], value) || (!value.is_empty() && wildcard_matches(pattern, &value[1..]));
     }
     if !value.is_empty() && (pattern[0] == b'?' || pattern[0] == value[0]) {
         return wildcard_matches(&pattern[1..], &value[1..]);
@@ -7519,24 +6506,13 @@ fn wildcard_matches(pattern: &[u8], value: &[u8]) -> bool {
 }
 
 fn temp_archive_path(destination: &Path) -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let file_name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("archive");
-    destination.with_file_name(format!(
-        "{TEMP_ARCHIVE_PREFIX}{file_name}{TEMP_ARCHIVE_MARKER}-{}-{now}",
-        std::process::id()
-    ))
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+    let file_name = destination.file_name().and_then(|name| name.to_str()).unwrap_or("archive");
+    destination
+        .with_file_name(format!("{TEMP_ARCHIVE_PREFIX}{file_name}{TEMP_ARCHIVE_MARKER}-{}-{now}", std::process::id()))
 }
 
-fn create_test_archive_path(
-    destination: &Path,
-    format: ArchiveFormat,
-    split_output: bool,
-) -> PathBuf {
+fn create_test_archive_path(destination: &Path, format: ArchiveFormat, split_output: bool) -> PathBuf {
     if split_output && format == ArchiveFormat::SevenZ {
         let mut path = destination.as_os_str().to_os_string();
         path.push(".001");
@@ -7575,28 +6551,19 @@ fn remove_file_destination_for_publish(path: &Path) -> io::Result<()> {
 
 fn default_extract_destination(archive: &str) -> PathBuf {
     let path = Path::new(archive);
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("archive");
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("archive");
     let stem = strip_known_archive_suffix(name).unwrap_or(name);
     path.parent().unwrap_or_else(|| Path::new(".")).join(stem)
 }
 
 fn strip_known_archive_suffix(name: &str) -> Option<&str> {
-    let mut extensions: Vec<&str> = TAR_ZST_EXTENSIONS
-        .iter()
-        .chain(ZIP_FAMILY_EXTENSIONS)
-        .chain(SEVEN_Z_EXTENSIONS)
-        .copied()
-        .collect();
+    let mut extensions: Vec<&str> =
+        TAR_ZST_EXTENSIONS.iter().chain(ZIP_FAMILY_EXTENSIONS).chain(SEVEN_Z_EXTENSIONS).copied().collect();
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     extensions.extend_from_slice(APPLE_ARCHIVE_EXTENSIONS);
     extensions.extend_from_slice(RAR_EXTENSIONS);
     extensions.extend_from_slice(DEB_EXTENSIONS);
-    extensions
-        .into_iter()
-        .find_map(|suffix| strip_suffix_ignore_ascii_case(name, suffix))
+    extensions.into_iter().find_map(|suffix| strip_suffix_ignore_ascii_case(name, suffix))
 }
 
 fn default_raw_stream_destination(archive: &str) -> PathBuf {
@@ -7604,11 +6571,7 @@ fn default_raw_stream_destination(archive: &str) -> PathBuf {
     let Some(parent) = path.parent() else {
         return PathBuf::from(".");
     };
-    if parent.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        parent.to_path_buf()
-    }
+    if parent.as_os_str().is_empty() { PathBuf::from(".") } else { parent.to_path_buf() }
 }
 
 fn read_optional_password_stdin(
@@ -7641,9 +6604,7 @@ fn validate_recipient_key_open_option(
     if password_stdin {
         return Some(usage_failure(
             global,
-            format_args!(
-                "{command} failed: --recipient-key cannot be combined with --password-stdin"
-            ),
+            format_args!("{command} failed: --recipient-key cannot be combined with --password-stdin"),
         ));
     }
     None
@@ -7685,9 +6646,7 @@ fn list_entries_with_password(
                     .map(|entry| GenericEntry {
                         kind: match entry.kind {
                             zmanager_core::sevenz_backend::SevenZEntryKind::File => "file",
-                            zmanager_core::sevenz_backend::SevenZEntryKind::Directory => {
-                                "directory"
-                            }
+                            zmanager_core::sevenz_backend::SevenZEntryKind::Directory => "directory",
                             zmanager_core::sevenz_backend::SevenZEntryKind::AntiItem => "anti-item",
                         }
                         .to_owned(),
@@ -7699,22 +6658,14 @@ fn list_entries_with_password(
                     .collect()
             })
             .map_err(|error| error.to_string())
-    } else if let Some(format) =
-        zmanager_core::raw_stream_backend::detect_raw_stream_format(archive)
-    {
+    } else if let Some(format) = zmanager_core::raw_stream_backend::detect_raw_stream_format(archive) {
         let name = zmanager_core::raw_stream_backend::output_name_for_raw_stream(archive, format)
             .ok_or_else(|| "could not derive raw stream output name".to_owned())?;
-        let size = zmanager_core::raw_stream_backend::test_raw_stream(archive, format)
-            .map_err(|error| error.to_string())?;
+        let size =
+            zmanager_core::raw_stream_backend::test_raw_stream(archive, format).map_err(|error| error.to_string())?;
         let compressed_size = fs::metadata(archive).ok().map(|metadata| metadata.len());
 
-        Ok(vec![GenericEntry {
-            kind: "file".to_owned(),
-            name,
-            size,
-            compressed_size,
-            ..GenericEntry::default()
-        }])
+        Ok(vec![GenericEntry { kind: "file".to_owned(), name, size, compressed_size, ..GenericEntry::default() }])
     } else if is_tzap_archive(archive) {
         let listing = if let Some(recipient_key) = recipient_key {
             zmanager_core::tzap_backend::list_tzap_index_with_recipient_key(archive, recipient_key)
@@ -7733,12 +6684,8 @@ fn list_entries_with_password(
                             zmanager_core::tzap_backend::TzapEntryKind::Directory => "directory",
                             zmanager_core::tzap_backend::TzapEntryKind::Symlink => "symlink",
                             zmanager_core::tzap_backend::TzapEntryKind::Hardlink => "hardlink",
-                            zmanager_core::tzap_backend::TzapEntryKind::CharacterDevice => {
-                                "character-device"
-                            }
-                            zmanager_core::tzap_backend::TzapEntryKind::BlockDevice => {
-                                "block-device"
-                            }
+                            zmanager_core::tzap_backend::TzapEntryKind::CharacterDevice => "character-device",
+                            zmanager_core::tzap_backend::TzapEntryKind::BlockDevice => "block-device",
                             zmanager_core::tzap_backend::TzapEntryKind::Fifo => "fifo",
                         }
                         .to_owned(),
@@ -7747,12 +6694,12 @@ fn list_entries_with_password(
                         compressed_size: Some(entry.compressed_size),
                         mode: Some(entry.mode),
                         modified: tzap_timestamp_string(entry.mtime, entry.mtime_nanoseconds),
-                        created: entry.created.and_then(|(seconds, nanoseconds)| {
-                            tzap_timestamp_string(seconds, nanoseconds)
-                        }),
-                        accessed: entry.accessed.and_then(|(seconds, nanoseconds)| {
-                            tzap_timestamp_string(seconds, nanoseconds)
-                        }),
+                        created: entry
+                            .created
+                            .and_then(|(seconds, nanoseconds)| tzap_timestamp_string(seconds, nanoseconds)),
+                        accessed: entry
+                            .accessed
+                            .and_then(|(seconds, nanoseconds)| tzap_timestamp_string(seconds, nanoseconds)),
                         encrypted: Some(encrypted),
                         method: Some("Zstd".to_owned()),
                         solid: Some(true),
@@ -7809,13 +6756,8 @@ fn filter_entries(entries: &mut Vec<GenericEntry>, includes: &[String], excludes
 }
 
 fn entry_selected(path: &str, includes: &[String], excludes: &[String]) -> bool {
-    let matches_include = includes.is_empty()
-        || includes
-            .iter()
-            .any(|pattern| archive_pattern_matches(pattern, path));
-    let matches_exclude = excludes
-        .iter()
-        .any(|pattern| archive_pattern_matches(pattern, path));
+    let matches_include = includes.is_empty() || includes.iter().any(|pattern| archive_pattern_matches(pattern, path));
+    let matches_exclude = excludes.iter().any(|pattern| archive_pattern_matches(pattern, path));
 
     matches_include && !matches_exclude
 }
@@ -7830,10 +6772,7 @@ fn print_entries_tree(entries: &[GenericEntry], global: &GlobalOptions) {
         if trimmed.is_empty() {
             continue;
         }
-        let parts = trimmed
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>();
+        let parts = trimmed.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
         for depth in 0..parts.len() {
             let prefix = parts[..=depth].join("/");
             if !printed.insert(prefix) {
@@ -7860,23 +6799,16 @@ fn print_entries_json(entries: &[GenericEntry]) {
         if index > 0 {
             print!(",");
         }
-        let compressed_size = entry
-            .compressed_size
-            .map_or_else(|| "null".to_owned(), |value| value.to_string());
-        let mode = entry
-            .mode
-            .map_or_else(|| "null".to_owned(), |value| value.to_string());
+        let compressed_size = entry.compressed_size.map_or_else(|| "null".to_owned(), |value| value.to_string());
+        let mode = entry.mode.map_or_else(|| "null".to_owned(), |value| value.to_string());
         let modified = serde_json::to_string(&entry.modified).unwrap_or_else(|_| "null".to_owned());
         let created = serde_json::to_string(&entry.created).unwrap_or_else(|_| "null".to_owned());
         let accessed = serde_json::to_string(&entry.accessed).unwrap_or_else(|_| "null".to_owned());
-        let encrypted =
-            serde_json::to_string(&entry.encrypted).unwrap_or_else(|_| "null".to_owned());
+        let encrypted = serde_json::to_string(&entry.encrypted).unwrap_or_else(|_| "null".to_owned());
         let method = serde_json::to_string(&entry.method).unwrap_or_else(|_| "null".to_owned());
         let solid = serde_json::to_string(&entry.solid).unwrap_or_else(|_| "null".to_owned());
-        let link_target =
-            serde_json::to_string(&entry.link_target).unwrap_or_else(|_| "null".to_owned());
-        let attributes =
-            serde_json::to_string(&entry.attributes).unwrap_or_else(|_| "null".to_owned());
+        let link_target = serde_json::to_string(&entry.link_target).unwrap_or_else(|_| "null".to_owned());
+        let attributes = serde_json::to_string(&entry.attributes).unwrap_or_else(|_| "null".to_owned());
         let uid = serde_json::to_string(&entry.uid).unwrap_or_else(|_| "null".to_owned());
         let gid = serde_json::to_string(&entry.gid).unwrap_or_else(|_| "null".to_owned());
         let owner = serde_json::to_string(&entry.owner).unwrap_or_else(|_| "null".to_owned());
@@ -7937,12 +6869,7 @@ fn print_create_summary_json(archive: &Path, outcome: &CreateOutcome) {
     println!("}}");
 }
 
-fn print_extract_summary(
-    archive: &Path,
-    destination: &Path,
-    outcome: &ExtractOutcome,
-    global: Option<&GlobalOptions>,
-) {
+fn print_extract_summary(archive: &Path, destination: &Path, outcome: &ExtractOutcome, global: Option<&GlobalOptions>) {
     match global {
         Some(global) if global.json => print_extract_summary_json(archive, destination, outcome),
         Some(global) if global.quiet => {}
@@ -7950,10 +6877,7 @@ fn print_extract_summary(
         None => {
             println!(
                 "{} extract ok: {} written, {} skipped, {} bytes",
-                outcome.label,
-                outcome.written_entries,
-                outcome.skipped_entries,
-                outcome.written_bytes
+                outcome.label, outcome.written_entries, outcome.skipped_entries, outcome.written_bytes
             );
             for warning in &outcome.warnings {
                 println!("warning\t{warning}");
@@ -8054,11 +6978,7 @@ fn print_manifest(manifest: &zmanager_core::manifest::ArchiveManifest, global: &
             if index > 0 {
                 print!(",");
             }
-            print!(
-                "{{\"path\":\"{}\",\"size\":{}}}",
-                json_escape(&entry.archive_path),
-                entry.size
-            );
+            print!("{{\"path\":\"{}\",\"size\":{}}}", json_escape(&entry.archive_path), entry.size);
         }
         println!("]}}");
     } else {
@@ -8089,11 +7009,7 @@ fn print_manifest(manifest: &zmanager_core::manifest::ArchiveManifest, global: &
         for warning in &manifest.warnings {
             print_warning_stdout(
                 global,
-                format_args!(
-                    "warning\t{}\t{}",
-                    warning.source_path.display(),
-                    warning.message
-                ),
+                format_args!("warning\t{}\t{}", warning.source_path.display(), warning.message),
             );
         }
     }
@@ -8136,17 +7052,11 @@ fn command_usage_error(command: &str, message: &str, global: &GlobalOptions) -> 
         output::stderr_line(global.color, format_args!(""));
         output::stderr_line(
             global.color,
-            format_args!(
-                "Did you mean '{}'?",
-                output::styled(StyleRole::Option, format_args!("{suggestion}"))
-            ),
+            format_args!("Did you mean '{}'?", output::styled(StyleRole::Option, format_args!("{suggestion}"))),
         );
     }
     output::stderr_line(global.color, format_args!(""));
-    output::stderr_write(
-        global.color,
-        format_args!("{}", output::render_help(command_usage_snippet(command))),
-    );
+    output::stderr_write(global.color, format_args!("{}", output::render_help(command_usage_snippet(command))));
     output::stderr_line(global.color, format_args!(""));
     if unknown_option.is_some() {
         output::stderr_line(
@@ -8171,15 +7081,9 @@ fn command_usage_error(command: &str, message: &str, global: &GlobalOptions) -> 
 fn format_command_error<'a>(command: &str, message: &'a str) -> (String, Option<&'a str>) {
     let prefix = format!("unknown {command} option: ");
     if let Some(option) = message.strip_prefix(&prefix) {
-        (
-            format!("unknown option '{option}' for 'zm {command}'"),
-            Some(option),
-        )
+        (format!("unknown option '{option}' for 'zm {command}'"), Some(option))
     } else if let Some(argument) = message.strip_prefix("unexpected argument: ") {
-        (
-            format!("unexpected argument '{argument}' for 'zm {command}'"),
-            None,
-        )
+        (format!("unexpected argument '{argument}' for 'zm {command}'"), None)
     } else {
         (message.to_owned(), None)
     }
@@ -8489,10 +7393,7 @@ fn is_apple_archive(_path: &str) -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn list_apple_archive_cli(
-    archive: &str,
-    password: Option<&str>,
-) -> Result<Vec<GenericEntry>, String> {
+fn list_apple_archive_cli(archive: &str, password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
     zmanager_core::apple_archive_backend::list_apple_archive(archive, password)
         .map(|listing| {
             listing
@@ -8501,16 +7402,10 @@ fn list_apple_archive_cli(
                 .map(|entry| GenericEntry {
                     kind: match entry.kind {
                         zmanager_core::apple_archive_backend::AppleArchiveEntryKind::File => "file",
-                        zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Directory => {
-                            "directory"
-                        }
-                        zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Symlink => {
-                            "symlink"
-                        }
+                        zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Directory => "directory",
+                        zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Symlink => "symlink",
                         zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Device
-                        | zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Special => {
-                            "special"
-                        }
+                        | zmanager_core::apple_archive_backend::AppleArchiveEntryKind::Special => "special",
                     }
                     .to_owned(),
                     name: entry.path,
@@ -8524,10 +7419,7 @@ fn list_apple_archive_cli(
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-fn list_apple_archive_cli(
-    _archive: &str,
-    _password: Option<&str>,
-) -> Result<Vec<GenericEntry>, String> {
+fn list_apple_archive_cli(_archive: &str, _password: Option<&str>) -> Result<Vec<GenericEntry>, String> {
     Err("Apple Archive is not supported on this platform".to_owned())
 }
 
@@ -8552,10 +7444,7 @@ fn extract_apple_archive_stdout(
                     global.color,
                     format_args!(
                         "{} to stdout ok: {} entries, {} skipped, {} bytes",
-                        FORMAT_APPLE_ARCHIVE,
-                        report.written_entries,
-                        report.skipped_entries,
-                        report.written_bytes
+                        FORMAT_APPLE_ARCHIVE, report.written_entries, report.skipped_entries, report.written_bytes
                     ),
                 );
             }
@@ -8586,9 +7475,7 @@ fn is_tzap_volume_archive(path: &str) -> bool {
     };
 
     volume_index.len() >= 3
-        && volume_index
-            .chars()
-            .all(|character| character.is_ascii_digit())
+        && volume_index.chars().all(|character| character.is_ascii_digit())
         && path_has_known_extension(base_path, TZAP_EXTENSIONS)
 }
 
@@ -8597,9 +7484,7 @@ fn is_deb_archive(path: &str) -> bool {
 }
 
 fn path_has_known_extension(path: &str, extensions: &[&str]) -> bool {
-    extensions
-        .iter()
-        .any(|extension| path_ends_with_ignore_ascii_case(path, extension))
+    extensions.iter().any(|extension| path_ends_with_ignore_ascii_case(path, extension))
 }
 
 fn path_ends_with_ignore_ascii_case(path: &str, suffix: &str) -> bool {
@@ -8609,11 +7494,7 @@ fn path_ends_with_ignore_ascii_case(path: &str, suffix: &str) -> bool {
 }
 
 fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
-    if path_ends_with_ignore_ascii_case(value, suffix) {
-        value.get(..value.len() - suffix.len())
-    } else {
-        None
-    }
+    if path_ends_with_ignore_ascii_case(value, suffix) { value.get(..value.len() - suffix.len()) } else { None }
 }
 
 fn run_zip_extract_with_policy(
@@ -8627,10 +7508,7 @@ fn run_zip_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::ZipExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::ZipExtract, total_bytes: None });
     let token = CancellationToken::new();
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
@@ -8659,10 +7537,7 @@ fn run_zip_extract_with_policy(
 
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_ZIP,
                 format: FORMAT_ZIP,
@@ -8675,14 +7550,10 @@ fn run_zip_extract_with_policy(
             print_extract_summary(&archive_path, &destination_path, &outcome, global);
             ExitCode::SUCCESS
         }
-        Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired)
-            if password.is_none() =>
-        {
+        Err(zmanager_core::zip_backend::ZipBackendError::PasswordRequired) if password.is_none() => {
             if no_password_prompt {
                 let message = "zip extract failed: password required and prompts are disabled";
-                progress.emit(JobEvent::Failed {
-                    message: message.to_owned(),
-                });
+                progress.emit(JobEvent::Failed { message: message.to_owned() });
                 eprintln!("{message}");
                 return ExitCode::from(2);
             }
@@ -8700,9 +7571,7 @@ fn run_zip_extract_with_policy(
             )
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("zip extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -8718,10 +7587,7 @@ fn run_tar_zst_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::TarZstdExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::TarZstdExtract, total_bytes: None });
     let token = CancellationToken::new();
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
@@ -8748,10 +7614,7 @@ fn run_tar_zst_extract_with_policy(
 
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_TAR_ZST,
                 format: FORMAT_TAR_ZST,
@@ -8765,9 +7628,7 @@ fn run_tar_zst_extract_with_policy(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("tar.zst extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -8785,10 +7646,7 @@ fn run_apple_archive_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::AppleArchiveExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::AppleArchiveExtract, total_bytes: None });
     let token = CancellationToken::new();
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
@@ -8817,10 +7675,7 @@ fn run_apple_archive_extract_with_policy(
 
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_APPLE_ARCHIVE,
                 format: FORMAT_APPLE_ARCHIVE,
@@ -8834,9 +7689,7 @@ fn run_apple_archive_extract_with_policy(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("aar extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -8866,10 +7719,7 @@ fn run_tzap_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::TzapExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::TzapExtract, total_bytes: None });
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
         let stderr = io::stderr();
@@ -8913,10 +7763,7 @@ fn run_tzap_extract_with_policy(
 
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_TZAP,
                 format: FORMAT_TZAP,
@@ -8930,9 +7777,7 @@ fn run_tzap_extract_with_policy(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("tzap extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -8950,10 +7795,7 @@ fn run_7z_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::SevenZExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::SevenZExtract, total_bytes: None });
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
         let stderr = io::stderr();
@@ -8966,19 +7808,11 @@ fn run_7z_extract_with_policy(
             &mut overwrite_resolver,
         )
     } else {
-        zmanager_core::sevenz_backend::extract_7z(
-            &archive_path,
-            &destination_path,
-            password,
-            policy.clone(),
-        )
+        zmanager_core::sevenz_backend::extract_7z(&archive_path, &destination_path, password, policy.clone())
     };
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_SEVEN_Z,
                 format: FORMAT_SEVEN_Z,
@@ -8994,9 +7828,7 @@ fn run_7z_extract_with_policy(
         Err(zmanager_core::sevenz_backend::SevenZError::PasswordRequired) if password.is_none() => {
             if no_password_prompt {
                 let message = "7z extract failed: password required and prompts are disabled";
-                progress.emit(JobEvent::Failed {
-                    message: message.to_owned(),
-                });
+                progress.emit(JobEvent::Failed { message: message.to_owned() });
                 eprintln!("{message}");
                 return ExitCode::from(2);
             }
@@ -9014,9 +7846,7 @@ fn run_7z_extract_with_policy(
             )
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("7z extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -9044,12 +7874,7 @@ fn run_rar_extract_with_policy(
             &mut overwrite_resolver,
         )
     } else {
-        zmanager_core::rar_backend::extract_rar_with_password(
-            &archive_path,
-            &destination_path,
-            policy,
-            password,
-        )
+        zmanager_core::rar_backend::extract_rar_with_password(&archive_path, &destination_path, policy, password)
     };
     match result {
         Ok(report) => {
@@ -9082,10 +7907,7 @@ fn run_libarchive_extract_with_policy(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let mut progress = ProgressReporter::from_global(global);
-    progress.emit(JobEvent::Started {
-        kind: JobKind::ArchiveExtract,
-        total_bytes: None,
-    });
+    progress.emit(JobEvent::Started { kind: JobKind::ArchiveExtract, total_bytes: None });
     let result = if matches!(policy.overwrite, OverwritePolicy::Ask) {
         let stdin = io::stdin();
         let stderr = io::stderr();
@@ -9107,10 +7929,7 @@ fn run_libarchive_extract_with_policy(
     };
     match result {
         Ok(report) => {
-            progress.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            progress.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             let outcome = ExtractOutcome {
                 label: FORMAT_LIBARCHIVE,
                 format: FORMAT_LIBARCHIVE,
@@ -9124,9 +7943,7 @@ fn run_libarchive_extract_with_policy(
             ExitCode::SUCCESS
         }
         Err(error) => {
-            progress.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            progress.emit(JobEvent::Failed { message: error.to_string() });
             eprintln!("libarchive extract failed: {error}");
             ExitCode::FAILURE
         }
@@ -9137,10 +7954,9 @@ fn run_libarchive_extract_with_policy(
 mod tests {
     use super::{
         ArchiveFormat, CreateRequest, DEFAULT_TZAP_REDIRECT_URI, ExtractRequest, GlobalOptions,
-        InteractiveOverwriteResolver, ListRequest, TestRequest, build_hosted_http_request,
-        contact_keygen_command, create_and_store_staging_enrollment_key,
-        normalize_prompted_password, parse_create_request, parse_extract_request,
-        parse_list_request, parse_test_request, publish_archive,
+        InteractiveOverwriteResolver, ListRequest, TestRequest, build_hosted_http_request, contact_keygen_command,
+        create_and_store_staging_enrollment_key, normalize_prompted_password, parse_create_request,
+        parse_extract_request, parse_list_request, parse_test_request, publish_archive,
         tzap_default_volume_loss_tolerance, validate_create_options,
     };
     use std::fs;
@@ -9158,9 +7974,7 @@ mod tests {
     #[test]
     fn hosted_http_transport_accepts_https_urls() {
         let client = reqwest::blocking::Client::new();
-        let request =
-            build_hosted_http_request(&client, "GET", "https://staging.tzap.org/v1/me", None, None)
-                .unwrap();
+        let request = build_hosted_http_request(&client, "GET", "https://staging.tzap.org/v1/me", None, None).unwrap();
 
         assert_eq!(request.url().scheme(), "https");
         assert_eq!(request.url().host_str(), Some("staging.tzap.org"));
@@ -9180,22 +7994,17 @@ mod tests {
 
         let _ = contact_keygen_command(&args, GlobalOptions::default());
 
-        let store =
-            zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
+        let store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
         let inventory = store.load_inventory("default").unwrap();
         assert_eq!(inventory.recipient_encryption_keys.len(), 1);
-        assert_eq!(
-            inventory.recipient_encryption_keys[0].label.as_deref(),
-            Some("Test recipient")
-        );
+        assert_eq!(inventory.recipient_encryption_keys[0].label.as_deref(), Some("Test recipient"));
         assert!(inventory.device_signing_keys.is_empty());
     }
 
     #[test]
     fn pending_organization_enrollment_reuses_the_same_device_key() {
         let temp = TestDir::new("organization-enrollment-key-retry");
-        let mut store =
-            zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
+        let mut store = zmanager_core::local_identity_store::FileTzapLocalIdentityStore::new(&temp.root);
         let request = zmanager_core::enrollment_client::TzapEnrollmentRequest {
             account_key: "default".to_owned(),
             org_id: Some("porg_test".to_owned()),
@@ -9203,10 +8012,8 @@ mod tests {
             now_unix_seconds: 1_000,
         };
 
-        let (first_key, first_csr) =
-            create_and_store_staging_enrollment_key(&mut store, &request, 1_000).unwrap();
-        let (retried_key, retried_csr) =
-            create_and_store_staging_enrollment_key(&mut store, &request, 1_001).unwrap();
+        let (first_key, first_csr) = create_and_store_staging_enrollment_key(&mut store, &request, 1_000).unwrap();
+        let (retried_key, retried_csr) = create_and_store_staging_enrollment_key(&mut store, &request, 1_001).unwrap();
 
         assert_eq!(retried_key.key_id, first_key.key_id);
         assert_eq!(retried_key.private_key_der, first_key.private_key_der);
@@ -9228,10 +8035,7 @@ mod tests {
 
     #[test]
     fn password_prompt_strips_line_endings_without_logging_secret() {
-        assert_eq!(
-            normalize_prompted_password("secret\r\n".to_owned(), 8),
-            Some("secret".to_owned())
-        );
+        assert_eq!(normalize_prompted_password("secret\r\n".to_owned(), 8), Some("secret".to_owned()));
     }
 
     #[test]
@@ -9255,14 +8059,8 @@ mod tests {
         parse_create_request(&args, &mut global, &mut request).unwrap();
 
         assert_eq!(request.tzap_signing_cert, Some(PathBuf::from("signer.pem")));
-        assert_eq!(
-            request.tzap_signing_private_key,
-            Some(PathBuf::from("signer.key"))
-        );
-        assert_eq!(
-            request.tzap_signing_chain,
-            vec![PathBuf::from("intermediate.pem")]
-        );
+        assert_eq!(request.tzap_signing_private_key, Some(PathBuf::from("signer.key")));
+        assert_eq!(request.tzap_signing_chain, vec![PathBuf::from("intermediate.pem")]);
         assert!(validate_create_options(ArchiveFormat::Tzap, &request).is_ok());
     }
 
@@ -9285,21 +8083,11 @@ mod tests {
     fn create_parser_accepts_tzap_recipient_certificate() {
         let mut request = CreateRequest::default();
         let mut global = GlobalOptions::default();
-        let args = strings([
-            "sealed.tzap",
-            "src",
-            "--format",
-            "tzap",
-            "--recipient-cert",
-            "recipient.pem",
-        ]);
+        let args = strings(["sealed.tzap", "src", "--format", "tzap", "--recipient-cert", "recipient.pem"]);
 
         parse_create_request(&args, &mut global, &mut request).unwrap();
 
-        assert_eq!(
-            request.tzap_recipient_cert,
-            Some(PathBuf::from("recipient.pem"))
-        );
+        assert_eq!(request.tzap_recipient_cert, Some(PathBuf::from("recipient.pem")));
         assert!(validate_create_options(ArchiveFormat::Tzap, &request).is_ok());
     }
 
@@ -9324,13 +8112,7 @@ mod tests {
         let mut global = GlobalOptions::default();
 
         let mut extract = ExtractRequest::default();
-        let extract_args = strings([
-            "sealed.tzap",
-            "-C",
-            "out",
-            "--recipient-key",
-            "recipient.key",
-        ]);
+        let extract_args = strings(["sealed.tzap", "-C", "out", "--recipient-key", "recipient.key"]);
         parse_extract_request(&extract_args, &mut global, &mut extract).unwrap();
         assert_eq!(extract.recipient_key, Some(PathBuf::from("recipient.key")));
 
@@ -9349,21 +8131,11 @@ mod tests {
     fn extract_parser_accepts_tzap_metadata_restore_options() {
         let mut request = ExtractRequest::default();
         let mut global = GlobalOptions::default();
-        let args = strings([
-            "archive.tzap",
-            "-C",
-            "out",
-            "--restore",
-            "same-os",
-            "--allow-degraded",
-        ]);
+        let args = strings(["archive.tzap", "-C", "out", "--restore", "same-os", "--allow-degraded"]);
 
         parse_extract_request(&args, &mut global, &mut request).unwrap();
 
-        assert_eq!(
-            request.tzap_restore_policy,
-            zmanager_core::tzap_backend::TzapRestorePolicy::SameOs
-        );
+        assert_eq!(request.tzap_restore_policy, zmanager_core::tzap_backend::TzapRestorePolicy::SameOs);
         assert!(request.tzap_allow_degraded);
     }
 
@@ -9381,10 +8153,7 @@ mod tests {
     #[test]
     fn tzap_split_create_defaults_to_one_volume_loss_tolerance() {
         assert_eq!(tzap_default_volume_loss_tolerance(None), 0);
-        assert_eq!(
-            tzap_default_volume_loss_tolerance(Some(10 * 1024 * 1024)),
-            1
-        );
+        assert_eq!(tzap_default_volume_loss_tolerance(Some(10 * 1024 * 1024)), 1);
     }
 
     #[test]
@@ -9411,10 +8180,7 @@ mod tests {
     fn overwrite_prompt_maps_single_entry_choices() {
         assert_eq!(overwrite_decision_for("yes\n"), OverwriteDecision::Replace);
         assert_eq!(overwrite_decision_for("no\n"), OverwriteDecision::Skip);
-        assert_eq!(
-            overwrite_decision_for("rename\n"),
-            OverwriteDecision::Rename
-        );
+        assert_eq!(overwrite_decision_for("rename\n"), OverwriteDecision::Rename);
         assert_eq!(overwrite_decision_for("quit\n"), OverwriteDecision::Quit);
     }
 
@@ -9439,10 +8205,7 @@ mod tests {
         let output = Vec::new();
         let mut resolver = InteractiveOverwriteResolver::new(input, output);
 
-        assert_eq!(
-            resolver.decide(&overwrite_conflict("file.txt")),
-            OverwriteDecision::Replace
-        );
+        assert_eq!(resolver.decide(&overwrite_conflict("file.txt")), OverwriteDecision::Replace);
 
         let output = String::from_utf8(resolver.output).unwrap();
         assert!(output.contains("please answer yes, no, all, rename, or quit"));
@@ -9500,10 +8263,7 @@ mod tests {
     }
 
     fn overwrite_conflict(path: &str) -> OverwriteConflict {
-        OverwriteConflict {
-            archive_path: path.to_owned(),
-            destination_path: PathBuf::from(path),
-        }
+        OverwriteConflict { archive_path: path.to_owned(), destination_path: PathBuf::from(path) }
     }
 
     fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
@@ -9516,12 +8276,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root = std::env::temp_dir()
-                .join(format!("zmanager-cli-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-cli-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
             Self { root }
         }

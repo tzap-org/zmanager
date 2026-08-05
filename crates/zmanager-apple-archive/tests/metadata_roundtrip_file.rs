@@ -8,9 +8,7 @@ mod tests {
     use std::fs;
     use std::time::{Duration, SystemTime};
 
-    use zmanager_apple_archive::{
-        ArchiveReader, ArchiveWriter, CompressionAlgorithm, CreateOptions, EntryMetadata,
-    };
+    use zmanager_apple_archive::{ArchiveReader, ArchiveWriter, CompressionAlgorithm, CreateOptions, EntryMetadata};
 
     // Helper to create a temporary file path, write an archive, then read it back.
     fn roundtrip(metadata: EntryMetadata, algo: CompressionAlgorithm) -> EntryMetadata {
@@ -22,17 +20,10 @@ mod tests {
 
         // Write archive to the temporary file.
         {
-            let mut writer = ArchiveWriter::create(
-                &temp_path,
-                CreateOptions {
-                    compression: algo,
-                    ..Default::default()
-                },
-            )
-            .expect("create writer");
-            writer
-                .append_directory("test_dir", metadata)
-                .expect("append directory");
+            let mut writer =
+                ArchiveWriter::create(&temp_path, CreateOptions { compression: algo, ..Default::default() })
+                    .expect("create writer");
+            writer.append_directory("test_dir", metadata).expect("append directory");
             writer.finish().expect("finish writer");
         }
         // Read back from the file.

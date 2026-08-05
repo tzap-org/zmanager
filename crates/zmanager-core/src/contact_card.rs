@@ -3,14 +3,11 @@
 use crate::device_identity::RECIPIENT_ENCRYPTION_KEY_ALGORITHM;
 use crate::jcs;
 use crate::local_identity_store::{
-    TzapContactRecord, TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord,
-    TzapLocalCertificateState, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-    TzapRecipientEncryptionKeyRecord,
+    TzapContactRecord, TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
+    TzapLocalIdentityStore, TzapLocalIdentityStoreError, TzapRecipientEncryptionKeyRecord,
 };
 use crate::p256_signature;
-use crate::trust::{
-    self, TzapCertificateProfileOptions, TzapRootPinSet, TzapTrustAnchorType, TzapVerificationState,
-};
+use crate::trust::{self, TzapCertificateProfileOptions, TzapRootPinSet, TzapTrustAnchorType, TzapVerificationState};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use openssl::pkey::{PKey, Private};
 use openssl::x509::X509;
@@ -97,10 +94,9 @@ impl fmt::Display for TzapContactCardError {
             Self::AcceptanceRequired => {
                 write!(f, "contact-card import requires explicit acceptance")
             }
-            Self::ContactRequiresFreshStatus { contact_id } => write!(
-                f,
-                "contact {contact_id} requires a fresh status check before sharing"
-            ),
+            Self::ContactRequiresFreshStatus { contact_id } => {
+                write!(f, "contact {contact_id} requires a fresh status check before sharing")
+            }
         }
     }
 }
@@ -123,16 +119,12 @@ pub fn export_tzap_contact_card(
         .recipient_encryption_keys
         .iter()
         .find(|record| record.key_id == request.recipient_key_id)
-        .ok_or(TzapContactCardError::MissingRecord {
-            field: "recipient_key_id",
-        })?;
+        .ok_or(TzapContactCardError::MissingRecord { field: "recipient_key_id" })?;
     let certificate = inventory
         .enrolled_certificates
         .iter()
         .find(|record| record.certificate_id == request.certificate_id)
-        .ok_or(TzapContactCardError::MissingRecord {
-            field: "certificate_id",
-        })?;
+        .ok_or(TzapContactCardError::MissingRecord { field: "certificate_id" })?;
     if certificate.state != TzapLocalCertificateState::Active {
         return Err(TzapContactCardError::CertificateNotActive);
     }
@@ -140,9 +132,7 @@ pub fn export_tzap_contact_card(
         .device_signing_keys
         .iter()
         .find(|record| record.key_id == certificate.signing_key_id)
-        .ok_or(TzapContactCardError::MissingRecord {
-            field: "signing_key_id",
-        })?;
+        .ok_or(TzapContactCardError::MissingRecord { field: "signing_key_id" })?;
     let payload = contact_card_payload(request, recipient_key, certificate);
     let signature = sign_contact_card_payload(signing_key, &payload)?;
     Ok(json!({
@@ -159,56 +149,32 @@ pub fn verify_tzap_contact_card(
 ) -> Result<TzapVerifiedContactCard, TzapContactCardError> {
     let object = json_object(card, "$")?;
     require_u64(object, "version", CONTACT_CARD_CONTAINER_VERSION)?;
-    require_string_equals(
-        object,
-        "signature_algorithm",
-        CONTACT_CARD_SIGNATURE_ALGORITHM,
-    )?;
+    require_string_equals(object, "signature_algorithm", CONTACT_CARD_SIGNATURE_ALGORITHM)?;
     let payload = json_field(object, "payload")?.clone();
     let payload_object = json_object(&payload, "payload")?;
-    require_u64(
-        payload_object,
-        "contact_card_version",
-        CONTACT_CARD_PAYLOAD_VERSION,
-    )?;
-    require_string_equals(
-        payload_object,
-        "recipient_key_algorithm",
-        RECIPIENT_ENCRYPTION_KEY_ALGORITHM,
-    )?;
+    require_u64(payload_object, "contact_card_version", CONTACT_CARD_PAYLOAD_VERSION)?;
+    require_string_equals(payload_object, "recipient_key_algorithm", RECIPIENT_ENCRYPTION_KEY_ALGORITHM)?;
     if let Some(expires_at) = optional_u64(payload_object, "expires_at_unix_seconds")?
         && options.verifier_time_unix_seconds >= expires_at.cast_signed()
     {
-        return Err(TzapContactCardError::InvalidField {
-            field: "expires_at_unix_seconds",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "expires_at_unix_seconds" });
     }
 
     let signature = decode_base64url(json_string(object, "signature")?, "signature")?;
-    let leaf_der = decode_base64url(
-        json_string(payload_object, "signing_certificate_der")?,
-        "signing_certificate_der",
-    )?;
-    let intermediate_chain_der =
-        decode_der_array(json_field(payload_object, "intermediate_chain_der")?)?;
+    let leaf_der =
+        decode_base64url(json_string(payload_object, "signing_certificate_der")?, "signing_certificate_der")?;
+    let intermediate_chain_der = decode_der_array(json_field(payload_object, "intermediate_chain_der")?)?;
     let chain_der = contact_chain_der(&leaf_der, &intermediate_chain_der);
     let validation = validate_contact_card_chain(&chain_der, options)?;
     let signing_certificate_sha256 = sha256_identifier(&leaf_der);
     if signing_certificate_sha256 != json_string(payload_object, "signing_certificate_sha256")? {
-        return Err(TzapContactCardError::InvalidField {
-            field: "signing_certificate_sha256",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "signing_certificate_sha256" });
     }
-    let recipient_public_key = decode_base64url(
-        json_string(payload_object, "recipient_public_key")?,
-        "recipient_public_key",
-    )?;
+    let recipient_public_key =
+        decode_base64url(json_string(payload_object, "recipient_public_key")?, "recipient_public_key")?;
     let recipient_public_key_fingerprint = sha256_identifier(&recipient_public_key);
-    if recipient_public_key_fingerprint != json_string(payload_object, "recipient_key_fingerprint")?
-    {
-        return Err(TzapContactCardError::InvalidField {
-            field: "recipient_key_fingerprint",
-        });
+    if recipient_public_key_fingerprint != json_string(payload_object, "recipient_key_fingerprint")? {
+        return Err(TzapContactCardError::InvalidField { field: "recipient_key_fingerprint" });
     }
 
     let canonical_payload = jcs::canonicalize_json_bytes(&payload)
@@ -216,13 +182,10 @@ pub fn verify_tzap_contact_card(
     let public_key = X509::from_der(&leaf_der)
         .and_then(|certificate| certificate.public_key())
         .map_err(|error| TzapContactCardError::Crypto(error.to_string()))?;
-    let verified =
-        p256_signature::verify_p256_sha256_p1363(&public_key, &canonical_payload, &signature)
-            .map_err(|error| TzapContactCardError::Crypto(format!("{error:?}")))?;
+    let verified = p256_signature::verify_p256_sha256_p1363(&public_key, &canonical_payload, &signature)
+        .map_err(|error| TzapContactCardError::Crypto(format!("{error:?}")))?;
     if !verified {
-        return Err(TzapContactCardError::Crypto(
-            "contact-card signature did not verify".to_owned(),
-        ));
+        return Err(TzapContactCardError::Crypto("contact-card signature did not verify".to_owned()));
     }
     let display_name = json_string(payload_object, "display_name")?;
 
@@ -260,9 +223,7 @@ pub fn import_tzap_contact_card(
         contact_card_payload: verified.payload,
         accepted_at_unix_seconds,
     };
-    inventory
-        .contacts
-        .retain(|existing| existing.contact_id != contact.contact_id);
+    inventory.contacts.retain(|existing| existing.contact_id != contact.contact_id);
     inventory.contacts.push(contact.clone());
     store.save_inventory(account_key, inventory)?;
     Ok(contact)
@@ -274,12 +235,10 @@ pub fn accepted_contact_recipient_public_keys(
     contact_ids: &[String],
     now_unix_seconds: u64,
 ) -> Result<Vec<Vec<u8>>, TzapContactCardError> {
-    Ok(
-        accepted_contact_recipients(store, account_key, contact_ids, now_unix_seconds)?
-            .into_iter()
-            .map(|recipient| recipient.recipient_public_key_der)
-            .collect(),
-    )
+    Ok(accepted_contact_recipients(store, account_key, contact_ids, now_unix_seconds)?
+        .into_iter()
+        .map(|recipient| recipient.recipient_public_key_der)
+        .collect())
 }
 
 pub fn accepted_contact_recipients(
@@ -289,9 +248,7 @@ pub fn accepted_contact_recipients(
     now_unix_seconds: u64,
 ) -> Result<Vec<TzapAcceptedContactRecipient>, TzapContactCardError> {
     if contact_ids.is_empty() {
-        return Err(TzapContactCardError::InvalidField {
-            field: "contact_ids",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "contact_ids" });
     }
     let inventory = store.load_inventory(account_key)?;
     contact_ids
@@ -301,22 +258,15 @@ pub fn accepted_contact_recipients(
                 .contacts
                 .iter()
                 .find(|record| &record.contact_id == contact_id)
-                .ok_or(TzapContactCardError::MissingRecord {
-                    field: "contact_id",
-                })?;
-            let payload_object =
-                json_object(&contact.contact_card_payload, "contact_card_payload")?;
+                .ok_or(TzapContactCardError::MissingRecord { field: "contact_id" })?;
+            let payload_object = json_object(&contact.contact_card_payload, "contact_card_payload")?;
             if let Some(expires_at) = optional_u64(payload_object, "expires_at_unix_seconds")?
                 && now_unix_seconds >= expires_at
             {
-                return Err(TzapContactCardError::InvalidField {
-                    field: "expires_at_unix_seconds",
-                });
+                return Err(TzapContactCardError::InvalidField { field: "expires_at_unix_seconds" });
             }
-            let recipient_public_key_der = decode_base64url(
-                json_string(payload_object, "recipient_public_key")?,
-                "recipient_public_key",
-            )?;
+            let recipient_public_key_der =
+                decode_base64url(json_string(payload_object, "recipient_public_key")?, "recipient_public_key")?;
             Ok(TzapAcceptedContactRecipient {
                 contact_id: contact.contact_id.clone(),
                 recipient_public_key_der,
@@ -328,30 +278,20 @@ pub fn accepted_contact_recipients(
         .collect()
 }
 
-fn validate_export_request(
-    request: &TzapContactCardExportRequest,
-) -> Result<(), TzapContactCardError> {
+fn validate_export_request(request: &TzapContactCardExportRequest) -> Result<(), TzapContactCardError> {
     if request.account_key.is_empty() {
-        return Err(TzapContactCardError::InvalidField {
-            field: "account_key",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "account_key" });
     }
     if request.display_name.is_empty() {
-        return Err(TzapContactCardError::InvalidField {
-            field: "display_name",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "display_name" });
     }
     if request.device_label.is_empty() {
-        return Err(TzapContactCardError::InvalidField {
-            field: "device_label",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "device_label" });
     }
     if let Some(expires_at) = request.expires_at_unix_seconds
         && expires_at <= request.created_at_unix_seconds
     {
-        return Err(TzapContactCardError::InvalidField {
-            field: "expires_at_unix_seconds",
-        });
+        return Err(TzapContactCardError::InvalidField { field: "expires_at_unix_seconds" });
     }
     Ok(())
 }
@@ -391,9 +331,8 @@ fn sign_contact_card_payload(
     signing_key: &TzapDeviceSigningKeyRecord,
     payload: &Value,
 ) -> Result<[u8; p256_signature::P256_P1363_SIGNATURE_LENGTH], TzapContactCardError> {
-    let private_key =
-        PKey::<Private>::private_key_from_der(signing_key.private_key_der.expose_secret())
-            .map_err(|error| TzapContactCardError::Crypto(error.to_string()))?;
+    let private_key = PKey::<Private>::private_key_from_der(signing_key.private_key_der.expose_secret())
+        .map_err(|error| TzapContactCardError::Crypto(error.to_string()))?;
     let canonical_payload = jcs::canonicalize_json_bytes(payload)
         .map_err(|error| TzapContactCardError::Canonicalization(format!("{error:?}")))?;
     p256_signature::sign_p256_sha256_p1363(&private_key, &canonical_payload)
@@ -417,24 +356,14 @@ fn validate_contact_card_chain(
     }
 
     let mut custom_error = None;
-    for chain_der in candidate_chains(
-        embedded_chain_der,
-        &options.custom_trust_root_certificates_der,
-    ) {
+    for chain_der in candidate_chains(embedded_chain_der, &options.custom_trust_root_certificates_der) {
         let Some(root_sha256) = chain_der.last().map(Vec::as_slice).map(sha256_identifier) else {
             continue;
         };
-        if !options
-            .custom_trust_root_sha256
-            .iter()
-            .any(|configured| configured == &root_sha256)
-        {
+        if !options.custom_trust_root_sha256.iter().any(|configured| configured == &root_sha256) {
             continue;
         }
-        match trust::validate_custom_tzap_certificate_chain_der(
-            &chain_der,
-            &options.certificate_profile_options,
-        ) {
+        match trust::validate_custom_tzap_certificate_chain_der(&chain_der, &options.certificate_profile_options) {
             Ok(validation) => return Ok(validation),
             Err(error) => custom_error = Some(error),
         }
@@ -466,28 +395,15 @@ fn candidate_chains(embedded_chain_der: &[Vec<u8>], roots_der: &[Vec<u8>]) -> Ve
     candidates
 }
 
-fn json_object<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> Result<&'a Map<String, Value>, TzapContactCardError> {
-    value
-        .as_object()
-        .ok_or(TzapContactCardError::InvalidField { field })
+fn json_object<'a>(value: &'a Value, field: &'static str) -> Result<&'a Map<String, Value>, TzapContactCardError> {
+    value.as_object().ok_or(TzapContactCardError::InvalidField { field })
 }
 
-fn json_field<'a>(
-    object: &'a Map<String, Value>,
-    field: &'static str,
-) -> Result<&'a Value, TzapContactCardError> {
-    object
-        .get(field)
-        .ok_or(TzapContactCardError::InvalidField { field })
+fn json_field<'a>(object: &'a Map<String, Value>, field: &'static str) -> Result<&'a Value, TzapContactCardError> {
+    object.get(field).ok_or(TzapContactCardError::InvalidField { field })
 }
 
-fn json_string(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<String, TzapContactCardError> {
+fn json_string(object: &Map<String, Value>, field: &'static str) -> Result<String, TzapContactCardError> {
     object
         .get(field)
         .and_then(Value::as_str)
@@ -496,26 +412,15 @@ fn json_string(
         .ok_or(TzapContactCardError::InvalidField { field })
 }
 
-fn optional_u64(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<Option<u64>, TzapContactCardError> {
+fn optional_u64(object: &Map<String, Value>, field: &'static str) -> Result<Option<u64>, TzapContactCardError> {
     object
         .get(field)
         .filter(|value| !value.is_null())
-        .map(|value| {
-            value
-                .as_u64()
-                .ok_or(TzapContactCardError::InvalidField { field })
-        })
+        .map(|value| value.as_u64().ok_or(TzapContactCardError::InvalidField { field }))
         .transpose()
 }
 
-fn require_u64(
-    object: &Map<String, Value>,
-    field: &'static str,
-    expected: u64,
-) -> Result<(), TzapContactCardError> {
+fn require_u64(object: &Map<String, Value>, field: &'static str, expected: u64) -> Result<(), TzapContactCardError> {
     if object.get(field).and_then(Value::as_u64) == Some(expected) {
         Ok(())
     } else {
@@ -538,27 +443,20 @@ fn require_string_equals(
 fn decode_der_array(value: &Value) -> Result<Vec<Vec<u8>>, TzapContactCardError> {
     value
         .as_array()
-        .ok_or(TzapContactCardError::InvalidField {
-            field: "intermediate_chain_der",
-        })?
+        .ok_or(TzapContactCardError::InvalidField { field: "intermediate_chain_der" })?
         .iter()
         .map(|value| {
             value
                 .as_str()
-                .ok_or(TzapContactCardError::InvalidField {
-                    field: "intermediate_chain_der",
-                })
+                .ok_or(TzapContactCardError::InvalidField { field: "intermediate_chain_der" })
                 .and_then(|encoded| decode_base64url(encoded.to_owned(), "intermediate_chain_der"))
         })
         .collect()
 }
 
 fn decode_base64url(value: String, field: &'static str) -> Result<Vec<u8>, TzapContactCardError> {
-    trust::validate_base64url_no_padding(&value)
-        .map_err(|_| TzapContactCardError::InvalidField { field })?;
-    URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| TzapContactCardError::InvalidField { field })
+    trust::validate_base64url_no_padding(&value).map_err(|_| TzapContactCardError::InvalidField { field })?;
+    URL_SAFE_NO_PAD.decode(value).map_err(|_| TzapContactCardError::InvalidField { field })
 }
 
 fn sha256_identifier(bytes: &[u8]) -> String {
@@ -569,22 +467,18 @@ fn sha256_identifier(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        TzapContactCardError, TzapContactCardExportRequest, TzapContactCardImportOptions,
-        export_tzap_contact_card, import_tzap_contact_card, verify_tzap_contact_card,
+        TzapContactCardError, TzapContactCardExportRequest, TzapContactCardImportOptions, export_tzap_contact_card,
+        import_tzap_contact_card, verify_tzap_contact_card,
     };
     use crate::device_identity::{
-        TzapDeviceCsrOptions, generate_device_signing_key_and_csr,
-        generate_recipient_encryption_key,
+        TzapDeviceCsrOptions, generate_device_signing_key_and_csr, generate_recipient_encryption_key,
     };
     use crate::local_identity_store::{
-        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, InMemoryTzapLocalIdentityStore,
-        TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
-        TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
-        TzapSignDeviceRouting,
+        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord,
+        TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
+        TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
     };
-    use crate::trust::{
-        self, TzapCertificateProfileOptions, TzapCertificatePublicMetadata, TzapRootPinSet,
-    };
+    use crate::trust::{self, TzapCertificateProfileOptions, TzapCertificatePublicMetadata, TzapRootPinSet};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
     use openssl::bn::BigNum;
@@ -614,13 +508,7 @@ mod tests {
 
         let mut fresh_store = InMemoryTzapLocalIdentityStore::new();
         assert!(matches!(
-            import_tzap_contact_card(
-                &mut fresh_store,
-                DEFAULT_IDENTITY_INVENTORY_ACCOUNT,
-                &card,
-                &options,
-                None,
-            ),
+            import_tzap_contact_card(&mut fresh_store, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, &card, &options, None,),
             Err(TzapContactCardError::AcceptanceRequired)
         ));
 
@@ -636,14 +524,7 @@ mod tests {
         assert_eq!(contact.trust_anchor_type, verified.trust_anchor_type);
         assert_eq!(contact.verification_state, verified.verification_state);
         assert!(contact.missing_status_caveat);
-        assert_eq!(
-            fresh_store
-                .load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT)
-                .unwrap()
-                .contacts
-                .len(),
-            1
-        );
+        assert_eq!(fresh_store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap().contacts.len(), 1);
         let selected_recipients = super::accepted_contact_recipients(
             &fresh_store,
             DEFAULT_IDENTITY_INVENTORY_ACCOUNT,
@@ -685,12 +566,10 @@ mod tests {
 
     impl ContactFixture {
         fn new() -> Self {
-            let signing_material =
-                generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+            let signing_material = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
             let recipient_material = generate_recipient_encryption_key().unwrap();
             let chain = certificate_fixture(
-                &PKey::private_key_from_der(signing_material.private_key_der.expose_secret())
-                    .unwrap(),
+                &PKey::private_key_from_der(signing_material.private_key_der.expose_secret()).unwrap(),
             );
             Self {
                 signing_key: TzapDeviceSigningKeyRecord {
@@ -733,16 +612,10 @@ mod tests {
         fn store(&self) -> InMemoryTzapLocalIdentityStore {
             let mut inventory = TzapLocalIdentityInventory::empty();
             inventory.device_signing_keys.push(self.signing_key.clone());
-            inventory
-                .recipient_encryption_keys
-                .push(self.recipient_key.clone());
-            inventory
-                .enrolled_certificates
-                .push(self.certificate.clone());
+            inventory.recipient_encryption_keys.push(self.recipient_key.clone());
+            inventory.enrolled_certificates.push(self.certificate.clone());
             let mut store = InMemoryTzapLocalIdentityStore::new();
-            store
-                .save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory)
-                .unwrap();
+            store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
             store
         }
 
@@ -761,10 +634,7 @@ mod tests {
         fn import_options(&self) -> TzapContactCardImportOptions<'_> {
             TzapContactCardImportOptions {
                 verifier_time_unix_seconds: now_unix_seconds(),
-                official_root_pins: &TzapRootPinSet {
-                    current: &[],
-                    planned_successors: &[],
-                },
+                official_root_pins: &TzapRootPinSet { current: &[], planned_successors: &[] },
                 official_root_certificates_der: Vec::new(),
                 custom_trust_root_sha256: vec![self.root_sha256.clone()],
                 custom_trust_root_certificates_der: vec![self.root_der.clone()],
@@ -786,25 +656,14 @@ mod tests {
         let root_key = p256_private_key();
         let platform_key = p256_private_key();
         let root = root_certificate(&root_key);
-        let platform = intermediate_certificate(
-            &platform_key,
-            root.as_ref(),
-            root_key.as_ref(),
-            root.as_ref(),
-        );
-        let leaf = leaf_certificate(
-            leaf_key,
-            platform.as_ref(),
-            platform_key.as_ref(),
-            platform.as_ref(),
-        );
+        let platform = intermediate_certificate(&platform_key, root.as_ref(), root_key.as_ref(), root.as_ref());
+        let leaf = leaf_certificate(leaf_key, platform.as_ref(), platform_key.as_ref(), platform.as_ref());
         let leaf_der = leaf.to_der().unwrap();
         let platform_der = platform.to_der().unwrap();
         let root_der = root.to_der().unwrap();
         let platform_parsed = X509Certificate::from_der(&platform_der).unwrap().1;
         let leaf_parsed = X509Certificate::from_der(&leaf_der).unwrap().1;
-        let issuer_key_identifier =
-            URL_SAFE_NO_PAD.encode(subject_key_identifier(&platform_parsed).unwrap());
+        let issuer_key_identifier = URL_SAFE_NO_PAD.encode(subject_key_identifier(&platform_parsed).unwrap());
         let serial_number = trust::canonical_serial_hex(leaf_parsed.raw_serial()).unwrap();
         CertificateFixture {
             leaf_der,
@@ -818,26 +677,8 @@ mod tests {
 
     fn root_certificate(key: &PKeyRef<Private>) -> X509 {
         let mut builder = base_certificate_builder("TZAP Test Root", key, None);
-        builder
-            .append_extension(
-                BasicConstraints::new()
-                    .critical()
-                    .ca()
-                    .pathlen(2)
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_cert_sign()
-                    .crl_sign()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        builder.append_extension(BasicConstraints::new().critical().ca().pathlen(2).build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
         append_subject_key_identifier(&mut builder, None);
         builder.sign(key, MessageDigest::sha256()).unwrap();
         builder.build()
@@ -849,36 +690,12 @@ mod tests {
         issuer_key: &PKeyRef<Private>,
         aki_source: &X509Ref,
     ) -> X509 {
-        let mut builder =
-            base_certificate_builder("TZAP Platform Intermediate", key, Some(issuer_cert));
-        builder
-            .append_extension(
-                BasicConstraints::new()
-                    .critical()
-                    .ca()
-                    .pathlen(0)
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_cert_sign()
-                    .crl_sign()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        let mut builder = base_certificate_builder("TZAP Platform Intermediate", key, Some(issuer_cert));
+        builder.append_extension(BasicConstraints::new().critical().ca().pathlen(0).build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
         append_subject_key_identifier(&mut builder, None);
         append_authority_key_identifier(&mut builder, aki_source);
-        append_der_extension(
-            &mut builder,
-            "2.5.29.32",
-            false,
-            &certificate_policies_der(&[trust::TZAP_OID_CA_POLICY]),
-        );
+        append_der_extension(&mut builder, "2.5.29.32", false, &certificate_policies_der(&[trust::TZAP_OID_CA_POLICY]));
         append_der_extension(&mut builder, "2.5.29.31", false, &[0x30, 0x00]);
         builder.sign(issuer_key, MessageDigest::sha256()).unwrap();
         builder.build()
@@ -891,21 +708,9 @@ mod tests {
         aki_source: &X509Ref,
     ) -> X509 {
         let mut builder = base_certificate_builder("TZAP Test Signer", key, Some(issuer_cert));
-        builder
-            .set_not_after(&Asn1Time::days_from_now(90).unwrap())
-            .unwrap();
-        builder
-            .append_extension(BasicConstraints::new().critical().build().unwrap())
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .digital_signature()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(90).unwrap()).unwrap();
+        builder.append_extension(BasicConstraints::new().critical().build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().digital_signature().build().unwrap()).unwrap();
         let mut eku = ExtendedKeyUsage::new();
         eku.other(trust::TZAP_OID_DOCUMENT_SIGNING_EKU);
         builder.append_extension(eku.build().unwrap()).unwrap();
@@ -916,12 +721,7 @@ mod tests {
             false,
             &certificate_policies_der(&[trust::TZAP_OID_LEAF_POLICY]),
         );
-        append_der_extension(
-            &mut builder,
-            trust::TZAP_OID_METADATA_EXTENSION,
-            false,
-            &metadata_extension_bytes(),
-        );
+        append_der_extension(&mut builder, trust::TZAP_OID_METADATA_EXTENSION, false, &metadata_extension_bytes());
         builder.sign(issuer_key, MessageDigest::sha256()).unwrap();
         builder.build()
     }
@@ -944,12 +744,8 @@ mod tests {
             builder.set_issuer_name(&name).unwrap();
         }
         builder.set_pubkey(key).unwrap();
-        builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(90).unwrap())
-            .unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(90).unwrap()).unwrap();
         builder
     }
 
@@ -962,10 +758,7 @@ mod tests {
         BigNum::from_u32(42).unwrap().to_asn1_integer().unwrap()
     }
 
-    fn append_subject_key_identifier(
-        builder: &mut openssl::x509::X509Builder,
-        issuer: Option<&X509Ref>,
-    ) {
+    fn append_subject_key_identifier(builder: &mut openssl::x509::X509Builder, issuer: Option<&X509Ref>) {
         let extension = {
             let context = builder.x509v3_context(issuer, None);
             SubjectKeyIdentifier::new().build(&context).unwrap()
@@ -976,32 +769,19 @@ mod tests {
     fn append_authority_key_identifier(builder: &mut openssl::x509::X509Builder, issuer: &X509Ref) {
         let extension = {
             let context = builder.x509v3_context(Some(issuer), None);
-            AuthorityKeyIdentifier::new()
-                .keyid(true)
-                .build(&context)
-                .unwrap()
+            AuthorityKeyIdentifier::new().keyid(true).build(&context).unwrap()
         };
         builder.append_extension(extension).unwrap();
     }
 
-    fn append_der_extension(
-        builder: &mut openssl::x509::X509Builder,
-        oid: &str,
-        critical: bool,
-        contents: &[u8],
-    ) {
+    fn append_der_extension(builder: &mut openssl::x509::X509Builder, oid: &str, critical: bool, contents: &[u8]) {
         let oid = Asn1Object::from_str(oid).unwrap();
         let contents = Asn1OctetString::new_from_bytes(contents).unwrap();
-        builder
-            .append_extension(X509Extension::new_from_der(&oid, critical, &contents).unwrap())
-            .unwrap();
+        builder.append_extension(X509Extension::new_from_der(&oid, critical, &contents).unwrap()).unwrap();
     }
 
     fn certificate_policies_der(policies: &[&str]) -> Vec<u8> {
-        let policy_infos = policies
-            .iter()
-            .flat_map(|policy| der_sequence(&der_oid(policy)))
-            .collect::<Vec<_>>();
+        let policy_infos = policies.iter().flat_map(|policy| der_sequence(&der_oid(policy))).collect::<Vec<_>>();
         der_sequence(&policy_infos)
     }
 
@@ -1056,8 +836,7 @@ mod tests {
 
     fn subject_key_identifier(certificate: &X509Certificate<'_>) -> Option<Vec<u8>> {
         certificate.iter_extensions().find_map(|extension| {
-            if let ParsedExtension::SubjectKeyIdentifier(identifier) = extension.parsed_extension()
-            {
+            if let ParsedExtension::SubjectKeyIdentifier(identifier) = extension.parsed_extension() {
                 Some(identifier.0.to_vec())
             } else {
                 None
@@ -1071,11 +850,6 @@ mod tests {
     }
 
     fn now_unix_seconds() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .try_into()
-            .unwrap()
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().try_into().unwrap()
     }
 }

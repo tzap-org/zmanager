@@ -152,11 +152,7 @@ impl PlanOptions {
     /// Returns the product-facing clean source archive profile.
     #[must_use]
     pub fn clean_source() -> Self {
-        Self {
-            clean_source_exclusions: true,
-            respect_gitignore: true,
-            ..Self::default()
-        }
+        Self { clean_source_exclusions: true, respect_gitignore: true, ..Self::default() }
     }
 }
 
@@ -178,11 +174,7 @@ impl fmt::Display for PlanError {
                 write!(f, "source path has no archive name: {}", path.display())
             }
             Self::Metadata { path, source } => {
-                write!(
-                    f,
-                    "failed to read metadata for {}: {source}",
-                    path.display()
-                )
+                write!(f, "failed to read metadata for {}: {source}", path.display())
             }
             Self::ReadDir { path, source } => {
                 write!(f, "failed to read directory {}: {source}", path.display())
@@ -209,10 +201,7 @@ impl std::error::Error for PlanError {
 ///
 /// Returns [`PlanError`] if the source has no usable archive name, if metadata
 /// cannot be read, or if directory traversal fails.
-pub fn plan_archive(
-    source: impl AsRef<Path>,
-    options: &PlanOptions,
-) -> Result<ArchiveManifest, PlanError> {
+pub fn plan_archive(source: impl AsRef<Path>, options: &PlanOptions) -> Result<ArchiveManifest, PlanError> {
     let root = source.as_ref().to_path_buf();
     plan_archive_roots([root.clone()], root, options)
 }
@@ -232,14 +221,9 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    let roots = sources
-        .into_iter()
-        .map(|source| source.as_ref().to_path_buf())
-        .collect::<Vec<_>>();
+    let roots = sources.into_iter().map(|source| source.as_ref().to_path_buf()).collect::<Vec<_>>();
     let Some(first_root) = roots.first() else {
-        return Err(PlanError::MissingFileName {
-            path: PathBuf::new(),
-        });
+        return Err(PlanError::MissingFileName { path: PathBuf::new() });
     };
     let manifest_root = common_parent(&roots).unwrap_or_else(|| first_root.clone());
 
@@ -265,16 +249,10 @@ fn plan_archive_roots(
         planner.walk(&root, root_name, 0, &[], &mut Vec::new())?;
     }
 
-    planner
-        .entries
-        .sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
+    planner.entries.sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
     record_archive_path_collisions(&planner.entries, &mut planner.warnings);
-    planner
-        .excluded_entries
-        .sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
-    planner
-        .warnings
-        .sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    planner.excluded_entries.sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
+    planner.warnings.sort_by(|left, right| left.source_path.cmp(&right.source_path));
 
     Ok(ArchiveManifest {
         root: manifest_root,
@@ -288,10 +266,7 @@ fn plan_archive_roots(
 
 fn common_parent(paths: &[PathBuf]) -> Option<PathBuf> {
     let first_parent = paths.first()?.parent()?.to_path_buf();
-    if paths
-        .iter()
-        .all(|path| path.parent().is_some_and(|parent| parent == first_parent))
-    {
+    if paths.iter().all(|path| path.parent().is_some_and(|parent| parent == first_parent)) {
         Some(first_parent)
     } else {
         None
@@ -317,21 +292,16 @@ impl ManifestPlanner<'_> {
         active_dirs: &mut Vec<PathBuf>,
     ) -> Result<(), PlanError> {
         let metadata = if self.options.follow_symlinks {
-            fs::metadata(source_path).map_err(|source| PlanError::Metadata {
-                path: source_path.to_path_buf(),
-                source,
-            })?
+            fs::metadata(source_path)
+                .map_err(|source| PlanError::Metadata { path: source_path.to_path_buf(), source })?
         } else {
-            fs::symlink_metadata(source_path).map_err(|source| PlanError::Metadata {
-                path: source_path.to_path_buf(),
-                source,
-            })?
+            fs::symlink_metadata(source_path)
+                .map_err(|source| PlanError::Metadata { path: source_path.to_path_buf(), source })?
         };
         let file_type = manifest_file_type(&metadata);
 
         if depth > 0
-            && let Some(reason) =
-                self.exclusion_reason(source_path, &archive_path, file_type, gitignore_rules)
+            && let Some(reason) = self.exclusion_reason(source_path, &archive_path, file_type, gitignore_rules)
         {
             let size = estimate_regular_file_bytes(&metadata, file_type);
             self.excluded_bytes = self.excluded_bytes.saturating_add(size);
@@ -344,12 +314,7 @@ impl ManifestPlanner<'_> {
             return Ok(());
         }
 
-        let entry = build_entry(
-            source_path,
-            archive_path.clone(),
-            &metadata,
-            &mut self.warnings,
-        );
+        let entry = build_entry(source_path, archive_path.clone(), &metadata, &mut self.warnings);
         if entry.file_type == ManifestFileType::File {
             self.total_bytes = self.total_bytes.saturating_add(entry.size);
         }
@@ -372,10 +337,7 @@ impl ManifestPlanner<'_> {
                         true
                     }
                     Err(source) => {
-                        return Err(PlanError::Metadata {
-                            path: source_path.to_path_buf(),
-                            source,
-                        });
+                        return Err(PlanError::Metadata { path: source_path.to_path_buf(), source });
                     }
                 }
             } else {
@@ -383,25 +345,15 @@ impl ManifestPlanner<'_> {
             };
             let active_gitignore_rules = if self.options.respect_gitignore {
                 let mut rules = gitignore_rules.to_vec();
-                rules.extend(read_gitignore_rules(
-                    source_path,
-                    &archive_path,
-                    &mut self.warnings,
-                ));
+                rules.extend(read_gitignore_rules(source_path, &archive_path, &mut self.warnings));
                 rules
             } else {
                 Vec::new()
             };
             let mut children = fs::read_dir(source_path)
-                .map_err(|source| PlanError::ReadDir {
-                    path: source_path.to_path_buf(),
-                    source,
-                })?
+                .map_err(|source| PlanError::ReadDir { path: source_path.to_path_buf(), source })?
                 .collect::<Result<Vec<_>, io::Error>>()
-                .map_err(|source| PlanError::ReadDir {
-                    path: source_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(|source| PlanError::ReadDir { path: source_path.to_path_buf(), source })?;
 
             children.sort_by_key(fs::DirEntry::file_name);
 
@@ -409,13 +361,7 @@ impl ManifestPlanner<'_> {
                 let child_name = child.file_name();
                 let child_name = child_name.to_string_lossy();
                 let child_archive_path = format!("{archive_path}/{child_name}");
-                self.walk(
-                    &child.path(),
-                    child_archive_path,
-                    depth + 1,
-                    &active_gitignore_rules,
-                    active_dirs,
-                )?;
+                self.walk(&child.path(), child_archive_path, depth + 1, &active_gitignore_rules, active_dirs)?;
             }
             if active_dir_marker {
                 active_dirs.pop();
@@ -448,37 +394,22 @@ impl ManifestPlanner<'_> {
             return Some(reason);
         }
 
-        if self
-            .options
-            .exclude_names
-            .iter()
-            .any(|excluded| excluded == file_name.as_ref())
-        {
-            if file_type == ManifestFileType::Directory
-                && self.has_explicit_include_descendant(archive_path)
-            {
+        if self.options.exclude_names.iter().any(|excluded| excluded == file_name.as_ref()) {
+            if file_type == ManifestFileType::Directory && self.has_explicit_include_descendant(archive_path) {
                 return None;
             }
             return Some(format!("excluded name: {file_name}"));
         }
 
-        if self
-            .options
-            .exclude_archive_paths
-            .iter()
-            .any(|excluded| excluded == archive_path)
-        {
-            if file_type == ManifestFileType::Directory
-                && self.has_explicit_include_descendant(archive_path)
-            {
+        if self.options.exclude_archive_paths.iter().any(|excluded| excluded == archive_path) {
+            if file_type == ManifestFileType::Directory && self.has_explicit_include_descendant(archive_path) {
                 return None;
             }
             return Some(format!("excluded archive path: {archive_path}"));
         }
 
         if self.options.respect_gitignore
-            && let Some((ignored, rule_index)) =
-                gitignore_decision(archive_path, file_type, gitignore_rules)
+            && let Some((ignored, rule_index)) = gitignore_decision(archive_path, file_type, gitignore_rules)
             && ignored
         {
             if file_type == ManifestFileType::Directory
@@ -492,17 +423,11 @@ impl ManifestPlanner<'_> {
         None
     }
 
-    fn clean_source_exclusion_reason(
-        &self,
-        archive_path: &str,
-        file_type: ManifestFileType,
-    ) -> Option<String> {
+    fn clean_source_exclusion_reason(&self, archive_path: &str, file_type: ManifestFileType) -> Option<String> {
         let mut components = archive_path.split('/').skip(1);
         let matched_name = components.find(|component| clean_source_exclude_name(component))?;
 
-        if file_type == ManifestFileType::Directory
-            && self.has_explicit_include_descendant(archive_path)
-        {
+        if file_type == ManifestFileType::Directory && self.has_explicit_include_descendant(archive_path) {
             return None;
         }
 
@@ -510,18 +435,12 @@ impl ManifestPlanner<'_> {
     }
 
     fn is_explicitly_included(&self, archive_path: &str) -> bool {
-        self.options
-            .include_archive_paths
-            .iter()
-            .any(|included| path_matches_or_is_descendant(archive_path, included))
+        self.options.include_archive_paths.iter().any(|included| path_matches_or_is_descendant(archive_path, included))
     }
 
     fn has_explicit_include_descendant(&self, archive_path: &str) -> bool {
         let prefix = format!("{archive_path}/");
-        self.options
-            .include_archive_paths
-            .iter()
-            .any(|included| included.starts_with(&prefix))
+        self.options.include_archive_paths.iter().any(|included| included.starts_with(&prefix))
     }
 }
 
@@ -536,8 +455,7 @@ struct GitignoreRule {
 
 impl GitignoreRule {
     fn matches(&self, archive_path: &str, file_type: ManifestFileType) -> bool {
-        let Some(relative_path) = relative_archive_path(&self.base_archive_path, archive_path)
-        else {
+        let Some(relative_path) = relative_archive_path(&self.base_archive_path, archive_path) else {
             return false;
         };
         if relative_path.is_empty() {
@@ -551,11 +469,8 @@ impl GitignoreRule {
         if self.is_anchored_or_path_pattern() {
             path_pattern_matches_or_contains_descendant(relative_path, &self.pattern)
         } else {
-            relative_path
-                .split('/')
-                .any(|segment| segment_pattern_matches(segment, &self.pattern))
-                || file_type == ManifestFileType::Directory
-                    && segment_pattern_matches(relative_path, &self.pattern)
+            relative_path.split('/').any(|segment| segment_pattern_matches(segment, &self.pattern))
+                || file_type == ManifestFileType::Directory && segment_pattern_matches(relative_path, &self.pattern)
         }
     }
 
@@ -564,9 +479,7 @@ impl GitignoreRule {
             return path_pattern_matches_or_contains_descendant(relative_path, &self.pattern);
         }
 
-        relative_path
-            .split('/')
-            .any(|segment| segment_pattern_matches(segment, &self.pattern))
+        relative_path.split('/').any(|segment| segment_pattern_matches(segment, &self.pattern))
     }
 
     fn could_include_below(&self, archive_path: &str) -> bool {
@@ -574,8 +487,7 @@ impl GitignoreRule {
             return false;
         }
 
-        let Some(relative_path) = relative_archive_path(&self.base_archive_path, archive_path)
-        else {
+        let Some(relative_path) = relative_archive_path(&self.base_archive_path, archive_path) else {
             return false;
         };
 
@@ -627,10 +539,7 @@ fn read_gitignore_rules(
         }
     };
 
-    contents
-        .lines()
-        .filter_map(|line| parse_gitignore_rule(line, base_archive_path))
-        .collect()
+    contents.lines().filter_map(|line| parse_gitignore_rule(line, base_archive_path)).collect()
 }
 
 fn parse_gitignore_rule(line: &str, base_archive_path: &str) -> Option<GitignoreRule> {
@@ -649,17 +558,9 @@ fn parse_gitignore_rule(line: &str, base_archive_path: &str) -> Option<Gitignore
         return None;
     }
 
-    let scope = if pattern.ends_with('/') {
-        GitignoreScope::Directory
-    } else {
-        GitignoreScope::Any
-    };
+    let scope = if pattern.ends_with('/') { GitignoreScope::Directory } else { GitignoreScope::Any };
     pattern = pattern.trim_end_matches('/');
-    let anchor = if pattern.starts_with('/') {
-        GitignoreAnchor::Anchored
-    } else {
-        GitignoreAnchor::Anywhere
-    };
+    let anchor = if pattern.starts_with('/') { GitignoreAnchor::Anchored } else { GitignoreAnchor::Anywhere };
     pattern = pattern.trim_start_matches('/');
 
     if pattern.is_empty() {
@@ -688,15 +589,8 @@ fn gitignore_decision(
         .next_back()
 }
 
-fn gitignore_has_later_negated_descendant(
-    archive_path: &str,
-    rules: &[GitignoreRule],
-    rule_index: usize,
-) -> bool {
-    rules
-        .iter()
-        .skip(rule_index.saturating_add(1))
-        .any(|rule| rule.could_include_below(archive_path))
+fn gitignore_has_later_negated_descendant(archive_path: &str, rules: &[GitignoreRule], rule_index: usize) -> bool {
+    rules.iter().skip(rule_index.saturating_add(1)).any(|rule| rule.could_include_below(archive_path))
 }
 
 fn relative_archive_path<'a>(base_archive_path: &str, archive_path: &'a str) -> Option<&'a str> {
@@ -704,16 +598,11 @@ fn relative_archive_path<'a>(base_archive_path: &str, archive_path: &'a str) -> 
         return Some("");
     }
 
-    archive_path
-        .strip_prefix(base_archive_path)
-        .and_then(|rest| rest.strip_prefix('/'))
+    archive_path.strip_prefix(base_archive_path).and_then(|rest| rest.strip_prefix('/'))
 }
 
 fn path_pattern_matches_or_contains_descendant(path: &str, pattern: &str) -> bool {
-    path_pattern_matches(path, pattern)
-        || path
-            .strip_prefix(pattern)
-            .is_some_and(|rest| rest.starts_with('/'))
+    path_pattern_matches(path, pattern) || path.strip_prefix(pattern).is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn path_pattern_matches(path: &str, pattern: &str) -> bool {
@@ -723,9 +612,7 @@ fn path_pattern_matches(path: &str, pattern: &str) -> bool {
 }
 
 fn split_path_segments(path: &str) -> Vec<&str> {
-    path.split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect()
+    path.split('/').filter(|segment| !segment.is_empty()).collect()
 }
 
 fn path_segments_match(pattern: &[&str], path: &[&str]) -> bool {
@@ -768,10 +655,7 @@ fn segment_pattern_matches_bytes(value: &[u8], pattern: &[u8]) -> bool {
 }
 
 fn path_matches_or_is_descendant(path: &str, include_path: &str) -> bool {
-    path == include_path
-        || path
-            .strip_prefix(include_path)
-            .is_some_and(|rest| rest.starts_with('/'))
+    path == include_path || path.strip_prefix(include_path).is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn clean_source_exclude_name(name: &str) -> bool {
@@ -809,9 +693,7 @@ fn estimate_regular_file_bytes(metadata: &Metadata, file_type: ManifestFileType)
 }
 
 fn archive_file_name(path: &Path) -> Result<String, PlanError> {
-    let file_name = path.file_name().ok_or_else(|| PlanError::MissingFileName {
-        path: path.to_path_buf(),
-    })?;
+    let file_name = path.file_name().ok_or_else(|| PlanError::MissingFileName { path: path.to_path_buf() })?;
 
     Ok(file_name.to_string_lossy().into_owned())
 }
@@ -823,11 +705,7 @@ fn build_entry(
     warnings: &mut Vec<ManifestWarning>,
 ) -> ManifestEntry {
     let file_type = manifest_file_type(metadata);
-    let size = if file_type == ManifestFileType::File {
-        metadata.len()
-    } else {
-        0
-    };
+    let size = if file_type == ManifestFileType::File { metadata.len() } else { 0 };
     let symlink_target = if file_type == ManifestFileType::Symlink {
         match fs::read_link(source_path) {
             Ok(target) => Some(target),
@@ -872,18 +750,12 @@ fn manifest_file_type(metadata: &Metadata) -> ManifestFileType {
 fn permission_snapshot(metadata: &Metadata) -> PermissionSnapshot {
     use std::os::unix::fs::PermissionsExt;
 
-    PermissionSnapshot {
-        readonly: metadata.permissions().readonly(),
-        unix_mode: Some(metadata.permissions().mode()),
-    }
+    PermissionSnapshot { readonly: metadata.permissions().readonly(), unix_mode: Some(metadata.permissions().mode()) }
 }
 
 #[cfg(not(unix))]
 fn permission_snapshot(metadata: &Metadata) -> PermissionSnapshot {
-    PermissionSnapshot {
-        readonly: metadata.permissions().readonly(),
-        unix_mode: None,
-    }
+    PermissionSnapshot { readonly: metadata.permissions().readonly(), unix_mode: None }
 }
 
 fn record_archive_path_collisions(entries: &[ManifestEntry], warnings: &mut Vec<ManifestWarning>) {
@@ -894,9 +766,7 @@ fn record_archive_path_collisions(entries: &[ManifestEntry], warnings: &mut Vec<
         if let Some(previous_path) = seen_paths.insert(collision_key, &entry.archive_path) {
             warnings.push(ManifestWarning {
                 source_path: entry.source_path.clone(),
-                message: format!(
-                    "archive path may collide with {previous_path} on case-insensitive file systems"
-                ),
+                message: format!("archive path may collide with {previous_path} on case-insensitive file systems"),
             });
         }
     }
@@ -905,8 +775,8 @@ fn record_archive_path_collisions(entries: &[ManifestEntry], warnings: &mut Vec<
 #[cfg(test)]
 mod tests {
     use super::{
-        ManifestEntry, ManifestFileType, PermissionSnapshot, PlanOptions, plan_archive,
-        plan_archives, record_archive_path_collisions,
+        ManifestEntry, ManifestFileType, PermissionSnapshot, PlanOptions, plan_archive, plan_archives,
+        record_archive_path_collisions,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -921,15 +791,7 @@ mod tests {
         let manifest = plan_archive(temp.path("project"), &PlanOptions::default()).unwrap();
         let archive_paths = manifest_paths(&manifest);
 
-        assert_eq!(
-            archive_paths,
-            vec![
-                "project",
-                "project/empty",
-                "project/src",
-                "project/src/main.rs"
-            ]
-        );
+        assert_eq!(archive_paths, vec!["project", "project/empty", "project/src", "project/src/main.rs"]);
         assert_eq!(manifest.total_bytes, 13);
         assert_eq!(manifest.excluded_entries, Vec::new());
     }
@@ -942,15 +804,9 @@ mod tests {
 
         let manifest = plan_archive(temp.path("project"), &PlanOptions::default()).unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["project", "project/file.txt"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["project", "project/file.txt"]);
         assert_eq!(manifest.excluded_count(), 1);
-        assert_eq!(
-            manifest.excluded_entries[0].archive_path,
-            "project/.DS_Store"
-        );
+        assert_eq!(manifest.excluded_entries[0].archive_path, "project/.DS_Store");
     }
 
     #[test]
@@ -967,10 +823,7 @@ mod tests {
         };
         let manifest = plan_archive(temp.path("project"), &options).unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["project", "project/keep.txt"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["project", "project/keep.txt"]);
         assert_eq!(manifest.excluded_count(), 2);
     }
 
@@ -986,21 +839,14 @@ mod tests {
 
         let manifest = plan_archive(temp.path("project"), &PlanOptions::clean_source()).unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["project", "project/src", "project/src/main.rs"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["project", "project/src", "project/src/main.rs"]);
         assert_eq!(manifest.excluded_count(), 5);
         assert_eq!(manifest.excluded_bytes, 5);
         assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/node_modules"
-                && entry.reason.contains("clean source")
-                && entry.size == 0
+            entry.archive_path == "project/node_modules" && entry.reason.contains("clean source") && entry.size == 0
         }));
         assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/.DS_Store"
-                && entry.reason.contains("default macOS")
-                && entry.size == 5
+            entry.archive_path == "project/.DS_Store" && entry.reason.contains("default macOS") && entry.size == 5
         }));
     }
 
@@ -1028,12 +874,17 @@ mod tests {
                 "project/src/lib.rs"
             ]
         );
-        assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/debug.log" && entry.reason == "ignored by .gitignore"
-        }));
-        assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/src/generated" && entry.reason == "ignored by .gitignore"
-        }));
+        assert!(
+            manifest
+                .excluded_entries
+                .iter()
+                .any(|entry| { entry.archive_path == "project/debug.log" && entry.reason == "ignored by .gitignore" })
+        );
+        assert!(
+            manifest.excluded_entries.iter().any(|entry| {
+                entry.archive_path == "project/src/generated" && entry.reason == "ignored by .gitignore"
+            })
+        );
     }
 
     #[test]
@@ -1045,15 +896,9 @@ mod tests {
 
         let manifest = plan_archive(temp.path("project"), &PlanOptions::clean_source()).unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["project", "project/.gitignore", "project/keep.log"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["project", "project/.gitignore", "project/keep.log"]);
         assert_eq!(manifest.excluded_count(), 1);
-        assert_eq!(
-            manifest.excluded_entries[0].archive_path,
-            "project/drop.log"
-        );
+        assert_eq!(manifest.excluded_entries[0].archive_path, "project/drop.log");
     }
 
     #[test]
@@ -1070,16 +915,10 @@ mod tests {
 
         assert_eq!(
             manifest_paths(&manifest),
-            vec![
-                "project",
-                "project/node_modules",
-                "project/node_modules/kept",
-                "project/node_modules/kept/index.js"
-            ]
+            vec!["project", "project/node_modules", "project/node_modules/kept", "project/node_modules/kept/index.js"]
         );
         assert!(manifest.excluded_entries.iter().any(|entry| {
-            entry.archive_path == "project/node_modules/drop"
-                && entry.reason.contains("clean source")
+            entry.archive_path == "project/node_modules/drop" && entry.reason.contains("clean source")
         }));
     }
 
@@ -1089,11 +928,7 @@ mod tests {
         temp.write_file("project/file.txt", b"content");
 
         let manifest = plan_archive(temp.path("project"), &PlanOptions::default()).unwrap();
-        let file = manifest
-            .entries
-            .iter()
-            .find(|entry| entry.archive_path == "project/file.txt")
-            .unwrap();
+        let file = manifest.entries.iter().find(|entry| entry.archive_path == "project/file.txt").unwrap();
 
         assert_eq!(file.file_type, ManifestFileType::File);
         assert_eq!(file.size, 7);
@@ -1115,11 +950,7 @@ mod tests {
         symlink("target.txt", temp.path("project/link.txt")).unwrap();
 
         let manifest = plan_archive(temp.path("project"), &PlanOptions::default()).unwrap();
-        let link = manifest
-            .entries
-            .iter()
-            .find(|entry| entry.archive_path == "project/link.txt")
-            .unwrap();
+        let link = manifest.entries.iter().find(|entry| entry.archive_path == "project/link.txt").unwrap();
 
         assert_eq!(link.file_type, ManifestFileType::Symlink);
         assert_eq!(link.size, 0);
@@ -1134,10 +965,7 @@ mod tests {
         let temp = TestDir::new("follow_symlinks_skips_directory_loops");
         temp.write_file("project/dir/file.txt", b"payload");
         symlink("..", temp.path("project/dir/back")).unwrap();
-        let options = PlanOptions {
-            follow_symlinks: true,
-            ..PlanOptions::default()
-        };
+        let options = PlanOptions { follow_symlinks: true, ..PlanOptions::default() };
 
         let manifest = plan_archive(temp.path("project"), &options).unwrap();
         let paths = manifest_paths(&manifest);
@@ -1148,8 +976,7 @@ mod tests {
             "symlink directory loop should not recurse indefinitely: {paths:?}"
         );
         assert!(manifest.warnings.iter().any(|warning| {
-            warning.source_path == temp.path("project/dir/back")
-                && warning.message == "skipped symlink directory loop"
+            warning.source_path == temp.path("project/dir/back") && warning.message == "skipped symlink directory loop"
         }));
     }
 
@@ -1162,22 +989,12 @@ mod tests {
         temp.write_file("outside.txt", b"outside");
         temp.create_dir("project");
         symlink("../outside.txt", temp.path("project/outside-link.txt")).unwrap();
-        let options = PlanOptions {
-            follow_symlinks: true,
-            ..PlanOptions::default()
-        };
+        let options = PlanOptions { follow_symlinks: true, ..PlanOptions::default() };
 
         let manifest = plan_archive(temp.path("project"), &options).unwrap();
-        let link = manifest
-            .entries
-            .iter()
-            .find(|entry| entry.archive_path == "project/outside-link.txt")
-            .unwrap();
+        let link = manifest.entries.iter().find(|entry| entry.archive_path == "project/outside-link.txt").unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["project", "project/outside-link.txt"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["project", "project/outside-link.txt"]);
         assert_eq!(link.file_type, ManifestFileType::File);
         assert_eq!(link.size, 7);
         assert_eq!(link.symlink_target, None);
@@ -1194,13 +1011,7 @@ mod tests {
 
         assert_eq!(
             manifest_paths(&manifest),
-            vec![
-                "project",
-                "project/a.txt",
-                "project/nested",
-                "project/nested/b.txt",
-                "project/z.txt"
-            ]
+            vec!["project", "project/a.txt", "project/nested", "project/nested/b.txt", "project/z.txt"]
         );
     }
 
@@ -1210,27 +1021,17 @@ mod tests {
         temp.write_file("a.txt", b"a");
         temp.write_file("folder/b.txt", b"bb");
 
-        let manifest = plan_archives(
-            [temp.path("a.txt"), temp.path("folder")],
-            &PlanOptions::default(),
-        )
-        .unwrap();
+        let manifest = plan_archives([temp.path("a.txt"), temp.path("folder")], &PlanOptions::default()).unwrap();
 
-        assert_eq!(
-            manifest_paths(&manifest),
-            vec!["a.txt", "folder", "folder/b.txt"]
-        );
+        assert_eq!(manifest_paths(&manifest), vec!["a.txt", "folder", "folder/b.txt"]);
         assert_eq!(manifest.total_bytes, 3);
         assert_eq!(manifest.root, temp.root);
     }
 
     #[test]
     fn warns_about_duplicate_names_on_case_insensitive_file_systems() {
-        let entries = vec![
-            test_entry("project/README.md"),
-            test_entry("project/between.txt"),
-            test_entry("project/readme.md"),
-        ];
+        let entries =
+            vec![test_entry("project/README.md"), test_entry("project/between.txt"), test_entry("project/readme.md")];
         let mut warnings = Vec::new();
 
         record_archive_path_collisions(&entries, &mut warnings);
@@ -1240,11 +1041,7 @@ mod tests {
     }
 
     fn manifest_paths(manifest: &super::ArchiveManifest) -> Vec<&str> {
-        manifest
-            .entries
-            .iter()
-            .map(|entry| entry.archive_path.as_str())
-            .collect()
+        manifest.entries.iter().map(|entry| entry.archive_path.as_str()).collect()
     }
 
     fn test_entry(archive_path: &str) -> ManifestEntry {
@@ -1254,10 +1051,7 @@ mod tests {
             file_type: ManifestFileType::File,
             size: 0,
             modified: None,
-            permissions: PermissionSnapshot {
-                readonly: false,
-                unix_mode: None,
-            },
+            permissions: PermissionSnapshot { readonly: false, unix_mode: None },
             symlink_target: None,
         }
     }
@@ -1268,12 +1062,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
 
             Self { root }

@@ -16,18 +16,8 @@ impl Utf8LocaleGuard {
         #[cfg(not(any(target_os = "linux", target_os = "illumos", target_os = "macos")))]
         let locale_name = c"";
 
-        let current = unsafe {
-            libc::newlocale(
-                libc::LC_CTYPE_MASK,
-                locale_name.as_ptr(),
-                std::ptr::null_mut(),
-            )
-        };
-        let previous = if current.is_null() {
-            std::ptr::null_mut()
-        } else {
-            unsafe { libc::uselocale(current) }
-        };
+        let current = unsafe { libc::newlocale(libc::LC_CTYPE_MASK, locale_name.as_ptr(), std::ptr::null_mut()) };
+        let previous = if current.is_null() { std::ptr::null_mut() } else { unsafe { libc::uselocale(current) } };
 
         Self { previous, current }
     }

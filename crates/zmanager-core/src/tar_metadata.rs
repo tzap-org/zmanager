@@ -17,10 +17,7 @@ pub(crate) fn append_pax_mtime<W: io::Write>(
         return Ok(());
     };
     let timestamp = system_time_to_timestamp(modified).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "modification time is outside the supported tar timestamp range",
-        )
+        io::Error::new(io::ErrorKind::InvalidInput, "modification time is outside the supported tar timestamp range")
     })?;
     if timestamp.seconds >= 0 && timestamp.nanoseconds == 0 {
         return Ok(());
@@ -32,14 +29,8 @@ pub(crate) fn append_pax_mtime<W: io::Write>(
 
 pub(crate) fn parse_pax_mtime(value: &[u8]) -> Option<TarTimestamp> {
     let value = std::str::from_utf8(value).ok()?;
-    let (negative, unsigned) = value
-        .strip_prefix('-')
-        .map_or((false, value), |value| (true, value));
-    let unsigned = if negative {
-        unsigned
-    } else {
-        unsigned.strip_prefix('+').unwrap_or(unsigned)
-    };
+    let (negative, unsigned) = value.strip_prefix('-').map_or((false, value), |value| (true, value));
+    let unsigned = if negative { unsigned } else { unsigned.strip_prefix('+').unwrap_or(unsigned) };
     let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
@@ -51,24 +42,16 @@ pub(crate) fn parse_pax_mtime(value: &[u8]) -> Option<TarTimestamp> {
     let mut nanoseconds = 0_u32;
     let mut digits = 0_u32;
     for byte in fraction.bytes().take(9) {
-        nanoseconds = nanoseconds
-            .checked_mul(10)?
-            .checked_add(u32::from(byte - b'0'))?;
+        nanoseconds = nanoseconds.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
         digits += 1;
     }
     nanoseconds = nanoseconds.checked_mul(10_u32.pow(9 - digits))?;
 
     if !negative {
-        return Some(TarTimestamp {
-            seconds: whole,
-            nanoseconds,
-        });
+        return Some(TarTimestamp { seconds: whole, nanoseconds });
     }
     if nanoseconds == 0 {
-        return Some(TarTimestamp {
-            seconds: whole.checked_neg()?,
-            nanoseconds: 0,
-        });
+        return Some(TarTimestamp { seconds: whole.checked_neg()?, nanoseconds: 0 });
     }
     Some(TarTimestamp {
         seconds: whole.checked_neg()?.checked_sub(1)?,
@@ -86,10 +69,7 @@ fn system_time_to_timestamp(time: SystemTime) -> Option<TarTimestamp> {
             let duration = error.duration();
             let seconds = i64::try_from(duration.as_secs()).ok()?;
             if duration.subsec_nanos() == 0 {
-                Some(TarTimestamp {
-                    seconds: seconds.checked_neg()?,
-                    nanoseconds: 0,
-                })
+                Some(TarTimestamp { seconds: seconds.checked_neg()?, nanoseconds: 0 })
             } else {
                 Some(TarTimestamp {
                     seconds: seconds.checked_neg()?.checked_sub(1)?,
@@ -120,18 +100,9 @@ mod tests {
     #[test]
     fn pax_timestamp_parser_handles_positive_and_negative_fractions() {
         for timestamp in [
-            TarTimestamp {
-                seconds: 1,
-                nanoseconds: 250_000_000,
-            },
-            TarTimestamp {
-                seconds: -2,
-                nanoseconds: 750_000_000,
-            },
-            TarTimestamp {
-                seconds: -1,
-                nanoseconds: 500_000_000,
-            },
+            TarTimestamp { seconds: 1, nanoseconds: 250_000_000 },
+            TarTimestamp { seconds: -2, nanoseconds: 750_000_000 },
+            TarTimestamp { seconds: -1, nanoseconds: 500_000_000 },
         ] {
             let encoded = timestamp_to_pax_value(timestamp);
             assert_eq!(parse_pax_mtime(encoded.as_bytes()), Some(timestamp));
@@ -146,28 +117,16 @@ mod tests {
         // Post-epoch
         assert_eq!(
             system_time_to_timestamp(UNIX_EPOCH + Duration::new(1, 250_000_000)),
-            Some(TarTimestamp {
-                seconds: 1,
-                nanoseconds: 250_000_000
-            })
+            Some(TarTimestamp { seconds: 1, nanoseconds: 250_000_000 })
         );
 
         // Pre-epoch
         assert_eq!(
             system_time_to_timestamp(UNIX_EPOCH - Duration::new(1, 250_000_000)),
-            Some(TarTimestamp {
-                seconds: -2,
-                nanoseconds: 750_000_000
-            })
+            Some(TarTimestamp { seconds: -2, nanoseconds: 750_000_000 })
         );
 
         // Exactly epoch
-        assert_eq!(
-            system_time_to_timestamp(UNIX_EPOCH),
-            Some(TarTimestamp {
-                seconds: 0,
-                nanoseconds: 0
-            })
-        );
+        assert_eq!(system_time_to_timestamp(UNIX_EPOCH), Some(TarTimestamp { seconds: 0, nanoseconds: 0 }));
     }
 }

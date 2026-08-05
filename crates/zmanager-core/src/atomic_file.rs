@@ -23,24 +23,13 @@ impl AtomicOutputFile {
         }
 
         let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
-        let file_name = final_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("archive");
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
+        let file_name = final_path.file_name().and_then(|name| name.to_str()).unwrap_or("archive");
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
 
         for attempt in 0..MAX_TEMP_ATTEMPTS {
-            let temp_path = parent.join(format!(
-                "{TEMP_PREFIX}-{file_name}-{}-{now}-{attempt}{TEMP_SUFFIX}",
-                std::process::id()
-            ));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-            {
+            let temp_path =
+                parent.join(format!("{TEMP_PREFIX}-{file_name}-{}-{now}-{attempt}{TEMP_SUFFIX}", std::process::id()));
+            match OpenOptions::new().write(true).create_new(true).open(&temp_path) {
                 Ok(file) => {
                     return Ok(Self {
                         final_path: final_path.to_path_buf(),
@@ -56,19 +45,13 @@ impl AtomicOutputFile {
 
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!(
-                "could not allocate temporary output path for {}",
-                final_path.display()
-            ),
+            format!("could not allocate temporary output path for {}", final_path.display()),
         ))
     }
 
     pub(crate) fn file_mut(&mut self) -> io::Result<&mut File> {
         self.file.as_mut().ok_or_else(|| {
-            io::Error::other(format!(
-                "temporary output already finalized for {}",
-                self.final_path.display()
-            ))
+            io::Error::other(format!("temporary output already finalized for {}", self.final_path.display()))
         })
     }
 
@@ -119,31 +102,19 @@ pub(crate) struct TemporaryFile {
 impl TemporaryFile {
     pub(crate) fn create(label: &str) -> io::Result<Self> {
         let parent = std::env::temp_dir();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
 
         for attempt in 0..MAX_TEMP_ATTEMPTS {
-            let path = parent.join(format!(
-                "{TEMP_PREFIX}-{label}-{}-{now}-{attempt}{TEMP_SUFFIX}",
-                std::process::id()
-            ));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            let path =
+                parent.join(format!("{TEMP_PREFIX}-{label}-{}-{now}-{attempt}{TEMP_SUFFIX}", std::process::id()));
+            match OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
                 Ok(file) => return Ok(Self { path, file }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
             }
         }
 
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("could not allocate temporary file for {label}"),
-        ))
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("could not allocate temporary file for {label}")))
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -268,12 +239,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
             Self { root }
         }

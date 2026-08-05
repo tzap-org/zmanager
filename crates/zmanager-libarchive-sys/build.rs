@@ -1,10 +1,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-const BUNDLED_SOURCE_PATHS: [&str; 2] = [
-    "vendor/libarchive/libarchive-3.8.9",
-    "../../vendor/libarchive/libarchive-3.8.9",
-];
+const BUNDLED_SOURCE_PATHS: [&str; 2] =
+    ["vendor/libarchive/libarchive-3.8.9", "../../vendor/libarchive/libarchive-3.8.9"];
 const ENV_CMAKE_TOOLCHAIN_FILE: &str = "CMAKE_TOOLCHAIN_FILE";
 const ENV_VCPKG_DEFAULT_TRIPLET: &str = "VCPKG_DEFAULT_TRIPLET";
 const ENV_VCPKG_INSTALLATION_ROOT: &str = "VCPKG_INSTALLATION_ROOT";
@@ -29,15 +27,7 @@ const VCPKG_LIBCRYPTO_LIB_NAMES: &[&str] = &["libcrypto", "libcryptod"];
 const VCPKG_LIBLZMA_LIB_NAMES: &[&str] = &["lzma", "lzmad"];
 const VCPKG_LZ4_LIB_NAMES: &[&str] = &["lz4", "lz4d"];
 const VCPKG_PROFILE_DEBUG: &str = "debug";
-const VCPKG_ZLIB_LIB_NAMES: &[&str] = &[
-    "zlib",
-    "zlibd",
-    "zlibstatic",
-    "zlibstaticd",
-    "zs",
-    "zsd",
-    "z",
-];
+const VCPKG_ZLIB_LIB_NAMES: &[&str] = &["zlib", "zlibd", "zlibstatic", "zlibstaticd", "zs", "zsd", "z"];
 const VCPKG_ZSTD_LIB_NAMES: &[&str] = &["zstd", "zstdd"];
 
 struct VcpkgLinkSearch {
@@ -66,10 +56,7 @@ fn main() {
 fn link_system_libarchive() {
     if let Some(root) = env::var_os("LIBARCHIVE_DIR") {
         let root = PathBuf::from(root);
-        println!(
-            "cargo:rustc-link-search=native={}",
-            root.join("lib").display()
-        );
+        println!("cargo:rustc-link-search=native={}", root.join("lib").display());
         println!("cargo:rustc-link-lib=archive");
         return;
     }
@@ -82,8 +69,7 @@ fn link_system_libarchive() {
 
 fn build_bundled_libarchive() {
     let target = env::var("TARGET").expect("TARGET is set by Cargo");
-    let manifest_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
     let source = locate_bundled_libarchive_source(&manifest_dir);
 
     let mut config = cmake::Config::new(&source);
@@ -394,12 +380,7 @@ fn link_windows_vcpkg_library(search: Option<&VcpkgLinkSearch>, candidates: &[&s
         }
     }
 
-    let searched = search
-        .lib_dirs
-        .iter()
-        .map(|dir| dir.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let searched = search.lib_dirs.iter().map(|dir| dir.display().to_string()).collect::<Vec<_>>().join(", ");
     panic!(
         "vcpkg library not found for triplet {}. Looked in {} for one of: {}",
         search.triplet,
@@ -442,10 +423,7 @@ fn print_link_search(path: impl AsRef<Path>) {
 fn find_static_library(root_var: &str, lib_name: &str) -> PathBuf {
     let root = env::var(root_var).unwrap_or_else(|_| panic!("{root_var} not found"));
     let root_path = Path::new(&root);
-    let candidates = [
-        root_path.join(lib_name),
-        root_path.join("lib").join(lib_name),
-    ];
+    let candidates = [root_path.join(lib_name), root_path.join("lib").join(lib_name)];
     for candidate in &candidates {
         if candidate.exists() {
             return candidate.clone();
@@ -473,11 +451,7 @@ fn find_include_dir(var_name: &str, root_var_name: &str) -> PathBuf {
 fn generate_bindings() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let wrapper_path = out_path.join("wrapper.h");
-    std::fs::write(
-        &wrapper_path,
-        "#include <archive.h>\n#include <archive_entry.h>\n",
-    )
-    .unwrap();
+    std::fs::write(&wrapper_path, "#include <archive.h>\n#include <archive_entry.h>\n").unwrap();
 
     let mut builder = bindgen::Builder::default()
         .header(wrapper_path.to_str().unwrap())
@@ -498,7 +472,5 @@ fn generate_bindings() {
     }
 
     let bindings = builder.generate().expect("Unable to generate bindings");
-    bindings
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+    bindings.write_to_file(out_path.join("bindings.rs")).expect("Couldn't write bindings!");
 }

@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 use zmanager_libarchive::{Error, FileType, ReadArchive};
 
 fn fixture_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/archives")
-        .join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(name)
 }
 
 #[test]
@@ -27,10 +25,7 @@ fn opens_and_lists_entries_from_fixture_zip() {
 
     let mut saw_readme = false;
     let mut saw_dir = false;
-    while let Some(entry) = archive
-        .next_entry()
-        .expect("advancing through fixture entries should be stable")
-    {
+    while let Some(entry) = archive.next_entry().expect("advancing through fixture entries should be stable") {
         match entry.pathname().as_deref() {
             Some("payload/") => {
                 saw_dir = true;
@@ -42,9 +37,7 @@ fn opens_and_lists_entries_from_fixture_zip() {
         }
 
         if entry.file_type() != FileType::RegularFile {
-            archive
-                .skip_data()
-                .expect("skip_data should work for non-regular entries");
+            archive.skip_data().expect("skip_data should work for non-regular entries");
         }
     }
 
@@ -57,16 +50,11 @@ fn reads_fixture_file_payload_contents() {
     let fixture = fixture_path("basic.zip");
     let mut archive = ReadArchive::open(&fixture).expect("open basic.zip fixture");
 
-    while let Some(entry) = archive
-        .next_entry()
-        .expect("advancing through fixture entries should be stable")
-    {
+    while let Some(entry) = archive.next_entry().expect("advancing through fixture entries should be stable") {
         let is_target_file = entry.pathname().as_deref() == Some("payload/README.txt");
         if !is_target_file {
             if entry.file_type() != FileType::RegularFile {
-                archive
-                    .skip_data()
-                    .expect("skip_data should work for non-target entries");
+                archive.skip_data().expect("skip_data should work for non-target entries");
             }
             continue;
         }
@@ -74,9 +62,7 @@ fn reads_fixture_file_payload_contents() {
         let mut output = Vec::new();
         let mut buffer = [0_u8; 64];
         loop {
-            let read = archive
-                .read_data(&mut buffer)
-                .expect("read_data should succeed");
+            let read = archive.read_data(&mut buffer).expect("read_data should succeed");
             if read == 0 {
                 break;
             }
@@ -94,9 +80,7 @@ fn reads_fixture_file_payload_contents() {
 #[test]
 fn open_missing_archive_returns_archive_error() {
     let missing = fixture_path("missing.zip");
-    let err = ReadArchive::open(&missing)
-        .err()
-        .expect("missing archive should return an error");
+    let err = ReadArchive::open(&missing).err().expect("missing archive should return an error");
 
     match err {
         Error::Archive { .. } => {}

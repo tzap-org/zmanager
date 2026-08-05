@@ -1,8 +1,4 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 //! Reproducible planning performance benchmark.
 //!
 //! Creates a temporary directory with 100,000 entries (90 % regular files,
@@ -143,8 +139,7 @@ struct Measurement {
 
 fn run_plan(root: &Path) -> Result<Measurement, String> {
     let start = Instant::now();
-    let manifest = plan_archive(root, &PlanOptions::default())
-        .map_err(|e| format!("plan_archive failed: {e}"))?;
+    let manifest = plan_archive(root, &PlanOptions::default()).map_err(|e| format!("plan_archive failed: {e}"))?;
     let elapsed = start.elapsed();
 
     // Sanity check: must have planned the expected number of entries
@@ -163,10 +158,7 @@ fn run_plan(root: &Path) -> Result<Measurement, String> {
 }
 
 fn report_measurements(label: &str, measurements: &[Measurement]) {
-    let mut durations: Vec<f64> = measurements
-        .iter()
-        .map(|m| m.duration.as_secs_f64())
-        .collect();
+    let mut durations: Vec<f64> = measurements.iter().map(|m| m.duration.as_secs_f64()).collect();
     durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let median = durations[durations.len() / 2];
@@ -222,10 +214,7 @@ mod fixture_tests {
         }
 
         let manifest = plan_archive(&root, &PlanOptions::default()).unwrap();
-        assert!(
-            !manifest.entries.is_empty(),
-            "should have planned some entries"
-        );
+        assert!(!manifest.entries.is_empty(), "should have planned some entries");
         eprintln!("Small fixture: {} entries planned", manifest.entries.len());
 
         fs::remove_dir_all(&root).unwrap();
@@ -259,10 +248,7 @@ fn plan_benchmark_100k_entries() {
     // This is a self-consistency check — real regression tests compare
     // against the safe-base baseline established here.
     let median = {
-        let mut d: Vec<f64> = measurements
-            .iter()
-            .map(|m| m.duration.as_secs_f64())
-            .collect();
+        let mut d: Vec<f64> = measurements.iter().map(|m| m.duration.as_secs_f64()).collect();
         d.sort_by(|a, b| a.partial_cmp(b).unwrap());
         d[d.len() / 2]
     };
@@ -272,8 +258,5 @@ fn plan_benchmark_100k_entries() {
 
     // The benchmark itself should complete in a reasonable time
     // (upper bound to catch unintentional O(n²) regressions)
-    assert!(
-        median < 120.0,
-        "planning 100k entries took {median:.1}s — exceeds 120s upper bound"
-    );
+    assert!(median < 120.0, "planning 100k entries took {median:.1}s — exceeds 120s upper bound");
 }

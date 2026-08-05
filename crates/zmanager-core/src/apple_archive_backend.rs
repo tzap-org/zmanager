@@ -1,10 +1,8 @@
 use crate::jobs::{JobCancelled, JobContext};
-use crate::manifest::{
-    ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive,
-};
+use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::{
-    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
+    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError,
+    ExtractionSafetyPlanner, OverwriteResolver,
 };
 use std::fmt;
 use std::fs::{self, File};
@@ -177,10 +175,9 @@ impl fmt::Display for AppleArchiveError {
                 write!(f, "AppleArchive file entry has no data blob: {path}")
             }
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
-            Self::StdoutSelectionNotSingleFile { selected_files } => write!(
-                f,
-                "extract --to-stdout requires exactly one selected regular file; selected {selected_files}"
-            ),
+            Self::StdoutSelectionNotSingleFile { selected_files } => {
+                write!(f, "extract --to-stdout requires exactly one selected regular file; selected {selected_files}")
+            }
             Self::Cancelled => write!(f, "job cancelled"),
         }
     }
@@ -238,13 +235,10 @@ pub const fn apple_archive_supported() -> bool {
 /// Returns whether a path has an Apple Archive extension (`.aar` or `.aea`).
 #[must_use]
 pub fn is_apple_archive_path(path: impl AsRef<Path>) -> bool {
-    path.as_ref()
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case(APPLE_ARCHIVE_EXTENSION)
-                || extension.eq_ignore_ascii_case(APPLE_ARCHIVE_ENCRYPTED_EXTENSION)
-        })
+    path.as_ref().extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+        extension.eq_ignore_ascii_case(APPLE_ARCHIVE_EXTENSION)
+            || extension.eq_ignore_ascii_case(APPLE_ARCHIVE_ENCRYPTED_EXTENSION)
+    })
 }
 
 /// Opens an `ArchiveReader`, using the encrypted path when a password is
@@ -311,13 +305,8 @@ fn create_apple_archive_from_manifest_inner(
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<AppleArchiveCreateReport, AppleArchiveError> {
     let destination = destination.as_ref();
-    let mut output =
-        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
-            AppleArchiveError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
+    let mut output = crate::atomic_file::AtomicOutputFile::create(destination)
+        .map_err(|source| AppleArchiveError::Io { path: destination.to_path_buf(), source })?;
     let temp_path = output.temp_path().to_path_buf();
     output.close();
 
@@ -331,29 +320,16 @@ fn create_apple_archive_from_manifest_inner(
     } else {
         ArchiveWriter::create(&temp_path, native_options)?
     };
-    let mut report = AppleArchiveCreateReport {
-        written_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report = AppleArchiveCreateReport { written_entries: 0, written_bytes: 0, warnings: Vec::new() };
 
     for entry in &manifest.entries {
-        append_manifest_entry(
-            &mut writer,
-            entry,
-            options,
-            &mut report,
-            context.as_deref_mut(),
-        )?;
+        append_manifest_entry(&mut writer, entry, options, &mut report, context.as_deref_mut())?;
     }
 
     writer.finish()?;
     output
         .commit_with_file_replace(options.replace_existing)
-        .map_err(|source| AppleArchiveError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| AppleArchiveError::Io { path: destination.to_path_buf(), source })?;
 
     Ok(report)
 }
@@ -384,9 +360,7 @@ pub fn list_apple_archive(
             crc: metadata.crc,
             uid: metadata.uid,
             gid: metadata.gid,
-            link_target: entry
-                .link_target()
-                .map(|p| p.to_string_lossy().into_owned()),
+            link_target: entry.link_target().map(|p| p.to_string_lossy().into_owned()),
         });
         reader.skip_entry_data(&entry)?;
     }
@@ -406,15 +380,7 @@ pub fn extract_apple_archive(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(
-        archive_path,
-        destination,
-        policy,
-        None,
-        None,
-        None,
-        password,
-    )
+    extract_apple_archive_inner(archive_path, destination, policy, None, None, None, password)
 }
 
 /// Extracts an `AppleArchive` while emitting job events.
@@ -430,15 +396,7 @@ pub fn extract_apple_archive_with_context(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(
-        archive_path,
-        destination,
-        policy,
-        None,
-        None,
-        Some(context),
-        password,
-    )
+    extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context), password)
 }
 
 /// Extracts an `AppleArchive` with an overwrite resolver.
@@ -454,15 +412,7 @@ pub fn extract_apple_archive_with_overwrite_resolver(
     overwrite_resolver: &mut dyn OverwriteResolver,
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(
-        archive_path,
-        destination,
-        policy,
-        None,
-        Some(overwrite_resolver),
-        None,
-        password,
-    )
+    extract_apple_archive_inner(archive_path, destination, policy, None, Some(overwrite_resolver), None, password)
 }
 
 /// Extracts one selected `AppleArchive` entry.
@@ -478,15 +428,7 @@ pub fn extract_apple_archive_entry(
     policy: ExtractionPolicy,
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    extract_apple_archive_inner(
-        archive_path,
-        destination,
-        policy,
-        Some(entry_path),
-        None,
-        None,
-        password,
-    )
+    extract_apple_archive_inner(archive_path, destination, policy, Some(entry_path), None, None, password)
 }
 
 /// Copies the one selected regular file entry to a writer.
@@ -504,19 +446,13 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     let archive_path = archive_path.as_ref();
     let mut reader = open_apple_archive_reader(archive_path, password)?;
-    let mut report = AppleArchiveExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        AppleArchiveExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
     let mut selected_files = 0_usize;
     let mut staged_file = None;
 
     while let Some(entry) = reader.next_entry()? {
-        if !selected(entry.path())
-            || !matches!(entry.kind(), zmanager_apple_archive::EntryKind::File)
-        {
+        if !selected(entry.path()) || !matches!(entry.kind(), zmanager_apple_archive::EntryKind::File) {
             reader.skip_entry_data(&entry)?;
             report.skipped_entries += 1;
             continue;
@@ -531,10 +467,7 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
 
         ensure_file_entry_has_data(&entry)?;
         let mut staged = crate::atomic_file::TemporaryFile::create("apple-archive-stdout")
-            .map_err(|source| AppleArchiveError::Io {
-                path: std::env::temp_dir(),
-                source,
-            })?;
+            .map_err(|source| AppleArchiveError::Io { path: std::env::temp_dir(), source })?;
         let copied = reader.read_entry_data(&entry, staged.file_mut(), |_| true)?;
         report.written_entries += 1;
         report.written_bytes += copied;
@@ -545,20 +478,13 @@ pub fn copy_apple_archive_files_to_writer<W: Write>(
         return Err(AppleArchiveError::StdoutSelectionNotSingleFile { selected_files });
     }
 
-    let mut staged =
-        staged_file.ok_or(AppleArchiveError::StdoutSelectionNotSingleFile { selected_files: 0 })?;
+    let mut staged = staged_file.ok_or(AppleArchiveError::StdoutSelectionNotSingleFile { selected_files: 0 })?;
     staged
         .file_mut()
         .seek(SeekFrom::Start(0))
-        .map_err(|source| AppleArchiveError::Io {
-            path: staged.path().to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| AppleArchiveError::Io { path: staged.path().to_path_buf(), source })?;
     io::copy(staged.file_mut(), output)
-        .map_err(|source| AppleArchiveError::Io {
-            path: staged.path().to_path_buf(),
-            source,
-        })
+        .map_err(|source| AppleArchiveError::Io { path: staged.path().to_path_buf(), source })
         .map(|_| report)
 }
 
@@ -573,11 +499,7 @@ pub fn test_apple_archive_filter(
     password: Option<&str>,
 ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
     let mut reader = open_apple_archive_reader(archive_path, password)?;
-    let mut report = AppleArchiveTestReport {
-        tested_entries: 0,
-        skipped_entries: 0,
-        tested_bytes: 0,
-    };
+    let mut report = AppleArchiveTestReport { tested_entries: 0, skipped_entries: 0, tested_bytes: 0 };
     let mut sink = io::sink();
 
     while let Some(entry) = reader.next_entry()? {
@@ -608,28 +530,15 @@ fn extract_apple_archive_inner(
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
     let destination = destination.as_ref();
-    let destination_root =
-        crate::safety::prepare_destination_root(destination).map_err(|source| {
-            AppleArchiveError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
+    let destination_root = crate::safety::prepare_destination_root(destination)
+        .map_err(|source| AppleArchiveError::Io { path: destination.to_path_buf(), source })?;
     let mut reader = open_apple_archive_reader(archive_path, password)?;
     let mut planner = match overwrite_resolver {
-        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
-            &destination_root,
-            policy,
-            resolver,
-        ),
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(&destination_root, policy, resolver),
         None => ExtractionSafetyPlanner::new(&destination_root, policy),
     };
-    let mut report = AppleArchiveExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        AppleArchiveExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
     let mut found_selected_entry = selected_entry.is_none();
     let mut deferred_directories = Vec::new();
 
@@ -667,24 +576,21 @@ fn extract_apple_archive_inner(
         }
 
         let processed = match planner.validate_entry(&safety_entry)? {
-            ExtractionDecision::Write {
-                destination_path,
-                replace_existing,
-                link_target_path,
-                ..
-            } => materialize_entry(
-                &mut reader,
-                &entry,
-                &safety_entry,
-                &WriteDecision {
-                    destination_path: &destination_path,
-                    replace_existing,
-                    link_target_path: link_target_path.as_deref(),
-                },
-                context.as_deref_mut(),
-                &mut deferred_directories,
-                &mut report,
-            )?,
+            ExtractionDecision::Write { destination_path, replace_existing, link_target_path, .. } => {
+                materialize_entry(
+                    &mut reader,
+                    &entry,
+                    &safety_entry,
+                    &WriteDecision {
+                        destination_path: &destination_path,
+                        replace_existing,
+                        link_target_path: link_target_path.as_deref(),
+                    },
+                    context.as_deref_mut(),
+                    &mut deferred_directories,
+                    &mut report,
+                )?
+            }
             ExtractionDecision::Skip { reason, .. } => {
                 reader.skip_entry_data(&entry)?;
                 report.skipped_entries += 1;
@@ -702,9 +608,7 @@ fn extract_apple_archive_inner(
     }
 
     if !found_selected_entry && let Some(path) = selected_entry {
-        return Err(AppleArchiveError::EntryNotFound {
-            path: path.to_owned(),
-        });
+        return Err(AppleArchiveError::EntryNotFound { path: path.to_owned() });
     }
 
     apply_deferred_directory_metadata(&deferred_directories)?;
@@ -738,65 +642,42 @@ fn materialize_entry(
     }
 
     if decision.replace_existing && !matches!(safety_entry.kind, ExtractionEntryKind::File) {
-        crate::safety::remove_destination_for_replace(decision.destination_path).map_err(
-            |source| AppleArchiveError::Io {
-                path: decision.destination_path.to_path_buf(),
-                source,
-            },
-        )?;
+        crate::safety::remove_destination_for_replace(decision.destination_path)
+            .map_err(|source| AppleArchiveError::Io { path: decision.destination_path.to_path_buf(), source })?;
     }
 
     let written_bytes = match &safety_entry.kind {
         ExtractionEntryKind::Directory => {
             reader.skip_entry_data(entry)?;
-            fs::create_dir_all(decision.destination_path).map_err(|source| {
-                AppleArchiveError::Io {
-                    path: decision.destination_path.to_path_buf(),
-                    source,
-                }
-            })?;
+            fs::create_dir_all(decision.destination_path)
+                .map_err(|source| AppleArchiveError::Io { path: decision.destination_path.to_path_buf(), source })?;
             deferred_directories.push((decision.destination_path.to_path_buf(), entry.metadata()));
             0
         }
-        ExtractionEntryKind::File => write_file_entry(
-            reader,
-            entry,
-            safety_entry,
-            decision,
-            context.as_deref_mut(),
-        )?,
+        ExtractionEntryKind::File => write_file_entry(reader, entry, safety_entry, decision, context.as_deref_mut())?,
         ExtractionEntryKind::Symlink { target } => {
             reader.skip_entry_data(entry)?;
             write_symlink(target, decision.destination_path)?;
             apply_symlink_mtime(decision.destination_path, entry.metadata().modified)?;
-            zmanager_apple_archive::apply_native_metadata(
-                decision.destination_path,
-                entry.metadata(),
-                true,
-            )?;
+            zmanager_apple_archive::apply_native_metadata(decision.destination_path, entry.metadata(), true)?;
             0
         }
         ExtractionEntryKind::Hardlink { .. } => {
             reader.skip_entry_data(entry)?;
-            let source_path = decision
-                .link_target_path
-                .ok_or_else(|| AppleArchiveError::Io {
-                    path: decision.destination_path.to_path_buf(),
-                    source: io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "hardlink target was not resolved by extraction safety planning",
-                    ),
-                })?;
+            let source_path = decision.link_target_path.ok_or_else(|| AppleArchiveError::Io {
+                path: decision.destination_path.to_path_buf(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "hardlink target was not resolved by extraction safety planning",
+                ),
+            })?;
             write_hardlink(source_path, decision.destination_path)?;
             0
         }
         ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
             reader.skip_entry_data(entry)?;
             report.skipped_entries += 1;
-            let warning = format!(
-                "skipped unsupported special entry {}",
-                safety_entry.archive_path
-            );
+            let warning = format!("skipped unsupported special entry {}", safety_entry.archive_path);
             report.warnings.push(warning.clone());
             if let Some(context) = context {
                 context.warning(warning);
@@ -819,16 +700,12 @@ fn write_file_entry(
 ) -> Result<u64, AppleArchiveError> {
     ensure_file_entry_has_data(entry)?;
     let mut output = crate::atomic_file::AtomicOutputFile::create(decision.destination_path)
-        .map_err(|source| AppleArchiveError::Io {
-            path: decision.destination_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| AppleArchiveError::Io { path: decision.destination_path.to_path_buf(), source })?;
     let written_bytes = reader.read_entry_data(
         entry,
-        output.file_mut().map_err(|source| AppleArchiveError::Io {
-            path: decision.destination_path.to_path_buf(),
-            source,
-        })?,
+        output
+            .file_mut()
+            .map_err(|source| AppleArchiveError::Io { path: decision.destination_path.to_path_buf(), source })?,
         |bytes| {
             if let Some(context) = context.as_deref_mut() {
                 if context.check_cancelled().is_err() {
@@ -841,10 +718,7 @@ fn write_file_entry(
     )?;
     output
         .commit_with_replace(decision.replace_existing)
-        .map_err(|source| AppleArchiveError::Io {
-            path: decision.destination_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| AppleArchiveError::Io { path: decision.destination_path.to_path_buf(), source })?;
     apply_metadata(decision.destination_path, entry.metadata())?;
     Ok(written_bytes)
 }
@@ -865,11 +739,8 @@ fn append_manifest_entry(
     let metadata = if options.preserve_metadata {
         use std::os::unix::fs::MetadataExt as _;
 
-        let source_metadata =
-            fs::symlink_metadata(&entry.source_path).map_err(|source| AppleArchiveError::Io {
-                path: entry.source_path.clone(),
-                source,
-            })?;
+        let source_metadata = fs::symlink_metadata(&entry.source_path)
+            .map_err(|source| AppleArchiveError::Io { path: entry.source_path.clone(), source })?;
         zmanager_apple_archive::EntryMetadata {
             mode: entry.permissions.unix_mode,
             modified: entry.modified,
@@ -889,28 +760,19 @@ fn append_manifest_entry(
             0
         }
         ManifestFileType::File => {
-            let mut source =
-                File::open(&entry.source_path).map_err(|source| AppleArchiveError::Io {
-                    path: entry.source_path.clone(),
-                    source,
-                })?;
+            let mut source = File::open(&entry.source_path)
+                .map_err(|source| AppleArchiveError::Io { path: entry.source_path.clone(), source })?;
             let mut cancelled = false;
-            let written = writer.append_file(
-                &entry.archive_path,
-                entry.size,
-                metadata,
-                &mut source,
-                |bytes| {
-                    if let Some(context) = context.as_deref_mut() {
-                        if context.check_cancelled().is_err() {
-                            cancelled = true;
-                            return false;
-                        }
-                        context.bytes_processed(Some(&entry.archive_path), bytes);
+            let written = writer.append_file(&entry.archive_path, entry.size, metadata, &mut source, |bytes| {
+                if let Some(context) = context.as_deref_mut() {
+                    if context.check_cancelled().is_err() {
+                        cancelled = true;
+                        return false;
                     }
-                    true
-                },
-            )?;
+                    context.bytes_processed(Some(&entry.archive_path), bytes);
+                }
+                true
+            })?;
             if cancelled {
                 return Err(AppleArchiveError::Cancelled);
             }
@@ -962,15 +824,11 @@ fn apple_file_flags(_metadata: &fs::Metadata) -> Option<u32> {
     None
 }
 
-fn ensure_file_entry_has_data(
-    entry: &zmanager_apple_archive::Entry,
-) -> Result<(), AppleArchiveError> {
+fn ensure_file_entry_has_data(entry: &zmanager_apple_archive::Entry) -> Result<(), AppleArchiveError> {
     if entry.has_data_blob() || entry.size().unwrap_or(0) == 0 {
         Ok(())
     } else {
-        Err(AppleArchiveError::MissingFileData {
-            path: entry.path().to_owned(),
-        })
+        Err(AppleArchiveError::MissingFileData { path: entry.path().to_owned() })
     }
 }
 
@@ -980,31 +838,26 @@ fn apple_entry_kind(kind: zmanager_apple_archive::EntryKind) -> AppleArchiveEntr
         zmanager_apple_archive::EntryKind::Directory => AppleArchiveEntryKind::Directory,
         zmanager_apple_archive::EntryKind::Symlink => AppleArchiveEntryKind::Symlink,
         zmanager_apple_archive::EntryKind::Device => AppleArchiveEntryKind::Device,
-        zmanager_apple_archive::EntryKind::Metadata
-        | zmanager_apple_archive::EntryKind::Special => AppleArchiveEntryKind::Special,
+        zmanager_apple_archive::EntryKind::Metadata | zmanager_apple_archive::EntryKind::Special => {
+            AppleArchiveEntryKind::Special
+        }
     }
 }
 
-fn extraction_kind(
-    entry: &zmanager_apple_archive::Entry,
-) -> Result<ExtractionEntryKind, AppleArchiveError> {
+fn extraction_kind(entry: &zmanager_apple_archive::Entry) -> Result<ExtractionEntryKind, AppleArchiveError> {
     match entry.kind() {
         zmanager_apple_archive::EntryKind::File => Ok(ExtractionEntryKind::File),
         zmanager_apple_archive::EntryKind::Directory => Ok(ExtractionEntryKind::Directory),
         zmanager_apple_archive::EntryKind::Symlink => {
-            let target =
-                entry
-                    .link_target()
-                    .ok_or_else(|| AppleArchiveError::MissingLinkTarget {
-                        path: entry.path().to_owned(),
-                    })?;
-            Ok(ExtractionEntryKind::Symlink {
-                target: target.to_path_buf(),
-            })
+            let target = entry
+                .link_target()
+                .ok_or_else(|| AppleArchiveError::MissingLinkTarget { path: entry.path().to_owned() })?;
+            Ok(ExtractionEntryKind::Symlink { target: target.to_path_buf() })
         }
         zmanager_apple_archive::EntryKind::Device => Ok(ExtractionEntryKind::Device),
-        zmanager_apple_archive::EntryKind::Metadata
-        | zmanager_apple_archive::EntryKind::Special => Ok(ExtractionEntryKind::Special),
+        zmanager_apple_archive::EntryKind::Metadata | zmanager_apple_archive::EntryKind::Special => {
+            Ok(ExtractionEntryKind::Special)
+        }
     }
 }
 
@@ -1026,27 +879,15 @@ fn apply_deferred_directory_metadata(
     Ok(())
 }
 
-fn apply_metadata(
-    path: &Path,
-    metadata: zmanager_apple_archive::EntryMetadata,
-) -> Result<(), AppleArchiveError> {
-    fs::symlink_metadata(path).map_err(|source| AppleArchiveError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+fn apply_metadata(path: &Path, metadata: zmanager_apple_archive::EntryMetadata) -> Result<(), AppleArchiveError> {
+    fs::symlink_metadata(path).map_err(|source| AppleArchiveError::Io { path: path.to_path_buf(), source })?;
 
     #[cfg(unix)]
     if let Some(mode) = metadata.mode {
         use std::os::unix::fs::PermissionsExt;
 
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(mode & APPLE_ARCHIVE_MODE_MASK),
-        )
-        .map_err(|source| AppleArchiveError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & APPLE_ARCHIVE_MODE_MASK))
+            .map_err(|source| AppleArchiveError::Io { path: path.to_path_buf(), source })?;
     }
 
     #[cfg(not(unix))]
@@ -1055,20 +896,16 @@ fn apply_metadata(
             if let Ok(fs_metadata) = fs::metadata(path) {
                 let mut perms = fs_metadata.permissions();
                 perms.set_readonly(true);
-                fs::set_permissions(path, perms).map_err(|source| AppleArchiveError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
+                fs::set_permissions(path, perms)
+                    .map_err(|source| AppleArchiveError::Io { path: path.to_path_buf(), source })?;
             }
         }
     }
 
     if let Some(modified) = metadata.modified {
         let mtime = system_time_to_filetime(modified);
-        filetime::set_file_mtime(path, mtime).map_err(|source| AppleArchiveError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        filetime::set_file_mtime(path, mtime)
+            .map_err(|source| AppleArchiveError::Io { path: path.to_path_buf(), source })?;
     }
 
     zmanager_apple_archive::apply_native_metadata(path, metadata, false)?;
@@ -1081,10 +918,8 @@ fn apply_metadata(
 fn apply_symlink_mtime(path: &Path, modified: Option<SystemTime>) -> Result<(), AppleArchiveError> {
     if let Some(modified) = modified {
         let ft = system_time_to_filetime(modified);
-        filetime::set_symlink_file_times(path, ft, ft).map_err(|source| AppleArchiveError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        filetime::set_symlink_file_times(path, ft, ft)
+            .map_err(|source| AppleArchiveError::Io { path: path.to_path_buf(), source })?;
     }
     Ok(())
 }
@@ -1095,10 +930,8 @@ fn system_time_to_filetime(time: SystemTime) -> filetime::FileTime {
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), AppleArchiveError> {
     ensure_parent_dir(destination_path)?;
-    fs::hard_link(source_path, destination_path).map_err(|source| AppleArchiveError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    fs::hard_link(source_path, destination_path)
+        .map_err(|source| AppleArchiveError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(unix)]
@@ -1106,29 +939,21 @@ fn write_symlink(target: &Path, destination_path: &Path) -> Result<(), AppleArch
     use std::os::unix::fs::symlink;
 
     ensure_parent_dir(destination_path)?;
-    symlink(target, destination_path).map_err(|source| AppleArchiveError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    symlink(target, destination_path)
+        .map_err(|source| AppleArchiveError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(not(unix))]
 fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), AppleArchiveError> {
     Err(AppleArchiveError::Io {
         path: destination_path.to_path_buf(),
-        source: io::Error::new(
-            io::ErrorKind::Unsupported,
-            "symlink extraction is not supported on this platform",
-        ),
+        source: io::Error::new(io::ErrorKind::Unsupported, "symlink extraction is not supported on this platform"),
     })
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), AppleArchiveError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| AppleArchiveError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent).map_err(|source| AppleArchiveError::Io { path: parent.to_path_buf(), source })?;
     }
     Ok(())
 }
@@ -1137,8 +962,8 @@ fn ensure_parent_dir(path: &Path) -> Result<(), AppleArchiveError> {
 mod tests {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     use super::{
-        AppleArchiveCompression, AppleArchiveCreateOptions, create_apple_archive_from_path,
-        extract_apple_archive, test_apple_archive_filter,
+        AppleArchiveCompression, AppleArchiveCreateOptions, create_apple_archive_from_path, extract_apple_archive,
+        test_apple_archive_filter,
     };
     use super::{apple_archive_supported, is_apple_archive_path, list_apple_archive};
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -1195,26 +1020,13 @@ mod tests {
         assert_eq!(create_report.written_bytes, 22);
 
         let listing = list_apple_archive(&archive, None).unwrap();
-        assert!(
-            listing
-                .entries
-                .iter()
-                .any(|entry| entry.path == "project/README.md")
-        );
+        assert!(listing.entries.iter().any(|entry| entry.path == "project/README.md"));
         test_apple_archive_filter(&archive, |_| true, None).unwrap();
 
-        let extract_report = extract_apple_archive(
-            &archive,
-            temp.path("out"),
-            ExtractionPolicy::default(),
-            None,
-        )
-        .unwrap();
+        let extract_report =
+            extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
         assert!(extract_report.written_entries >= 3);
-        assert_eq!(
-            fs::read_to_string(temp.path("out/project/README.md")).unwrap(),
-            "hello aar"
-        );
+        assert_eq!(fs::read_to_string(temp.path("out/project/README.md")).unwrap(), "hello aar");
         assert!(temp.path("out/project/empty").is_dir());
     }
 
@@ -1227,14 +1039,7 @@ mod tests {
         let temp = TestDir::new("apple_archive_complete_metadata");
         temp.write_file("project/native.txt", b"native metadata");
         let source = temp.path("project/native.txt");
-        assert!(
-            std::process::Command::new("/usr/bin/chflags")
-                .arg("hidden")
-                .arg(&source)
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(std::process::Command::new("/usr/bin/chflags").arg("hidden").arg(&source).status().unwrap().success());
         let expected = fs::metadata(&source).unwrap();
         let archive = temp.path("metadata.aar");
 
@@ -1250,11 +1055,7 @@ mod tests {
         .unwrap();
 
         let listing = list_apple_archive(&archive, None).unwrap();
-        let entry = listing
-            .entries
-            .iter()
-            .find(|entry| entry.path == "project/native.txt")
-            .unwrap();
+        let entry = listing.entries.iter().find(|entry| entry.path == "project/native.txt").unwrap();
         assert_eq!(entry.flags, Some(expected.st_flags()));
         assert_eq!(entry.uid, Some(expected.uid()));
         assert_eq!(entry.gid, Some(expected.gid()));
@@ -1303,13 +1104,9 @@ mod tests {
         let metadata = fs::symlink_metadata(&extracted_symlink).unwrap();
 
         let mtime = metadata.modified().unwrap();
-        let mtime_secs =
-            i64::try_from(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
+        let mtime_secs = i64::try_from(mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
         let diff = (mtime_secs - 1_000_000_000).abs();
-        assert!(
-            diff <= 2,
-            "extracted mtime diff {diff} is greater than 2 seconds"
-        );
+        assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -1333,13 +1130,7 @@ mod tests {
             },
         )
         .unwrap();
-        extract_apple_archive(
-            &archive,
-            temp.path("out"),
-            ExtractionPolicy::default(),
-            None,
-        )
-        .unwrap();
+        extract_apple_archive(&archive, temp.path("out"), ExtractionPolicy::default(), None).unwrap();
 
         let metadata = fs::metadata(temp.path("out/project/old.txt")).unwrap();
         assert_eq!(metadata.mtime(), -2);
@@ -1350,11 +1141,7 @@ mod tests {
     #[test]
     fn native_operations_return_unsupported_on_non_apple_targets() {
         let error = list_apple_archive("archive.aar", None).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("supported only on macOS and iOS")
-        );
+        assert!(error.to_string().contains("supported only on macOS and iOS"));
         assert!(!apple_archive_supported());
     }
 
@@ -1372,11 +1159,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
-            let root = std::env::temp_dir()
-                .join(format!("zmanager-core-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+            let root = std::env::temp_dir().join(format!("zmanager-core-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
             Self { root }
         }

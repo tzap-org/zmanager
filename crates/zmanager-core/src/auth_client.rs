@@ -59,16 +59,9 @@ impl TzapHostedAuthLaunchConfig {
         redirect_uri: impl Into<String>,
     ) -> Self {
         let (hosted_auth_base_url, hosted_account_base_url) = match environment {
-            TzapHostedAuthEnvironment::Local => {
-                (LOCAL_HOSTED_AUTH_BASE_URL, LOCAL_HOSTED_ACCOUNT_BASE_URL)
-            }
-            TzapHostedAuthEnvironment::Staging => (
-                STAGING_HOSTED_AUTH_BASE_URL,
-                STAGING_HOSTED_ACCOUNT_BASE_URL,
-            ),
-            TzapHostedAuthEnvironment::Prod => {
-                (PROD_HOSTED_AUTH_BASE_URL, PROD_HOSTED_ACCOUNT_BASE_URL)
-            }
+            TzapHostedAuthEnvironment::Local => (LOCAL_HOSTED_AUTH_BASE_URL, LOCAL_HOSTED_ACCOUNT_BASE_URL),
+            TzapHostedAuthEnvironment::Staging => (STAGING_HOSTED_AUTH_BASE_URL, STAGING_HOSTED_ACCOUNT_BASE_URL),
+            TzapHostedAuthEnvironment::Prod => (PROD_HOSTED_AUTH_BASE_URL, PROD_HOSTED_ACCOUNT_BASE_URL),
         };
         Self {
             client_id: client_id.into(),
@@ -119,11 +112,7 @@ impl TzapHostedAuthLaunchConfig {
 
     #[must_use]
     pub fn account_url(&self) -> String {
-        format!(
-            "{}{}",
-            trim_trailing_slash(&self.hosted_account_base_url),
-            HOSTED_ACCOUNT_PATH
-        )
+        format!("{}{}", trim_trailing_slash(&self.hosted_account_base_url), HOSTED_ACCOUNT_PATH)
     }
 }
 
@@ -202,16 +191,11 @@ pub struct TzapAuthProvider {
 impl TzapAuthProvider {
     pub fn authorization_target(&self) -> Result<&str, TzapAuthError> {
         if !self.enabled {
-            return Err(TzapAuthError::ProviderDisabled {
-                provider_id: self.id.clone(),
-                reason: self.disabled_reason,
-            });
+            return Err(TzapAuthError::ProviderDisabled { provider_id: self.id.clone(), reason: self.disabled_reason });
         }
-        self.authorization_url.as_deref().ok_or_else(|| {
-            TzapAuthError::ProviderMissingAuthorizationUrl {
-                provider_id: self.id.clone(),
-            }
-        })
+        self.authorization_url
+            .as_deref()
+            .ok_or_else(|| TzapAuthError::ProviderMissingAuthorizationUrl { provider_id: self.id.clone() })
     }
 }
 
@@ -231,19 +215,14 @@ impl TzapProviderDiscovery {
         let providers = required_field(object, "$", "providers")?
             .as_array()
             .ok_or(TzapAuthError::ExpectedArray { path: "providers" })?;
-        let providers = providers
-            .iter()
-            .map(parse_provider)
-            .collect::<Result<Vec<_>, _>>()?;
+        let providers = providers.iter().map(parse_provider).collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self { providers })
     }
 
     #[must_use]
     pub fn provider(&self, provider_id: &str) -> Option<&TzapAuthProvider> {
-        self.providers
-            .iter()
-            .find(|provider| provider.id == provider_id)
+        self.providers.iter().find(|provider| provider.id == provider_id)
     }
 }
 
@@ -259,20 +238,12 @@ impl TzapPkcePair {
     pub fn generate() -> Self {
         let verifier = random_base64url(PKCE_VERIFIER_RANDOM_BYTES);
         let challenge = pkce_s256_challenge(&verifier);
-        Self {
-            verifier,
-            challenge,
-            method: PKCE_METHOD_S256,
-        }
+        Self { verifier, challenge, method: PKCE_METHOD_S256 }
     }
 
     pub fn from_verifier(verifier: &str) -> Result<Self, TzapAuthError> {
         validate_pkce_verifier(verifier)?;
-        Ok(Self {
-            verifier: verifier.to_owned(),
-            challenge: pkce_s256_challenge(verifier),
-            method: PKCE_METHOD_S256,
-        })
+        Ok(Self { verifier: verifier.to_owned(), challenge: pkce_s256_challenge(verifier), method: PKCE_METHOD_S256 })
     }
 }
 
@@ -306,9 +277,7 @@ impl TzapOAuthStateTracker {
         let redirect_uri = redirect_uri.into();
         loop {
             let state = random_base64url(OAUTH_STATE_RANDOM_BYTES);
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                self.pending.entry(state.clone())
-            {
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.pending.entry(state.clone()) {
                 let pending = TzapPendingAuthState {
                     state: state.clone(),
                     provider_id: provider_id.clone(),
@@ -334,9 +303,7 @@ impl TzapOAuthStateTracker {
 
     pub fn consume(&mut self, state: &str) -> Result<TzapPendingAuthState, TzapAuthError> {
         validate_oauth_state(state)?;
-        self.pending
-            .remove(state)
-            .ok_or(TzapAuthError::UnknownState)
+        self.pending.remove(state).ok_or(TzapAuthError::UnknownState)
     }
 
     pub fn consume_handoff(
@@ -347,19 +314,14 @@ impl TzapOAuthStateTracker {
     ) -> Result<TzapPendingAuthState, TzapAuthError> {
         reject_url_session_material(callback.callback_url.as_deref())?;
         validate_oauth_state(&callback.state)?;
-        let pending = self
-            .pending
-            .get(&callback.state)
-            .ok_or(TzapAuthError::UnknownState)?;
+        let pending = self.pending.get(&callback.state).ok_or(TzapAuthError::UnknownState)?;
         if pending.redirect_uri != callback.redirect_uri {
             return Err(TzapAuthError::RedirectUriMismatch);
         }
         if pending.pkce.verifier != callback.pkce_verifier {
             return Err(TzapAuthError::PkceVerifierMismatch);
         }
-        let expires_at = pending
-            .created_at_unix_seconds
-            .saturating_add(handoff_lifetime_seconds);
+        let expires_at = pending.created_at_unix_seconds.saturating_add(handoff_lifetime_seconds);
         if now_unix_seconds > expires_at {
             return Err(TzapAuthError::ExpiredHandoff);
         }
@@ -383,8 +345,7 @@ pub fn complete_hosted_auth_handoff(
     callback: &TzapHostedAuthCallback,
     now_unix_seconds: u64,
 ) -> Result<TzapSessionRecord, TzapAuthError> {
-    let pending =
-        tracker.consume_handoff(callback, now_unix_seconds, AUTH_HANDOFF_LIFETIME_SECONDS)?;
+    let pending = tracker.consume_handoff(callback, now_unix_seconds, AUTH_HANDOFF_LIFETIME_SECONDS)?;
     let relay = TzapAuthRelayCompletion::from_json_bytes(&callback.relay_body)?;
     let session = relay.into_session();
     session.require_audience(&pending_expected_audience(&pending))?;
@@ -436,10 +397,7 @@ impl TzapSessionRecord {
         if self.audience == expected {
             Ok(())
         } else {
-            Err(TzapAuthError::AudienceMismatch {
-                expected: expected.to_owned(),
-                actual: self.audience.clone(),
-            })
+            Err(TzapAuthError::AudienceMismatch { expected: expected.to_owned(), actual: self.audience.clone() })
         }
     }
 }
@@ -536,29 +494,19 @@ pub fn fetch_current_user(
     session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
     let request = TzapAuthHttpRequest {
         method: TzapAuthHttpMethod::Get,
-        url: format!(
-            "{}{}",
-            trim_trailing_slash(sign_base_url),
-            CURRENT_USER_PATH
-        ),
+        url: format!("{}{}", trim_trailing_slash(sign_base_url), CURRENT_USER_PATH),
         bearer_token: Some(session.access_token.clone()),
         body: None,
     };
     let response = transport.send(&request)?;
     if !(200..=299).contains(&response.status_code) {
-        return Err(TzapAuthError::HttpStatus {
-            status_code: response.status_code,
-        });
+        return Err(TzapAuthError::HttpStatus { status_code: response.status_code });
     }
     TzapCurrentUser::from_json_bytes(&response.body)
 }
 
 pub trait TzapSessionStore {
-    fn save_session(
-        &mut self,
-        account_key: &str,
-        session: TzapSessionRecord,
-    ) -> Result<(), TzapAuthError>;
+    fn save_session(&mut self, account_key: &str, session: TzapSessionRecord) -> Result<(), TzapAuthError>;
     fn load_session(&self, account_key: &str) -> Option<TzapSessionRecord>;
     fn clear_session(&mut self, account_key: &str) -> Result<(), TzapAuthError>;
 }
@@ -576,11 +524,7 @@ impl InMemoryTzapSessionStore {
 }
 
 impl TzapSessionStore for InMemoryTzapSessionStore {
-    fn save_session(
-        &mut self,
-        account_key: &str,
-        session: TzapSessionRecord,
-    ) -> Result<(), TzapAuthError> {
+    fn save_session(&mut self, account_key: &str, session: TzapSessionRecord) -> Result<(), TzapAuthError> {
         self.sessions.insert(account_key.to_owned(), session);
         Ok(())
     }
@@ -598,50 +542,20 @@ impl TzapSessionStore for InMemoryTzapSessionStore {
 #[derive(Debug)]
 pub enum TzapAuthError {
     InvalidJson(serde_json::Error),
-    ExpectedObject {
-        path: &'static str,
-    },
-    ExpectedArray {
-        path: &'static str,
-    },
-    MissingField {
-        path: &'static str,
-        field: &'static str,
-    },
-    InvalidString {
-        path: &'static str,
-        field: &'static str,
-    },
-    InvalidBoolean {
-        path: &'static str,
-        field: &'static str,
-    },
-    InvalidProviderType {
-        provider_id: String,
-        provider_type: String,
-    },
-    InvalidDisabledReason {
-        provider_id: String,
-        reason: String,
-    },
-    DisabledProviderHasAuthorizationUrl {
-        provider_id: String,
-    },
-    EnabledProviderMissingAuthorizationUrl {
-        provider_id: String,
-    },
-    ProviderDisabled {
-        provider_id: String,
-        reason: Option<TzapDisabledProviderReason>,
-    },
-    ProviderMissingAuthorizationUrl {
-        provider_id: String,
-    },
+    ExpectedObject { path: &'static str },
+    ExpectedArray { path: &'static str },
+    MissingField { path: &'static str, field: &'static str },
+    InvalidString { path: &'static str, field: &'static str },
+    InvalidBoolean { path: &'static str, field: &'static str },
+    InvalidProviderType { provider_id: String, provider_type: String },
+    InvalidDisabledReason { provider_id: String, reason: String },
+    DisabledProviderHasAuthorizationUrl { provider_id: String },
+    EnabledProviderMissingAuthorizationUrl { provider_id: String },
+    ProviderDisabled { provider_id: String, reason: Option<TzapDisabledProviderReason> },
+    ProviderMissingAuthorizationUrl { provider_id: String },
     InvalidPkceVerifier,
     InvalidState,
-    InvalidConfig {
-        field: &'static str,
-    },
+    InvalidConfig { field: &'static str },
     DuplicateState,
     UnknownState,
     RedirectUriMismatch,
@@ -654,22 +568,11 @@ pub enum TzapAuthError {
     SessionTokenInCallbackUrl,
     RawProviderMaterial,
     EmptyToken,
-    InvalidAssuranceLevel {
-        value: String,
-    },
-    AudienceMismatch {
-        expected: String,
-        actual: String,
-    },
-    Transport {
-        message: String,
-    },
-    Storage {
-        message: String,
-    },
-    HttpStatus {
-        status_code: u16,
-    },
+    InvalidAssuranceLevel { value: String },
+    AudienceMismatch { expected: String, actual: String },
+    Transport { message: String },
+    Storage { message: String },
+    HttpStatus { status_code: u16 },
 }
 
 impl fmt::Display for TzapAuthError {
@@ -683,31 +586,19 @@ impl fmt::Display for TzapAuthError {
                 write!(f, "{path}.{field} must be a non-empty string")
             }
             Self::InvalidBoolean { path, field } => write!(f, "{path}.{field} must be a boolean"),
-            Self::InvalidProviderType {
-                provider_id,
-                provider_type,
-            } => write!(f, "provider {provider_id} has unknown type {provider_type}"),
-            Self::InvalidDisabledReason {
-                provider_id,
-                reason,
-            } => write!(
-                f,
-                "provider {provider_id} has unknown disabled reason {reason}"
-            ),
-            Self::DisabledProviderHasAuthorizationUrl { provider_id } => write!(
-                f,
-                "disabled provider {provider_id} must not include an authorization URL"
-            ),
-            Self::EnabledProviderMissingAuthorizationUrl { provider_id } => {
-                write!(
-                    f,
-                    "enabled provider {provider_id} is missing an authorization URL"
-                )
+            Self::InvalidProviderType { provider_id, provider_type } => {
+                write!(f, "provider {provider_id} has unknown type {provider_type}")
             }
-            Self::ProviderDisabled {
-                provider_id,
-                reason,
-            } => write!(
+            Self::InvalidDisabledReason { provider_id, reason } => {
+                write!(f, "provider {provider_id} has unknown disabled reason {reason}")
+            }
+            Self::DisabledProviderHasAuthorizationUrl { provider_id } => {
+                write!(f, "disabled provider {provider_id} must not include an authorization URL")
+            }
+            Self::EnabledProviderMissingAuthorizationUrl { provider_id } => {
+                write!(f, "enabled provider {provider_id} is missing an authorization URL")
+            }
+            Self::ProviderDisabled { provider_id, reason } => write!(
                 f,
                 "provider {provider_id} is disabled ({})",
                 reason.map_or("unknown", TzapDisabledProviderReason::as_str)
@@ -733,33 +624,21 @@ impl fmt::Display for TzapAuthError {
             Self::CancelledHandoff => write!(f, "hosted auth handoff was cancelled"),
             Self::FailedHandoff => write!(f, "hosted auth handoff failed"),
             Self::InvalidHandoffStatus => write!(f, "hosted auth handoff status is invalid"),
-            Self::SessionTokenInCallbackUrl => write!(
-                f,
-                "hosted auth callback URL must not contain session tokens"
-            ),
-            Self::RawProviderMaterial => write!(
-                f,
-                "hosted auth handoff must not contain raw provider material"
-            ),
+            Self::SessionTokenInCallbackUrl => write!(f, "hosted auth callback URL must not contain session tokens"),
+            Self::RawProviderMaterial => write!(f, "hosted auth handoff must not contain raw provider material"),
             Self::EmptyToken => write!(f, "session token is empty"),
             Self::InvalidAssuranceLevel { value } => {
                 write!(f, "identity assurance level is invalid: {value}")
             }
             Self::AudienceMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "session audience mismatch: expected {expected}, got {actual}"
-                )
+                write!(f, "session audience mismatch: expected {expected}, got {actual}")
             }
             Self::Transport { message } => {
                 write!(f, "hosted auth HTTP transport failed: {message}")
             }
             Self::Storage { message } => write!(f, "hosted auth storage failed: {message}"),
             Self::HttpStatus { status_code } => {
-                write!(
-                    f,
-                    "hosted auth HTTP request failed with status {status_code}"
-                )
+                write!(f, "hosted auth HTTP request failed with status {status_code}")
             }
         }
     }
@@ -776,11 +655,7 @@ pub fn validate_pkce_verifier(verifier: &str) -> Result<(), TzapAuthError> {
     if !(PKCE_VERIFIER_MIN_LENGTH..=PKCE_VERIFIER_MAX_LENGTH).contains(&verifier.len()) {
         return Err(TzapAuthError::InvalidPkceVerifier);
     }
-    if verifier.bytes().all(is_pkce_unreserved) {
-        Ok(())
-    } else {
-        Err(TzapAuthError::InvalidPkceVerifier)
-    }
+    if verifier.bytes().all(is_pkce_unreserved) { Ok(()) } else { Err(TzapAuthError::InvalidPkceVerifier) }
 }
 
 pub fn validate_oauth_state(state: &str) -> Result<(), TzapAuthError> {
@@ -791,11 +666,7 @@ pub fn validate_oauth_state(state: &str) -> Result<(), TzapAuthError> {
 }
 
 fn validate_non_empty_config(field: &'static str, value: &str) -> Result<(), TzapAuthError> {
-    if value.is_empty() {
-        Err(TzapAuthError::InvalidConfig { field })
-    } else {
-        Ok(())
-    }
+    if value.is_empty() { Err(TzapAuthError::InvalidConfig { field }) } else { Ok(()) }
 }
 
 fn pending_expected_audience(_pending: &TzapPendingAuthState) -> String {
@@ -806,11 +677,7 @@ fn parse_session_record(value: &Value) -> Result<TzapSessionRecord, TzapAuthErro
     let object = object_at(value, "session")?;
     Ok(TzapSessionRecord {
         audience: required_string_field(object, "session", "audience")?,
-        access_token: TzapBearerToken::new(required_string_field(
-            object,
-            "session",
-            "access_token",
-        )?)?,
+        access_token: TzapBearerToken::new(required_string_field(object, "session", "access_token")?)?,
         expires_at_unix_seconds: required_u64_field(object, "session", "expires_at_unix_seconds")?,
         identity_assurance: parse_assurance_level(object, "session", "identity_assurance")?,
         selected_org_id: optional_string_field(object, "session", "selected_org_id")?,
@@ -824,37 +691,28 @@ fn parse_assurance_level(
     field: &'static str,
 ) -> Result<trust::TzapIdentityAssurance, TzapAuthError> {
     let value = required_string_field(object, path, field)?;
-    trust::TzapIdentityAssurance::parse(&value)
-        .ok_or(TzapAuthError::InvalidAssuranceLevel { value })
+    trust::TzapIdentityAssurance::parse(&value).ok_or(TzapAuthError::InvalidAssuranceLevel { value })
 }
 
 fn reject_url_session_material(callback_url: Option<&str>) -> Result<(), TzapAuthError> {
     let Some(callback_url) = callback_url else {
         return Ok(());
     };
-    let (before_fragment, fragment) = callback_url
-        .split_once('#')
-        .map_or((callback_url, None), |(before, fragment)| {
-            (before, Some(fragment))
-        });
+    let (before_fragment, fragment) =
+        callback_url.split_once('#').map_or((callback_url, None), |(before, fragment)| (before, Some(fragment)));
     let query = before_fragment.split_once('?').map(|(_, query)| query);
     reject_url_session_material_parameters(query)?;
     reject_url_session_material_parameters(fragment)?;
     Ok(())
 }
 
-fn reject_url_session_material_parameters(
-    parameter_text: Option<&str>,
-) -> Result<(), TzapAuthError> {
+fn reject_url_session_material_parameters(parameter_text: Option<&str>) -> Result<(), TzapAuthError> {
     let Some(parameter_text) = parameter_text else {
         return Ok(());
     };
     for parameter in parameter_text.split('&') {
         let key = parameter.split_once('=').map_or(parameter, |(key, _)| key);
-        if matches!(
-            key,
-            "relay_body" | "access_token" | "session_token" | "id_token" | "refresh_token"
-        ) {
+        if matches!(key, "relay_body" | "access_token" | "session_token" | "id_token" | "refresh_token") {
             return Err(TzapAuthError::SessionTokenInCallbackUrl);
         }
     }
@@ -896,30 +754,20 @@ fn is_disallowed_provider_material_field(field: &str) -> bool {
 
 fn parse_provider(value: &Value) -> Result<TzapAuthProvider, TzapAuthError> {
     let path = "providers[]";
-    let object = value
-        .as_object()
-        .ok_or(TzapAuthError::ExpectedObject { path })?;
+    let object = value.as_object().ok_or(TzapAuthError::ExpectedObject { path })?;
 
     let id = required_string_field(object, path, "id")?;
     let display_name = required_string_field(object, path, "display_name")?;
     let provider_type_value = required_string_field(object, path, "provider_type")?;
-    let provider_type =
-        TzapAuthProviderType::from_wire_value(&provider_type_value).ok_or_else(|| {
-            TzapAuthError::InvalidProviderType {
-                provider_id: id.clone(),
-                provider_type: provider_type_value,
-            }
-        })?;
+    let provider_type = TzapAuthProviderType::from_wire_value(&provider_type_value).ok_or_else(|| {
+        TzapAuthError::InvalidProviderType { provider_id: id.clone(), provider_type: provider_type_value }
+    })?;
     let enabled = required_bool_field(object, path, "enabled")?;
     let authorization_url = optional_string_field(object, path, "authorization_url")?;
     let disabled_reason = optional_string_field(object, path, "disabled_reason")?
         .map(|reason| {
-            TzapDisabledProviderReason::from_wire_value(&reason).ok_or_else(|| {
-                TzapAuthError::InvalidDisabledReason {
-                    provider_id: id.clone(),
-                    reason,
-                }
-            })
+            TzapDisabledProviderReason::from_wire_value(&reason)
+                .ok_or_else(|| TzapAuthError::InvalidDisabledReason { provider_id: id.clone(), reason })
         })
         .transpose()?;
 
@@ -930,23 +778,11 @@ fn parse_provider(value: &Value) -> Result<TzapAuthProvider, TzapAuthError> {
         return Err(TzapAuthError::DisabledProviderHasAuthorizationUrl { provider_id: id });
     }
 
-    Ok(TzapAuthProvider {
-        id,
-        display_name,
-        provider_type,
-        enabled,
-        authorization_url,
-        disabled_reason,
-    })
+    Ok(TzapAuthProvider { id, display_name, provider_type, enabled, authorization_url, disabled_reason })
 }
 
-fn object_at<'a>(
-    value: &'a Value,
-    path: &'static str,
-) -> Result<&'a Map<String, Value>, TzapAuthError> {
-    value
-        .as_object()
-        .ok_or(TzapAuthError::ExpectedObject { path })
+fn object_at<'a>(value: &'a Value, path: &'static str) -> Result<&'a Map<String, Value>, TzapAuthError> {
+    value.as_object().ok_or(TzapAuthError::ExpectedObject { path })
 }
 
 fn required_field<'a>(
@@ -954,9 +790,7 @@ fn required_field<'a>(
     path: &'static str,
     field: &'static str,
 ) -> Result<&'a Value, TzapAuthError> {
-    object
-        .get(field)
-        .ok_or(TzapAuthError::MissingField { path, field })
+    object.get(field).ok_or(TzapAuthError::MissingField { path, field })
 }
 
 fn required_string_field(
@@ -1000,9 +834,7 @@ fn required_bool_field(
     field: &'static str,
 ) -> Result<bool, TzapAuthError> {
     let value = required_field(object, path, field)?;
-    value
-        .as_bool()
-        .ok_or(TzapAuthError::InvalidBoolean { path, field })
+    value.as_bool().ok_or(TzapAuthError::InvalidBoolean { path, field })
 }
 
 fn required_u64_field(
@@ -1011,9 +843,7 @@ fn required_u64_field(
     field: &'static str,
 ) -> Result<u64, TzapAuthError> {
     let value = required_field(object, path, field)?;
-    value
-        .as_u64()
-        .ok_or(TzapAuthError::InvalidString { path, field })
+    value.as_u64().ok_or(TzapAuthError::InvalidString { path, field })
 }
 
 fn trim_trailing_slash(value: &str) -> &str {
@@ -1079,14 +909,12 @@ fn is_pkce_unreserved(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTH_HANDOFF_LIFETIME_SECONDS, InMemoryTzapSessionStore, LOGIN_TZAP_BASE_URL,
-        PKCE_METHOD_S256, SESSION_AUDIENCE_SIGN_TZAP, SIGN_TZAP_BASE_URL, SIGNUP_TZAP_BASE_URL,
-        TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse,
-        TzapAuthHttpTransport, TzapAuthProviderType, TzapBearerToken, TzapHostedAuthCallback,
-        TzapHostedAuthEnvironment, TzapHostedAuthLaunchConfig, TzapOAuthStateTracker,
-        TzapPendingAuthState, TzapPkcePair, TzapProviderDiscovery, TzapSessionRecord,
-        TzapSessionStore, complete_hosted_auth_handoff, fetch_current_user, pkce_s256_challenge,
-        validate_pkce_verifier,
+        AUTH_HANDOFF_LIFETIME_SECONDS, InMemoryTzapSessionStore, LOGIN_TZAP_BASE_URL, PKCE_METHOD_S256,
+        SESSION_AUDIENCE_SIGN_TZAP, SIGN_TZAP_BASE_URL, SIGNUP_TZAP_BASE_URL, TzapAuthError, TzapAuthHttpMethod,
+        TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport, TzapAuthProviderType, TzapBearerToken,
+        TzapHostedAuthCallback, TzapHostedAuthEnvironment, TzapHostedAuthLaunchConfig, TzapOAuthStateTracker,
+        TzapPendingAuthState, TzapPkcePair, TzapProviderDiscovery, TzapSessionRecord, TzapSessionStore,
+        complete_hosted_auth_handoff, fetch_current_user, pkce_s256_challenge, validate_pkce_verifier,
     };
     use crate::trust;
     use serde_json::json;
@@ -1094,17 +922,11 @@ mod tests {
     #[test]
     fn pkce_s256_uses_rfc7636_vector() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        assert_eq!(
-            pkce_s256_challenge(verifier),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
+        assert_eq!(pkce_s256_challenge(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
 
         let pair = TzapPkcePair::from_verifier(verifier).unwrap();
         assert_eq!(pair.method, PKCE_METHOD_S256);
-        assert_eq!(
-            pair.challenge,
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
+        assert_eq!(pair.challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
     }
 
     #[test]
@@ -1117,14 +939,9 @@ mod tests {
 
     #[test]
     fn pkce_verifier_rejects_bad_length_and_characters() {
+        assert!(matches!(TzapPkcePair::from_verifier("short"), Err(TzapAuthError::InvalidPkceVerifier)));
         assert!(matches!(
-            TzapPkcePair::from_verifier("short"),
-            Err(TzapAuthError::InvalidPkceVerifier)
-        ));
-        assert!(matches!(
-            TzapPkcePair::from_verifier(
-                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=STUVWXYZ0123456789"
-            ),
+            TzapPkcePair::from_verifier("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=STUVWXYZ0123456789"),
             Err(TzapAuthError::InvalidPkceVerifier)
         ));
     }
@@ -1135,10 +952,7 @@ mod tests {
         let pending = pending_auth_state();
         tracker.insert_pending(pending.clone()).unwrap();
 
-        assert!(matches!(
-            tracker.insert_pending(pending.clone()),
-            Err(TzapAuthError::DuplicateState)
-        ));
+        assert!(matches!(tracker.insert_pending(pending.clone()), Err(TzapAuthError::DuplicateState)));
         assert_eq!(tracker.consume(&pending.state).unwrap(), pending);
         assert!(matches!(
             tracker.consume("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"),
@@ -1239,12 +1053,7 @@ mod tests {
         ));
 
         let good_callback = hosted_auth_callback(&pending, relay_success_body());
-        assert_eq!(
-            tracker
-                .consume_handoff(&good_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS)
-                .unwrap(),
-            pending
-        );
+        assert_eq!(tracker.consume_handoff(&good_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS).unwrap(), pending);
     }
 
     #[test]
@@ -1255,20 +1064,12 @@ mod tests {
         let mut store = InMemoryTzapSessionStore::new();
         let callback = hosted_auth_callback(&pending, relay_success_body());
 
-        let session =
-            complete_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101)
-                .unwrap();
+        let session = complete_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101).unwrap();
 
         assert_eq!(session.audience, SESSION_AUDIENCE_SIGN_TZAP);
-        assert_eq!(
-            session.identity_assurance,
-            trust::TzapIdentityAssurance::OauthVerifiedEmail
-        );
+        assert_eq!(session.identity_assurance, trust::TzapIdentityAssurance::OauthVerifiedEmail);
         assert_eq!(session.selected_org_id.as_deref(), Some("org_123"));
-        assert_eq!(
-            session.login_session_id.as_deref(),
-            Some("login_session_123")
-        );
+        assert_eq!(session.login_session_id.as_deref(), Some("login_session_123"));
         assert_eq!(store.load_session("default"), Some(session));
     }
 
@@ -1280,9 +1081,7 @@ mod tests {
         let mut store = FailingSessionStore;
         let callback = hosted_auth_callback(&pending, relay_success_body());
 
-        let error =
-            complete_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101)
-                .unwrap_err();
+        let error = complete_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101).unwrap_err();
 
         assert!(matches!(error, TzapAuthError::Storage { message } if message == "store failed"));
     }
@@ -1293,8 +1092,7 @@ mod tests {
         let mut tracker = TzapOAuthStateTracker::new();
         tracker.insert_pending(pending.clone()).unwrap();
         let mut callback = hosted_auth_callback(&pending, relay_success_body());
-        callback.callback_url =
-            Some("zmanager://auth/callback?state=ok&access_token=never".to_owned());
+        callback.callback_url = Some("zmanager://auth/callback?state=ok&access_token=never".to_owned());
 
         assert!(matches!(
             tracker.consume_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
@@ -1304,9 +1102,8 @@ mod tests {
         let mut tracker = TzapOAuthStateTracker::new();
         tracker.insert_pending(pending.clone()).unwrap();
         let mut fragment_callback = hosted_auth_callback(&pending, relay_success_body());
-        fragment_callback.callback_url = Some(
-            "zmanager://auth/callback?state=ok#access_token=never&relay_body=never".to_owned(),
-        );
+        fragment_callback.callback_url =
+            Some("zmanager://auth/callback?state=ok#access_token=never&relay_body=never".to_owned());
         assert!(matches!(
             tracker.consume_handoff(&fragment_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
             Err(TzapAuthError::SessionTokenInCallbackUrl)
@@ -1315,8 +1112,7 @@ mod tests {
         let mut tracker = TzapOAuthStateTracker::new();
         tracker.insert_pending(pending.clone()).unwrap();
         let mut relay_query_callback = hosted_auth_callback(&pending, relay_success_body());
-        relay_query_callback.callback_url =
-            Some("zmanager://auth/callback?state=ok&relay_body=never".to_owned());
+        relay_query_callback.callback_url = Some("zmanager://auth/callback?state=ok&relay_body=never".to_owned());
         assert!(matches!(
             tracker.consume_handoff(&relay_query_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS),
             Err(TzapAuthError::SessionTokenInCallbackUrl)
@@ -1377,10 +1173,7 @@ mod tests {
 
         let google = discovery.provider("google").unwrap();
         assert_eq!(google.provider_type, TzapAuthProviderType::Google);
-        assert_eq!(
-            google.authorization_target().unwrap(),
-            "https://login.tzap.org/auth/google"
-        );
+        assert_eq!(google.authorization_target().unwrap(), "https://login.tzap.org/auth/google");
 
         let email = discovery.provider("email").unwrap();
         assert!(matches!(
@@ -1437,9 +1230,7 @@ mod tests {
         };
         assert!(!session.is_expired_at(199));
         assert!(session.is_expired_at(200));
-        session
-            .require_audience(SESSION_AUDIENCE_SIGN_TZAP)
-            .unwrap();
+        session.require_audience(SESSION_AUDIENCE_SIGN_TZAP).unwrap();
         assert!(matches!(
             session.require_audience("login.tzap.org"),
             Err(TzapAuthError::AudienceMismatch { expected, actual })
@@ -1489,10 +1280,7 @@ mod tests {
         assert_eq!(current_user.display_name, "Ada Lovelace");
         assert_eq!(current_user.selected_org_id.as_deref(), Some("org_123"));
         assert_eq!(
-            format!(
-                "{:?}",
-                transport.last_request().bearer_token.as_ref().unwrap()
-            ),
+            format!("{:?}", transport.last_request().bearer_token.as_ref().unwrap()),
             "TzapBearerToken(<redacted>)"
         );
     }
@@ -1502,16 +1290,12 @@ mod tests {
             state: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ".to_owned(),
             provider_id: "github".to_owned(),
             redirect_uri: "zmanager://auth/callback".to_owned(),
-            pkce: TzapPkcePair::from_verifier("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ")
-                .unwrap(),
+            pkce: TzapPkcePair::from_verifier("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ").unwrap(),
             created_at_unix_seconds: 100,
         }
     }
 
-    fn hosted_auth_callback(
-        pending: &TzapPendingAuthState,
-        relay_body: Vec<u8>,
-    ) -> TzapHostedAuthCallback {
+    fn hosted_auth_callback(pending: &TzapPendingAuthState, relay_body: Vec<u8>) -> TzapHostedAuthCallback {
         TzapHostedAuthCallback {
             state: pending.state.clone(),
             redirect_uri: pending.redirect_uri.clone(),
@@ -1548,19 +1332,12 @@ mod tests {
 
     impl FakeAuthTransport {
         fn last_request(&self) -> TzapAuthHttpRequest {
-            self.last_request
-                .borrow()
-                .as_ref()
-                .expect("fake transport received request")
-                .clone()
+            self.last_request.borrow().as_ref().expect("fake transport received request").clone()
         }
     }
 
     impl TzapAuthHttpTransport for FakeAuthTransport {
-        fn send(
-            &self,
-            request: &TzapAuthHttpRequest,
-        ) -> Result<TzapAuthHttpResponse, TzapAuthError> {
+        fn send(&self, request: &TzapAuthHttpRequest) -> Result<TzapAuthHttpResponse, TzapAuthError> {
             assert_eq!(request.method, TzapAuthHttpMethod::Get);
             assert_eq!(request.url, "https://sign.tzap.org/v1/me");
             self.last_request.replace(Some(request.clone()));
@@ -1571,14 +1348,8 @@ mod tests {
     struct FailingSessionStore;
 
     impl TzapSessionStore for FailingSessionStore {
-        fn save_session(
-            &mut self,
-            _account_key: &str,
-            _session: TzapSessionRecord,
-        ) -> Result<(), TzapAuthError> {
-            Err(TzapAuthError::Storage {
-                message: "store failed".to_owned(),
-            })
+        fn save_session(&mut self, _account_key: &str, _session: TzapSessionRecord) -> Result<(), TzapAuthError> {
+            Err(TzapAuthError::Storage { message: "store failed".to_owned() })
         }
 
         fn load_session(&self, _account_key: &str) -> Option<TzapSessionRecord> {

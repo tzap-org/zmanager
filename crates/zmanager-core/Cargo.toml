@@ -16,6 +16,7 @@ brotli = "8.0.2"
 bzip2 = "0.6.1"
 filetime = "0.2.29"
 flate2 = "1.1.9"
+hex = "0.4"
 lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.16.2", default-features = false, features = ["lzip", "std", "xz"] }
 num-bigint = "0.4.6"

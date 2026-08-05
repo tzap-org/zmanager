@@ -4,9 +4,8 @@ use crate::auth_client::{SESSION_AUDIENCE_SIGN_TZAP, TzapAuthError, TzapSessionR
 use crate::certificate_lifecycle::TzapRetirementCompletion;
 use crate::device_identity::{TzapDeviceCsrOptions, generate_device_signing_key_and_csr};
 use crate::local_identity_store::{
-    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
-    TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-    TzapSignDeviceRouting,
+    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityInventory,
+    TzapLocalIdentityStore, TzapLocalIdentityStoreError, TzapSignDeviceRouting,
 };
 use crate::trust::{self, TzapCertificatePublicMetadata};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -93,15 +92,10 @@ pub fn enroll_local_fake_certificate(
     let signing_key = ensure_device_signing_key(&mut inventory, options.now_unix_seconds)?;
     let record = issue_fake_certificate(
         &signing_key,
-        fake_certificate_id(
-            FAKE_CERTIFICATE_ID_PREFIX,
-            inventory.enrolled_certificates.len() + 1,
-        ),
+        fake_certificate_id(FAKE_CERTIFICATE_ID_PREFIX, inventory.enrolled_certificates.len() + 1),
         options.now_unix_seconds,
     )?;
-    inventory
-        .enrolled_certificates
-        .retain(|existing| existing.certificate_sha256 != record.certificate_sha256);
+    inventory.enrolled_certificates.retain(|existing| existing.certificate_sha256 != record.certificate_sha256);
     inventory.enrolled_certificates.push(record.clone());
     store.save_inventory(&options.account_key, inventory)?;
     Ok(record)
@@ -132,10 +126,7 @@ pub fn renew_local_fake_certificate(
         .ok_or(TzapLocalFakeServiceError::CertificateNotFound)?;
     let record = issue_fake_certificate(
         &signing_key,
-        fake_certificate_id(
-            FAKE_RENEWED_CERTIFICATE_ID_PREFIX,
-            inventory.enrolled_certificates.len() + 1,
-        ),
+        fake_certificate_id(FAKE_RENEWED_CERTIFICATE_ID_PREFIX, inventory.enrolled_certificates.len() + 1),
         options.now_unix_seconds,
     )?;
     inventory.enrolled_certificates.push(record.clone());
@@ -175,10 +166,7 @@ pub fn retire_local_fake_device(
     let mut attempted = Vec::new();
     for certificate in &mut inventory.enrolled_certificates {
         if certificate.state == TzapLocalCertificateState::Active
-            && matches!(
-                certificate.sign_device_routing,
-                TzapSignDeviceRouting::Personal
-            )
+            && matches!(certificate.sign_device_routing, TzapSignDeviceRouting::Personal)
         {
             attempted.push(certificate.sign_device_id.clone());
             certificate.state = TzapLocalCertificateState::Revoked;
@@ -273,29 +261,17 @@ fn certificate_chain_for_leaf_key(
         root.as_ref(),
         now_unix_seconds,
     )?;
-    let leaf = leaf_certificate(
-        leaf_key,
-        platform.as_ref(),
-        platform_key.as_ref(),
-        platform.as_ref(),
-        now_unix_seconds,
-    )?;
-    let leaf_der = leaf
-        .to_der()
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    let platform_der = platform
-        .to_der()
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    let root_der = root
-        .to_der()
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let leaf =
+        leaf_certificate(leaf_key, platform.as_ref(), platform_key.as_ref(), platform.as_ref(), now_unix_seconds)?;
+    let leaf_der = leaf.to_der().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let platform_der = platform.to_der().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let root_der = root.to_der().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     let platform_parsed = parse_certificate(&platform_der, "platform")?;
     let leaf_parsed = parse_certificate(&leaf_der, "leaf")?;
     Ok(IssuedChain {
         issuer_key_identifier: URL_SAFE_NO_PAD.encode(
-            subject_key_identifier(&platform_parsed).ok_or_else(|| {
-                TzapLocalFakeServiceError::Crypto("platform certificate missing SKI".to_owned())
-            })?,
+            subject_key_identifier(&platform_parsed)
+                .ok_or_else(|| TzapLocalFakeServiceError::Crypto("platform certificate missing SKI".to_owned()))?,
         ),
         serial_number: trust::canonical_serial_hex(leaf_parsed.raw_serial())
             .map_err(|_| TzapLocalFakeServiceError::Crypto("invalid serial".to_owned()))?,
@@ -307,10 +283,7 @@ fn certificate_chain_for_leaf_key(
     })
 }
 
-fn root_certificate(
-    key: &PKeyRef<Private>,
-    now_unix_seconds: u64,
-) -> Result<X509, TzapLocalFakeServiceError> {
+fn root_certificate(key: &PKeyRef<Private>, now_unix_seconds: u64) -> Result<X509, TzapLocalFakeServiceError> {
     let mut builder = base_certificate_builder(FAKE_ROOT_CN, key, None, now_unix_seconds)?;
     builder
         .append_extension(
@@ -333,9 +306,7 @@ fn root_certificate(
         )
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     append_subject_key_identifier(&mut builder, None)?;
-    builder
-        .sign(key, MessageDigest::sha256())
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.sign(key, MessageDigest::sha256()).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     Ok(builder.build())
 }
 
@@ -346,8 +317,7 @@ fn intermediate_certificate(
     aki_source: &X509Ref,
     now_unix_seconds: u64,
 ) -> Result<X509, TzapLocalFakeServiceError> {
-    let mut builder =
-        base_certificate_builder(FAKE_PLATFORM_CN, key, Some(issuer_cert), now_unix_seconds)?;
+    let mut builder = base_certificate_builder(FAKE_PLATFORM_CN, key, Some(issuer_cert), now_unix_seconds)?;
     builder
         .append_extension(
             BasicConstraints::new()
@@ -370,12 +340,7 @@ fn intermediate_certificate(
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     append_subject_key_identifier(&mut builder, None)?;
     append_authority_key_identifier(&mut builder, aki_source)?;
-    append_der_extension(
-        &mut builder,
-        "2.5.29.32",
-        false,
-        &certificate_policies_der(&[trust::TZAP_OID_CA_POLICY])?,
-    )?;
+    append_der_extension(&mut builder, "2.5.29.32", false, &certificate_policies_der(&[trust::TZAP_OID_CA_POLICY])?)?;
     append_der_extension(&mut builder, "2.5.29.31", false, &[0x30, 0x00])?;
     builder
         .sign(issuer_key, MessageDigest::sha256())
@@ -390,8 +355,7 @@ fn leaf_certificate(
     aki_source: &X509Ref,
     now_unix_seconds: u64,
 ) -> Result<X509, TzapLocalFakeServiceError> {
-    let mut builder =
-        base_certificate_builder(FAKE_SIGNER_CN, key, Some(issuer_cert), now_unix_seconds)?;
+    let mut builder = base_certificate_builder(FAKE_SIGNER_CN, key, Some(issuer_cert), now_unix_seconds)?;
     builder
         .append_extension(
             BasicConstraints::new()
@@ -412,24 +376,11 @@ fn leaf_certificate(
     let mut eku = ExtendedKeyUsage::new();
     eku.other(trust::TZAP_OID_DOCUMENT_SIGNING_EKU);
     builder
-        .append_extension(
-            eku.build()
-                .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?,
-        )
+        .append_extension(eku.build().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?)
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     append_authority_key_identifier(&mut builder, aki_source)?;
-    append_der_extension(
-        &mut builder,
-        "2.5.29.32",
-        false,
-        &certificate_policies_der(&[trust::TZAP_OID_LEAF_POLICY])?,
-    )?;
-    append_der_extension(
-        &mut builder,
-        trust::TZAP_OID_METADATA_EXTENSION,
-        false,
-        &metadata_extension_bytes()?,
-    )?;
+    append_der_extension(&mut builder, "2.5.29.32", false, &certificate_policies_der(&[trust::TZAP_OID_LEAF_POLICY])?)?;
+    append_der_extension(&mut builder, trust::TZAP_OID_METADATA_EXTENSION, false, &metadata_extension_bytes()?)?;
     builder
         .sign(issuer_key, MessageDigest::sha256())
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
@@ -442,61 +393,41 @@ fn base_certificate_builder(
     issuer: Option<&X509Ref>,
     now_unix_seconds: u64,
 ) -> Result<openssl::x509::X509Builder, TzapLocalFakeServiceError> {
-    let mut name = X509NameBuilder::new()
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let mut name = X509NameBuilder::new().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     name.append_entry_by_text("CN", common_name)
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     let name = name.build();
-    let mut builder =
-        X509::builder().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    builder
-        .set_version(2)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let mut builder = X509::builder().map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_version(2).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     let serial = serial_number(now_unix_seconds)?;
-    builder
-        .set_serial_number(&serial)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    builder
-        .set_subject_name(&name)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_serial_number(&serial).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_subject_name(&name).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     if let Some(issuer) = issuer {
         builder
             .set_issuer_name(issuer.subject_name())
             .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     } else {
-        builder
-            .set_issuer_name(&name)
-            .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+        builder.set_issuer_name(&name).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     }
-    builder
-        .set_pubkey(key)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_pubkey(key).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     let not_before = Asn1Time::from_unix(i64::try_from(now_unix_seconds).unwrap_or(i64::MAX))
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    builder
-        .set_not_before(&not_before)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    let not_after = Asn1Time::from_unix(
-        i64::try_from(now_unix_seconds.saturating_add(FAKE_VALIDITY_SECONDS)).unwrap_or(i64::MAX),
-    )
-    .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    builder
-        .set_not_after(&not_after)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_not_before(&not_before).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let not_after =
+        Asn1Time::from_unix(i64::try_from(now_unix_seconds.saturating_add(FAKE_VALIDITY_SECONDS)).unwrap_or(i64::MAX))
+            .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    builder.set_not_after(&not_after).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     Ok(builder)
 }
 
 fn p256_private_key() -> Result<PKey<Private>, TzapLocalFakeServiceError> {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
-    let key = EcKey::generate(&group)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let key = EcKey::generate(&group).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     PKey::from_ec_key(key).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
 }
 
-fn serial_number(
-    now_unix_seconds: u64,
-) -> Result<openssl::asn1::Asn1Integer, TzapLocalFakeServiceError> {
+fn serial_number(now_unix_seconds: u64) -> Result<openssl::asn1::Asn1Integer, TzapLocalFakeServiceError> {
     let serial = (now_unix_seconds % u64::from(u32::MAX - 1)) + 1;
     BigNum::from_u32(u32::try_from(serial).unwrap())
         .and_then(|number| number.to_asn1_integer())
@@ -513,9 +444,7 @@ fn append_subject_key_identifier(
             .build(&context)
             .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?
     };
-    builder
-        .append_extension(extension)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
+    builder.append_extension(extension).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
 }
 
 fn append_authority_key_identifier(
@@ -529,9 +458,7 @@ fn append_authority_key_identifier(
             .build(&context)
             .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?
     };
-    builder
-        .append_extension(extension)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
+    builder.append_extension(extension).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))
 }
 
 fn append_der_extension(
@@ -540,8 +467,7 @@ fn append_der_extension(
     critical: bool,
     contents: &[u8],
 ) -> Result<(), TzapLocalFakeServiceError> {
-    let oid = Asn1Object::from_str(oid)
-        .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
+    let oid = Asn1Object::from_str(oid).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     let contents = Asn1OctetString::new_from_bytes(contents)
         .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?;
     builder
@@ -566,9 +492,7 @@ fn certificate_policies_der(policies: &[&str]) -> Result<Vec<u8>, TzapLocalFakeS
 fn der_oid(oid: &str) -> Result<Vec<u8>, TzapLocalFakeServiceError> {
     Ok(der_wrap(
         0x06,
-        Asn1Object::from_str(oid)
-            .map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?
-            .as_slice(),
+        Asn1Object::from_str(oid).map_err(|error| TzapLocalFakeServiceError::Crypto(error.to_string()))?.as_slice(),
     ))
 }
 
@@ -627,18 +551,13 @@ fn subject_key_identifier(certificate: &X509Certificate<'_>) -> Option<Vec<u8>> 
     })
 }
 
-fn parse_certificate<'a>(
-    der: &'a [u8],
-    label: &'static str,
-) -> Result<X509Certificate<'a>, TzapLocalFakeServiceError> {
+fn parse_certificate<'a>(der: &'a [u8], label: &'static str) -> Result<X509Certificate<'a>, TzapLocalFakeServiceError> {
     let (remaining, certificate) = X509Certificate::from_der(der)
         .map_err(|error| TzapLocalFakeServiceError::Crypto(format!("{label}: {error}")))?;
     if remaining.is_empty() {
         Ok(certificate)
     } else {
-        Err(TzapLocalFakeServiceError::Crypto(format!(
-            "{label}: trailing DER bytes"
-        )))
+        Err(TzapLocalFakeServiceError::Crypto(format!("{label}: trailing DER bytes")))
     }
 }
 

@@ -17,13 +17,8 @@ fn competitor_zip_family_formats_extract_with_zm() {
 
     for extension in ["zip", "zipx", "jar", "war", "ipa", "apk", "appx", "xpi"] {
         let archive = temp.path(format!("payload.{extension}"));
-        let create = Command::new(&zip)
-            .current_dir(&temp.root)
-            .arg("-qr")
-            .arg(&archive)
-            .arg("project")
-            .output()
-            .unwrap();
+        let create =
+            Command::new(&zip).current_dir(&temp.root).arg("-qr").arg(&archive).arg("project").output().unwrap();
         assert_success(&format!("zip creates .{extension}"), &create);
 
         assert_zm_extracts_payload(&format!("zip-created .{extension}"), &archive, PAYLOAD);
@@ -76,13 +71,7 @@ fn competitor_zip_sfx_style_exe_extracts_with_zm() {
     create_project_payload(&temp);
     let archive = temp.path("payload.exe");
 
-    let create = Command::new(zip)
-        .current_dir(&temp.root)
-        .arg("-qr")
-        .arg(&archive)
-        .arg("project")
-        .output()
-        .unwrap();
+    let create = Command::new(zip).current_dir(&temp.root).arg("-qr").arg(&archive).arg("project").output().unwrap();
     assert_success("zip creates .exe-shaped archive", &create);
 
     assert_zm_extracts_payload("zip-created .exe-shaped archive", &archive, PAYLOAD);
@@ -96,10 +85,7 @@ fn competitor_rar_formats_extract_with_zm() {
     let temp = TestDir::new("compat_rar");
     create_project_payload(&temp);
 
-    for (label, switch, filename) in [
-        ("rar5", "-ma5", "payload-rar5.rar"),
-        ("rar4", "-ma4", "payload-rar4.rar"),
-    ] {
+    for (label, switch, filename) in [("rar5", "-ma5", "payload-rar5.rar"), ("rar4", "-ma4", "payload-rar4.rar")] {
         let archive = temp.path(filename);
         let create = Command::new(&rar)
             .current_dir(&temp.root)
@@ -128,10 +114,9 @@ fn competitor_rar_multipart_formats_extract_with_zm() {
     create_project_payload(&temp);
     write_deterministic_blob(&temp.path("project/big.bin"), 384 * 1024);
 
-    for (label, switch, filename) in [
-        ("rar5 multipart", "-ma5", "payload-rar5.rar"),
-        ("rar4 multipart", "-ma4", "payload-rar4.rar"),
-    ] {
+    for (label, switch, filename) in
+        [("rar5 multipart", "-ma5", "payload-rar5.rar"), ("rar4 multipart", "-ma4", "payload-rar4.rar")]
+    {
         let archive = temp.path(filename);
         let create = Command::new(&rar)
             .current_dir(&temp.root)
@@ -149,24 +134,11 @@ fn competitor_rar_multipart_formats_extract_with_zm() {
         }
         assert_success(&format!("rar creates {label}"), &create);
 
-        let first_volume = archive.with_file_name(
-            archive
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .replace(".rar", ".part1.rar"),
-        );
-        let second_volume = archive.with_file_name(
-            archive
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap()
-                .replace(".rar", ".part2.rar"),
-        );
-        assert!(
-            first_volume.exists() && second_volume.exists(),
-            "{label} did not produce split .partN.rar volumes"
-        );
+        let first_volume = archive
+            .with_file_name(archive.file_name().and_then(|name| name.to_str()).unwrap().replace(".rar", ".part1.rar"));
+        let second_volume = archive
+            .with_file_name(archive.file_name().and_then(|name| name.to_str()).unwrap().replace(".rar", ".part2.rar"));
+        assert!(first_volume.exists() && second_volume.exists(), "{label} did not produce split .partN.rar volumes");
 
         assert_zm_extracts_payload(label, &first_volume, PAYLOAD);
     }
@@ -181,16 +153,8 @@ fn competitor_rar_passworded_formats_extract_with_zm() {
     create_project_payload(&temp);
 
     for (label, password_switch, filename) in [
-        (
-            "rar5 encrypted data",
-            "-psecret",
-            "payload-rar5-password.rar",
-        ),
-        (
-            "rar5 encrypted headers",
-            "-hpsecret",
-            "payload-rar5-header-password.rar",
-        ),
+        ("rar5 encrypted data", "-psecret", "payload-rar5-password.rar"),
+        ("rar5 encrypted headers", "-hpsecret", "payload-rar5-header-password.rar"),
     ] {
         let archive = temp.path(filename);
         let create = Command::new(&rar)
@@ -228,11 +192,7 @@ fn competitor_rar_passworded_links_extract_safely_with_zm() {
     fs::create_dir_all(temp.path("project")).unwrap();
     fs::write(temp.path("project/target.txt"), PAYLOAD).unwrap();
     symlink("target.txt", temp.path("project/link.txt")).unwrap();
-    fs::hard_link(
-        temp.path("project/target.txt"),
-        temp.path("project/hard.txt"),
-    )
-    .unwrap();
+    fs::hard_link(temp.path("project/target.txt"), temp.path("project/hard.txt")).unwrap();
 
     let archive = temp.path("payload-rar5-links.rar");
     let create = Command::new(&rar)
@@ -258,21 +218,10 @@ fn competitor_rar_passworded_links_extract_safely_with_zm() {
     let hardlink = out.join("project/hard.txt");
 
     assert_eq!(fs::read(&target).unwrap(), PAYLOAD);
-    assert!(
-        fs::symlink_metadata(&symlink_path)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        fs::read_link(&symlink_path).unwrap(),
-        PathBuf::from("target.txt")
-    );
+    assert!(fs::symlink_metadata(&symlink_path).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read_link(&symlink_path).unwrap(), PathBuf::from("target.txt"));
     assert_eq!(fs::read(&symlink_path).unwrap(), PAYLOAD);
-    assert_eq!(
-        fs::metadata(&target).unwrap().ino(),
-        fs::metadata(&hardlink).unwrap().ino()
-    );
+    assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&hardlink).unwrap().ino());
 }
 
 #[test]
@@ -301,10 +250,7 @@ fn competitor_rar_passworded_file_references_extract_with_zm() {
     assert_success("rar creates passworded file-reference fixture", &create);
 
     let technical_list = run_rar_with_password(&rar, ["vt", archive.to_str().unwrap()], "secret");
-    assert_success(
-        "rar lists passworded file-reference fixture",
-        &technical_list,
-    );
+    assert_success("rar lists passworded file-reference fixture", &technical_list);
     assert!(
         String::from_utf8_lossy(&technical_list.stdout).contains("Type: File reference"),
         "rar did not create a file-reference entry\nstdout:\n{}",
@@ -322,14 +268,8 @@ fn competitor_rar_passworded_file_references_extract_with_zm() {
     let output = run_zm_extract_with_password(&archive, "secret");
     assert_success("zm extracts passworded RAR file reference", &output);
     let out = extraction_output_dir(&archive);
-    assert_eq!(
-        fs::read(out.join("project/a.bin")).unwrap(),
-        duplicate_payload
-    );
-    assert_eq!(
-        fs::read(out.join("project/b.bin")).unwrap(),
-        duplicate_payload
-    );
+    assert_eq!(fs::read(out.join("project/a.bin")).unwrap(), duplicate_payload);
+    assert_eq!(fs::read(out.join("project/b.bin")).unwrap(), duplicate_payload);
 }
 
 #[cfg(unix)]
@@ -422,23 +362,12 @@ fn competitor_rar_passworded_unicode_paths_extract_with_zm() {
     let output = run_zm_extract_with_password(&archive, "secret");
     assert_success("zm extracts unicode passworded RAR", &output);
     let out = extraction_output_dir(&archive);
-    assert_eq!(
-        fs::read(out.join("project/数据").join(unicode_file_name)).unwrap(),
-        PAYLOAD
-    );
+    assert_eq!(fs::read(out.join("project/数据").join(unicode_file_name)).unwrap(), PAYLOAD);
     #[cfg(unix)]
     {
         let unicode_link = out.join("project/数据/链接.txt");
-        assert!(
-            fs::symlink_metadata(&unicode_link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            fs::read_link(&unicode_link).unwrap(),
-            PathBuf::from(unicode_file_name)
-        );
+        assert!(fs::symlink_metadata(&unicode_link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&unicode_link).unwrap(), PathBuf::from(unicode_file_name));
         assert_eq!(fs::read(&unicode_link).unwrap(), PAYLOAD);
     }
 }
@@ -450,10 +379,7 @@ fn competitor_rar_passworded_large_dictionary_is_rejected_by_zm() {
     };
     let temp = TestDir::new("compat_rar_passworded_large_dictionary");
     let large_file = temp.path("large.bin");
-    File::create(&large_file)
-        .unwrap()
-        .set_len(600 * 1024 * 1024)
-        .unwrap();
+    File::create(&large_file).unwrap().set_len(600 * 1024 * 1024).unwrap();
 
     let archive = temp.path("payload-rar5-large-dict.rar");
     let create = Command::new(&rar)
@@ -472,10 +398,7 @@ fn competitor_rar_passworded_large_dictionary_is_rejected_by_zm() {
     assert_success("rar creates passworded large-dictionary fixture", &create);
 
     let technical_list = run_rar_with_password(&rar, ["vt", archive.to_str().unwrap()], "secret");
-    assert_success(
-        "rar lists passworded large-dictionary fixture",
-        &technical_list,
-    );
+    assert_success("rar lists passworded large-dictionary fixture", &technical_list);
     assert!(
         String::from_utf8_lossy(&technical_list.stdout).contains("-md=1g"),
         "rar did not create a 1 GiB dictionary fixture\nstdout:\n{}",
@@ -520,12 +443,7 @@ fn competitor_tar_cpio_pax_formats_extract_with_zm() {
         if let Some(format) = format {
             command.arg("--format").arg(format);
         }
-        let create = command
-            .arg("-C")
-            .arg(&temp.root)
-            .arg("project")
-            .output()
-            .unwrap();
+        let create = command.arg("-C").arg(&temp.root).arg("project").output().unwrap();
         assert_success(&format!("bsdtar creates {label}"), &create);
 
         assert_zm_extracts_payload(&format!("bsdtar-created {label}"), &archive, PAYLOAD);
@@ -554,26 +472,14 @@ fn competitor_keka_style_cpgz_and_spk_extract_with_zm() {
     assert_success("bsdtar creates cpio for cpgz", &create_cpio);
     create_stdout_archive(
         "gzip creates cpgz",
-        Command::new(require_tool("gzip"))
-            .arg("-c")
-            .arg(&cpio_archive),
+        Command::new(require_tool("gzip")).arg("-c").arg(&cpio_archive),
         &temp.path("payload.cpgz"),
     );
-    assert_zm_extracts_payload(
-        "gzip-compressed cpio .cpgz",
-        &temp.path("payload.cpgz"),
-        PAYLOAD,
-    );
+    assert_zm_extracts_payload("gzip-compressed cpio .cpgz", &temp.path("payload.cpgz"), PAYLOAD);
 
     let spk_archive = temp.path("payload.spk");
-    let create_spk = Command::new(&bsdtar)
-        .arg("-cf")
-        .arg(&spk_archive)
-        .arg("-C")
-        .arg(&temp.root)
-        .arg("project")
-        .output()
-        .unwrap();
+    let create_spk =
+        Command::new(&bsdtar).arg("-cf").arg(&spk_archive).arg("-C").arg(&temp.root).arg("project").output().unwrap();
     assert_success("bsdtar creates spk-shaped tar", &create_spk);
     assert_zm_extracts_payload("tar-shaped .spk", &spk_archive, PAYLOAD);
 }
@@ -589,14 +495,8 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
     let mut archives = Vec::new();
 
     let tar_archive = temp.path("payload.tar");
-    let create_tar = Command::new(&bsdtar)
-        .arg("-cf")
-        .arg(&tar_archive)
-        .arg("-C")
-        .arg(&temp.root)
-        .arg("project")
-        .output()
-        .unwrap();
+    let create_tar =
+        Command::new(&bsdtar).arg("-cf").arg(&tar_archive).arg("-C").arg(&temp.root).arg("project").output().unwrap();
     assert_success("bsdtar creates source tar", &create_tar);
 
     if create_stdout_archive_with_optional_tool(
@@ -674,30 +574,19 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
     if run_optional_tool("compress", "compress creates tar.Z", |command| {
         command.arg("-f").arg(&compress_input);
     }) {
-        archives.push((
-            "payload-compress.tar.Z".to_owned(),
-            temp.path("payload-compress.tar.Z"),
-        ));
+        archives.push(("payload-compress.tar.Z".to_owned(), temp.path("payload-compress.tar.Z")));
     }
 
     let lz4_archive = temp.path("payload.tar.lz4");
     if run_optional_tool("lz4", "lz4 compresses tar", |command| {
-        command
-            .arg("-q")
-            .arg("-f")
-            .arg(&tar_archive)
-            .arg(&lz4_archive);
+        command.arg("-q").arg("-f").arg(&tar_archive).arg(&lz4_archive);
     }) {
         archives.push(("payload.tar.lz4".to_owned(), lz4_archive));
     }
 
     let lrzip_archive = temp.path("payload.tar.lrz");
     if run_optional_tool("lrzip", "lrzip compresses tar", |command| {
-        command
-            .arg("-q")
-            .arg("-o")
-            .arg(&lrzip_archive)
-            .arg(&tar_archive);
+        command.arg("-q").arg("-o").arg(&lrzip_archive).arg(&tar_archive);
     }) {
         archives.push(("payload.tar.lrz".to_owned(), lrzip_archive));
     }
@@ -728,11 +617,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &zstd_archive,
     ) {
-        archives.push((
-            "payload.txt.zst".to_owned(),
-            zstd_archive.clone(),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.zst".to_owned(), zstd_archive.clone(), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "gzip",
@@ -742,11 +627,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.gz"),
     ) {
-        archives.push((
-            "payload.txt.gz".to_owned(),
-            temp.path("payload.txt.gz"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.gz".to_owned(), temp.path("payload.txt.gz"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "bzip2",
@@ -756,11 +637,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.bz2"),
     ) {
-        archives.push((
-            "payload.txt.bz2".to_owned(),
-            temp.path("payload.txt.bz2"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.bz2".to_owned(), temp.path("payload.txt.bz2"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "xz",
@@ -770,28 +647,17 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.xz"),
     ) {
-        archives.push((
-            "payload.txt.xz".to_owned(),
-            temp.path("payload.txt.xz"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.xz".to_owned(), temp.path("payload.txt.xz"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "xz",
         "xz lzma compresses raw file",
         |command| {
-            command
-                .arg("--format=lzma")
-                .arg("-c")
-                .arg(temp.path("payload.txt"));
+            command.arg("--format=lzma").arg("-c").arg(temp.path("payload.txt"));
         },
         &temp.path("payload.txt.lzma"),
     ) {
-        archives.push((
-            "payload.txt.lzma".to_owned(),
-            temp.path("payload.txt.lzma"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.lzma".to_owned(), temp.path("payload.txt.lzma"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "lzip",
@@ -801,11 +667,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.lz"),
     ) {
-        archives.push((
-            "payload.txt.lz".to_owned(),
-            temp.path("payload.txt.lz"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.lz".to_owned(), temp.path("payload.txt.lz"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "brotli",
@@ -815,11 +677,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.br"),
     ) {
-        archives.push((
-            "payload.txt.br".to_owned(),
-            temp.path("payload.txt.br"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.br".to_owned(), temp.path("payload.txt.br"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "lz4",
@@ -829,11 +687,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.lz4"),
     ) {
-        archives.push((
-            "payload.txt.lz4".to_owned(),
-            temp.path("payload.txt.lz4"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.lz4".to_owned(), temp.path("payload.txt.lz4"), "payload.txt"));
     }
     if create_stdout_archive_with_optional_tool(
         "lzop",
@@ -843,11 +697,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
         },
         &temp.path("payload.txt.lzo"),
     ) {
-        archives.push((
-            "payload.txt.lzo".to_owned(),
-            temp.path("payload.txt.lzo"),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.lzo".to_owned(), temp.path("payload.txt.lzo"), "payload.txt"));
     }
     let compress_dir = temp.path("compress-raw");
     fs::create_dir_all(&compress_dir).unwrap();
@@ -856,25 +706,13 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
     if run_optional_tool("compress", "compress creates raw .Z", |command| {
         command.arg("-f").arg(compress_dir.join("payload.txt"));
     }) {
-        archives.push((
-            "payload.txt.Z".to_owned(),
-            compress_archive.clone(),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.Z".to_owned(), compress_archive.clone(), "payload.txt"));
     }
     let lrzip_archive = temp.path("payload.txt.lrz");
     if run_optional_tool("lrzip", "lrzip compresses raw file", |command| {
-        command
-            .arg("-q")
-            .arg("-o")
-            .arg(&lrzip_archive)
-            .arg(temp.path("payload.txt"));
+        command.arg("-q").arg("-o").arg(&lrzip_archive).arg(temp.path("payload.txt"));
     }) {
-        archives.push((
-            "payload.txt.lrz".to_owned(),
-            lrzip_archive.clone(),
-            "payload.txt",
-        ));
+        archives.push(("payload.txt.lrz".to_owned(), lrzip_archive.clone(), "payload.txt"));
     }
 
     if archives.is_empty() {
@@ -887,20 +725,11 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
     }
 
     if zstd_archive.exists() {
-        let stdout = Command::new(zm_path())
-            .arg("extract")
-            .arg(&zstd_archive)
-            .arg("--to-stdout")
-            .output()
-            .unwrap();
+        let stdout = Command::new(zm_path()).arg("extract").arg(&zstd_archive).arg("--to-stdout").output().unwrap();
         assert_success("zm extract raw zst to stdout", &stdout);
         assert_eq!(stdout.stdout, PAYLOAD);
 
-        let list = Command::new(zm_path())
-            .arg("list")
-            .arg(&zstd_archive)
-            .output()
-            .unwrap();
+        let list = Command::new(zm_path()).arg("list").arg(&zstd_archive).output().unwrap();
         assert_success("zm list raw zst", &list);
         assert!(
             String::from_utf8_lossy(&list.stdout).contains("payload.txt"),
@@ -908,20 +737,12 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
             String::from_utf8_lossy(&list.stdout)
         );
 
-        let test = Command::new(zm_path())
-            .arg("test")
-            .arg(&zstd_archive)
-            .output()
-            .unwrap();
+        let test = Command::new(zm_path()).arg("test").arg(&zstd_archive).output().unwrap();
         assert_success("zm test raw zst", &test);
     }
     if lrzip_archive.exists() {
-        let lrzip_stdout = Command::new(zm_path())
-            .arg("extract")
-            .arg(&lrzip_archive)
-            .arg("--to-stdout")
-            .output()
-            .unwrap();
+        let lrzip_stdout =
+            Command::new(zm_path()).arg("extract").arg(&lrzip_archive).arg("--to-stdout").output().unwrap();
         assert_success("zm extract raw lrz to stdout", &lrzip_stdout);
         assert_eq!(lrzip_stdout.stdout, PAYLOAD);
     }
@@ -936,11 +757,7 @@ fn raw_stream_extract_without_directory_writes_next_to_archive() {
     write_zstd_file(&archive, PAYLOAD);
     fs::remove_file(&source).unwrap();
 
-    let output = Command::new(zm_path())
-        .arg("extract")
-        .arg(&archive)
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("extract").arg(&archive).output().unwrap();
     assert_success("zm extract raw zst without -C", &output);
     assert_eq!(fs::read(source).unwrap(), PAYLOAD);
 }
@@ -952,26 +769,16 @@ fn competitor_iso_xar_cab_formats_extract_with_zm() {
 
     if let Some(mkisofs) = find_on_path("mkisofs") {
         let archive = temp.path("payload.iso");
-        let create = Command::new(mkisofs)
-            .arg("-quiet")
-            .arg("-o")
-            .arg(&archive)
-            .arg(temp.path("project"))
-            .output()
-            .unwrap();
+        let create =
+            Command::new(mkisofs).arg("-quiet").arg("-o").arg(&archive).arg(temp.path("project")).output().unwrap();
         assert_success("mkisofs creates iso", &create);
         assert_zm_extracts_payload("mkisofs-created iso", &archive, PAYLOAD);
     }
 
     if let Some(xar) = find_on_path("xar") {
         let archive = temp.path("payload.xar");
-        let create = Command::new(xar)
-            .current_dir(&temp.root)
-            .arg("-cf")
-            .arg(&archive)
-            .arg("project")
-            .output()
-            .unwrap();
+        let create =
+            Command::new(xar).current_dir(&temp.root).arg("-cf").arg(&archive).arg("project").output().unwrap();
         assert_success("xar creates xar", &create);
         assert_zm_extracts_payload("xar-created xar", &archive, PAYLOAD);
     }
@@ -1017,11 +824,7 @@ fn competitor_unix_package_wrappers_extract_with_zm() {
             "Package: zmanager-compat\nVersion: 1.0\nArchitecture: all\nMaintainer: ZManager <test@example.invalid>\nDescription: ZManager compatibility fixture\n",
         )
         .unwrap();
-        fs::write(
-            package_root.join("usr/share/zmanager-compat/file.txt"),
-            PAYLOAD,
-        )
-        .unwrap();
+        fs::write(package_root.join("usr/share/zmanager-compat/file.txt"), PAYLOAD).unwrap();
         let archive = temp.path("payload.deb");
         let create = Command::new(dpkg_deb)
             .arg("--build")
@@ -1123,19 +926,12 @@ fn write_zstd_file(path: &Path, contents: &[u8]) {
 }
 
 fn require_tool(binary: &str) -> PathBuf {
-    find_on_path(binary)
-        .unwrap_or_else(|| panic!("{binary} is required for this compatibility test"))
+    find_on_path(binary).unwrap_or_else(|| panic!("{binary} is required for this compatibility test"))
 }
 
 fn assert_zm_extracts_payload(label: &str, archive: &Path, expected: &[u8]) {
     let out = extraction_output_dir(archive);
-    let output = Command::new(zm_path())
-        .arg("extract")
-        .arg(archive)
-        .arg("-C")
-        .arg(&out)
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("extract").arg(archive).arg("-C").arg(&out).output().unwrap();
     assert_success(&format!("zm extract {label}"), &output);
     assert!(
         tree_contains_file_with_contents(&out, expected),
@@ -1145,61 +941,30 @@ fn assert_zm_extracts_payload(label: &str, archive: &Path, expected: &[u8]) {
 }
 
 fn assert_zm_tests_archive(label: &str, archive: &Path) {
-    let output = Command::new(zm_path())
-        .arg("test")
-        .arg(archive)
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("test").arg(archive).output().unwrap();
     assert_success(&format!("zm test {label}"), &output);
 }
 
 fn run_zm_extract_with_password(archive: &Path, password: &str) -> std::process::Output {
     let out = extraction_output_dir(archive);
-    run_zm_with_password(
-        [
-            "extract",
-            archive.to_str().unwrap(),
-            "-C",
-            out.to_str().unwrap(),
-        ],
-        password,
-    )
+    run_zm_with_password(["extract", archive.to_str().unwrap(), "-C", out.to_str().unwrap()], password)
 }
 
 fn run_zm_with_password<const N: usize>(args: [&str; N], password: &str) -> std::process::Output {
     let mut command = Command::new(zm_path());
     command.args(args).arg("--password-stdin");
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(format!("{password}\n").as_bytes())
-        .unwrap();
+    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.as_mut().unwrap().write_all(format!("{password}\n").as_bytes()).unwrap();
     child.wait_with_output().unwrap()
 }
 
-fn run_rar_with_password<const N: usize>(
-    rar: &Path,
-    args: [&str; N],
-    password: &str,
-) -> std::process::Output {
+fn run_rar_with_password<const N: usize>(rar: &Path, args: [&str; N], password: &str) -> std::process::Output {
     let mut command = Command::new(rar);
     command.args(args).arg(format!("-p{password}"));
     command.output().unwrap()
 }
 
-fn assert_zm_extracts_payload_with_password(
-    label: &str,
-    archive: &Path,
-    expected: &[u8],
-    password: &str,
-) {
+fn assert_zm_extracts_payload_with_password(label: &str, archive: &Path, expected: &[u8], password: &str) {
     let out = extraction_output_dir(archive);
     let output = run_zm_extract_with_password(archive, password);
     assert_success(&format!("zm extract {label}"), &output);
@@ -1212,26 +977,14 @@ fn assert_zm_extracts_payload_with_password(
 
 fn assert_zm_extracts_raw_file(label: &str, archive: &Path, output_name: &str, expected: &[u8]) {
     let out = extraction_output_dir(archive);
-    let output = Command::new(zm_path())
-        .arg("extract")
-        .arg(archive)
-        .arg("-C")
-        .arg(&out)
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("extract").arg(archive).arg("-C").arg(&out).output().unwrap();
     assert_success(&format!("zm extract {label}"), &output);
     assert_eq!(fs::read(out.join(output_name)).unwrap(), expected);
 }
 
 fn assert_zm_extracts_any_file(label: &str, archive: &Path) {
     let out = extraction_output_dir(archive);
-    let output = Command::new(zm_path())
-        .arg("extract")
-        .arg(archive)
-        .arg("-C")
-        .arg(&out)
-        .output()
-        .unwrap();
+    let output = Command::new(zm_path()).arg("extract").arg(archive).arg("-C").arg(&out).output().unwrap();
     assert_success(&format!("zm extract {label}"), &output);
     assert!(
         tree_contains_any_file(&out),
@@ -1251,27 +1004,13 @@ fn assert_zm_extracts_deb_payload(label: &str, archive: &Path) {
         .output()
         .unwrap();
     assert_success(&format!("zm extract {label}"), &output);
-    assert_eq!(
-        fs::read(out.join("data/usr/share/zmanager-compat/file.txt")).unwrap(),
-        PAYLOAD
-    );
-    assert!(
-        fs::read_to_string(out.join("control/control"))
-            .unwrap()
-            .contains("Package: zmanager-compat")
-    );
+    assert_eq!(fs::read(out.join("data/usr/share/zmanager-compat/file.txt")).unwrap(), PAYLOAD);
+    assert!(fs::read_to_string(out.join("control/control")).unwrap().contains("Package: zmanager-compat"));
 }
 
 fn extraction_output_dir(archive: &Path) -> PathBuf {
-    let name = archive
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("archive")
-        .replace(['.', '/'], "-");
-    archive
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("out-{name}"))
+    let name = archive.file_name().and_then(|name| name.to_str()).unwrap_or("archive").replace(['.', '/'], "-");
+    archive.parent().unwrap_or_else(|| Path::new(".")).join(format!("out-{name}"))
 }
 
 fn tree_contains_file_with_contents(root: &Path, expected: &[u8]) -> bool {
@@ -1322,9 +1061,7 @@ fn assert_success(label: &str, output: &std::process::Output) {
 
 fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
-    env::split_paths(&path)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
+    env::split_paths(&path).map(|dir| dir.join(binary)).find(|candidate| candidate.is_file())
 }
 
 fn zm_path() -> PathBuf {
@@ -1337,10 +1074,7 @@ struct TestDir {
 
 impl TestDir {
     fn new(name: &str) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let root = env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 

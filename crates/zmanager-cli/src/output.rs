@@ -46,13 +46,7 @@ impl OutputMode {
 impl fmt::Display for Styled<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let style = style_for(self.role);
-        write!(
-            formatter,
-            "{}{}{}",
-            style.render(),
-            self.value,
-            style.render_reset()
-        )
+        write!(formatter, "{}{}{}", style.render(), self.value, style.render_reset())
     }
 }
 
@@ -87,9 +81,7 @@ pub(crate) fn render_help(help: &str) -> String {
     let mut section = HelpSection::Other;
 
     for (index, raw_line) in help.split_inclusive('\n').enumerate() {
-        let (line, newline) = raw_line
-            .strip_suffix('\n')
-            .map_or((raw_line, ""), |line| (line, "\n"));
+        let (line, newline) = raw_line.strip_suffix('\n').map_or((raw_line, ""), |line| (line, "\n"));
         push_help_line(&mut rendered, line, index, &mut section);
         rendered.push_str(newline);
     }
@@ -110,11 +102,7 @@ fn push_help_line(rendered: &mut String, line: &str, index: usize, section: &mut
     }
 
     if index == 0 || is_help_heading(line) {
-        *section = if line == "Commands:" {
-            HelpSection::Commands
-        } else {
-            HelpSection::Other
-        };
+        *section = if line == "Commands:" { HelpSection::Commands } else { HelpSection::Other };
         push_styled(rendered, StyleRole::Heading, line);
         return;
     }
@@ -132,28 +120,20 @@ fn is_help_heading(line: &str) -> bool {
 }
 
 fn push_command_line(rendered: &mut String, line: &str) {
-    let command_start = line
-        .find(|ch: char| !ch.is_whitespace())
-        .unwrap_or(line.len());
-    let command_end = line[command_start..]
-        .find(char::is_whitespace)
-        .map_or(line.len(), |offset| command_start + offset);
+    let command_start = line.find(|ch: char| !ch.is_whitespace()).unwrap_or(line.len());
+    let command_end =
+        line[command_start..].find(char::is_whitespace).map_or(line.len(), |offset| command_start + offset);
 
     rendered.push_str(&line[..command_start]);
-    push_styled(
-        rendered,
-        StyleRole::Command,
-        &line[command_start..command_end],
-    );
+    push_styled(rendered, StyleRole::Command, &line[command_start..command_end]);
     push_styled_tokens(rendered, &line[command_end..]);
 }
 
 fn push_styled_tokens(rendered: &mut String, line: &str) {
     let mut index = 0usize;
     while index < line.len() {
-        let Some(token_start_offset) = line[index..]
-            .char_indices()
-            .find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(offset))
+        let Some(token_start_offset) =
+            line[index..].char_indices().find_map(|(offset, ch)| (!ch.is_whitespace()).then_some(offset))
         else {
             rendered.push_str(&line[index..]);
             break;
@@ -185,21 +165,13 @@ fn push_styled_token(rendered: &mut String, token: &str) {
 
 fn push_styled(rendered: &mut String, role: StyleRole, value: &str) {
     let style = style_for(role);
-    let _ = write!(
-        rendered,
-        "{}{}{}",
-        style.render(),
-        value,
-        style.render_reset()
-    );
+    let _ = write!(rendered, "{}{}{}", style.render(), value, style.render_reset());
 }
 
 fn style_for(role: StyleRole) -> Style {
     match role {
         StyleRole::Heading => AnsiColor::Cyan.on_default().effects(Effects::BOLD),
-        StyleRole::Command | StyleRole::Success => {
-            AnsiColor::Green.on_default().effects(Effects::BOLD)
-        }
+        StyleRole::Command | StyleRole::Success => AnsiColor::Green.on_default().effects(Effects::BOLD),
         StyleRole::Option => AnsiColor::Yellow.on_default(),
         StyleRole::Placeholder => AnsiColor::Magenta.on_default(),
         StyleRole::Warning => AnsiColor::Yellow.on_default().effects(Effects::BOLD),

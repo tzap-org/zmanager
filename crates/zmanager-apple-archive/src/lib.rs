@@ -74,14 +74,9 @@ impl fmt::Display for Error {
             Self::InteriorNul(source) => write!(f, "input contains an interior NUL byte: {source}"),
             Self::Io(source) => write!(f, "I/O operation failed: {source}"),
             Self::Cancelled => write!(f, "operation cancelled"),
-            Self::SizeMismatch {
-                path,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "archive entry {path} declared {expected} data bytes but source produced {actual}"
-            ),
+            Self::SizeMismatch { path, expected, actual } => {
+                write!(f, "archive entry {path} declared {expected} data bytes but source produced {actual}")
+            }
         }
     }
 }
@@ -192,11 +187,7 @@ pub struct CreateOptions {
 
 impl Default for CreateOptions {
     fn default() -> Self {
-        Self {
-            compression: CompressionAlgorithm::default(),
-            block_size: 4 * 1024 * 1024,
-            threads: 0,
-        }
+        Self { compression: CompressionAlgorithm::default(), block_size: 4 * 1024 * 1024, threads: 0 }
     }
 }
 
@@ -274,8 +265,7 @@ impl Entry {
 
 mod platform {
     use super::{
-        BlobKey, CompressionAlgorithm, CreateOptions, Entry, EntryBlob, EntryKind, EntryMetadata,
-        Error, Result,
+        BlobKey, CompressionAlgorithm, CreateOptions, Entry, EntryBlob, EntryKind, EntryMetadata, Error, Result,
     };
     use libc::{c_char, c_int, c_void, mode_t, size_t, timespec};
     use std::cmp;
@@ -342,11 +332,7 @@ mod platform {
 
     #[link(name = "AppleArchive")]
     unsafe extern "C" {
-        fn AAFileStreamOpenWithPath(
-            path: *const c_char,
-            open_flags: c_int,
-            open_mode: mode_t,
-        ) -> AAByteStream;
+        fn AAFileStreamOpenWithPath(path: *const c_char, open_flags: c_int, open_mode: mode_t) -> AAByteStream;
         fn AACompressionOutputStreamOpen(
             compressed_stream: AAByteStream,
             compression_algorithm: AACompressionAlgorithm,
@@ -375,12 +361,8 @@ mod platform {
             n_threads: c_int,
         ) -> AAArchiveStream;
         fn AAArchiveStreamReadHeader(stream: AAArchiveStream, header: *mut AAHeader) -> c_int;
-        fn AAArchiveStreamReadBlob(
-            stream: AAArchiveStream,
-            key: FieldKey,
-            buffer: *mut c_void,
-            nbyte: size_t,
-        ) -> c_int;
+        fn AAArchiveStreamReadBlob(stream: AAArchiveStream, key: FieldKey, buffer: *mut c_void, nbyte: size_t)
+        -> c_int;
         fn AAArchiveStreamWriteHeader(stream: AAArchiveStream, header: AAHeader) -> c_int;
         fn AAArchiveStreamWriteBlob(
             stream: AAArchiveStream,
@@ -404,12 +386,7 @@ mod platform {
             length: *mut size_t,
         ) -> c_int;
         fn AAHeaderGetFieldTimespec(header: AAHeader, index: u32, value: *mut timespec) -> c_int;
-        fn AAHeaderGetFieldBlob(
-            header: AAHeader,
-            index: u32,
-            size: *mut u64,
-            offset: *mut u64,
-        ) -> c_int;
+        fn AAHeaderGetFieldBlob(header: AAHeader, index: u32, size: *mut u64, offset: *mut u64) -> c_int;
         fn AAHeaderSetFieldUInt(header: AAHeader, index: u32, key: FieldKey, value: u64) -> c_int;
         fn AAHeaderSetFieldString(
             header: AAHeader,
@@ -418,12 +395,7 @@ mod platform {
             value: *const c_char,
             length: size_t,
         ) -> c_int;
-        fn AAHeaderSetFieldTimespec(
-            header: AAHeader,
-            index: u32,
-            key: FieldKey,
-            value: *const timespec,
-        ) -> c_int;
+        fn AAHeaderSetFieldTimespec(header: AAHeader, index: u32, key: FieldKey, value: *const timespec) -> c_int;
         fn AAHeaderSetFieldBlob(header: AAHeader, index: u32, key: FieldKey, size: u64) -> c_int;
     }
 
@@ -451,10 +423,7 @@ mod platform {
             flags: AAFlagSet,
             n_threads: c_int,
         ) -> AAByteStream;
-        fn AEAEncryptionOutputStreamCloseAndUpdateContext(
-            stream: AAByteStream,
-            context: AEAContext,
-        ) -> c_int;
+        fn AEAEncryptionOutputStreamCloseAndUpdateContext(stream: AAByteStream, context: AEAContext) -> c_int;
         fn AEADecryptionInputStreamOpen(
             encrypted_stream: AAByteStream,
             context: AEAContext,
@@ -473,10 +442,7 @@ mod platform {
         fn with_password(password: &[u8]) -> Result<Self> {
             let inner = unsafe { AEAContextCreateWithProfile(AEA_PROFILE_SCRYPT) };
             if inner.is_null() {
-                return Err(Error::Status {
-                    operation: "create encryption context",
-                    status: -1,
-                });
+                return Err(Error::Status { operation: "create encryption context", status: -1 });
             }
             let status = unsafe {
                 AEAContextSetFieldBlob(
@@ -489,10 +455,7 @@ mod platform {
             };
             if status < 0 {
                 unsafe { AEAContextDestroy(inner) };
-                return Err(Error::Status {
-                    operation: "set encryption password",
-                    status: i64::from(status),
-                });
+                return Err(Error::Status { operation: "set encryption password", status: i64::from(status) });
             }
             Ok(Self { inner })
         }
@@ -505,10 +468,7 @@ mod platform {
         fn for_decryption(stream: AAByteStream, password: &[u8]) -> Result<Self> {
             let inner = unsafe { AEAContextCreateWithEncryptedStream(stream) };
             if inner.is_null() {
-                return Err(Error::Status {
-                    operation: "create decryption context",
-                    status: -1,
-                });
+                return Err(Error::Status { operation: "create decryption context", status: -1 });
             }
             let status = unsafe {
                 AEAContextSetFieldBlob(
@@ -521,10 +481,7 @@ mod platform {
             };
             if status < 0 {
                 unsafe { AEAContextDestroy(inner) };
-                return Err(Error::Status {
-                    operation: "set decryption password",
-                    status: i64::from(status),
-                });
+                return Err(Error::Status { operation: "set decryption password", status: i64::from(status) });
             }
             Ok(Self { inner })
         }
@@ -552,8 +509,7 @@ mod platform {
             let file_stream = ByteStream::open_path(path.as_ref(), libc::O_RDONLY, 0)?;
             let decompression_stream =
                 ByteStream::decompression_input(file_stream.as_ptr(), "open decompression stream")?;
-            let archive_stream =
-                ArchiveStream::decode_input(decompression_stream.as_ptr(), "open decode stream")?;
+            let archive_stream = ArchiveStream::decode_input(decompression_stream.as_ptr(), "open decode stream")?;
             Ok(Self {
                 archive_stream,
                 _decompression_stream: decompression_stream,
@@ -577,22 +533,15 @@ mod platform {
             let decryption_stream_ptr =
                 unsafe { AEADecryptionInputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0) };
             if decryption_stream_ptr.is_null() {
-                return Err(Error::Status {
-                    operation: "open decryption input stream",
-                    status: -1,
-                });
+                return Err(Error::Status { operation: "open decryption input stream", status: -1 });
             }
             // Safety: AEADecryptionInputStreamOpen returns an owned AAByteStream
             // that wraps the file_stream. ByteStream takes ownership and calls
             // AAByteStreamClose on drop.
-            let decryption_stream =
-                ByteStream::from_ptr(decryption_stream_ptr, "decryption stream")?;
-            let decompression_stream = ByteStream::decompression_input(
-                decryption_stream.as_ptr(),
-                "open decompression stream",
-            )?;
-            let archive_stream =
-                ArchiveStream::decode_input(decompression_stream.as_ptr(), "open decode stream")?;
+            let decryption_stream = ByteStream::from_ptr(decryption_stream_ptr, "decryption stream")?;
+            let decompression_stream =
+                ByteStream::decompression_input(decryption_stream.as_ptr(), "open decompression stream")?;
+            let archive_stream = ArchiveStream::decode_input(decompression_stream.as_ptr(), "open decode stream")?;
             // Ownership order: archive_stream drops first (closes decode stream),
             // then _decompression_stream (closes decompression stream),
             // then _decryption_stream (closes decryption stream wrapping file),
@@ -611,14 +560,9 @@ mod platform {
         /// Returns an error if reading the next entry header from the archive stream fails.
         pub fn next_entry(&mut self) -> Result<Option<Entry>> {
             let mut raw_header = ptr::null_mut();
-            let status = unsafe {
-                AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &raw mut raw_header)
-            };
+            let status = unsafe { AAArchiveStreamReadHeader(self.archive_stream.as_ptr(), &raw mut raw_header) };
             if status < 0 {
-                return Err(Error::Status {
-                    operation: "read header",
-                    status: i64::from(status),
-                });
+                return Err(Error::Status { operation: "read header", status: i64::from(status) });
             }
             if status == 0 {
                 return Ok(None);
@@ -674,8 +618,7 @@ mod platform {
             for blob in &entry.blobs {
                 let mut remaining = blob.size;
                 while remaining > 0 {
-                    let chunk_len = usize::try_from(cmp::min(remaining, buffer.len() as u64))
-                        .unwrap_or(usize::MAX);
+                    let chunk_len = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
                     check_status(
                         unsafe {
                             AAArchiveStreamReadBlob(
@@ -728,46 +671,29 @@ mod platform {
         ///
         /// Returns an error if the underlying I/O or encryption streams cannot be
         /// created or initialized.
-        pub fn create_encrypted(
-            path: impl AsRef<Path>,
-            options: CreateOptions,
-            password: &[u8],
-        ) -> Result<Self> {
+        pub fn create_encrypted(path: impl AsRef<Path>, options: CreateOptions, password: &[u8]) -> Result<Self> {
             Self::create_inner(path, options, Some(password))
         }
 
-        fn create_inner(
-            path: impl AsRef<Path>,
-            options: CreateOptions,
-            password: Option<&[u8]>,
-        ) -> Result<Self> {
-            let file_stream = ByteStream::open_path(
-                path.as_ref(),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
-                0o600,
-            )?;
+        fn create_inner(path: impl AsRef<Path>, options: CreateOptions, password: Option<&[u8]>) -> Result<Self> {
+            let file_stream =
+                ByteStream::open_path(path.as_ref(), libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC, 0o600)?;
 
             // Wrap with encryption stream when password is provided
-            let (encryption_context, encryption_stream, compression_input) =
-                if let Some(password) = password {
-                    let ctx = EncryptionContext::with_password(password)?;
-                    let enc_stream_ptr = unsafe {
-                        AEAEncryptionOutputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0)
-                    };
-                    if enc_stream_ptr.is_null() {
-                        return Err(Error::Status {
-                            operation: "open encryption output stream",
-                            status: -1,
-                        });
-                    }
-                    // Safety: AEAEncryptionOutputStreamOpen returns an owned AAByteStream
-                    // that wraps the file_stream. When encryption_stream is dropped, it
-                    // closes the inner file stream automatically.
-                    let enc_stream = ByteStream::from_ptr(enc_stream_ptr, "encryption stream")?;
-                    (Some(ctx), Some(enc_stream), enc_stream_ptr)
-                } else {
-                    (None, None, file_stream.as_ptr())
-                };
+            let (encryption_context, encryption_stream, compression_input) = if let Some(password) = password {
+                let ctx = EncryptionContext::with_password(password)?;
+                let enc_stream_ptr = unsafe { AEAEncryptionOutputStreamOpen(file_stream.as_ptr(), ctx.as_ptr(), 0, 0) };
+                if enc_stream_ptr.is_null() {
+                    return Err(Error::Status { operation: "open encryption output stream", status: -1 });
+                }
+                // Safety: AEAEncryptionOutputStreamOpen returns an owned AAByteStream
+                // that wraps the file_stream. When encryption_stream is dropped, it
+                // closes the inner file stream automatically.
+                let enc_stream = ByteStream::from_ptr(enc_stream_ptr, "encryption stream")?;
+                (Some(ctx), Some(enc_stream), enc_stream_ptr)
+            } else {
+                (None, None, file_stream.as_ptr())
+            };
 
             let compression_stream = ByteStream::compression_output(
                 compression_input,
@@ -776,11 +702,8 @@ mod platform {
                 options.threads,
                 "open compression stream",
             )?;
-            let archive_stream = ArchiveStream::encode_output(
-                compression_stream.as_ptr(),
-                options.threads,
-                "open encode stream",
-            )?;
+            let archive_stream =
+                ArchiveStream::encode_output(compression_stream.as_ptr(), options.threads, "open encode stream")?;
             Ok(Self {
                 archive_stream: Some(archive_stream),
                 compression_stream: Some(compression_stream),
@@ -804,12 +727,7 @@ mod platform {
         /// # Errors
         ///
         /// Returns an error if writing the header to the archive stream fails.
-        pub fn append_symlink(
-            &mut self,
-            path: &str,
-            target: &Path,
-            metadata: EntryMetadata,
-        ) -> Result<()> {
+        pub fn append_symlink(&mut self, path: &str, target: &Path, metadata: EntryMetadata) -> Result<()> {
             let mut header = Header::new()?;
             header.append_uint(field_key(b"TYP"), ENTRY_TYPE_LNK)?;
             header.append_string(field_key(b"PAT"), path)?;
@@ -841,15 +759,10 @@ mod platform {
             let mut written = 0_u64;
             while written < size {
                 let remaining = size - written;
-                let max_read =
-                    usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
+                let max_read = usize::try_from(cmp::min(remaining, buffer.len() as u64)).unwrap_or(usize::MAX);
                 let read = input.read(&mut buffer[..max_read])?;
                 if read == 0 {
-                    return Err(Error::SizeMismatch {
-                        path: path.to_owned(),
-                        expected: size,
-                        actual: written,
-                    });
+                    return Err(Error::SizeMismatch { path: path.to_owned(), expected: size, actual: written });
                 }
                 check_status(
                     unsafe {
@@ -876,30 +789,17 @@ mod platform {
         /// Returns an error if closing any of the underlying streams fails.
         pub fn finish(mut self) -> Result<()> {
             let mut first_error = None;
-            close_archive_option(
-                &mut self.archive_stream,
-                "close archive stream",
-                &mut first_error,
-            );
-            close_byte_option(
-                &mut self.compression_stream,
-                "close compression stream",
-                &mut first_error,
-            );
+            close_archive_option(&mut self.archive_stream, "close archive stream", &mut first_error);
+            close_byte_option(&mut self.compression_stream, "close compression stream", &mut first_error);
             // Close encryption stream before file stream so the AEA context
             // captures the archive metadata (raw size, container size, identifier).
-            if let (Some(ctx), Some(enc_stream)) =
-                (&self.encryption_context, &mut self.encryption_stream)
+            if let (Some(ctx), Some(enc_stream)) = (&self.encryption_context, &mut self.encryption_stream)
                 && let Some(ptr) = enc_stream.take_ptr()
             {
-                let status = unsafe {
-                    AEAEncryptionOutputStreamCloseAndUpdateContext(ptr.as_ptr(), ctx.as_ptr())
-                };
+                let status = unsafe { AEAEncryptionOutputStreamCloseAndUpdateContext(ptr.as_ptr(), ctx.as_ptr()) };
                 if status < 0 && first_error.is_none() {
-                    first_error = Some(Error::Status {
-                        operation: "close encryption stream",
-                        status: i64::from(status),
-                    });
+                    first_error =
+                        Some(Error::Status { operation: "close encryption stream", status: i64::from(status) });
                 }
             }
             close_byte_option(&mut self.file_stream, "close file stream", &mut first_error);
@@ -912,18 +812,13 @@ mod platform {
 
         fn write_header(&mut self, header: &Header) -> Result<()> {
             check_status(
-                unsafe {
-                    AAArchiveStreamWriteHeader(self.archive_stream()?.as_ptr(), header.as_ptr())
-                },
+                unsafe { AAArchiveStreamWriteHeader(self.archive_stream()?.as_ptr(), header.as_ptr()) },
                 "write header",
             )
         }
 
         fn archive_stream(&self) -> Result<&ArchiveStream> {
-            self.archive_stream.as_ref().ok_or(Error::Status {
-                operation: "use finalized archive stream",
-                status: -1,
-            })
+            self.archive_stream.as_ref().ok_or(Error::Status { operation: "use finalized archive stream", status: -1 })
         }
     }
 
@@ -972,76 +867,40 @@ mod platform {
                     blobs: self.blobs()?,
                 }));
             };
-            let entry_type = self
-                .uint_for_key(field_key(b"TYP"))?
-                .unwrap_or(ENTRY_TYPE_REG);
+            let entry_type = self.uint_for_key(field_key(b"TYP"))?.unwrap_or(ENTRY_TYPE_REG);
             let kind = entry_kind(entry_type);
             let blobs = self.blobs()?;
-            let data_size = blobs
-                .iter()
-                .find_map(|blob| (blob.key == BlobKey::Data).then_some(blob.size));
+            let data_size = blobs.iter().find_map(|blob| (blob.key == BlobKey::Data).then_some(blob.size));
             let size = self.uint_for_key(field_key(b"SIZ"))?.or(data_size);
             let metadata = EntryMetadata {
-                mode: self
-                    .uint_for_key(field_key(b"MOD"))?
-                    .and_then(|mode| u32::try_from(mode).ok()),
+                mode: self.uint_for_key(field_key(b"MOD"))?.and_then(|mode| u32::try_from(mode).ok()),
                 modified: self.timespec_for_key(field_key(b"MTM"))?,
                 created: self.timespec_for_key(field_key(b"CTM"))?,
-                flags: self
-                    .uint_for_key(field_key(b"FLG"))?
-                    .and_then(|flags| u32::try_from(flags).ok()),
-                crc: self
-                    .uint_for_key(field_key(b"CKS"))?
-                    .and_then(|crc| u32::try_from(crc).ok()),
-                uid: self
-                    .uint_for_key(field_key(b"UID"))?
-                    .and_then(|uid| u32::try_from(uid).ok()),
-                gid: self
-                    .uint_for_key(field_key(b"GID"))?
-                    .and_then(|gid| u32::try_from(gid).ok()),
+                flags: self.uint_for_key(field_key(b"FLG"))?.and_then(|flags| u32::try_from(flags).ok()),
+                crc: self.uint_for_key(field_key(b"CKS"))?.and_then(|crc| u32::try_from(crc).ok()),
+                uid: self.uint_for_key(field_key(b"UID"))?.and_then(|uid| u32::try_from(uid).ok()),
+                gid: self.uint_for_key(field_key(b"GID"))?.and_then(|gid| u32::try_from(gid).ok()),
             };
             let link_target = self.string_for_key(field_key(b"LNK"))?.map(PathBuf::from);
 
-            Ok(Some(Entry {
-                path,
-                kind,
-                size,
-                data_size,
-                metadata,
-                link_target,
-                blobs,
-            }))
+            Ok(Some(Entry { path, kind, size, data_size, metadata, link_target, blobs }))
         }
 
         fn append_uint(&mut self, key: FieldKey, value: u64) -> Result<()> {
-            check_status(
-                unsafe { AAHeaderSetFieldUInt(self.as_ptr(), UINT32_APPEND, key, value) },
-                "append uint field",
-            )
+            check_status(unsafe { AAHeaderSetFieldUInt(self.as_ptr(), UINT32_APPEND, key, value) }, "append uint field")
         }
 
         fn append_string(&mut self, key: FieldKey, value: &str) -> Result<()> {
             let value = CString::new(value)?;
             let length = value.as_bytes().len();
             check_status(
-                unsafe {
-                    AAHeaderSetFieldString(
-                        self.as_ptr(),
-                        UINT32_APPEND,
-                        key,
-                        value.as_ptr(),
-                        length,
-                    )
-                },
+                unsafe { AAHeaderSetFieldString(self.as_ptr(), UINT32_APPEND, key, value.as_ptr(), length) },
                 "append string field",
             )
         }
 
         fn append_blob(&mut self, key: FieldKey, size: u64) -> Result<()> {
-            check_status(
-                unsafe { AAHeaderSetFieldBlob(self.as_ptr(), UINT32_APPEND, key, size) },
-                "append blob field",
-            )
+            check_status(unsafe { AAHeaderSetFieldBlob(self.as_ptr(), UINT32_APPEND, key, size) }, "append blob field")
         }
 
         fn append_metadata(&mut self, metadata: EntryMetadata) -> Result<()> {
@@ -1053,12 +912,7 @@ mod platform {
             {
                 check_status(
                     unsafe {
-                        AAHeaderSetFieldTimespec(
-                            self.as_ptr(),
-                            UINT32_APPEND,
-                            field_key(b"MTM"),
-                            &raw const value,
-                        )
+                        AAHeaderSetFieldTimespec(self.as_ptr(), UINT32_APPEND, field_key(b"MTM"), &raw const value)
                     },
                     "append timespec field",
                 )?;
@@ -1068,12 +922,7 @@ mod platform {
             {
                 check_status(
                     unsafe {
-                        AAHeaderSetFieldTimespec(
-                            self.as_ptr(),
-                            UINT32_APPEND,
-                            field_key(b"CTM"),
-                            &raw const value,
-                        )
+                        AAHeaderSetFieldTimespec(self.as_ptr(), UINT32_APPEND, field_key(b"CTM"), &raw const value)
                     },
                     "append timespec field",
                 )?;
@@ -1101,10 +950,7 @@ mod platform {
                 return Ok(None);
             }
             let mut value = 0_u64;
-            check_status(
-                unsafe { AAHeaderGetFieldUInt(self.as_ptr(), index, &raw mut value) },
-                "get uint field",
-            )?;
+            check_status(unsafe { AAHeaderGetFieldUInt(self.as_ptr(), index, &raw mut value) }, "get uint field")?;
             Ok(Some(value))
         }
 
@@ -1117,30 +963,14 @@ mod platform {
             }
             let mut length = 0_usize;
             check_status(
-                unsafe {
-                    AAHeaderGetFieldString(
-                        self.as_ptr(),
-                        index,
-                        0,
-                        ptr::null_mut(),
-                        &raw mut length,
-                    )
-                },
+                unsafe { AAHeaderGetFieldString(self.as_ptr(), index, 0, ptr::null_mut(), &raw mut length) },
                 "measure string field",
             )?;
-            let capacity = length.checked_add(1).ok_or(Error::SizeOutOfRange {
-                field: "string length",
-            })?;
+            let capacity = length.checked_add(1).ok_or(Error::SizeOutOfRange { field: "string length" })?;
             let mut buffer = vec![0_u8; capacity];
             check_status(
                 unsafe {
-                    AAHeaderGetFieldString(
-                        self.as_ptr(),
-                        index,
-                        capacity,
-                        buffer.as_mut_ptr().cast(),
-                        &raw mut length,
-                    )
+                    AAHeaderGetFieldString(self.as_ptr(), index, capacity, buffer.as_mut_ptr().cast(), &raw mut length)
                 },
                 "get string field",
             )?;
@@ -1155,10 +985,7 @@ mod platform {
             if self.field_type(index)? != FIELD_TYPE_TIMESPEC {
                 return Ok(None);
             }
-            let mut value = timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
+            let mut value = timespec { tv_sec: 0, tv_nsec: 0 };
             check_status(
                 unsafe { AAHeaderGetFieldTimespec(self.as_ptr(), index, &raw mut value) },
                 "get timespec field",
@@ -1177,16 +1004,10 @@ mod platform {
                 let mut size = 0_u64;
                 let mut offset = 0_u64;
                 check_status(
-                    unsafe {
-                        AAHeaderGetFieldBlob(self.as_ptr(), index, &raw mut size, &raw mut offset)
-                    },
+                    unsafe { AAHeaderGetFieldBlob(self.as_ptr(), index, &raw mut size, &raw mut offset) },
                     "get blob field",
                 )?;
-                blobs.push(EntryBlob {
-                    raw: key,
-                    key: blob_key(key),
-                    size,
-                });
+                blobs.push(EntryBlob { raw: key, key: blob_key(key), size });
             }
             Ok(blobs)
         }
@@ -1194,10 +1015,7 @@ mod platform {
         fn field_type(&self, index: u32) -> Result<c_int> {
             let status = unsafe { AAHeaderGetFieldType(self.as_ptr(), index) };
             if status < 0 {
-                Err(Error::Status {
-                    operation: "get field type",
-                    status: i64::from(status),
-                })
+                Err(Error::Status { operation: "get field type", status: i64::from(status) })
             } else {
                 Ok(status)
             }
@@ -1233,8 +1051,7 @@ mod platform {
             threads: i32,
             object: &'static str,
         ) -> Result<Self> {
-            let ptr =
-                unsafe { AACompressionOutputStreamOpen(stream, algorithm, block_size, 0, threads) };
+            let ptr = unsafe { AACompressionOutputStreamOpen(stream, algorithm, block_size, 0, threads) };
             Self::from_ptr(ptr, object)
         }
 
@@ -1279,22 +1096,12 @@ mod platform {
 
     impl ArchiveStream {
         fn encode_output(stream: AAByteStream, threads: i32, object: &'static str) -> Result<Self> {
-            let ptr = unsafe {
-                AAEncodeArchiveOutputStreamOpen(
-                    stream,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    0,
-                    threads,
-                )
-            };
+            let ptr = unsafe { AAEncodeArchiveOutputStreamOpen(stream, ptr::null_mut(), ptr::null_mut(), 0, threads) };
             Self::from_ptr(ptr, object)
         }
 
         fn decode_input(stream: AAByteStream, object: &'static str) -> Result<Self> {
-            let ptr = unsafe {
-                AADecodeArchiveInputStreamOpen(stream, ptr::null_mut(), ptr::null_mut(), 0, 0)
-            };
+            let ptr = unsafe { AADecodeArchiveInputStreamOpen(stream, ptr::null_mut(), ptr::null_mut(), 0, 0) };
             Self::from_ptr(ptr, object)
         }
 
@@ -1334,11 +1141,7 @@ mod platform {
         }
     }
 
-    fn close_byte_option(
-        stream: &mut Option<ByteStream>,
-        operation: &'static str,
-        first_error: &mut Option<Error>,
-    ) {
+    fn close_byte_option(stream: &mut Option<ByteStream>, operation: &'static str, first_error: &mut Option<Error>) {
         if let Some(mut stream) = stream.take()
             && let Err(error) = stream.close(operation)
             && first_error.is_none()
@@ -1350,9 +1153,7 @@ mod platform {
     #[allow(clippy::cast_possible_wrap)]
     #[allow(clippy::trivially_copy_pass_by_ref)]
     fn field_key(key: &[u8; 3]) -> FieldKey {
-        FieldKey {
-            skey: [key[0] as c_char, key[1] as c_char, key[2] as c_char, 0],
-        }
+        FieldKey { skey: [key[0] as c_char, key[1] as c_char, key[2] as c_char, 0] }
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -1362,11 +1163,7 @@ mod platform {
     }
 
     fn blob_key(key: FieldKey) -> BlobKey {
-        if raw_key_bytes(key) == *b"DAT" {
-            BlobKey::Data
-        } else {
-            BlobKey::Other
-        }
+        if raw_key_bytes(key) == *b"DAT" { BlobKey::Data } else { BlobKey::Other }
     }
 
     fn entry_kind(value: u64) -> EntryKind {
@@ -1381,25 +1178,14 @@ mod platform {
     }
 
     fn check_status(status: c_int, operation: &'static str) -> Result<()> {
-        if status < 0 {
-            Err(Error::Status {
-                operation,
-                status: i64::from(status),
-            })
-        } else {
-            Ok(())
-        }
+        if status < 0 { Err(Error::Status { operation, status: i64::from(status) }) } else { Ok(()) }
     }
 
     fn c_path(path: &Path) -> Result<CString> {
         CString::new(path.as_os_str().as_bytes()).map_err(Error::from)
     }
 
-    pub(super) fn apply_native_metadata(
-        path: &Path,
-        metadata: EntryMetadata,
-        symlink: bool,
-    ) -> Result<()> {
+    pub(super) fn apply_native_metadata(path: &Path, metadata: EntryMetadata, symlink: bool) -> Result<()> {
         let path = c_path(path)?;
 
         if let Some(created) = metadata.created
@@ -1436,11 +1222,7 @@ mod platform {
             // SAFETY: `path` is NUL-terminated and the scalar IDs are passed
             // by value. lchown intentionally does not follow symlinks.
             let status = unsafe {
-                if symlink {
-                    libc::lchown(path.as_ptr(), uid, gid)
-                } else {
-                    libc::chown(path.as_ptr(), uid, gid)
-                }
+                if symlink { libc::lchown(path.as_ptr(), uid, gid) } else { libc::chown(path.as_ptr(), uid, gid) }
             };
             if status != 0 {
                 return Err(Error::Io(io::Error::last_os_error()));
@@ -1453,8 +1235,7 @@ mod platform {
             let status = unsafe {
                 if symlink {
                     const O_SYMLINK: libc::c_int = 0x0020_0000;
-                    let descriptor =
-                        libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC | O_SYMLINK);
+                    let descriptor = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC | O_SYMLINK);
                     if descriptor < 0 {
                         -1
                     } else {
@@ -1480,10 +1261,7 @@ mod platform {
             return None;
         }
         if value.tv_sec >= 0 {
-            UNIX_EPOCH.checked_add(Duration::new(
-                u64::try_from(value.tv_sec).unwrap_or(0),
-                nanos,
-            ))
+            UNIX_EPOCH.checked_add(Duration::new(u64::try_from(value.tv_sec).unwrap_or(0), nanos))
         } else {
             UNIX_EPOCH
                 .checked_sub(Duration::from_secs(value.tv_sec.unsigned_abs()))?
@@ -1493,24 +1271,17 @@ mod platform {
 
     fn system_time_to_timespec(value: SystemTime) -> Option<timespec> {
         match value.duration_since(UNIX_EPOCH) {
-            Ok(duration) => Some(timespec {
-                tv_sec: duration.as_secs().try_into().ok()?,
-                tv_nsec: duration.subsec_nanos().into(),
-            }),
+            Ok(duration) => {
+                Some(timespec { tv_sec: duration.as_secs().try_into().ok()?, tv_nsec: duration.subsec_nanos().into() })
+            }
             Err(error) => {
                 let duration = error.duration();
                 let seconds = i64::try_from(duration.as_secs()).ok()?;
                 let nanoseconds = duration.subsec_nanos();
                 if nanoseconds == 0 {
-                    return Some(timespec {
-                        tv_sec: -seconds,
-                        tv_nsec: 0,
-                    });
+                    return Some(timespec { tv_sec: -seconds, tv_nsec: 0 });
                 }
-                Some(timespec {
-                    tv_sec: (-seconds).checked_sub(1)?,
-                    tv_nsec: (1_000_000_000 - nanoseconds).into(),
-                })
+                Some(timespec { tv_sec: (-seconds).checked_sub(1)?, tv_nsec: (1_000_000_000 - nanoseconds).into() })
             }
         }
     }

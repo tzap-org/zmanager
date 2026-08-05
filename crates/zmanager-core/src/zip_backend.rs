@@ -1,10 +1,8 @@
 use crate::jobs::{JobCancelled, JobContext};
-use crate::manifest::{
-    ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive,
-};
+use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::{
-    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
+    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError,
+    ExtractionSafetyPlanner, OverwriteResolver,
 };
 use crate::secrets::SecretString;
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,15 +173,11 @@ impl fmt::Display for ZipBackendError {
             Self::PasswordRequired => write!(f, "password required to decrypt ZIP entry data"),
             Self::InvalidPassword => write!(f, "provided ZIP password is incorrect"),
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
-            Self::VolumeSizeTooSmall { size, minimum } => write!(
-                f,
-                "ZIP volume size {size} bytes is smaller than the minimum {minimum} bytes"
-            ),
+            Self::VolumeSizeTooSmall { size, minimum } => {
+                write!(f, "ZIP volume size {size} bytes is smaller than the minimum {minimum} bytes")
+            }
             Self::UnsupportedSplitZip { reason } => {
-                write!(
-                    f,
-                    "split ZIP creation is not supported for this archive: {reason}"
-                )
+                write!(f, "split ZIP creation is not supported for this archive: {reason}")
             }
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::InvalidSymlinkTarget { archive_path } => {
@@ -265,35 +259,20 @@ pub fn create_zip_from_manifest(
     validate_zip_volume_size(options.volume_size)?;
 
     let destination = destination.as_ref();
-    let mut output =
-        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
-            ZipBackendError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
-    let file = output.file_mut().map_err(|source| ZipBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let mut output = crate::atomic_file::AtomicOutputFile::create(destination)
+        .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
+    let file = output.file_mut().map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
     let mut writer = ZipWriter::new(file);
     let mut report = write_manifest_to_zip(&mut writer, manifest, options, None)?;
     writer.finish()?;
     if let Some(volume_size) = options.volume_size {
         output.close();
-        report.volume_count = split_zip_temp_archive(
-            output.temp_path(),
-            destination,
-            volume_size,
-            options.replace_existing,
-        )?;
+        report.volume_count =
+            split_zip_temp_archive(output.temp_path(), destination, volume_size, options.replace_existing)?;
     } else {
         output
             .commit_with_file_replace(options.replace_existing)
-            .map_err(|source| ZipBackendError::Io {
-                path: destination.to_path_buf(),
-                source,
-            })?;
+            .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
     }
 
     Ok(report)
@@ -314,35 +293,20 @@ pub fn create_zip_from_manifest_with_context(
     validate_zip_volume_size(options.volume_size)?;
 
     let destination = destination.as_ref();
-    let mut output =
-        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
-            ZipBackendError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
-    let file = output.file_mut().map_err(|source| ZipBackendError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let mut output = crate::atomic_file::AtomicOutputFile::create(destination)
+        .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
+    let file = output.file_mut().map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
     let mut writer = ZipWriter::new(file);
     let mut report = write_manifest_to_zip(&mut writer, manifest, options, Some(context))?;
     writer.finish()?;
     if let Some(volume_size) = options.volume_size {
         output.close();
-        report.volume_count = split_zip_temp_archive(
-            output.temp_path(),
-            destination,
-            volume_size,
-            options.replace_existing,
-        )?;
+        report.volume_count =
+            split_zip_temp_archive(output.temp_path(), destination, volume_size, options.replace_existing)?;
     } else {
         output
             .commit_with_file_replace(options.replace_existing)
-            .map_err(|source| ZipBackendError::Io {
-                path: destination.to_path_buf(),
-                source,
-            })?;
+            .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
     }
 
     Ok(report)
@@ -390,9 +354,7 @@ pub fn create_zip_stream_from_manifest<W: Write>(
 
 fn validate_zip_stream_options(options: &ZipCreateOptions) -> Result<(), ZipBackendError> {
     if options.volume_size.is_some() {
-        return Err(ZipBackendError::UnsupportedSplitZip {
-            reason: "streaming ZIP output cannot be split".to_owned(),
-        });
+        return Err(ZipBackendError::UnsupportedSplitZip { reason: "streaming ZIP output cannot be split".to_owned() });
     }
     Ok(())
 }
@@ -400,10 +362,7 @@ fn validate_zip_stream_options(options: &ZipCreateOptions) -> Result<(), ZipBack
 fn validate_zip_volume_size(volume_size: Option<u64>) -> Result<(), ZipBackendError> {
     match volume_size {
         Some(size) if size < MIN_ZIP_VOLUME_SIZE_BYTES => {
-            Err(ZipBackendError::VolumeSizeTooSmall {
-                size,
-                minimum: MIN_ZIP_VOLUME_SIZE_BYTES,
-            })
+            Err(ZipBackendError::VolumeSizeTooSmall { size, minimum: MIN_ZIP_VOLUME_SIZE_BYTES })
         }
         Some(size) if size > u64::from(u32::MAX) => Err(ZipBackendError::UnsupportedSplitZip {
             reason: "volume sizes above 4294967295 bytes need ZIP64 multi-disk metadata".to_owned(),
@@ -419,26 +378,16 @@ fn split_zip_temp_archive(
     replace_existing: bool,
 ) -> Result<usize, ZipBackendError> {
     let archive_size = fs::metadata(archive_path)
-        .map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?
         .len();
     let eocd = read_zip_eocd(archive_path, archive_size)?;
 
     if archive_size <= volume_size {
         let volume_paths = vec![destination.to_path_buf()];
         let existing_volume_paths = existing_split_zip_volume_paths(destination)?;
-        ensure_split_destinations_available(
-            destination,
-            &volume_paths,
-            &existing_volume_paths,
-            replace_existing,
-        )?;
-        let mut archive = File::open(archive_path).map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?;
+        ensure_split_destinations_available(destination, &volume_paths, &existing_volume_paths, replace_existing)?;
+        let mut archive = File::open(archive_path)
+            .map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
         let mut writer = ZipSplitVolumeWriter::new(&volume_paths, archive_size.max(1))?;
         writer.copy_from(&mut archive, archive_size, destination)?;
         writer.finish(destination, &existing_volume_paths, replace_existing)?;
@@ -448,17 +397,12 @@ fn split_zip_temp_archive(
     let logical_size = archive_size
         .checked_add(u64::try_from(ZIP_SPLIT_SIGNATURE.len()).unwrap_or(4))
         .ok_or_else(|| unsupported_split_zip("archive is too large to split"))?;
-    let volume_count = split_volume_count(logical_size, volume_size)
-        .ok_or_else(|| unsupported_split_zip("too many ZIP volumes"))?;
+    let volume_count =
+        split_volume_count(logical_size, volume_size).ok_or_else(|| unsupported_split_zip("too many ZIP volumes"))?;
     let layout = ZipSplitLayout::new(logical_size, volume_size, &eocd)?;
     let volume_paths = split_zip_volume_paths(destination, volume_count)?;
     let existing_volume_paths = existing_split_zip_volume_paths(destination)?;
-    ensure_split_destinations_available(
-        destination,
-        &volume_paths,
-        &existing_volume_paths,
-        replace_existing,
-    )?;
+    ensure_split_destinations_available(destination, &volume_paths, &existing_volume_paths, replace_existing)?;
 
     let mut central_directory = read_zip_central_directory(archive_path, &eocd)?;
     let entries_on_last_disk = patch_split_zip_central_directory(
@@ -468,20 +412,11 @@ fn split_zip_temp_archive(
         layout.last_disk,
     )?;
     let mut eocd_bytes = eocd.bytes.clone();
-    patch_split_zip_eocd(
-        &mut eocd_bytes,
-        &layout,
-        eocd.total_entries,
-        entries_on_last_disk,
-    )?;
+    patch_split_zip_eocd(&mut eocd_bytes, &layout, eocd.total_entries, entries_on_last_disk)?;
 
-    let mut archive =
-        BufReader::new(
-            File::open(archive_path).map_err(|source| ZipBackendError::Io {
-                path: archive_path.to_path_buf(),
-                source,
-            })?,
-        );
+    let mut archive = BufReader::new(
+        File::open(archive_path).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?,
+    );
     let mut writer = ZipSplitVolumeWriter::new(&volume_paths, volume_size)?;
     writer.write_all(&ZIP_SPLIT_SIGNATURE)?;
     writer.copy_from(&mut archive, eocd.central_directory_offset, archive_path)?;
@@ -509,11 +444,7 @@ struct ZipSplitLayout {
 }
 
 impl ZipSplitLayout {
-    fn new(
-        logical_size: u64,
-        volume_size: u64,
-        eocd: &ZipEndOfCentralDirectory,
-    ) -> Result<Self, ZipBackendError> {
+    fn new(logical_size: u64, volume_size: u64, eocd: &ZipEndOfCentralDirectory) -> Result<Self, ZipBackendError> {
         let central_directory_logical_offset = eocd
             .central_directory_offset
             .checked_add(u64::try_from(ZIP_SPLIT_SIGNATURE.len()).unwrap_or(4))
@@ -530,35 +461,23 @@ impl ZipSplitLayout {
     }
 }
 
-fn read_zip_eocd(
-    archive_path: &Path,
-    archive_size: u64,
-) -> Result<ZipEndOfCentralDirectory, ZipBackendError> {
+fn read_zip_eocd(archive_path: &Path, archive_size: u64) -> Result<ZipEndOfCentralDirectory, ZipBackendError> {
     if archive_size < ZIP_EOCD_MIN_SIZE as u64 {
         return Err(unsupported_split_zip("archive is missing ZIP end record"));
     }
 
     let tail_size = archive_size.min(ZIP_EOCD_MIN_SIZE as u64 + ZIP_EOCD_MAX_COMMENT_SIZE);
-    let mut file = File::open(archive_path).map_err(|source| ZipBackendError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
+    let mut file =
+        File::open(archive_path).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     file.seek(SeekFrom::Start(archive_size - tail_size))
-        .map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     let mut tail = vec![
         0;
         usize::try_from(tail_size).map_err(|_| {
             unsupported_split_zip("ZIP end record tail is too large for this platform")
         })?
     ];
-    file.read_exact(&mut tail)
-        .map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?;
+    file.read_exact(&mut tail).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
 
     for offset in (0..=tail.len() - ZIP_EOCD_MIN_SIZE).rev() {
         if read_u32(&tail[offset..offset + 4]) != ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE {
@@ -576,12 +495,9 @@ fn read_zip_eocd(
                 let relative = usize::try_from(locator_start - (archive_size - tail_size))
                     .map_err(|_| unsupported_split_zip("ZIP64 locator offset overflow"))?;
                 if relative + 4 <= tail.len()
-                    && read_u32(&tail[relative..relative + 4])
-                        == ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE
+                    && read_u32(&tail[relative..relative + 4]) == ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE
                 {
-                    return Err(unsupported_split_zip(
-                        "ZIP64 split metadata is not implemented",
-                    ));
+                    return Err(unsupported_split_zip("ZIP64 split metadata is not implemented"));
                 }
             }
         }
@@ -600,14 +516,10 @@ fn read_zip_eocd(
             || central_directory_size == u32::MAX
             || central_directory_offset == u32::MAX
         {
-            return Err(unsupported_split_zip(
-                "ZIP64 central directory markers are not supported for split output",
-            ));
+            return Err(unsupported_split_zip("ZIP64 central directory markers are not supported for split output"));
         }
         if entries_on_disk != total_entries {
-            return Err(unsupported_split_zip(
-                "central directory entry counts are inconsistent",
-            ));
+            return Err(unsupported_split_zip("central directory entry counts are inconsistent"));
         }
         let central_directory_offset = u64::from(central_directory_offset);
         let central_directory_size = u64::from(central_directory_size);
@@ -615,9 +527,7 @@ fn read_zip_eocd(
             .checked_add(central_directory_size)
             .ok_or_else(|| unsupported_split_zip("central directory offset overflow"))?;
         if central_directory_end != eocd_offset {
-            return Err(unsupported_split_zip(
-                "unexpected data between central directory and ZIP end record",
-            ));
+            return Err(unsupported_split_zip("unexpected data between central directory and ZIP end record"));
         }
 
         return Ok(ZipEndOfCentralDirectory {
@@ -635,15 +545,10 @@ fn read_zip_central_directory(
     archive_path: &Path,
     eocd: &ZipEndOfCentralDirectory,
 ) -> Result<Vec<u8>, ZipBackendError> {
-    let mut file = File::open(archive_path).map_err(|source| ZipBackendError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
+    let mut file =
+        File::open(archive_path).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     file.seek(SeekFrom::Start(eocd.central_directory_offset))
-        .map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     let mut central_directory = vec![
         0;
         usize::try_from(eocd.central_directory_size).map_err(|_| {
@@ -651,10 +556,7 @@ fn read_zip_central_directory(
         })?
     ];
     file.read_exact(&mut central_directory)
-        .map_err(|source| ZipBackendError::Io {
-            path: archive_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     Ok(central_directory)
 }
 
@@ -681,9 +583,7 @@ fn patch_split_zip_central_directory(
             return Err(unsupported_split_zip("archive is already a multi-disk ZIP"));
         }
         if local_header_offset == u32::MAX {
-            return Err(unsupported_split_zip(
-                "ZIP64 local header offsets are not supported for split output",
-            ));
+            return Err(unsupported_split_zip("ZIP64 local header offsets are not supported for split output"));
         }
         let logical_header_offset = u64::from(local_header_offset)
             .checked_add(u64::try_from(ZIP_SPLIT_SIGNATURE.len()).unwrap_or(4))
@@ -694,8 +594,7 @@ fn patch_split_zip_central_directory(
         let central_directory_entry_offset = central_directory_logical_offset
             .checked_add(u64::try_from(offset).unwrap_or(0))
             .ok_or_else(|| unsupported_split_zip("central directory entry offset overflow"))?;
-        let (central_directory_entry_disk, _) =
-            split_zip_location(central_directory_entry_offset, volume_size)?;
+        let (central_directory_entry_disk, _) = split_zip_location(central_directory_entry_offset, volume_size)?;
         if central_directory_entry_disk == eocd_disk {
             entries_on_eocd_disk = entries_on_eocd_disk.saturating_add(1);
         }
@@ -706,9 +605,7 @@ fn patch_split_zip_central_directory(
             .and_then(|value| value.checked_add(comment_len))
             .ok_or_else(|| unsupported_split_zip("central directory entry overflow"))?;
         if next_offset > central_directory.len() {
-            return Err(unsupported_split_zip(
-                "central directory entry is truncated",
-            ));
+            return Err(unsupported_split_zip("central directory entry is truncated"));
         }
         offset = next_offset;
     }
@@ -721,9 +618,7 @@ fn patch_split_zip_eocd(
     total_entries: u16,
     entries_on_last_disk: u16,
 ) -> Result<(), ZipBackendError> {
-    if eocd.len() < ZIP_EOCD_MIN_SIZE
-        || read_u32(&eocd[0..4]) != ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE
-    {
+    if eocd.len() < ZIP_EOCD_MIN_SIZE || read_u32(&eocd[0..4]) != ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE {
         return Err(unsupported_split_zip("ZIP end record is malformed"));
     }
     eocd[4..6].copy_from_slice(&layout.last_disk.to_le_bytes());
@@ -734,19 +629,14 @@ fn patch_split_zip_eocd(
     Ok(())
 }
 
-fn split_zip_location(
-    logical_offset: u64,
-    volume_size: u64,
-) -> Result<(u16, u32), ZipBackendError> {
+fn split_zip_location(logical_offset: u64, volume_size: u64) -> Result<(u16, u32), ZipBackendError> {
     let disk = logical_offset / volume_size;
     if disk >= u64::from(u16::MAX) {
         return Err(unsupported_split_zip("too many ZIP volumes"));
     }
     let offset = logical_offset % volume_size;
-    let disk =
-        u16::try_from(disk).map_err(|_| unsupported_split_zip("ZIP disk number overflow"))?;
-    let offset = u32::try_from(offset)
-        .map_err(|_| unsupported_split_zip("ZIP disk-relative offset overflow"))?;
+    let disk = u16::try_from(disk).map_err(|_| unsupported_split_zip("ZIP disk number overflow"))?;
+    let offset = u32::try_from(offset).map_err(|_| unsupported_split_zip("ZIP disk-relative offset overflow"))?;
     Ok((disk, offset))
 }
 
@@ -755,10 +645,7 @@ fn split_volume_count(archive_size: u64, volume_size: u64) -> Option<usize> {
     usize::try_from(count).ok()
 }
 
-fn split_zip_volume_paths(
-    destination: &Path,
-    count: usize,
-) -> Result<Vec<PathBuf>, ZipBackendError> {
+fn split_zip_volume_paths(destination: &Path, count: usize) -> Result<Vec<PathBuf>, ZipBackendError> {
     if count <= 1 {
         return Ok(vec![destination.to_path_buf()]);
     }
@@ -780,9 +667,7 @@ fn split_zip_base_path(destination: &Path) -> Result<PathBuf, ZipBackendError> {
     {
         return Ok(destination.with_extension(""));
     }
-    Err(unsupported_split_zip(
-        "split ZIP output path must use a .zip extension",
-    ))
+    Err(unsupported_split_zip("split ZIP output path must use a .zip extension"))
 }
 
 fn ensure_split_destinations_available(
@@ -802,39 +687,21 @@ fn unique_paths<'a>(left: &'a [PathBuf], right: &'a [PathBuf]) -> Vec<&'a Path> 
     let mut seen = BTreeSet::new();
     left.iter()
         .chain(right.iter())
-        .filter_map(|path| {
-            if seen.insert(path.clone()) {
-                Some(path.as_path())
-            } else {
-                None
-            }
-        })
+        .filter_map(|path| if seen.insert(path.clone()) { Some(path.as_path()) } else { None })
         .collect()
 }
 
-fn ensure_file_destination_available(
-    path: &Path,
-    replace_existing: bool,
-) -> Result<(), ZipBackendError> {
+fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Result<(), ZipBackendError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io_error(
-                path,
-                io::ErrorKind::IsADirectory,
-                format!("cannot replace directory {}", path.display()),
-            ))
+            Err(io_error(path, io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
         }
-        Ok(_) if !replace_existing => Err(io_error(
-            path,
-            io::ErrorKind::AlreadyExists,
-            format!("destination already exists: {}", path.display()),
-        )),
+        Ok(_) if !replace_existing => {
+            Err(io_error(path, io::ErrorKind::AlreadyExists, format!("destination already exists: {}", path.display())))
+        }
         Ok(_) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(ZipBackendError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(ZipBackendError::Io { path: path.to_path_buf(), source }),
     }
 }
 
@@ -855,21 +722,11 @@ fn remove_split_destinations_for_replace(
 fn remove_file_destination_for_replace(path: &Path) -> Result<(), ZipBackendError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io_error(
-                path,
-                io::ErrorKind::IsADirectory,
-                format!("cannot replace directory {}", path.display()),
-            ))
+            Err(io_error(path, io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
         }
-        Ok(_) => fs::remove_file(path).map_err(|source| ZipBackendError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Ok(_) => fs::remove_file(path).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source }),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(ZipBackendError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(ZipBackendError::Io { path: path.to_path_buf(), source }),
     }
 }
 
@@ -883,10 +740,7 @@ fn existing_split_zip_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, Z
         Ok(entries) => entries,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
-            return Err(ZipBackendError::Io {
-                path: directory.to_path_buf(),
-                source,
-            });
+            return Err(ZipBackendError::Io { path: directory.to_path_buf(), source });
         }
     };
     let mut paths = BTreeMap::new();
@@ -908,9 +762,7 @@ fn parse_split_zip_sidecar_name(name: &str) -> Option<(&str, u32)> {
     let (base, extension) = name.rsplit_once('.')?;
     let extension = extension.to_ascii_lowercase();
     let number = extension.strip_prefix('z')?;
-    if number.len() < ZIP_SPLIT_SIDE_CAR_EXTENSION_WIDTH
-        || !number.chars().all(|value| value.is_ascii_digit())
-    {
+    if number.len() < ZIP_SPLIT_SIDE_CAR_EXTENSION_WIDTH || !number.chars().all(|value| value.is_ascii_digit()) {
         return None;
     }
     let part = number.parse().ok()?;
@@ -946,8 +798,7 @@ impl<'a> ZipSplitVolumeWriter<'a> {
                 self.finish_current_volume();
                 self.start_next_volume()?;
             }
-            let remaining =
-                usize::try_from(self.volume_size - self.current_written).unwrap_or(usize::MAX);
+            let remaining = usize::try_from(self.volume_size - self.current_written).unwrap_or(usize::MAX);
             let to_write = remaining.min(bytes.len());
             let path = self.current_path().to_path_buf();
             let output = self
@@ -955,13 +806,8 @@ impl<'a> ZipSplitVolumeWriter<'a> {
                 .as_mut()
                 .ok_or_else(|| unsupported_split_zip("missing ZIP volume output"))?
                 .file_mut()
-                .map_err(|source| ZipBackendError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-            output
-                .write_all(&bytes[..to_write])
-                .map_err(|source| ZipBackendError::Io { path, source })?;
+                .map_err(|source| ZipBackendError::Io { path: path.clone(), source })?;
+            output.write_all(&bytes[..to_write]).map_err(|source| ZipBackendError::Io { path, source })?;
             self.current_written += u64::try_from(to_write).unwrap_or(0);
             bytes = &bytes[to_write..];
         }
@@ -976,14 +822,10 @@ impl<'a> ZipSplitVolumeWriter<'a> {
     ) -> Result<(), ZipBackendError> {
         let mut buffer = vec![0; 64 * 1024];
         while bytes_to_copy > 0 {
-            let chunk_len =
-                usize::try_from(bytes_to_copy.min(buffer.len() as u64)).unwrap_or(buffer.len());
+            let chunk_len = usize::try_from(bytes_to_copy.min(buffer.len() as u64)).unwrap_or(buffer.len());
             reader
                 .read_exact(&mut buffer[..chunk_len])
-                .map_err(|source| ZipBackendError::Io {
-                    path: source_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(|source| ZipBackendError::Io { path: source_path.to_path_buf(), source })?;
             self.write_all(&buffer[..chunk_len])?;
             bytes_to_copy -= u64::try_from(chunk_len).unwrap_or(0);
         }
@@ -998,22 +840,13 @@ impl<'a> ZipSplitVolumeWriter<'a> {
     ) -> Result<(), ZipBackendError> {
         self.finish_current_volume();
         if self.completed.len() != self.paths.len() {
-            return Err(unsupported_split_zip(
-                "ZIP split writer did not fill all volumes",
-            ));
+            return Err(unsupported_split_zip("ZIP split writer did not fill all volumes"));
         }
-        remove_split_destinations_for_replace(
-            destination,
-            existing_volume_paths,
-            replace_existing,
-        )?;
+        remove_split_destinations_for_replace(destination, existing_volume_paths, replace_existing)?;
         for (output, path) in self.completed.into_iter().zip(self.paths) {
             output
                 .commit_with_file_replace(replace_existing)
-                .map_err(|source| ZipBackendError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
+                .map_err(|source| ZipBackendError::Io { path: path.clone(), source })?;
         }
         Ok(())
     }
@@ -1022,12 +855,8 @@ impl<'a> ZipSplitVolumeWriter<'a> {
         let Some(path) = self.paths.get(self.next_index) else {
             return Err(unsupported_split_zip("ZIP split produced too many volumes"));
         };
-        let output = crate::atomic_file::AtomicOutputFile::create(path).map_err(|source| {
-            ZipBackendError::Io {
-                path: path.clone(),
-                source,
-            }
-        })?;
+        let output = crate::atomic_file::AtomicOutputFile::create(path)
+            .map_err(|source| ZipBackendError::Io { path: path.clone(), source })?;
         self.current = Some(output);
         self.current_written = 0;
         self.next_index += 1;
@@ -1043,9 +872,7 @@ impl<'a> ZipSplitVolumeWriter<'a> {
 
     fn current_path(&self) -> &Path {
         let current_index = self.next_index.saturating_sub(1);
-        self.paths
-            .get(current_index)
-            .map_or_else(|| Path::new("archive.zip"), PathBuf::as_path)
+        self.paths.get(current_index).map_or_else(|| Path::new("archive.zip"), PathBuf::as_path)
     }
 }
 
@@ -1058,16 +885,11 @@ fn read_u32(bytes: &[u8]) -> u32 {
 }
 
 fn unsupported_split_zip(reason: impl Into<String>) -> ZipBackendError {
-    ZipBackendError::UnsupportedSplitZip {
-        reason: reason.into(),
-    }
+    ZipBackendError::UnsupportedSplitZip { reason: reason.into() }
 }
 
 fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> ZipBackendError {
-    ZipBackendError::Io {
-        path: path.to_path_buf(),
-        source: io::Error::new(kind, message.into()),
-    }
+    ZipBackendError::Io { path: path.to_path_buf(), source: io::Error::new(kind, message.into()) }
 }
 
 /// Lists ZIP archive entries.
@@ -1077,10 +899,7 @@ fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> Zip
 /// Returns [`ZipBackendError`] when the archive cannot be opened or parsed.
 pub fn list_zip(path: impl AsRef<Path>) -> Result<ZipListing, ZipBackendError> {
     let path = path.as_ref();
-    let file = File::open(path).map_err(|source| ZipBackendError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     let mut archive = ZipArchive::new(file)?;
     let mut entries = Vec::with_capacity(archive.len());
 
@@ -1135,10 +954,7 @@ pub fn test_zip_with_password_filter(
     mut selected: impl FnMut(&str) -> bool,
 ) -> Result<ZipTestReport, ZipBackendError> {
     let path = path.as_ref();
-    let file = File::open(path).map_err(|source| ZipBackendError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     let mut archive = ZipArchive::new(file)?;
     let mut tested_entries = 0;
     let mut skipped_entries = 0;
@@ -1154,27 +970,19 @@ pub fn test_zip_with_password_filter(
             skipped_entries += 1;
             continue;
         }
-        let mut file = archive
-            .by_index_with_options(index, ZipReadOptions::new().password(password))
-            .map_err(map_zip_error)?;
+        let mut file =
+            archive.by_index_with_options(index, ZipReadOptions::new().password(password)).map_err(map_zip_error)?;
         if file.is_dir() {
             tested_entries += 1;
             continue;
         }
-        let copied =
-            io::copy(&mut file, &mut io::sink()).map_err(|source| ZipBackendError::Io {
-                path: PathBuf::from(file.name()),
-                source,
-            })?;
+        let copied = io::copy(&mut file, &mut io::sink())
+            .map_err(|source| ZipBackendError::Io { path: PathBuf::from(file.name()), source })?;
         tested_entries += 1;
         tested_bytes += copied;
     }
 
-    Ok(ZipTestReport {
-        tested_entries,
-        skipped_entries,
-        tested_bytes,
-    })
+    Ok(ZipTestReport { tested_entries, skipped_entries, tested_bytes })
 }
 
 /// Extracts a ZIP archive through the shared extraction safety policy.
@@ -1220,18 +1028,12 @@ pub fn copy_zip_files_to_writer<W: Write>(
     output: &mut W,
 ) -> Result<ZipExtractReport, ZipBackendError> {
     let archive_path = archive_path.as_ref();
-    let file = File::open(archive_path).map_err(|source| ZipBackendError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
+    let file =
+        File::open(archive_path).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     let mut archive = ZipArchive::new(file)?;
     let password = password_bytes(password);
-    let mut report = ZipExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        ZipExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
 
     for index in 0..archive.len() {
         let name = {
@@ -1243,18 +1045,15 @@ pub fn copy_zip_files_to_writer<W: Write>(
             continue;
         }
 
-        let mut file = archive
-            .by_index_with_options(index, ZipReadOptions::new().password(password))
-            .map_err(map_zip_error)?;
+        let mut file =
+            archive.by_index_with_options(index, ZipReadOptions::new().password(password)).map_err(map_zip_error)?;
         if zip_entry_kind(&file) != ZipEntryKind::File {
             report.skipped_entries += 1;
             continue;
         }
 
-        let copied = io::copy(&mut file, output).map_err(|source| ZipBackendError::Io {
-            path: PathBuf::from(file.name()),
-            source,
-        })?;
+        let copied = io::copy(&mut file, output)
+            .map_err(|source| ZipBackendError::Io { path: PathBuf::from(file.name()), source })?;
         report.written_entries += 1;
         report.written_bytes += copied;
     }
@@ -1292,14 +1091,7 @@ pub fn extract_zip_with_context_and_password(
     password: Option<&str>,
     context: &mut JobContext<'_>,
 ) -> Result<ZipExtractReport, ZipBackendError> {
-    extract_zip_inner(
-        archive_path,
-        destination,
-        policy,
-        password,
-        Some(context),
-        None,
-    )
+    extract_zip_inner(archive_path, destination, policy, password, Some(context), None)
 }
 
 /// Extracts a ZIP archive with an overwrite resolver and optional password.
@@ -1316,14 +1108,7 @@ pub fn extract_zip_with_overwrite_resolver_and_password(
     password: Option<&str>,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<ZipExtractReport, ZipBackendError> {
-    extract_zip_inner(
-        archive_path,
-        destination,
-        policy,
-        password,
-        None,
-        Some(overwrite_resolver),
-    )
+    extract_zip_inner(archive_path, destination, policy, password, None, Some(overwrite_resolver))
 }
 
 fn extract_zip_inner(
@@ -1336,34 +1121,19 @@ fn extract_zip_inner(
 ) -> Result<ZipExtractReport, ZipBackendError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
-    let destination_root =
-        crate::safety::prepare_destination_root(destination).map_err(|source| {
-            ZipBackendError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
+    let destination_root = crate::safety::prepare_destination_root(destination)
+        .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let file = File::open(archive_path).map_err(|source| ZipBackendError::Io {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
+    let file =
+        File::open(archive_path).map_err(|source| ZipBackendError::Io { path: archive_path.to_path_buf(), source })?;
     let mut archive = ZipArchive::new(file)?;
     let password = password_bytes(password);
     let mut planner = match overwrite_resolver {
-        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
-            &destination_root,
-            policy,
-            resolver,
-        ),
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(&destination_root, policy, resolver),
         None => ExtractionSafetyPlanner::new(&destination_root, policy),
     };
-    let mut report = ZipExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        ZipExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
     let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)> = Vec::new();
     let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
@@ -1371,9 +1141,8 @@ fn extract_zip_inner(
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        let mut file = archive
-            .by_index_with_options(index, ZipReadOptions::new().password(password))
-            .map_err(map_zip_error)?;
+        let mut file =
+            archive.by_index_with_options(index, ZipReadOptions::new().password(password)).map_err(map_zip_error)?;
         let entry_size = file.size();
         let unix_mode = file.unix_mode();
         let modified_time = file.last_modified();
@@ -1390,12 +1159,7 @@ fn extract_zip_inner(
         }
 
         let processed = match planner.validate_entry(&entry)? {
-            ExtractionDecision::Write {
-                destination_path,
-                replace_existing,
-                link_target_path,
-                ..
-            } => write_zip_entry(
+            ExtractionDecision::Write { destination_path, replace_existing, link_target_path, .. } => write_zip_entry(
                 &mut file,
                 &entry,
                 ZipEntryWriteContext {
@@ -1461,11 +1225,8 @@ fn write_manifest_to_zip<W: Write + Seek>(
             }
             ManifestFileType::File => {
                 writer.start_file(&entry.archive_path, zip_options(entry, options))?;
-                let mut source =
-                    File::open(&entry.source_path).map_err(|source| ZipBackendError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                let mut source = File::open(&entry.source_path)
+                    .map_err(|source| ZipBackendError::Io { path: entry.source_path.clone(), source })?;
                 let copied = if let Some(context) = context.as_deref_mut() {
                     copy_with_progress(
                         &mut source,
@@ -1476,10 +1237,8 @@ fn write_manifest_to_zip<W: Write + Seek>(
                         &mut io_buffer,
                     )?
                 } else {
-                    io::copy(&mut source, writer).map_err(|source| ZipBackendError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?
+                    io::copy(&mut source, writer)
+                        .map_err(|source| ZipBackendError::Io { path: entry.source_path.clone(), source })?
                 };
                 report.written_entries += 1;
                 report.written_bytes += copied;
@@ -1523,10 +1282,7 @@ fn write_manifest_to_zip<W: Write + Seek>(
     Ok(report)
 }
 
-fn zip_options<'a>(
-    entry: &ManifestEntry,
-    create_options: &'a ZipCreateOptions,
-) -> FileOptions<'a, ()> {
+fn zip_options<'a>(entry: &ManifestEntry, create_options: &'a ZipCreateOptions) -> FileOptions<'a, ()> {
     let compression_method = match create_options.compression {
         ZipCompression::Store => CompressionMethod::Stored,
         ZipCompression::Deflate => CompressionMethod::Deflated,
@@ -1563,11 +1319,7 @@ fn zip_options<'a>(
 }
 
 fn zip_password(options: &ZipCreateOptions) -> Option<&str> {
-    options
-        .password
-        .as_ref()
-        .map(SecretString::expose_secret)
-        .filter(|password| !password.is_empty())
+    options.password.as_ref().map(SecretString::expose_secret).filter(|password| !password.is_empty())
 }
 
 fn zip_compression_level(options: &ZipCreateOptions) -> Option<i64> {
@@ -1578,16 +1330,12 @@ fn zip_compression_level(options: &ZipCreateOptions) -> Option<i64> {
 }
 
 fn password_bytes(password: Option<&str>) -> Option<&[u8]> {
-    password
-        .filter(|password| !password.is_empty())
-        .map(str::as_bytes)
+    password.filter(|password| !password.is_empty()).map(str::as_bytes)
 }
 
 fn map_zip_error(source: zip::result::ZipError) -> ZipBackendError {
     match &source {
-        zip::result::ZipError::UnsupportedArchive(message)
-            if *message == zip::result::ZipError::PASSWORD_REQUIRED =>
-        {
+        zip::result::ZipError::UnsupportedArchive(message) if *message == zip::result::ZipError::PASSWORD_REQUIRED => {
             ZipBackendError::PasswordRequired
         }
         zip::result::ZipError::InvalidPassword => ZipBackendError::InvalidPassword,
@@ -1619,12 +1367,8 @@ fn extraction_entry_kind<R: Read>(
     if file.is_symlink() {
         let mut target = String::new();
         file.read_to_string(&mut target)
-            .map_err(|_| ZipBackendError::InvalidSymlinkTarget {
-                archive_path: file.name().to_owned(),
-            })?;
-        return Ok(ExtractionEntryKind::Symlink {
-            target: PathBuf::from(target),
-        });
+            .map_err(|_| ZipBackendError::InvalidSymlinkTarget { archive_path: file.name().to_owned() })?;
+        return Ok(ExtractionEntryKind::Symlink { target: PathBuf::from(target) });
     }
 
     Ok(ExtractionEntryKind::File)
@@ -1648,12 +1392,8 @@ fn prepare_zip_destination(
     replace_existing: bool,
 ) -> Result<(), ZipBackendError> {
     if replace_existing && !matches!(entry.kind, ExtractionEntryKind::File) {
-        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
-            ZipBackendError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            }
-        })?;
+        crate::safety::remove_destination_for_replace(destination_path)
+            .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?;
     }
     Ok(())
 }
@@ -1678,47 +1418,27 @@ fn write_zip_entry<R: Read>(
 
     match entry.kind {
         ExtractionEntryKind::Directory => {
-            fs::create_dir_all(destination_path).map_err(|source| ZipBackendError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            })?;
+            fs::create_dir_all(destination_path)
+                .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?;
             deferred_directories.push((destination_path.to_path_buf(), unix_mode, modified_time));
             report.written_entries += 1;
             Ok(0)
         }
         ExtractionEntryKind::File => {
             let mut destination = crate::atomic_file::AtomicOutputFile::create(destination_path)
-                .map_err(|source| ZipBackendError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?;
             let output = destination
                 .file_mut()
-                .map_err(|source| ZipBackendError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?;
             let copied = if let Some(context) = job_context {
-                copy_with_progress(
-                    file,
-                    output,
-                    &entry.archive_path,
-                    destination_path,
-                    context,
-                    io_buffer,
-                )?
+                copy_with_progress(file, output, &entry.archive_path, destination_path, context, io_buffer)?
             } else {
-                io::copy(file, output).map_err(|source| ZipBackendError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?
+                io::copy(file, output)
+                    .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?
             };
             destination
                 .commit_with_replace(replace_existing)
-                .map_err(|source| ZipBackendError::Io {
-                    path: destination_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })?;
             apply_zip_metadata(destination_path, unix_mode, modified_time)?;
             report.written_entries += 1;
             report.written_bytes += copied;
@@ -1753,10 +1473,7 @@ fn write_zip_entry<R: Read>(
         }
         ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
             report.skipped_entries += 1;
-            report.warnings.push(format!(
-                "skipped unsupported ZIP entry kind for {}",
-                entry.archive_path
-            ));
+            report.warnings.push(format!("skipped unsupported ZIP entry kind for {}", entry.archive_path));
             Ok(0)
         }
     }
@@ -1770,12 +1487,8 @@ fn apply_zip_metadata(
     #[cfg(unix)]
     if let Some(mode) = unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode & ZIP_MODE_MASK)).map_err(
-            |source| ZipBackendError::Io {
-                path: path.to_path_buf(),
-                source,
-            },
-        )?;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & ZIP_MODE_MASK))
+            .map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     }
 
     #[cfg(not(unix))]
@@ -1785,10 +1498,7 @@ fn apply_zip_metadata(
     {
         let mut perms = metadata.permissions();
         perms.set_readonly(true);
-        fs::set_permissions(path, perms).map_err(|source| ZipBackendError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        fs::set_permissions(path, perms).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     }
 
     if let Some(dt) = modified_time
@@ -1801,22 +1511,15 @@ fn apply_zip_metadata(
     {
         let primitive = time::PrimitiveDateTime::new(date, time_cmp);
         let sys_time = std::time::SystemTime::from(primitive.assume_utc());
-        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time)).map_err(
-            |source| ZipBackendError::Io {
-                path: path.to_path_buf(),
-                source,
-            },
-        )?;
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(sys_time))
+            .map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     }
     Ok(())
 }
 
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
 /// reported so extraction cannot claim metadata was restored when it was not.
-fn apply_symlink_mtime(
-    path: &Path,
-    modified_time: Option<zip::DateTime>,
-) -> Result<(), ZipBackendError> {
+fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) -> Result<(), ZipBackendError> {
     if let Some(dt) = modified_time
         && let Ok(date) = time::Date::from_calendar_date(
             i32::from(dt.year()),
@@ -1828,10 +1531,8 @@ fn apply_symlink_mtime(
         let primitive = time::PrimitiveDateTime::new(date, time_cmp);
         let sys_time = std::time::SystemTime::from(primitive.assume_utc());
         let ft = filetime::FileTime::from_system_time(sys_time);
-        filetime::set_symlink_file_times(path, ft, ft).map_err(|source| ZipBackendError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        filetime::set_symlink_file_times(path, ft, ft)
+            .map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     }
     Ok(())
 }
@@ -1857,21 +1558,14 @@ fn copy_with_progress<R: Read, W: Write>(
 
     loop {
         context.check_cancelled()?;
-        let read = reader
-            .read(io_buffer)
-            .map_err(|source| ZipBackendError::Io {
-                path: io_path.to_path_buf(),
-                source,
-            })?;
+        let read =
+            reader.read(io_buffer).map_err(|source| ZipBackendError::Io { path: io_path.to_path_buf(), source })?;
         if read == 0 {
             break;
         }
         writer
             .write_all(&io_buffer[..read])
-            .map_err(|source| ZipBackendError::Io {
-                path: io_path.to_path_buf(),
-                source,
-            })?;
+            .map_err(|source| ZipBackendError::Io { path: io_path.to_path_buf(), source })?;
         let read = read as u64;
         copied += read;
         context.bytes_processed(Some(archive_path), read);
@@ -1882,15 +1576,10 @@ fn copy_with_progress<R: Read, W: Write>(
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), ZipBackendError> {
     if let Some(parent) = destination_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io { path: parent.to_path_buf(), source })?;
     }
-    fs::hard_link(source_path, destination_path).map_err(|source| ZipBackendError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    fs::hard_link(source_path, destination_path)
+        .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(unix)]
@@ -1898,34 +1587,25 @@ fn write_symlink(target: &Path, destination_path: &Path) -> Result<(), ZipBacken
     use std::os::unix::fs::symlink;
 
     if let Some(parent) = destination_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent).map_err(|source| ZipBackendError::Io { path: parent.to_path_buf(), source })?;
     }
-    symlink(target, destination_path).map_err(|source| ZipBackendError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    symlink(target, destination_path)
+        .map_err(|source| ZipBackendError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(not(unix))]
 fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), ZipBackendError> {
     Err(ZipBackendError::Io {
         path: destination_path.to_path_buf(),
-        source: io::Error::new(
-            io::ErrorKind::Unsupported,
-            "symlink extraction is not supported on this platform",
-        ),
+        source: io::Error::new(io::ErrorKind::Unsupported, "symlink extraction is not supported on this platform"),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ZipBackendError, ZipCompression, ZipCreateOptions, ZipEntryKind, create_zip_from_path,
-        extract_zip, extract_zip_with_password, list_zip, needs_zip64, test_zip,
-        test_zip_with_password,
+        ZipBackendError, ZipCompression, ZipCreateOptions, ZipEntryKind, create_zip_from_path, extract_zip,
+        extract_zip_with_password, list_zip, needs_zip64, test_zip, test_zip_with_password,
     };
     use crate::safety::{ExtractionPolicy, ExtractionSafetyError};
     use crate::secrets::SecretString;
@@ -1943,34 +1623,19 @@ mod tests {
         temp.create_dir("project/empty");
         let archive = temp.path("archive.zip");
 
-        let create_report =
-            create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default())
-                .unwrap();
+        let create_report = create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default()).unwrap();
         let listing = list_zip(&archive).unwrap();
         let test_report = test_zip(&archive).unwrap();
-        let extract_report =
-            extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        let extract_report = extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
         assert_eq!(create_report.written_entries, 4);
         assert_eq!(
-            listing
-                .entries
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "project/",
-                "project/empty/",
-                "project/src/",
-                "project/src/main.rs"
-            ]
+            listing.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
+            vec!["project/", "project/empty/", "project/src/", "project/src/main.rs"]
         );
         assert_eq!(test_report.tested_entries, 4);
         assert_eq!(extract_report.written_entries, 4);
-        assert_eq!(
-            fs::read_to_string(temp.path("out/project/src/main.rs")).unwrap(),
-            "fn main() {}\n"
-        );
+        assert_eq!(fs::read_to_string(temp.path("out/project/src/main.rs")).unwrap(), "fn main() {}\n");
         assert!(temp.path("out/project/empty").is_dir());
     }
 
@@ -1999,11 +1664,7 @@ mod tests {
         create_zip_from_path(
             temp.path("project"),
             &archive,
-            &ZipCreateOptions {
-                preserve_metadata: true,
-
-                ..ZipCreateOptions::default()
-            },
+            &ZipCreateOptions { preserve_metadata: true, ..ZipCreateOptions::default() },
         )
         .unwrap();
 
@@ -2028,10 +1689,7 @@ mod tests {
         // ZIP only has 2-second resolution (MS-DOS time), so we check with a delta
         let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
         let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
-        assert!(
-            diff <= 2,
-            "extracted mtime diff {diff} is greater than 2 seconds"
-        );
+        assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
     }
 
     #[test]
@@ -2044,20 +1702,12 @@ mod tests {
         create_zip_from_path(
             temp.path("project"),
             &archive,
-            &ZipCreateOptions {
-                compression: ZipCompression::Store,
-                level: None,
-                ..ZipCreateOptions::default()
-            },
+            &ZipCreateOptions { compression: ZipCompression::Store, level: None, ..ZipCreateOptions::default() },
         )
         .unwrap();
 
-        let file_entry = list_zip(&archive)
-            .unwrap()
-            .entries
-            .into_iter()
-            .find(|entry| entry.name == "project/file.txt")
-            .unwrap();
+        let file_entry =
+            list_zip(&archive).unwrap().entries.into_iter().find(|entry| entry.name == "project/file.txt").unwrap();
         assert_eq!(file_entry.kind, ZipEntryKind::File);
     }
 
@@ -2067,12 +1717,9 @@ mod tests {
         temp.write_file("project/file.txt", b"streamed");
         let mut output = WriteOnlyBuffer::default();
 
-        let (_output, report) = super::create_zip_stream_from_path(
-            temp.path("project"),
-            &mut output,
-            &ZipCreateOptions::default(),
-        )
-        .unwrap();
+        let (_output, report) =
+            super::create_zip_stream_from_path(temp.path("project"), &mut output, &ZipCreateOptions::default())
+                .unwrap();
 
         assert_eq!(report.written_entries, 2);
 
@@ -2094,10 +1741,7 @@ mod tests {
         create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default()).unwrap();
         extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
-        assert_eq!(
-            fs::read_to_string(temp.path("out/project/hello cafe.txt")).unwrap(),
-            "unicode"
-        );
+        assert_eq!(fs::read_to_string(temp.path("out/project/hello cafe.txt")).unwrap(), "unicode");
     }
 
     #[cfg(unix)]
@@ -2110,9 +1754,7 @@ mod tests {
         symlink("target.txt", temp.path("project/link.txt")).unwrap();
         let archive = temp.path("archive.zip");
 
-        let report =
-            create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default())
-                .unwrap();
+        let report = create_zip_from_path(temp.path("project"), &archive, &ZipCreateOptions::default()).unwrap();
 
         assert_eq!(report.warnings.len(), 0);
         assert!(
@@ -2120,9 +1762,7 @@ mod tests {
                 .unwrap()
                 .entries
                 .iter()
-                .any(
-                    |entry| entry.name == "project/link.txt" && entry.kind == ZipEntryKind::Symlink
-                )
+                .any(|entry| entry.name == "project/link.txt" && entry.kind == ZipEntryKind::Symlink)
         );
     }
 
@@ -2153,10 +1793,7 @@ mod tests {
                 .any(|entry| { entry.name == "project/file.txt" && entry.encrypted })
         );
 
-        assert!(matches!(
-            test_zip(&archive),
-            Err(ZipBackendError::PasswordRequired)
-        ));
+        assert!(matches!(test_zip(&archive), Err(ZipBackendError::PasswordRequired)));
         assert!(matches!(
             test_zip_with_password(&archive, Some("wrong password")),
             Err(ZipBackendError::InvalidPassword)
@@ -2165,17 +1802,9 @@ mod tests {
         let test_report = test_zip_with_password(&archive, Some("correct horse")).unwrap();
         assert_eq!(test_report.tested_bytes, 6);
 
-        extract_zip_with_password(
-            &archive,
-            temp.path("out"),
-            ExtractionPolicy::default(),
-            Some("correct horse"),
-        )
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(temp.path("out/project/file.txt")).unwrap(),
-            "secret"
-        );
+        extract_zip_with_password(&archive, temp.path("out"), ExtractionPolicy::default(), Some("correct horse"))
+            .unwrap();
+        assert_eq!(fs::read_to_string(temp.path("out/project/file.txt")).unwrap(), "secret");
     }
 
     #[test]
@@ -2198,24 +1827,15 @@ mod tests {
 
         assert_eq!(report.volume_size, Some(super::MIN_ZIP_VOLUME_SIZE_BYTES));
         assert!(report.volume_count > 1);
-        assert_eq!(
-            fs::metadata(temp.path("archive.z01")).unwrap().len(),
-            super::MIN_ZIP_VOLUME_SIZE_BYTES
-        );
+        assert_eq!(fs::metadata(temp.path("archive.z01")).unwrap().len(), super::MIN_ZIP_VOLUME_SIZE_BYTES);
         assert_eq!(
             &fs::read(temp.path("archive.z01")).unwrap()[..super::ZIP_SPLIT_SIGNATURE.len()],
             super::ZIP_SPLIT_SIGNATURE.as_slice()
         );
         assert!(archive.is_file());
 
-        let listing =
-            crate::libarchive_backend::list_archive_with_password(&archive, None).unwrap();
-        assert!(
-            listing
-                .entries
-                .iter()
-                .any(|entry| entry.path == "project/blob.bin")
-        );
+        let listing = crate::libarchive_backend::list_archive_with_password(&archive, None).unwrap();
+        assert!(listing.entries.iter().any(|entry| entry.path == "project/blob.bin"));
 
         let extract_report = crate::libarchive_backend::extract_archive_with_password(
             &archive,
@@ -2226,10 +1846,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(extract_report.written_bytes, payload.len() as u64);
-        assert_eq!(
-            fs::read(temp.path("out/project/blob.bin")).unwrap(),
-            payload
-        );
+        assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), payload);
     }
 
     #[test]
@@ -2262,10 +1879,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            fs::read(temp.path("out/project/blob.bin")).unwrap(),
-            payload
-        );
+        assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), payload);
     }
 
     #[test]
@@ -2310,22 +1924,11 @@ mod tests {
     fn extraction_rejects_traversal() {
         let temp = TestDir::new("extraction_rejects_traversal");
         let archive = temp.path("archive.zip");
-        write_raw_zip(
-            &archive,
-            &[(
-                "../escape.txt",
-                b"escape".as_slice(),
-                CompressionMethod::Stored,
-            )],
-        );
+        write_raw_zip(&archive, &[("../escape.txt", b"escape".as_slice(), CompressionMethod::Stored)]);
 
-        let error =
-            extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap_err();
+        let error = extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ZipBackendError::Safety(ExtractionSafetyError::ParentTraversal { .. })
-        ));
+        assert!(matches!(error, ZipBackendError::Safety(ExtractionSafetyError::ParentTraversal { .. })));
     }
 
     #[test]
@@ -2340,13 +1943,9 @@ mod tests {
             ],
         );
 
-        let error =
-            extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap_err();
+        let error = extract_zip(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ZipBackendError::Safety(ExtractionSafetyError::NameCollision { .. })
-        ));
+        assert!(matches!(error, ZipBackendError::Safety(ExtractionSafetyError::NameCollision { .. })));
     }
 
     #[test]
@@ -2360,12 +1959,7 @@ mod tests {
         let mut writer = ZipWriter::new(file);
 
         for (name, contents, method) in entries {
-            writer
-                .start_file(
-                    *name,
-                    SimpleFileOptions::default().compression_method(*method),
-                )
-                .unwrap();
+            writer.start_file(*name, SimpleFileOptions::default().compression_method(*method)).unwrap();
             writer.write_all(contents).unwrap();
         }
 
@@ -2406,12 +2000,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
 
             Self { root }

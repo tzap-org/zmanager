@@ -155,9 +155,7 @@ pub(crate) fn unsupported_symlink_warning(archive_path: &str) -> String {
 /// Each pair is `(source, destination)`. A source produced by another pair is
 /// ordered after that dependency; sources outside the deferred set must
 /// already exist. Cycles and missing sources are rejected.
-pub(crate) fn deferred_link_dependency_order(
-    links: &[(PathBuf, PathBuf)],
-) -> io::Result<Vec<usize>> {
+pub(crate) fn deferred_link_dependency_order(links: &[(PathBuf, PathBuf)]) -> io::Result<Vec<usize>> {
     let destinations = links
         .iter()
         .enumerate()
@@ -173,10 +171,7 @@ pub(crate) fn deferred_link_dependency_order(
         } else if let Err(source_error) = std::fs::symlink_metadata(source) {
             return Err(io::Error::new(
                 source_error.kind(),
-                format!(
-                    "deferred link target was not materialized: {}",
-                    source.display()
-                ),
+                format!("deferred link target was not materialized: {}", source.display()),
             ));
         }
     }
@@ -198,10 +193,7 @@ pub(crate) fn deferred_link_dependency_order(
     }
 
     if order.len() != links.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "deferred link dependency cycle",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "deferred link dependency cycle"));
     }
     Ok(order)
 }
@@ -273,10 +265,7 @@ impl PlannedWrite {
 
 enum PlannedDestination {
     Write(PlannedWrite),
-    Skip {
-        normalized_archive_path: String,
-        reason: String,
-    },
+    Skip { normalized_archive_path: String, reason: String },
 }
 
 impl From<PlannedWrite> for PlannedDestination {
@@ -325,10 +314,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
     /// Returns [`ExtractionSafetyError`] when the archive path, link target,
     /// overwrite behavior, file type, or name collision would violate the
     /// configured safety policy.
-    pub fn validate_entry(
-        &mut self,
-        entry: &ExtractionEntry,
-    ) -> Result<ExtractionDecision, ExtractionSafetyError> {
+    pub fn validate_entry(&mut self, entry: &ExtractionEntry) -> Result<ExtractionDecision, ExtractionSafetyError> {
         let mut normalized_archive_path = normalize_archive_path(&entry.archive_path)?;
         if !archive_path_selected(
             &normalized_archive_path,
@@ -341,8 +327,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             });
         }
         if self.policy.strip_components > 0 {
-            let stripped =
-                strip_archive_components(&normalized_archive_path, self.policy.strip_components);
+            let stripped = strip_archive_components(&normalized_archive_path, self.policy.strip_components);
             let Some(stripped) = stripped else {
                 return Ok(ExtractionDecision::Skip {
                     normalized_archive_path,
@@ -353,11 +338,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         }
         let destination_path = self.destination_root.join(&normalized_archive_path);
         let destination_path = lexically_normalize(&destination_path);
-        ensure_inside_destination(
-            &self.destination_root,
-            &destination_path,
-            &entry.archive_path,
-        )?;
+        ensure_inside_destination(&self.destination_root, &destination_path, &entry.archive_path)?;
 
         let link_target_path = match &entry.kind {
             ExtractionEntryKind::Symlink { target } => {
@@ -379,34 +360,23 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     });
                 }
 
-                return Err(ExtractionSafetyError::UnsafeFileType {
-                    archive_path: entry.archive_path.clone(),
-                });
+                return Err(ExtractionSafetyError::UnsafeFileType { archive_path: entry.archive_path.clone() });
             }
             ExtractionEntryKind::File | ExtractionEntryKind::Directory => None,
         };
 
         self.reject_collision(&normalized_archive_path)?;
 
-        let plan = self.plan_destination_write(
-            entry,
-            normalized_archive_path,
-            destination_path,
-            link_target_path,
-        )?;
+        let plan = self.plan_destination_write(entry, normalized_archive_path, destination_path, link_target_path)?;
 
         match plan {
             PlannedDestination::Write(plan) => {
                 self.reserve_expanded_size(entry)?;
                 Ok(plan.into_decision())
             }
-            PlannedDestination::Skip {
-                normalized_archive_path,
-                reason,
-            } => Ok(ExtractionDecision::Skip {
-                normalized_archive_path,
-                reason,
-            }),
+            PlannedDestination::Skip { normalized_archive_path, reason } => {
+                Ok(ExtractionDecision::Skip { normalized_archive_path, reason })
+            }
         }
     }
 
@@ -422,9 +392,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         if let Ok(metadata) = destination_metadata {
             match self.policy.overwrite {
                 OverwritePolicy::Refuse => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory)
-                        && metadata.file_type().is_dir()
-                    {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
                         return Ok(PlannedWrite {
                             normalized_archive_path,
                             destination_path,
@@ -439,13 +407,11 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     });
                 }
                 OverwritePolicy::Replace => {
-                    replace_existing = !matches!(entry.kind, ExtractionEntryKind::Directory)
-                        || !metadata.file_type().is_dir();
+                    replace_existing =
+                        !matches!(entry.kind, ExtractionEntryKind::Directory) || !metadata.file_type().is_dir();
                 }
                 OverwritePolicy::Rename => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory)
-                        && metadata.file_type().is_dir()
-                    {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
                         return Ok(PlannedWrite {
                             normalized_archive_path,
                             destination_path,
@@ -457,9 +423,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     destination_path = next_available_destination_path(&destination_path);
                 }
                 OverwritePolicy::Ask => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory)
-                        && metadata.file_type().is_dir()
-                    {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
                         return Ok(PlannedWrite {
                             normalized_archive_path,
                             destination_path,
@@ -501,13 +465,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             });
         }
 
-        Ok(PlannedWrite {
-            normalized_archive_path,
-            destination_path,
-            link_target_path,
-            replace_existing,
-        }
-        .into())
+        Ok(PlannedWrite { normalized_archive_path, destination_path, link_target_path, replace_existing }.into())
     }
 
     fn resolve_overwrite_conflict(
@@ -527,16 +485,10 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         }))
     }
 
-    fn reject_collision(
-        &mut self,
-        normalized_archive_path: &str,
-    ) -> Result<(), ExtractionSafetyError> {
+    fn reject_collision(&mut self, normalized_archive_path: &str) -> Result<(), ExtractionSafetyError> {
         let collision_key = case_collision_key(normalized_archive_path);
 
-        if let Some(previous_archive_path) = self
-            .seen_paths
-            .insert(collision_key, normalized_archive_path.to_owned())
-        {
+        if let Some(previous_archive_path) = self.seen_paths.insert(collision_key, normalized_archive_path.to_owned()) {
             return Err(ExtractionSafetyError::NameCollision {
                 archive_path: normalized_archive_path.to_owned(),
                 previous_archive_path,
@@ -546,30 +498,20 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         Ok(())
     }
 
-    fn validate_symlink_target(
-        &self,
-        destination_path: &Path,
-        target: &Path,
-    ) -> Result<(), ExtractionSafetyError> {
+    fn validate_symlink_target(&self, destination_path: &Path, target: &Path) -> Result<(), ExtractionSafetyError> {
         let target_text = target.to_string_lossy();
         reject_raw_path_hazards(&target_text)?;
         if target.is_absolute() {
-            return Err(ExtractionSafetyError::LinkTargetEscapes {
-                target: target.to_path_buf(),
-            });
+            return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
         }
 
         let Some(parent) = destination_path.parent() else {
-            return Err(ExtractionSafetyError::LinkTargetEscapes {
-                target: target.to_path_buf(),
-            });
+            return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
         };
         let resolved_target = lexically_normalize(&parent.join(target));
 
         if !resolved_target.starts_with(&self.destination_root) {
-            return Err(ExtractionSafetyError::LinkTargetEscapes {
-                target: target.to_path_buf(),
-            });
+            return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
         }
 
         Ok(())
@@ -577,17 +519,11 @@ impl<'a> ExtractionSafetyPlanner<'a> {
 
     fn resolve_hardlink_target(&self, target: &Path) -> Result<PathBuf, ExtractionSafetyError> {
         let target_text = target.to_string_lossy();
-        let mut normalized_target = normalize_archive_path(&target_text).map_err(|_| {
-            ExtractionSafetyError::LinkTargetEscapes {
-                target: target.to_path_buf(),
-            }
-        })?;
+        let mut normalized_target = normalize_archive_path(&target_text)
+            .map_err(|_| ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() })?;
         if self.policy.strip_components > 0 {
-            normalized_target =
-                strip_archive_components(&normalized_target, self.policy.strip_components)
-                    .ok_or_else(|| ExtractionSafetyError::LinkTargetEscapes {
-                        target: target.to_path_buf(),
-                    })?;
+            normalized_target = strip_archive_components(&normalized_target, self.policy.strip_components)
+                .ok_or_else(|| ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() })?;
         }
 
         let target_path = lexically_normalize(&self.destination_root.join(normalized_target));
@@ -595,15 +531,10 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             return Ok(target_path);
         }
 
-        Err(ExtractionSafetyError::LinkTargetEscapes {
-            target: target.to_path_buf(),
-        })
+        Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() })
     }
 
-    fn reserve_expanded_size(
-        &mut self,
-        entry: &ExtractionEntry,
-    ) -> Result<(), ExtractionSafetyError> {
+    fn reserve_expanded_size(&mut self, entry: &ExtractionEntry) -> Result<(), ExtractionSafetyError> {
         if !matches!(entry.kind, ExtractionEntryKind::File) {
             return Ok(());
         }
@@ -612,18 +543,11 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         };
 
         if let Some(ratio_limit) = self.policy.limits.max_entry_expansion_ratio {
-            reject_expansion_ratio(
-                &entry.archive_path,
-                uncompressed_size,
-                entry.compressed_size,
-                ratio_limit,
-            )?;
+            reject_expansion_ratio(&entry.archive_path, uncompressed_size, entry.compressed_size, ratio_limit)?;
         }
 
         if let Some(total_limit) = self.policy.limits.max_expanded_bytes {
-            let attempted = self
-                .planned_expanded_bytes
-                .saturating_add(uncompressed_size);
+            let attempted = self.planned_expanded_bytes.saturating_add(uncompressed_size);
             if attempted > total_limit {
                 return Err(ExtractionSafetyError::ExpandedSizeLimitExceeded {
                     archive_path: entry.archive_path.clone(),
@@ -683,37 +607,17 @@ pub enum ExtractionSafetyError {
     /// Archive path attempts to traverse above destination.
     ParentTraversal { path: String },
     /// Normalized destination escapes the extraction root.
-    DestinationEscape {
-        archive_path: String,
-        destination_root: PathBuf,
-        destination_path: PathBuf,
-    },
+    DestinationEscape { archive_path: String, destination_root: PathBuf, destination_path: PathBuf },
     /// Entry collides with a previous archive path.
-    NameCollision {
-        archive_path: String,
-        previous_archive_path: String,
-    },
+    NameCollision { archive_path: String, previous_archive_path: String },
     /// Entry would overwrite an existing destination path.
-    DestinationExists {
-        archive_path: String,
-        destination_path: PathBuf,
-    },
+    DestinationExists { archive_path: String, destination_path: PathBuf },
     /// Interactive overwrite was requested without a resolver.
-    OverwritePromptUnavailable {
-        archive_path: String,
-        destination_path: PathBuf,
-    },
+    OverwritePromptUnavailable { archive_path: String, destination_path: PathBuf },
     /// User aborted extraction from an overwrite prompt.
-    OverwriteAborted {
-        archive_path: String,
-        destination_path: PathBuf,
-    },
+    OverwriteAborted { archive_path: String, destination_path: PathBuf },
     /// Destination existence could not be checked safely.
-    DestinationProbe {
-        archive_path: String,
-        destination_path: PathBuf,
-        message: String,
-    },
+    DestinationProbe { archive_path: String, destination_path: PathBuf, message: String },
     /// Entry type is unsafe by default.
     UnsafeFileType { archive_path: String },
     /// Link target resolves outside the extraction root.
@@ -752,83 +656,47 @@ impl fmt::Display for ExtractionSafetyError {
             Self::ParentTraversal { path } => {
                 write!(f, "archive path attempts parent traversal: {path}")
             }
-            Self::DestinationEscape {
-                archive_path,
-                destination_root,
-                destination_path,
-            } => write!(
+            Self::DestinationEscape { archive_path, destination_root, destination_path } => write!(
                 f,
                 "archive path {archive_path} resolves outside {} to {}",
                 destination_root.display(),
                 destination_path.display()
             ),
-            Self::NameCollision {
-                archive_path,
-                previous_archive_path,
-            } => write!(
-                f,
-                "archive path {archive_path} collides with previous entry {previous_archive_path}"
-            ),
-            Self::DestinationExists {
-                archive_path,
-                destination_path,
-            } => write!(
-                f,
-                "archive path {archive_path} would overwrite {}",
-                destination_path.display()
-            ),
-            Self::OverwritePromptUnavailable {
-                archive_path,
-                destination_path,
-            } => write!(
+            Self::NameCollision { archive_path, previous_archive_path } => {
+                write!(f, "archive path {archive_path} collides with previous entry {previous_archive_path}")
+            }
+            Self::DestinationExists { archive_path, destination_path } => {
+                write!(f, "archive path {archive_path} would overwrite {}", destination_path.display())
+            }
+            Self::OverwritePromptUnavailable { archive_path, destination_path } => write!(
                 f,
                 "archive path {archive_path} requires an overwrite decision for {}",
                 destination_path.display()
             ),
-            Self::OverwriteAborted {
-                archive_path,
-                destination_path,
-            } => write!(
+            Self::OverwriteAborted { archive_path, destination_path } => write!(
                 f,
                 "overwrite prompt aborted while handling archive path {archive_path} for {}",
                 destination_path.display()
             ),
-            Self::DestinationProbe {
-                archive_path,
-                destination_path,
-                message,
-            } => write!(
-                f,
-                "archive path {archive_path} could not check {}: {message}",
-                destination_path.display()
-            ),
+            Self::DestinationProbe { archive_path, destination_path, message } => {
+                write!(f, "archive path {archive_path} could not check {}: {message}", destination_path.display())
+            }
             Self::UnsafeFileType { archive_path } => {
                 write!(f, "archive path {archive_path} has an unsafe file type")
             }
             Self::LinkTargetEscapes { target } => {
-                write!(
-                    f,
-                    "link target escapes extraction root: {}",
-                    target.display()
-                )
+                write!(f, "link target escapes extraction root: {}", target.display())
             }
-            Self::ExpandedSizeLimitExceeded {
-                archive_path,
-                attempted_bytes,
-                limit_bytes,
-            } => write!(
+            Self::ExpandedSizeLimitExceeded { archive_path, attempted_bytes, limit_bytes } => write!(
                 f,
                 "archive path {archive_path} would expand extraction to {attempted_bytes} bytes, exceeding the {limit_bytes} byte limit"
             ),
-            Self::ExpansionRatioLimitExceeded {
-                archive_path,
-                uncompressed_size,
-                compressed_size,
-                ratio_limit,
-            } => write!(
-                f,
-                "archive path {archive_path} expands from {compressed_size} to {uncompressed_size} bytes, exceeding the {ratio_limit}:1 ratio limit"
-            ),
+            Self::ExpansionRatioLimitExceeded { archive_path, uncompressed_size, compressed_size, ratio_limit } => {
+                write!(
+                    f,
+                    "archive path {archive_path} expands from {compressed_size} to {uncompressed_size} bytes, exceeding the {ratio_limit}:1 ratio limit"
+                )
+            }
         }
     }
 }
@@ -851,9 +719,7 @@ pub fn normalize_archive_path(raw_path: &str) -> Result<String, ExtractionSafety
         match part {
             "" | "." => {}
             ".." => {
-                return Err(ExtractionSafetyError::ParentTraversal {
-                    path: raw_path.to_owned(),
-                });
+                return Err(ExtractionSafetyError::ParentTraversal { path: raw_path.to_owned() });
             }
             safe_part => parts.push(safe_part),
         }
@@ -868,22 +734,16 @@ pub fn normalize_archive_path(raw_path: &str) -> Result<String, ExtractionSafety
 
 fn reject_raw_path_hazards(raw_path: &str) -> Result<(), ExtractionSafetyError> {
     if raw_path.contains('\0') {
-        return Err(ExtractionSafetyError::NulByte {
-            path: raw_path.to_owned(),
-        });
+        return Err(ExtractionSafetyError::NulByte { path: raw_path.to_owned() });
     }
 
     let slash_path = raw_path.replace('\\', "/");
     if has_windows_prefix(&slash_path) {
-        return Err(ExtractionSafetyError::WindowsPrefix {
-            path: raw_path.to_owned(),
-        });
+        return Err(ExtractionSafetyError::WindowsPrefix { path: raw_path.to_owned() });
     }
 
     if slash_path.starts_with('/') {
-        return Err(ExtractionSafetyError::AbsolutePath {
-            path: raw_path.to_owned(),
-        });
+        return Err(ExtractionSafetyError::AbsolutePath { path: raw_path.to_owned() });
     }
 
     Ok(())
@@ -915,13 +775,8 @@ fn ensure_inside_destination(
 }
 
 fn archive_path_selected(path: &str, includes: &[String], excludes: &[String]) -> bool {
-    let matches_include = includes.is_empty()
-        || includes
-            .iter()
-            .any(|pattern| archive_pattern_matches(pattern, path));
-    let matches_exclude = excludes
-        .iter()
-        .any(|pattern| archive_pattern_matches(pattern, path));
+    let matches_include = includes.is_empty() || includes.iter().any(|pattern| archive_pattern_matches(pattern, path));
+    let matches_exclude = excludes.iter().any(|pattern| archive_pattern_matches(pattern, path));
 
     matches_include && !matches_exclude
 }
@@ -937,8 +792,7 @@ fn wildcard_matches(pattern: &[u8], value: &[u8]) -> bool {
         return value.is_empty();
     }
     if pattern[0] == b'*' {
-        return wildcard_matches(&pattern[1..], value)
-            || (!value.is_empty() && wildcard_matches(pattern, &value[1..]));
+        return wildcard_matches(&pattern[1..], value) || (!value.is_empty() && wildcard_matches(pattern, &value[1..]));
     }
     if !value.is_empty() && (pattern[0] == b'?' || pattern[0] == value[0]) {
         return wildcard_matches(&pattern[1..], &value[1..]);
@@ -948,11 +802,7 @@ fn wildcard_matches(pattern: &[u8], value: &[u8]) -> bool {
 
 fn strip_archive_components(path: &str, count: usize) -> Option<String> {
     let components = path.split('/').skip(count).collect::<Vec<_>>();
-    if components.is_empty() {
-        None
-    } else {
-        Some(components.join("/"))
-    }
+    if components.is_empty() { None } else { Some(components.join("/")) }
 }
 
 fn next_available_destination_path(path: &Path) -> PathBuf {
@@ -1039,10 +889,10 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits,
-        ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteConflict,
-        OverwriteDecision, OverwritePolicy, OverwriteResolver, UnsafeFilePolicy,
-        deferred_link_dependency_order, normalize_archive_path, prepare_destination_root,
+        ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits, ExtractionPolicy,
+        ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteConflict, OverwriteDecision, OverwritePolicy,
+        OverwriteResolver, UnsafeFilePolicy, deferred_link_dependency_order, normalize_archive_path,
+        prepare_destination_root,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1056,43 +906,24 @@ mod tests {
         let first = temp.path("first");
         let middle = temp.path("middle");
         let last = temp.path("last");
-        let chain = vec![
-            (middle.clone(), first.clone()),
-            (last.clone(), middle.clone()),
-            (target, last.clone()),
-        ];
+        let chain = vec![(middle.clone(), first.clone()), (last.clone(), middle.clone()), (target, last.clone())];
 
-        assert_eq!(
-            deferred_link_dependency_order(&chain).unwrap(),
-            vec![2, 1, 0]
-        );
+        assert_eq!(deferred_link_dependency_order(&chain).unwrap(), vec![2, 1, 0]);
         let cycle = vec![(middle.clone(), first.clone()), (first, middle)];
-        assert_eq!(
-            deferred_link_dependency_order(&cycle).unwrap_err().kind(),
-            std::io::ErrorKind::InvalidData
-        );
+        assert_eq!(deferred_link_dependency_order(&cycle).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]
     fn normalizes_archive_paths() {
-        assert_eq!(
-            normalize_archive_path("./dir\\file.txt").unwrap(),
-            "dir/file.txt"
-        );
-        assert_eq!(
-            normalize_archive_path("dir//file.txt").unwrap(),
-            "dir/file.txt"
-        );
+        assert_eq!(normalize_archive_path("./dir\\file.txt").unwrap(), "dir/file.txt");
+        assert_eq!(normalize_archive_path("dir//file.txt").unwrap(), "dir/file.txt");
     }
 
     #[test]
     fn rejects_parent_traversal() {
         let error = normalize_archive_path("dir/../../escape.txt").unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::ParentTraversal { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::ParentTraversal { .. }));
     }
 
     #[test]
@@ -1107,21 +938,14 @@ mod tests {
         let drive_error = normalize_archive_path("C:/tmp/file.txt").unwrap_err();
         let unc_error = normalize_archive_path("\\\\server\\share\\file.txt").unwrap_err();
 
-        assert!(matches!(
-            drive_error,
-            ExtractionSafetyError::WindowsPrefix { .. }
-        ));
-        assert!(matches!(
-            unc_error,
-            ExtractionSafetyError::WindowsPrefix { .. }
-        ));
+        assert!(matches!(drive_error, ExtractionSafetyError::WindowsPrefix { .. }));
+        assert!(matches!(unc_error, ExtractionSafetyError::WindowsPrefix { .. }));
     }
 
     #[test]
     fn rejects_duplicate_entries() {
         let temp = TestDir::new("rejects_duplicate_entries");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
         let first = file_entry("dir/file.txt");
         let duplicate = file_entry("dir/file.txt");
 
@@ -1134,15 +958,10 @@ mod tests {
     #[test]
     fn rejects_case_insensitive_collisions() {
         let temp = TestDir::new("rejects_case_insensitive_collisions");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
 
-        planner
-            .validate_entry(&file_entry("dir/README.md"))
-            .unwrap();
-        let error = planner
-            .validate_entry(&file_entry("dir/readme.md"))
-            .unwrap_err();
+        planner.validate_entry(&file_entry("dir/README.md")).unwrap();
+        let error = planner.validate_entry(&file_entry("dir/readme.md")).unwrap_err();
 
         assert!(matches!(error, ExtractionSafetyError::NameCollision { .. }));
     }
@@ -1150,8 +969,7 @@ mod tests {
     #[test]
     fn rejects_unicode_case_insensitive_collisions() {
         let temp = TestDir::new("rejects_unicode_case_insensitive_collisions");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
 
         planner.validate_entry(&file_entry("Über.txt")).unwrap();
         let error = planner.validate_entry(&file_entry("über.txt")).unwrap_err();
@@ -1163,25 +981,18 @@ mod tests {
     fn refuses_overwrite_when_destination_exists() {
         let temp = TestDir::new("refuses_overwrite_when_destination_exists");
         temp.write_file("out/file.txt", b"existing");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
 
         let error = planner.validate_entry(&file_entry("file.txt")).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::DestinationExists { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::DestinationExists { .. }));
     }
 
     #[test]
     fn allows_overwrite_when_policy_replaces() {
         let temp = TestDir::new("allows_overwrite_when_policy_replaces");
         temp.write_file("out/file.txt", b"existing");
-        let policy = ExtractionPolicy {
-            overwrite: OverwritePolicy::Replace,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { overwrite: OverwritePolicy::Replace, ..ExtractionPolicy::default() };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
 
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
@@ -1193,16 +1004,9 @@ mod tests {
     fn asks_overwrite_resolver_for_conflicts() {
         let temp = TestDir::new("asks_overwrite_resolver_for_conflicts");
         temp.write_file("out/file.txt", b"existing");
-        let policy = ExtractionPolicy {
-            overwrite: OverwritePolicy::Ask,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { overwrite: OverwritePolicy::Ask, ..ExtractionPolicy::default() };
         let mut resolver = FixedOverwriteResolver(OverwriteDecision::Skip);
-        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(
-            temp.path("out"),
-            policy,
-            &mut resolver,
-        );
+        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(temp.path("out"), policy, &mut resolver);
 
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
 
@@ -1213,23 +1017,13 @@ mod tests {
     fn ask_overwrite_renames_conflicts_safely() {
         let temp = TestDir::new("ask_overwrite_renames_conflicts_safely");
         temp.write_file("out/file.txt", b"existing");
-        let policy = ExtractionPolicy {
-            overwrite: OverwritePolicy::Ask,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { overwrite: OverwritePolicy::Ask, ..ExtractionPolicy::default() };
         let mut resolver = FixedOverwriteResolver(OverwriteDecision::Rename);
-        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(
-            temp.path("out"),
-            policy,
-            &mut resolver,
-        );
+        let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(temp.path("out"), policy, &mut resolver);
 
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
 
-        let ExtractionDecision::Write {
-            destination_path, ..
-        } = decision
-        else {
+        let ExtractionDecision::Write { destination_path, .. } = decision else {
             panic!("expected renamed write decision");
         };
         assert_eq!(destination_path, temp.path("out/file 2.txt"));
@@ -1238,35 +1032,26 @@ mod tests {
     #[test]
     fn rejects_symlink_escape() {
         let temp = TestDir::new("rejects_symlink_escape");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
         let entry = ExtractionEntry {
             archive_path: "dir/link".to_owned(),
-            kind: ExtractionEntryKind::Symlink {
-                target: PathBuf::from("../../outside"),
-            },
+            kind: ExtractionEntryKind::Symlink { target: PathBuf::from("../../outside") },
             uncompressed_size: None,
             compressed_size: None,
         };
 
         let error = planner.validate_entry(&entry).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::LinkTargetEscapes { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::LinkTargetEscapes { .. }));
     }
 
     #[test]
     fn allows_symlink_inside_destination() {
         let temp = TestDir::new("allows_symlink_inside_destination");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
         let entry = ExtractionEntry {
             archive_path: "dir/link".to_owned(),
-            kind: ExtractionEntryKind::Symlink {
-                target: PathBuf::from("../target.txt"),
-            },
+            kind: ExtractionEntryKind::Symlink { target: PathBuf::from("../target.txt") },
             uncompressed_size: None,
             compressed_size: None,
         };
@@ -1279,16 +1064,11 @@ mod tests {
     #[test]
     fn skips_symlink_when_ignore_symlinks_enabled() {
         let temp = TestDir::new("skips_symlink_when_ignore_symlinks_enabled");
-        let policy = ExtractionPolicy {
-            ignore_symlinks: true,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { ignore_symlinks: true, ..ExtractionPolicy::default() };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
         let entry = ExtractionEntry {
             archive_path: "dir/link".to_owned(),
-            kind: ExtractionEntryKind::Symlink {
-                target: PathBuf::from("../target.txt"),
-            },
+            kind: ExtractionEntryKind::Symlink { target: PathBuf::from("../target.txt") },
             uncompressed_size: None,
             compressed_size: None,
         };
@@ -1301,27 +1081,18 @@ mod tests {
     #[test]
     fn resolves_hardlink_target_as_archive_member_path_after_strip() {
         let temp = TestDir::new("resolves_hardlink_target_as_archive_member_path_after_strip");
-        let policy = ExtractionPolicy {
-            strip_components: 1,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { strip_components: 1, ..ExtractionPolicy::default() };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
         let entry = ExtractionEntry {
             archive_path: "project/dir/link.txt".to_owned(),
-            kind: ExtractionEntryKind::Hardlink {
-                target: PathBuf::from("project/dir/target.txt"),
-            },
+            kind: ExtractionEntryKind::Hardlink { target: PathBuf::from("project/dir/target.txt") },
             uncompressed_size: None,
             compressed_size: None,
         };
 
         let decision = planner.validate_entry(&entry).unwrap();
 
-        let ExtractionDecision::Write {
-            destination_path,
-            link_target_path: Some(link_target_path),
-            ..
-        } = decision
+        let ExtractionDecision::Write { destination_path, link_target_path: Some(link_target_path), .. } = decision
         else {
             panic!("expected resolved hardlink write decision");
         };
@@ -1359,77 +1130,52 @@ mod tests {
     #[test]
     fn rejects_hardlink_escape() {
         let temp = TestDir::new("rejects_hardlink_escape");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
         let entry = ExtractionEntry {
             archive_path: "dir/link".to_owned(),
-            kind: ExtractionEntryKind::Hardlink {
-                target: PathBuf::from("../../outside"),
-            },
+            kind: ExtractionEntryKind::Hardlink { target: PathBuf::from("../../outside") },
             uncompressed_size: None,
             compressed_size: None,
         };
 
         let error = planner.validate_entry(&entry).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::LinkTargetEscapes { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::LinkTargetEscapes { .. }));
     }
 
     #[test]
     fn rejects_extraction_when_total_expanded_size_exceeds_limit() {
         let temp = TestDir::new("rejects_extraction_when_total_expanded_size_exceeds_limit");
         let policy = ExtractionPolicy {
-            limits: ExtractionLimits {
-                max_expanded_bytes: Some(5),
-                max_entry_expansion_ratio: None,
-            },
+            limits: ExtractionLimits { max_expanded_bytes: Some(5), max_entry_expansion_ratio: None },
             ..ExtractionPolicy::default()
         };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
 
-        planner
-            .validate_entry(&sized_file_entry("one.bin", 3, Some(3)))
-            .unwrap();
-        let error = planner
-            .validate_entry(&sized_file_entry("two.bin", 3, Some(3)))
-            .unwrap_err();
+        planner.validate_entry(&sized_file_entry("one.bin", 3, Some(3))).unwrap();
+        let error = planner.validate_entry(&sized_file_entry("two.bin", 3, Some(3))).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::ExpandedSizeLimitExceeded { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::ExpandedSizeLimitExceeded { .. }));
     }
 
     #[test]
     fn rejects_entry_when_expansion_ratio_exceeds_limit() {
         let temp = TestDir::new("rejects_entry_when_expansion_ratio_exceeds_limit");
         let policy = ExtractionPolicy {
-            limits: ExtractionLimits {
-                max_expanded_bytes: None,
-                max_entry_expansion_ratio: Some(10),
-            },
+            limits: ExtractionLimits { max_expanded_bytes: None, max_entry_expansion_ratio: Some(10) },
             ..ExtractionPolicy::default()
         };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
 
-        let error = planner
-            .validate_entry(&sized_file_entry("bomb.bin", 100, Some(1)))
-            .unwrap_err();
+        let error = planner.validate_entry(&sized_file_entry("bomb.bin", 100, Some(1))).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::ExpansionRatioLimitExceeded { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::ExpansionRatioLimitExceeded { .. }));
     }
 
     #[test]
     fn rejects_unsafe_file_types_by_default() {
         let temp = TestDir::new("rejects_unsafe_file_types_by_default");
-        let mut planner =
-            ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
         let entry = ExtractionEntry {
             archive_path: "dev/null".to_owned(),
             kind: ExtractionEntryKind::Device,
@@ -1439,19 +1185,13 @@ mod tests {
 
         let error = planner.validate_entry(&entry).unwrap_err();
 
-        assert!(matches!(
-            error,
-            ExtractionSafetyError::UnsafeFileType { .. }
-        ));
+        assert!(matches!(error, ExtractionSafetyError::UnsafeFileType { .. }));
     }
 
     #[test]
     fn skips_unsafe_file_types_when_policy_allows_skip() {
         let temp = TestDir::new("skips_unsafe_file_types_when_policy_allows_skip");
-        let policy = ExtractionPolicy {
-            unsafe_file: UnsafeFilePolicy::Skip,
-            ..ExtractionPolicy::default()
-        };
+        let policy = ExtractionPolicy { unsafe_file: UnsafeFilePolicy::Skip, ..ExtractionPolicy::default() };
         let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
         let entry = ExtractionEntry {
             archive_path: "dev/null".to_owned(),
@@ -1469,11 +1209,7 @@ mod tests {
         sized_file_entry(archive_path, 1, Some(1))
     }
 
-    fn sized_file_entry(
-        archive_path: &str,
-        uncompressed_size: u64,
-        compressed_size: Option<u64>,
-    ) -> ExtractionEntry {
+    fn sized_file_entry(archive_path: &str, uncompressed_size: u64, compressed_size: Option<u64>) -> ExtractionEntry {
         ExtractionEntry {
             archive_path: archive_path.to_owned(),
             kind: ExtractionEntryKind::File,
@@ -1497,12 +1233,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
 
             Self { root }

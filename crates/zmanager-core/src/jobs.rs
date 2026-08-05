@@ -1,7 +1,5 @@
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-use crate::apple_archive_backend::{
-    self, AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveError,
-};
+use crate::apple_archive_backend::{self, AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveError};
 use crate::manifest::{PlanOptions, plan_archive, plan_archives};
 use crate::safety::ExtractionPolicy;
 use crate::sevenz_backend::{SevenZCreateOptions, SevenZCreateReport};
@@ -259,20 +257,9 @@ impl JobProgressState {
         }
     }
 
-    fn record_paths(
-        &mut self,
-        current: Option<&str>,
-        recent: &[String],
-        identities: &[ProgressPathIdentity],
-    ) {
+    fn record_paths(&mut self, current: Option<&str>, recent: &[String], identities: &[ProgressPathIdentity]) {
         for (index, path) in recent.iter().enumerate() {
-            self.record_path_with_identity(
-                path,
-                identities
-                    .get(index)
-                    .copied()
-                    .unwrap_or_else(|| path_identity(path)),
-            );
+            self.record_path_with_identity(path, identities.get(index).copied().unwrap_or_else(|| path_identity(path)));
         }
         if let Some(path) = current {
             let identity = recent
@@ -291,11 +278,7 @@ impl JobProgressState {
 
     fn record_path_with_identity(&mut self, path: &str, identity: ProgressPathIdentity) {
         let path = truncate_utf8(path, PROGRESS_PATH_DISPLAY_BYTES_LIMIT);
-        if let Some(index) = self
-            .recent_path_identities
-            .iter()
-            .position(|candidate| *candidate == identity)
-        {
+        if let Some(index) = self.recent_path_identities.iter().position(|candidate| *candidate == identity) {
             self.recent_paths.remove(index);
             self.recent_path_identities.remove(index);
         }
@@ -305,9 +288,7 @@ impl JobProgressState {
             self.recent_paths.remove(0);
             self.recent_path_identities.remove(0);
         }
-        while self.recent_paths.iter().map(String::len).sum::<usize>()
-            > PROGRESS_RECENT_PATH_BYTES_LIMIT
-        {
+        while self.recent_paths.iter().map(String::len).sum::<usize>() > PROGRESS_RECENT_PATH_BYTES_LIMIT {
             self.recent_paths.remove(0);
             self.recent_path_identities.remove(0);
         }
@@ -334,8 +315,7 @@ pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const PROGRESS_MIN_BYTE_STEP: u64 = 4 * 1024 * 1024;
 pub const PROGRESS_RECENT_PATH_LIMIT: usize = 10;
 pub const PROGRESS_RECENT_PATH_BYTES_LIMIT: usize = 4 * 1024;
-pub const PROGRESS_PATH_DISPLAY_BYTES_LIMIT: usize =
-    PROGRESS_RECENT_PATH_BYTES_LIMIT / PROGRESS_RECENT_PATH_LIMIT;
+pub const PROGRESS_PATH_DISPLAY_BYTES_LIMIT: usize = PROGRESS_RECENT_PATH_BYTES_LIMIT / PROGRESS_RECENT_PATH_LIMIT;
 pub(crate) const PROGRESS_ENTRY_STEP: u64 = 128;
 
 pub(crate) struct ProgressBatch {
@@ -395,12 +375,7 @@ impl ProgressCoalescer {
         self.record_activity(path, bytes, 0)
     }
 
-    pub(crate) fn record_activity(
-        &mut self,
-        path: Option<&str>,
-        bytes: u64,
-        entries: u64,
-    ) -> Option<ProgressBatch> {
+    pub(crate) fn record_activity(&mut self, path: Option<&str>, bytes: u64, entries: u64) -> Option<ProgressBatch> {
         self.record_activity_at(path, bytes, entries, Instant::now())
     }
 
@@ -423,15 +398,9 @@ impl ProgressCoalescer {
             if self.latest_path.as_deref() != Some(display_path.as_str()) {
                 self.latest_path = Some(display_path.clone());
             }
-            if self
-                .recent_paths
-                .back()
-                .is_none_or(|(recent_identity, _)| *recent_identity != identity)
-            {
-                if let Some(position) = self
-                    .recent_paths
-                    .iter()
-                    .position(|(recent_identity, _)| *recent_identity == identity)
+            if self.recent_paths.back().is_none_or(|(recent_identity, _)| *recent_identity != identity) {
+                if let Some(position) =
+                    self.recent_paths.iter().position(|(recent_identity, _)| *recent_identity == identity)
                 {
                     self.recent_paths.remove(position);
                 }
@@ -439,11 +408,7 @@ impl ProgressCoalescer {
                 if self.recent_paths.len() > PROGRESS_RECENT_PATH_LIMIT {
                     self.recent_paths.pop_front();
                 }
-                while self
-                    .recent_paths
-                    .iter()
-                    .map(|(_, path)| path.len())
-                    .sum::<usize>()
+                while self.recent_paths.iter().map(|(_, path)| path.len()).sum::<usize>()
                     > PROGRESS_RECENT_PATH_BYTES_LIMIT
                 {
                     self.recent_paths.pop_front();
@@ -477,11 +442,7 @@ impl ProgressCoalescer {
         self.last_emitted = now;
         Some(ProgressBatch {
             path: self.latest_path.take(),
-            recent_path_identities: self
-                .recent_paths
-                .iter()
-                .map(|(identity, _)| *identity)
-                .collect(),
+            recent_path_identities: self.recent_paths.iter().map(|(identity, _)| *identity).collect(),
             recent_paths: self.recent_paths.drain(..).map(|(_, path)| path).collect(),
             bytes: std::mem::take(&mut self.pending_bytes),
             entries: std::mem::take(&mut self.pending_entries),
@@ -600,9 +561,7 @@ impl<'a> JobContext<'a> {
 
     /// Emits a warning event.
     pub fn warning(&mut self, message: impl Into<String>) {
-        self.emit(JobEvent::Warning {
-            message: message.into(),
-        });
+        self.emit(JobEvent::Warning { message: message.into() });
     }
 
     /// Emits a bytes-processed event and updates cumulative progress.
@@ -641,22 +600,9 @@ impl<'a> JobContext<'a> {
     }
 
     /// Emits phase-scoped byte progress and updates its cumulative counter.
-    pub fn phase_bytes_processed(
-        &mut self,
-        phase: JobPhase,
-        path: Option<&str>,
-        bytes: u64,
-        total_bytes: Option<u64>,
-    ) {
+    pub fn phase_bytes_processed(&mut self, phase: JobPhase, path: Option<&str>, bytes: u64, total_bytes: Option<u64>) {
         let recent_paths = path.into_iter().map(ToOwned::to_owned).collect();
-        self.phase_bytes_processed_with_recent_paths(
-            phase,
-            path,
-            recent_paths,
-            bytes,
-            total_bytes,
-            false,
-        );
+        self.phase_bytes_processed_with_recent_paths(phase, path, recent_paths, bytes, total_bytes, false);
     }
 
     /// Emits phase-scoped byte progress with a capped recent-path activity list.
@@ -669,10 +615,7 @@ impl<'a> JobContext<'a> {
         total_bytes: Option<u64>,
         recent_paths_truncated: bool,
     ) {
-        let recent_path_identities = recent_paths
-            .iter()
-            .map(|path| path_identity(path))
-            .collect();
+        let recent_path_identities = recent_paths.iter().map(|path| path_identity(path)).collect();
         self.phase_bytes_processed_with_path_identities(
             phase,
             path,
@@ -718,11 +661,7 @@ impl<'a> JobContext<'a> {
     ///
     /// Returns [`JobCancelled`] when the shared token has been cancelled.
     pub fn check_cancelled(&self) -> Result<(), JobCancelled> {
-        if self.token.is_cancelled() {
-            Err(JobCancelled)
-        } else {
-            Ok(())
-        }
+        if self.token.is_cancelled() { Err(JobCancelled) } else { Ok(()) }
     }
 
     /// Returns a clone of the cancellation token for reader adapters that
@@ -753,27 +692,14 @@ pub fn run_zip_create_job(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = ZipBackendError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::ZipCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::ZipCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::ZipCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::ZipCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = zip_backend::create_zip_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result = zip_backend::create_zip_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_zip_create_result(result, sink)
 }
@@ -827,27 +753,14 @@ pub fn run_zip_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = ZipBackendError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::ZipCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::ZipCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::ZipCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::ZipCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = zip_backend::create_zip_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result = zip_backend::create_zip_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_zip_create_result(result, sink)
 }
@@ -922,18 +835,10 @@ pub fn run_zip_extract_job_with_password_and_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
-    sink.emit(JobEvent::Started {
-        kind: JobKind::ZipExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::ZipExtract, total_bytes: None });
     let mut context = JobContext::new(token, sink);
-    let result = zip_backend::extract_zip_with_context_and_password(
-        archive_path,
-        destination,
-        policy,
-        password,
-        &mut context,
-    );
+    let result =
+        zip_backend::extract_zip_with_context_and_password(archive_path, destination, policy, password, &mut context);
     context.flush_progress();
     finish_zip_extract_result(result, sink)
 }
@@ -953,14 +858,7 @@ pub fn run_tar_zst_create_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tar_zst_backend::TarZstdCreateReport, TarZstdError> {
-    run_tar_zst_create_job_with_plan_options(
-        source,
-        destination,
-        options,
-        &PlanOptions::default(),
-        token,
-        sink,
-    )
+    run_tar_zst_create_job_with_plan_options(source, destination, options, &PlanOptions::default(), token, sink)
 }
 
 /// Runs the clean source `.tar.zst` create profile and emits lifecycle/progress
@@ -979,14 +877,7 @@ pub fn run_clean_source_tar_zst_create_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tar_zst_backend::TarZstdCreateReport, TarZstdError> {
-    run_tar_zst_create_job_with_plan_options(
-        source,
-        destination,
-        options,
-        &PlanOptions::clean_source(),
-        token,
-        sink,
-    )
+    run_tar_zst_create_job_with_plan_options(source, destination, options, &PlanOptions::clean_source(), token, sink)
 }
 
 /// Runs the clean source `.tar.zst` create profile for multiple source roots
@@ -1053,27 +944,15 @@ fn run_tar_zst_create_job_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = TarZstdError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::TarZstdCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::TarZstdCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TarZstdCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TarZstdCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = tar_zst_backend::create_tar_zst_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result =
+        tar_zst_backend::create_tar_zst_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_tar_zst_create_result(result, sink)
 }
@@ -1099,27 +978,15 @@ pub fn run_tar_zst_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = TarZstdError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::TarZstdCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::TarZstdCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TarZstdCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TarZstdCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = tar_zst_backend::create_tar_zst_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result =
+        tar_zst_backend::create_tar_zst_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_tar_zst_create_result(result, sink)
 }
@@ -1145,27 +1012,15 @@ pub fn run_tar_gz_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = TarGzError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::TarGzCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::TarGzCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TarGzCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TarGzCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = tar_gz_backend::create_tar_gz_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result =
+        tar_gz_backend::create_tar_gz_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_tar_gz_create_result(result, sink)
 }
@@ -1192,20 +1047,12 @@ pub fn run_apple_archive_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = AppleArchiveError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::AppleArchiveCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::AppleArchiveCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::AppleArchiveCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::AppleArchiveCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
     let result = apple_archive_backend::create_apple_archive_from_manifest_with_context(
         &manifest,
@@ -1237,27 +1084,14 @@ pub fn run_7z_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = SevenZError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::SevenZCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::SevenZCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::SevenZCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::SevenZCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = sevenz_backend::create_7z_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result = sevenz_backend::create_7z_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_7z_create_result(result, sink)
 }
@@ -1268,22 +1102,15 @@ fn finish_7z_create_result(
 ) -> Result<SevenZCreateReport, SevenZError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(SevenZError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(SevenZError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1310,27 +1137,14 @@ pub fn run_tzap_create_job_from_sources_with_plan_options(
         Ok(manifest) => manifest,
         Err(error) => {
             let error = TzapError::Plan(error);
-            sink.emit(JobEvent::Started {
-                kind: JobKind::TzapCreate,
-                total_bytes: None,
-            });
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Started { kind: JobKind::TzapCreate, total_bytes: None });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             return Err(error);
         }
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TzapCreate,
-        total_bytes: Some(manifest.total_bytes),
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TzapCreate, total_bytes: Some(manifest.total_bytes) });
     let mut context = JobContext::new_with_progress_total(token, sink, Some(manifest.total_bytes));
-    let result = tzap_backend::create_tzap_from_manifest_with_context(
-        &manifest,
-        destination,
-        options,
-        &mut context,
-    );
+    let result = tzap_backend::create_tzap_from_manifest_with_context(&manifest, destination, options, &mut context);
     context.flush_progress();
     finish_tzap_create_result(result, sink)
 }
@@ -1350,13 +1164,7 @@ pub fn run_tar_zst_extract_job(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
-    run_tar_zst_extract_job_with_policy(
-        archive_path,
-        destination,
-        ExtractionPolicy::default(),
-        token,
-        sink,
-    )
+    run_tar_zst_extract_job_with_policy(archive_path, destination, ExtractionPolicy::default(), token, sink)
 }
 
 /// Runs a TAR.ZST extract job with an explicit extraction policy while emitting
@@ -1377,17 +1185,9 @@ pub fn run_tar_zst_extract_job_with_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<TarZstdExtractReport, TarZstdError> {
     let total_bytes = tar_zst_backend::estimate_tar_zst_uncompressed_size(&archive_path).ok();
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TarZstdExtract,
-        total_bytes,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TarZstdExtract, total_bytes });
     let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
-    let result = tar_zst_backend::extract_tar_zst_with_context(
-        archive_path,
-        destination,
-        policy,
-        &mut context,
-    );
+    let result = tar_zst_backend::extract_tar_zst_with_context(archive_path, destination, policy, &mut context);
     context.flush_progress();
     finish_tar_zst_extract_result(result, sink)
 }
@@ -1410,10 +1210,7 @@ pub fn run_apple_archive_extract_job_with_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<apple_archive_backend::AppleArchiveExtractReport, AppleArchiveError> {
-    sink.emit(JobEvent::Started {
-        kind: JobKind::AppleArchiveExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::AppleArchiveExtract, total_bytes: None });
     let mut context = JobContext::new(token, sink);
     let result = apple_archive_backend::extract_apple_archive_with_context(
         archive_path,
@@ -1445,28 +1242,17 @@ pub fn run_7z_extract_job_with_password_and_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<sevenz_backend::SevenZExtractReport, SevenZError> {
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(SevenZError::Io {
             path: archive_path.as_ref().to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
         });
     }
 
-    sink.emit(JobEvent::Started {
-        kind: JobKind::SevenZExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::SevenZExtract, total_bytes: None });
 
     let mut context = JobContext::new(token, sink);
-    let result = sevenz_backend::extract_7z_with_context(
-        archive_path,
-        destination,
-        password,
-        policy,
-        &mut context,
-    );
+    let result = sevenz_backend::extract_7z_with_context(archive_path, destination, password, policy, &mut context);
     context.flush_progress();
     finish_7z_extract_result(result, sink)
 }
@@ -1490,9 +1276,7 @@ pub fn run_rar_extract_job_with_password_and_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<rar_backend::RarExtractReport, RarBackendError> {
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(RarBackendError::Io {
             path: archive_path.as_ref().to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
@@ -1500,21 +1284,12 @@ pub fn run_rar_extract_job_with_password_and_policy(
     }
 
     let listing = rar_backend::list_rar_with_password(&archive_path, password).ok();
-    let total_bytes = listing
-        .as_ref()
-        .map(|listing| listing.entries.iter().map(|entry| entry.size).sum());
-    sink.emit(JobEvent::Started {
-        kind: JobKind::RarExtract,
-        total_bytes,
-    });
+    let total_bytes = listing.as_ref().map(|listing| listing.entries.iter().map(|entry| entry.size).sum());
+    sink.emit(JobEvent::Started { kind: JobKind::RarExtract, total_bytes });
 
     let mut context = JobContext::new_with_progress_total(token, sink, total_bytes);
     let result = if let Some(listing) = listing {
-        let entries = listing
-            .entries
-            .into_iter()
-            .map(rar_backend::RarListEntry::into_unrar_entry)
-            .collect::<Vec<_>>();
+        let entries = listing.entries.into_iter().map(rar_backend::RarListEntry::into_unrar_entry).collect::<Vec<_>>();
         rar_backend::extract_rar_entries_with_password_and_context(
             archive_path,
             destination,
@@ -1524,13 +1299,7 @@ pub fn run_rar_extract_job_with_password_and_policy(
             &mut context,
         )
     } else {
-        rar_backend::extract_rar_with_password_and_context(
-            archive_path,
-            destination,
-            policy,
-            password,
-            &mut context,
-        )
+        rar_backend::extract_rar_with_password_and_context(archive_path, destination, policy, password, &mut context)
     };
     context.flush_progress();
     finish_rar_extract_result(result, sink)
@@ -1580,19 +1349,14 @@ pub fn run_libarchive_extract_job_with_password_and_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<libarchive_backend::LibarchiveExtractReport, LibarchiveError> {
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(LibarchiveError::Io {
             path: archive_path.as_ref().to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
         });
     }
 
-    sink.emit(JobEvent::Started {
-        kind: JobKind::ArchiveExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::ArchiveExtract, total_bytes: None });
 
     let mut context = JobContext::new(token, sink);
     let result = libarchive_backend::extract_archive_with_password_and_context(
@@ -1625,8 +1389,7 @@ pub fn run_raw_stream_extract_job_with_policy(
     sink: &mut dyn JobEventSink,
 ) -> Result<raw_stream_backend::RawStreamExtractReport, RawStreamError> {
     let archive_path = archive_path.as_ref();
-    let estimated_total_bytes =
-        raw_stream_backend::estimate_raw_stream_uncompressed_size(archive_path, format);
+    let estimated_total_bytes = raw_stream_backend::estimate_raw_stream_uncompressed_size(archive_path, format);
     let source_size = archive_path.metadata().ok().map(|metadata| metadata.len());
     let track_source_progress = estimated_total_bytes.is_none()
         && raw_stream_backend::can_track_source_progress(format)
@@ -1638,14 +1401,9 @@ pub fn run_raw_stream_extract_job_with_policy(
     } else {
         None
     };
-    sink.emit(JobEvent::Started {
-        kind: JobKind::RawStreamExtract,
-        total_bytes,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::RawStreamExtract, total_bytes });
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(RawStreamError::Io {
             path: archive_path.to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::Interrupted, "job cancelled"),
@@ -1710,27 +1468,21 @@ pub fn run_tzap_extract_job_with_password_and_policy_and_restore_options(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TzapExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TzapExtract, total_bytes: None });
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(TzapError::Cancelled);
     }
 
     let mut context = JobContext::new(token, sink);
-    let result =
-        tzap_backend::extract_tzap_with_optional_password_and_context_fast_with_restore_options(
-            archive_path,
-            destination,
-            policy,
-            password,
-            restore_options,
-            &mut context,
-        );
+    let result = tzap_backend::extract_tzap_with_optional_password_and_context_fast_with_restore_options(
+        archive_path,
+        destination,
+        policy,
+        password,
+        restore_options,
+        &mut context,
+    );
     context.flush_progress();
     finish_tzap_extract_result(result, sink)
 }
@@ -1746,14 +1498,9 @@ pub fn run_tzap_extract_job_with_recipient_key_and_policy(
     token: &CancellationToken,
     sink: &mut dyn JobEventSink,
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
-    sink.emit(JobEvent::Started {
-        kind: JobKind::TzapExtract,
-        total_bytes: None,
-    });
+    sink.emit(JobEvent::Started { kind: JobKind::TzapExtract, total_bytes: None });
     if token.is_cancelled() {
-        sink.emit(JobEvent::Cancelled {
-            message: "job cancelled".to_owned(),
-        });
+        sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
         return Err(TzapError::Cancelled);
     }
     let mut context = JobContext::new(token, sink);
@@ -1775,22 +1522,15 @@ fn finish_zip_create_result(
 ) -> Result<ZipCreateReport, ZipBackendError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(ZipBackendError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(ZipBackendError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1802,22 +1542,15 @@ fn finish_tzap_create_result(
 ) -> Result<TzapCreateReport, TzapError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(TzapError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(TzapError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1830,22 +1563,15 @@ fn finish_apple_archive_create_result(
 ) -> Result<AppleArchiveCreateReport, AppleArchiveError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(AppleArchiveError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(AppleArchiveError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1857,22 +1583,15 @@ fn finish_tzap_extract_result(
 ) -> Result<tzap_backend::TzapExtractReport, TzapError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(TzapError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(TzapError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1886,26 +1605,17 @@ fn finish_apple_archive_extract_result(
     match result {
         Ok(report) => {
             for warning in &report.warnings {
-                sink.emit(JobEvent::Warning {
-                    message: warning.clone(),
-                });
+                sink.emit(JobEvent::Warning { message: warning.clone() });
             }
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(AppleArchiveError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(AppleArchiveError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1917,22 +1627,15 @@ fn finish_zip_extract_result(
 ) -> Result<zip_backend::ZipExtractReport, ZipBackendError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(ZipBackendError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(ZipBackendError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1944,22 +1647,15 @@ fn finish_tar_zst_create_result(
 ) -> Result<tar_zst_backend::TarZstdCreateReport, TarZstdError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(TarZstdError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(TarZstdError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1971,22 +1667,15 @@ fn finish_tar_gz_create_result(
 ) -> Result<tar_gz_backend::TarGzCreateReport, TarGzError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(TarGzError::Cancelled(cancelled)) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(TarGzError::Cancelled(cancelled))
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -1998,22 +1687,15 @@ fn finish_tar_zst_extract_result(
 ) -> Result<TarZstdExtractReport, TarZstdError> {
     match result {
         Ok(report) => {
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(TarZstdError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(TarZstdError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -2026,26 +1708,17 @@ fn finish_7z_extract_result(
     match result {
         Ok(report) => {
             for warning in &report.warnings {
-                sink.emit(JobEvent::Warning {
-                    message: warning.clone(),
-                });
+                sink.emit(JobEvent::Warning { message: warning.clone() });
             }
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(SevenZError::Cancelled) => {
-            sink.emit(JobEvent::Cancelled {
-                message: "job cancelled".to_owned(),
-            });
+            sink.emit(JobEvent::Cancelled { message: "job cancelled".to_owned() });
             Err(SevenZError::Cancelled)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -2058,20 +1731,13 @@ fn finish_rar_extract_result(
     match result {
         Ok(report) => {
             for warning in &report.warnings {
-                sink.emit(JobEvent::Warning {
-                    message: warning.clone(),
-                });
+                sink.emit(JobEvent::Warning { message: warning.clone() });
             }
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -2084,20 +1750,13 @@ fn finish_libarchive_extract_result(
     match result {
         Ok(report) => {
             for warning in &report.warnings {
-                sink.emit(JobEvent::Warning {
-                    message: warning.clone(),
-                });
+                sink.emit(JobEvent::Warning { message: warning.clone() });
             }
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -2110,20 +1769,13 @@ fn finish_raw_stream_extract_result(
     match result {
         Ok(report) => {
             for warning in &report.warnings {
-                sink.emit(JobEvent::Warning {
-                    message: warning.clone(),
-                });
+                sink.emit(JobEvent::Warning { message: warning.clone() });
             }
-            sink.emit(JobEvent::Completed {
-                entries: report.written_entries,
-                bytes: report.written_bytes,
-            });
+            sink.emit(JobEvent::Completed { entries: report.written_entries, bytes: report.written_bytes });
             Ok(report)
         }
         Err(error) => {
-            sink.emit(JobEvent::Failed {
-                message: error.to_string(),
-            });
+            sink.emit(JobEvent::Failed { message: error.to_string() });
             Err(error)
         }
     }
@@ -2132,25 +1784,19 @@ fn finish_raw_stream_extract_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        CancellationToken, JobEvent, JobOutcome, JobPhase, JobProgressState,
-        PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
-        run_7z_create_job_from_sources_with_plan_options,
-        run_7z_extract_job_with_password_and_policy, run_clean_source_tar_zst_create_job,
-        run_clean_source_tar_zst_create_job_from_sources,
-        run_libarchive_extract_job_with_password_and_policy,
-        run_raw_stream_extract_job_with_policy, run_tar_zst_create_job,
-        run_tzap_create_job_from_sources_with_plan_options,
-        run_tzap_extract_job_with_password_and_policy, run_zip_create_job,
-        run_zip_create_job_from_sources, run_zip_extract_job,
+        CancellationToken, JobEvent, JobOutcome, JobPhase, JobProgressState, PROGRESS_MIN_BYTE_STEP, ProgressCoalescer,
+        run_7z_create_job_from_sources_with_plan_options, run_7z_extract_job_with_password_and_policy,
+        run_clean_source_tar_zst_create_job, run_clean_source_tar_zst_create_job_from_sources,
+        run_libarchive_extract_job_with_password_and_policy, run_raw_stream_extract_job_with_policy,
+        run_tar_zst_create_job, run_tzap_create_job_from_sources_with_plan_options,
+        run_tzap_extract_job_with_password_and_policy, run_zip_create_job, run_zip_create_job_from_sources,
+        run_zip_extract_job,
     };
 
     #[test]
     fn progress_projection_is_monotonic_bounded_and_terminal_is_immutable() {
         let mut state = JobProgressState::default();
-        state.apply(&JobEvent::Started {
-            kind: super::JobKind::ZipCreate,
-            total_bytes: Some(10),
-        });
+        state.apply(&JobEvent::Started { kind: super::JobKind::ZipCreate, total_bytes: Some(10) });
         for index in 0..20 {
             state.apply(&JobEvent::BytesProcessed {
                 path: Some(format!("file-{index}")),
@@ -2163,14 +1809,9 @@ mod tests {
                 recent_paths_truncated: false,
             });
         }
-        state.apply(&JobEvent::Completed {
-            entries: 20,
-            bytes: 20,
-        });
+        state.apply(&JobEvent::Completed { entries: 20, bytes: 20 });
         let terminal = state.clone();
-        state.apply(&JobEvent::Failed {
-            message: "late".into(),
-        });
+        state.apply(&JobEvent::Failed { message: "late".into() });
         assert_eq!(state, terminal);
         assert_eq!(state.outcome, Some(JobOutcome::Completed));
         assert_eq!(state.processed_bytes, 20);
@@ -2191,10 +1832,7 @@ mod tests {
             total_entries_processed: 0,
             recent_paths_truncated: false,
         });
-        state.apply(&JobEvent::PhaseStarted {
-            phase: JobPhase::PlanningPayload,
-            total_bytes: Some(8),
-        });
+        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::PlanningPayload, total_bytes: Some(8) });
         state.apply(&JobEvent::PhaseBytesProcessed {
             phase: JobPhase::PlanningPayload,
             path: None,
@@ -2205,10 +1843,7 @@ mod tests {
             total_bytes: Some(8),
             recent_paths_truncated: false,
         });
-        state.apply(&JobEvent::PhaseStarted {
-            phase: JobPhase::EmittingPayload,
-            total_bytes: Some(8),
-        });
+        state.apply(&JobEvent::PhaseStarted { phase: JobPhase::EmittingPayload, total_bytes: Some(8) });
         assert_eq!(state.processed_bytes, 5);
         assert_eq!(state.phase_processed_bytes, 0);
     }
@@ -2230,17 +1865,9 @@ mod tests {
     fn progress_coalescer_flushes_entry_and_time_thresholds_without_sleeping() {
         let start = Instant::now();
         let mut entries = ProgressCoalescer::new_at(None, start);
-        assert!(
-            entries
-                .record_activity_at(Some("first"), 0, 1, start)
-                .is_some()
-        );
+        assert!(entries.record_activity_at(Some("first"), 0, 1, start).is_some());
         for index in 0..127 {
-            assert!(
-                entries
-                    .record_activity_at(Some("tiny"), 0, 1, start + Duration::from_millis(index))
-                    .is_none()
-            );
+            assert!(entries.record_activity_at(Some("tiny"), 0, 1, start + Duration::from_millis(index)).is_none());
         }
         let batch = entries
             .record_activity_at(Some("tiny"), 0, 1, start + Duration::from_millis(127))
@@ -2248,39 +1875,19 @@ mod tests {
         assert_eq!(batch.entries, super::PROGRESS_ENTRY_STEP);
 
         let mut timed = ProgressCoalescer::new_at(None, start);
-        assert!(
-            timed
-                .record_activity_at(Some("first"), 1, 0, start)
-                .is_some()
-        );
-        assert!(
-            timed
-                .record_activity_at(Some("pending"), 1, 0, start + Duration::from_millis(999))
-                .is_none()
-        );
-        assert!(
-            timed
-                .record_activity_at(Some("pending"), 1, 0, start + Duration::from_secs(1))
-                .is_some()
-        );
+        assert!(timed.record_activity_at(Some("first"), 1, 0, start).is_some());
+        assert!(timed.record_activity_at(Some("pending"), 1, 0, start + Duration::from_millis(999)).is_none());
+        assert!(timed.record_activity_at(Some("pending"), 1, 0, start + Duration::from_secs(1)).is_some());
     }
 
     #[test]
     fn progress_paths_are_utf8_safe_and_storage_bounded() {
         let mut progress = ProgressCoalescer::new(None);
         let long = "界".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
-        let batch = progress
-            .record(Some(&long), 1)
-            .expect("first activity flushes");
+        let batch = progress.record(Some(&long), 1).expect("first activity flushes");
         assert!(batch.recent_paths_truncated);
         assert!(batch.path.as_ref().unwrap().len() <= super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
-        assert!(
-            batch
-                .path
-                .as_ref()
-                .unwrap()
-                .is_char_boundary(batch.path.as_ref().unwrap().len())
-        );
+        assert!(batch.path.as_ref().unwrap().is_char_boundary(batch.path.as_ref().unwrap().len()));
     }
 
     #[test]
@@ -2289,9 +1896,7 @@ mod tests {
         let common = "x".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT);
         let first = format!("{common}-first");
         let second = format!("{common}-second");
-        let _ = progress
-            .record(Some("warmup"), 1)
-            .expect("first activity flushes");
+        let _ = progress.record(Some("warmup"), 1).expect("first activity flushes");
         assert!(progress.record(Some(&first), 1).is_none());
         let batch = progress.flush().expect("pending activity flushes");
         assert_eq!(batch.recent_paths.len(), 1);
@@ -2299,10 +1904,7 @@ mod tests {
         assert!(progress.record(Some(&second), 1).is_none());
         let batch = progress.flush().expect("distinct long paths flush");
         assert_eq!(batch.recent_paths.len(), 2);
-        assert_ne!(
-            batch.recent_path_identities[0],
-            batch.recent_path_identities[1]
-        );
+        assert_ne!(batch.recent_path_identities[0], batch.recent_path_identities[1]);
         assert!(batch.recent_paths_truncated);
 
         let mut projection = JobProgressState::default();
@@ -2326,28 +1928,17 @@ mod tests {
         {
             let mut sink = |event| events.push(event);
             let mut context = super::JobContext::new(&token, &mut sink);
-            context.bytes_processed(
-                Some(&"界".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT)),
-                1,
-            );
+            context.bytes_processed(Some(&"界".repeat(super::PROGRESS_RECENT_PATH_BYTES_LIMIT)), 1);
             context.bytes_processed(Some("pending"), 1);
             context.phase_started(JobPhase::PlanningPayload, Some(2));
         }
-        assert!(matches!(
-            events.first(),
-            Some(JobEvent::BytesProcessed {
-                recent_paths_truncated: true,
-                ..
-            })
-        ));
+        assert!(matches!(events.first(), Some(JobEvent::BytesProcessed { recent_paths_truncated: true, .. })));
         let pending = events
             .iter()
             .position(|event| matches!(event, JobEvent::BytesProcessed { path: Some(path), .. } if path == "pending"))
             .expect("pending logical progress flushed");
-        let phase = events
-            .iter()
-            .position(|event| matches!(event, JobEvent::PhaseStarted { .. }))
-            .expect("phase started");
+        let phase =
+            events.iter().position(|event| matches!(event, JobEvent::PhaseStarted { .. })).expect("phase started");
         assert!(pending < phase);
     }
 
@@ -2366,22 +1957,12 @@ mod tests {
         assert_eq!(one_percent_batch.bytes, one_percent);
 
         for index in 0..12 {
-            assert!(
-                progress
-                    .record(Some(&format!("recent-{index:02}")), 1)
-                    .is_none()
-            );
+            assert!(progress.record(Some(&format!("recent-{index:02}")), 1).is_none());
         }
         let recent = progress.flush().unwrap();
         assert_eq!(recent.recent_paths.len(), 10);
-        assert_eq!(
-            recent.recent_paths.first().map(String::as_str),
-            Some("recent-02")
-        );
-        assert_eq!(
-            recent.recent_paths.last().map(String::as_str),
-            Some("recent-11")
-        );
+        assert_eq!(recent.recent_paths.first().map(String::as_str), Some("recent-02"));
+        assert_eq!(recent.recent_paths.last().map(String::as_str), Some("recent-11"));
         assert_eq!(recent.path.as_deref(), Some("recent-11"));
     }
 
@@ -2400,13 +1981,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(
-            events.first(),
-            Some(JobEvent::Started {
-                kind: super::JobKind::ZipCreate,
-                ..
-            })
-        ));
+        assert!(matches!(events.first(), Some(JobEvent::Started { kind: super::JobKind::ZipCreate, .. })));
         assert!(events.iter().any(|event| matches!(
             event,
             JobEvent::BytesProcessed {
@@ -2417,13 +1992,7 @@ mod tests {
             } if path == "project/file.txt"
                 && recent_paths == &["project/file.txt".to_owned()]
         )));
-        assert!(matches!(
-            events.last(),
-            Some(JobEvent::Completed {
-                entries: 2,
-                bytes: 5
-            })
-        ));
+        assert!(matches!(events.last(), Some(JobEvent::Completed { entries: 2, bytes: 5 })));
     }
 
     #[test]
@@ -2431,12 +2000,10 @@ mod tests {
         let temp = TestDir::new("zip_extract_job_emits_failure_event");
         let mut events = Vec::new();
 
-        let result = run_zip_extract_job(
-            temp.path("missing.zip"),
-            temp.path("out"),
-            &CancellationToken::new(),
-            &mut |event| events.push(event),
-        );
+        let result =
+            run_zip_extract_job(temp.path("missing.zip"), temp.path("out"), &CancellationToken::new(), &mut |event| {
+                events.push(event)
+            });
 
         assert!(result.is_err());
         assert!(matches!(events.first(), Some(JobEvent::Started { .. })));
@@ -2457,12 +2024,9 @@ mod tests {
         .unwrap();
         let mut events = Vec::new();
 
-        run_zip_extract_job(
-            temp.path("archive.zip"),
-            temp.path("out"),
-            &CancellationToken::new(),
-            &mut |event| events.push(event),
-        )
+        run_zip_extract_job(temp.path("archive.zip"), temp.path("out"), &CancellationToken::new(), &mut |event| {
+            events.push(event)
+        })
         .unwrap();
 
         assert_extract_started_with_unknown_total(&events, super::JobKind::ZipExtract);
@@ -2547,16 +2111,9 @@ mod tests {
 
         assert!(matches!(
             events.first(),
-            Some(JobEvent::Started {
-                kind: super::JobKind::RawStreamExtract,
-                total_bytes: Some(_),
-            })
+            Some(JobEvent::Started { kind: super::JobKind::RawStreamExtract, total_bytes: Some(_) })
         ));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::BytesProcessed { .. }))
-        );
+        assert!(events.iter().any(|event| matches!(event, JobEvent::BytesProcessed { .. })));
     }
 
     #[test]
@@ -2584,11 +2141,7 @@ mod tests {
         .unwrap();
 
         let last_progress = events.iter().rev().find_map(|event| {
-            if let JobEvent::BytesProcessed {
-                total_bytes_processed,
-                ..
-            } = event
-            {
+            if let JobEvent::BytesProcessed { total_bytes_processed, .. } = event {
                 Some(*total_bytes_processed)
             } else {
                 None
@@ -2600,10 +2153,7 @@ mod tests {
 
         assert_eq!(
             events.first(),
-            Some(&JobEvent::Started {
-                kind: super::JobKind::RawStreamExtract,
-                total_bytes: Some(source_size),
-            })
+            Some(&JobEvent::Started { kind: super::JobKind::RawStreamExtract, total_bytes: Some(source_size) })
         );
         assert!(last_processed_bytes <= source_size);
     }
@@ -2646,11 +2196,11 @@ mod tests {
             let phase_progress = events
                 .iter()
                 .filter_map(|event| match event {
-                    JobEvent::PhaseBytesProcessed {
-                        phase: event_phase,
-                        total_bytes_processed,
-                        ..
-                    } if *event_phase == phase => Some(*total_bytes_processed),
+                    JobEvent::PhaseBytesProcessed { phase: event_phase, total_bytes_processed, .. }
+                        if *event_phase == phase =>
+                    {
+                        Some(*total_bytes_processed)
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -2685,17 +2235,10 @@ mod tests {
             .expect("expected at least one aggregate with a finished entry");
 
         assert!(
-            events
-                .iter()
-                .skip(first_finished_index + 1)
-                .any(|event| matches!(event, JobEvent::BytesProcessed { .. })),
+            events.iter().skip(first_finished_index + 1).any(|event| matches!(event, JobEvent::BytesProcessed { .. })),
             "expected later byte progress after the first finished entry"
         );
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, JobEvent::PhaseBytesProcessed { path: None, .. }))
-        );
+        assert!(events.iter().all(|event| !matches!(event, JobEvent::PhaseBytesProcessed { path: None, .. })));
     }
 
     #[test]
@@ -2723,21 +2266,13 @@ mod tests {
     impl TzapCreateCancellationPoint {
         fn matches(self, event: &JobEvent) -> bool {
             match self {
-                Self::PlanningPayload => matches!(
-                    event,
-                    JobEvent::PhaseBytesProcessed {
-                        phase: JobPhase::PlanningPayload,
-                        ..
-                    }
-                ),
+                Self::PlanningPayload => {
+                    matches!(event, JobEvent::PhaseBytesProcessed { phase: JobPhase::PlanningPayload, .. })
+                }
                 Self::EmittingPayload => matches!(event, JobEvent::BytesProcessed { .. }),
-                Self::CommittingOutput => matches!(
-                    event,
-                    JobEvent::PhaseStarted {
-                        phase: JobPhase::CommittingOutput,
-                        ..
-                    }
-                ),
+                Self::CommittingOutput => {
+                    matches!(event, JobEvent::PhaseStarted { phase: JobPhase::CommittingOutput, .. })
+                }
             }
         }
 
@@ -2772,20 +2307,9 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(crate::tzap_backend::TzapError::Cancelled)
-        ));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Cancelled { .. }))
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Completed { .. }))
-        );
+        assert!(matches!(result, Err(crate::tzap_backend::TzapError::Cancelled)));
+        assert!(events.iter().any(|event| matches!(event, JobEvent::Cancelled { .. })));
+        assert!(!events.iter().any(|event| matches!(event, JobEvent::Completed { .. })));
         assert!(!destination.exists());
     }
 
@@ -2810,9 +2334,7 @@ mod tests {
         let phase_progress = events
             .iter()
             .filter_map(|event| match event {
-                JobEvent::PhaseBytesProcessed {
-                    path, recent_paths, ..
-                } => Some((path, recent_paths)),
+                JobEvent::PhaseBytesProcessed { path, recent_paths, .. } => Some((path, recent_paths)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -2826,8 +2348,7 @@ mod tests {
 
     #[test]
     fn sevenz_create_job_emits_progress_before_completion_for_large_file() {
-        let temp =
-            TestDir::new("sevenz_create_job_emits_progress_before_completion_for_large_file");
+        let temp = TestDir::new("sevenz_create_job_emits_progress_before_completion_for_large_file");
         let payload = large_tzap_progress_payload();
         temp.write_file("project/payload.bin", &payload);
         let mut events = Vec::new();
@@ -2835,10 +2356,7 @@ mod tests {
         run_7z_create_job_from_sources_with_plan_options(
             &[temp.path("project")],
             temp.path("archive.7z"),
-            &SevenZCreateOptions {
-                level: Some(1),
-                ..SevenZCreateOptions::default()
-            },
+            &SevenZCreateOptions { level: Some(1), ..SevenZCreateOptions::default() },
             &crate::manifest::PlanOptions::default(),
             &CancellationToken::new(),
             &mut |event| events.push(event),
@@ -2860,10 +2378,7 @@ mod tests {
         let result = run_7z_create_job_from_sources_with_plan_options(
             &[temp.path("project")],
             temp.path("archive.7z"),
-            &SevenZCreateOptions {
-                level: Some(1),
-                ..SevenZCreateOptions::default()
-            },
+            &SevenZCreateOptions { level: Some(1), ..SevenZCreateOptions::default() },
             &crate::manifest::PlanOptions::default(),
             &token,
             &mut |event| {
@@ -2875,16 +2390,8 @@ mod tests {
         );
 
         assert!(matches!(result, Err(SevenZError::Cancelled)));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Cancelled { .. }))
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Completed { .. }))
-        );
+        assert!(events.iter().any(|event| matches!(event, JobEvent::Cancelled { .. })));
+        assert!(!events.iter().any(|event| matches!(event, JobEvent::Completed { .. })));
     }
 
     #[test]
@@ -2917,15 +2424,10 @@ mod tests {
         assert_extract_started_with_unknown_total(&events, super::JobKind::TzapExtract);
         assert_monotonic_progress_reaches_total_before_completion(&events, payload.len() as u64);
         assert!(events.iter().all(|event| match event {
-            JobEvent::BytesProcessed {
-                path, recent_paths, ..
-            } => path.is_some() && !recent_paths.is_empty(),
+            JobEvent::BytesProcessed { path, recent_paths, .. } => path.is_some() && !recent_paths.is_empty(),
             _ => true,
         }));
-        assert_eq!(
-            fs::read(temp.path("out/project/payload.bin")).unwrap(),
-            payload
-        );
+        assert_eq!(fs::read(temp.path("out/project/payload.bin")).unwrap(), payload);
     }
 
     #[test]
@@ -2950,16 +2452,8 @@ mod tests {
         );
 
         assert!(matches!(result, Err(ZipBackendError::Cancelled)));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Cancelled { .. }))
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, JobEvent::Completed { .. }))
-        );
+        assert!(events.iter().any(|event| matches!(event, JobEvent::Cancelled { .. })));
+        assert!(!events.iter().any(|event| matches!(event, JobEvent::Completed { .. })));
     }
 
     #[test]
@@ -2983,18 +2477,11 @@ mod tests {
         assert_eq!(report.written_bytes, 3);
         assert!(matches!(
             events.first(),
-            Some(JobEvent::Started {
-                kind: super::JobKind::ZipCreate,
-                total_bytes: Some(3),
-            })
+            Some(JobEvent::Started { kind: super::JobKind::ZipCreate, total_bytes: Some(3) })
         ));
 
         let listing = list_zip(&archive).unwrap();
-        let names = listing
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect::<Vec<_>>();
+        let names = listing.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a.txt", "folder/", "folder/b.txt"]);
     }
 
@@ -3007,36 +2494,15 @@ mod tests {
         run_tar_zst_create_job(
             temp.path("project"),
             temp.path("archive.tar.zst"),
-            &TarZstdCreateOptions {
-                level: 1,
-                threads: Some(1),
-                preserve_metadata: true,
-                replace_existing: false,
-            },
+            &TarZstdCreateOptions { level: 1, threads: Some(1), preserve_metadata: true, replace_existing: false },
             &CancellationToken::new(),
             &mut |event| events.push(event),
         )
         .unwrap();
 
-        assert!(matches!(
-            events.first(),
-            Some(JobEvent::Started {
-                kind: super::JobKind::TarZstdCreate,
-                ..
-            })
-        ));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, JobEvent::BytesProcessed { bytes: 5, .. }))
-        );
-        assert!(matches!(
-            events.last(),
-            Some(JobEvent::Completed {
-                entries: 2,
-                bytes: 5
-            })
-        ));
+        assert!(matches!(events.first(), Some(JobEvent::Started { kind: super::JobKind::TarZstdCreate, .. })));
+        assert!(events.iter().any(|event| matches!(event, JobEvent::BytesProcessed { bytes: 5, .. })));
+        assert!(matches!(events.last(), Some(JobEvent::Completed { entries: 2, bytes: 5 })));
     }
 
     #[test]
@@ -3049,12 +2515,7 @@ mod tests {
         let report = run_clean_source_tar_zst_create_job(
             temp.path("project"),
             temp.path("project.clean.tar.zst"),
-            &TarZstdCreateOptions {
-                level: 1,
-                threads: Some(1),
-                preserve_metadata: true,
-                replace_existing: false,
-            },
+            &TarZstdCreateOptions { level: 1, threads: Some(1), preserve_metadata: true, replace_existing: false },
             &CancellationToken::new(),
             &mut |event| events.push(event),
         )
@@ -3083,12 +2544,7 @@ mod tests {
         let report = run_clean_source_tar_zst_create_job_from_sources(
             &[temp.path("a.txt"), temp.path("folder")],
             &archive,
-            &TarZstdCreateOptions {
-                level: 1,
-                threads: Some(1),
-                preserve_metadata: true,
-                replace_existing: false,
-            },
+            &TarZstdCreateOptions { level: 1, threads: Some(1), preserve_metadata: true, replace_existing: false },
             &CancellationToken::new(),
             &mut |_| {},
         )
@@ -3098,18 +2554,12 @@ mod tests {
         assert_eq!(report.written_bytes, 3);
 
         let listing = list_entries(&archive).unwrap();
-        let paths = listing
-            .entries
-            .iter()
-            .map(|entry| entry.path.as_str())
-            .collect::<Vec<_>>();
+        let paths = listing.entries.iter().map(|entry| entry.path.as_str()).collect::<Vec<_>>();
         assert_eq!(paths, vec!["a.txt", "folder", "folder/b.txt"]);
     }
 
     fn large_tzap_progress_payload() -> Vec<u8> {
-        (0..(512 * 1024))
-            .map(|index| u8::try_from(index % 251).expect("modulo result fits in u8"))
-            .collect()
+        (0..(512 * 1024)).map(|index| u8::try_from(index % 251).expect("modulo result fits in u8")).collect()
     }
 
     fn test_tzap_create_options() -> TzapCreateOptions {
@@ -3125,19 +2575,12 @@ mod tests {
         }
     }
 
-    fn assert_monotonic_progress_reaches_total_before_completion(
-        events: &[JobEvent],
-        expected_total: u64,
-    ) {
+    fn assert_monotonic_progress_reaches_total_before_completion(events: &[JobEvent], expected_total: u64) {
         let progress_totals = progress_totals_before_completion(events);
 
         assert!(!progress_totals.is_empty());
         assert!(progress_totals.iter().all(|total| *total <= expected_total));
-        assert!(
-            progress_totals
-                .windows(2)
-                .all(|window| window[0] <= window[1])
-        );
+        assert!(progress_totals.windows(2).all(|window| window[0] <= window[1]));
         assert_eq!(progress_totals.last(), Some(&expected_total));
     }
 
@@ -3159,10 +2602,7 @@ mod tests {
         events[..completed_index]
             .iter()
             .filter_map(|event| match event {
-                JobEvent::BytesProcessed {
-                    total_bytes_processed,
-                    ..
-                } => Some(*total_bytes_processed),
+                JobEvent::BytesProcessed { total_bytes_processed, .. } => Some(*total_bytes_processed),
                 _ => None,
             })
             .collect()
@@ -3174,12 +2614,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
 
             Self { root }

@@ -1,11 +1,9 @@
 use crate::atomic_file::AtomicOutputFile;
-use crate::jobs::{
-    CancellationToken, JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer,
-};
+use crate::jobs::{CancellationToken, JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer};
 use crate::manifest::{ArchiveManifest, ManifestFileType, PlanError};
 use crate::safety::{
-    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy,
-    ExtractionSafetyError, ExtractionSafetyPlanner, OverwritePolicy, OverwriteResolver,
+    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError,
+    ExtractionSafetyPlanner, OverwritePolicy, OverwriteResolver,
 };
 use crate::secrets::{SecretBytes, SecretString};
 use crate::x509_format::x509_name_to_string;
@@ -27,39 +25,32 @@ use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tzap_core::format::{
-    AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FORMAT_VERSION, FecAlgo, FormatError,
-    KdfAlgo, READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM,
-    READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV, VOLUME_HEADER_LEN,
+    AeadAlgo, CRYPTO_HEADER_FIXED_LEN, CompressionAlgo, FORMAT_VERSION, FecAlgo, FormatError, KdfAlgo,
+    READER_MAX_ARGON2ID_M_COST_KIB, READER_MAX_ARGON2ID_PARALLELISM, READER_MAX_ARGON2ID_T_COST, VOLUME_FORMAT_REV,
+    VOLUME_HEADER_LEN,
 };
 use tzap_core::reader::{
-    ArchiveEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic, PublicNoKeyVerification,
-    RecipientWrapRecordContext, RootAuthDiagnostic, RootAuthVerification,
+    ArchiveEntry, ExtractedArchiveMember, PublicNoKeyDiagnostic, PublicNoKeyVerification, RecipientWrapRecordContext,
+    RootAuthDiagnostic, RootAuthVerification,
 };
-use tzap_core::wire::{
-    CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader,
-};
+use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, RecipientRecordV1, RootAuthFooterV1, VolumeHeader};
 use tzap_core::{
-    ArchiveTimestamp, ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink,
-    ArchiveWriteSink, ExtractError, KdfParams, MasterKey, MetadataDiagnostic,
-    MetadataDiagnosticStatus, MetadataOperation, OpenedArchive, PortableFileMetadata,
-    PortableModeOrigin, PortablePosixOwner, ReaderOptions, RegularFileSource,
-    RestorePolicy as CoreRestorePolicy, RootAuthSigningRequest, SafeExtractionOptions,
-    SourceEntryKind, TarEntryKind, WriterOptions, open_seekable_archive,
-    open_seekable_archive_volumes,
-    open_seekable_archive_volumes_with_recipient_wrap_resolver_options,
-    public_no_key_verify_volumes_with,
+    ArchiveTimestamp, ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink, ArchiveWriteSink, ExtractError,
+    KdfParams, MasterKey, MetadataDiagnostic, MetadataDiagnosticStatus, MetadataOperation, OpenedArchive,
+    PortableFileMetadata, PortableModeOrigin, PortablePosixOwner, ReaderOptions, RegularFileSource,
+    RestorePolicy as CoreRestorePolicy, RootAuthSigningRequest, SafeExtractionOptions, SourceEntryKind, TarEntryKind,
+    WriterOptions, open_seekable_archive, open_seekable_archive_volumes,
+    open_seekable_archive_volumes_with_recipient_wrap_resolver_options, public_no_key_verify_volumes_with,
     write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress,
     write_archive_sources_to_sink_with_progress,
 };
 use tzap_plugin_keywrap::{
-    ArchiveIdentity as KeyWrapArchiveIdentity, KeyWrapOutcome, KeyWrapSuite, PrivateKeyLookup,
-    RecipientRecordInput, RecipientRecordMetadata, dispatch_key_wrap_record,
-    wrap_master_key_for_recipient,
+    ArchiveIdentity as KeyWrapArchiveIdentity, KeyWrapOutcome, KeyWrapSuite, PrivateKeyLookup, RecipientRecordInput,
+    RecipientRecordMetadata, dispatch_key_wrap_record, wrap_master_key_for_recipient,
 };
 use tzap_plugin_signing::x509_chain::{
-    X509_AUTHENTICATOR_ID, X509_SIGNER_IDENTITY_TYPE_DER_CERT, X509RootAuthReport,
-    X509RootAuthSigner, certificate_der_from_pem_or_der, certificates_der_from_pem_or_der,
-    signing_input, verify_root_auth_footer,
+    X509_AUTHENTICATOR_ID, X509_SIGNER_IDENTITY_TYPE_DER_CERT, X509RootAuthReport, X509RootAuthSigner,
+    certificate_der_from_pem_or_der, certificates_der_from_pem_or_der, signing_input, verify_root_auth_footer,
 };
 
 const DEFAULT_ARGON2_T_COST: u32 = 3;
@@ -77,8 +68,7 @@ const X509_ROOT_AUTH_MAGIC: &[u8; 4] = b"TZXC";
 const X509_ROOT_AUTH_VERSION: u16 = 1;
 const X509_ROOT_AUTH_OPENSSL_SHA256_SCHEME: u16 = 1;
 const X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN: usize = 60;
-const OFFICIAL_TZAP_ROOT_CERT_SHA256: &str =
-    "sha256:d80d318f6cd6096dc791e314ec6f41434caa47feb75e85ad6f87d5bf72bbd53d";
+const OFFICIAL_TZAP_ROOT_CERT_SHA256: &str = "sha256:d80d318f6cd6096dc791e314ec6f41434caa47feb75e85ad6f87d5bf72bbd53d";
 const OFFICIAL_TZAP_ROOT_CERT_PEM: &[u8] = include_bytes!("trust/tzap-production-root-ca-2026.pem");
 
 /// Returns whether a path names a TZAP archive or one of its numbered volumes.
@@ -92,9 +82,7 @@ pub fn is_tzap_archive_path(path: &Path) -> bool {
         return true;
     }
 
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(is_tzap_volume_archive_file_name)
+    path.file_name().and_then(|name| name.to_str()).is_some_and(is_tzap_volume_archive_file_name)
 }
 
 fn is_tzap_volume_archive_file_name(name: &str) -> bool {
@@ -192,9 +180,7 @@ impl TzapX509TrustOptions {
     /// Returns whether verification has any trust source to use.
     #[must_use]
     pub fn has_trust_source(&self) -> bool {
-        self.include_official_tzap_root
-            || !self.trusted_ca_certificates.is_empty()
-            || self.trusted_system_roots
+        self.include_official_tzap_root || !self.trusted_ca_certificates.is_empty() || self.trusted_system_roots
     }
 }
 
@@ -563,9 +549,7 @@ fn process_is_elevated() -> bool {
 fn process_is_elevated() -> bool {
     use std::mem::size_of;
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::Security::{
-        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
-    };
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = std::ptr::null_mut();
@@ -734,22 +718,15 @@ pub fn create_tzap_from_manifest_with_context(
         TzapKeySource::RecipientCertificates(recipient_certificates) => {
             validate_recipient_wrap_create_options(options)?;
             if recipient_certificates.is_empty() {
-                return Err(TzapError::KeyWrap(
-                    "at least one recipient certificate is required".to_owned(),
-                ));
+                return Err(TzapError::KeyWrap("at least one recipient certificate is required".to_owned()));
             }
             let archive_identity = recipient_wrap_archive_identity_for_writer(&mut writer_options);
             Some(
                 recipient_certificates
                     .iter()
                     .map(|path| {
-                        let certificate =
-                            load_single_x509_certificate_file("recipient certificate", path)?;
-                        build_recipient_wrap_record_from_certificate_der(
-                            &certificate,
-                            &master_key,
-                            &archive_identity,
-                        )
+                        let certificate = load_single_x509_certificate_file("recipient certificate", path)?;
+                        build_recipient_wrap_record_from_certificate_der(&certificate, &master_key, &archive_identity)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -757,9 +734,7 @@ pub fn create_tzap_from_manifest_with_context(
         TzapKeySource::RecipientPublicKeys(recipient_public_keys) => {
             validate_recipient_wrap_create_options(options)?;
             if recipient_public_keys.is_empty() {
-                return Err(TzapError::KeyWrap(
-                    "at least one recipient public key is required".to_owned(),
-                ));
+                return Err(TzapError::KeyWrap("at least one recipient public key is required".to_owned()));
             }
             let archive_identity = recipient_wrap_archive_identity_for_writer(&mut writer_options);
             Some(
@@ -767,11 +742,7 @@ pub fn create_tzap_from_manifest_with_context(
                     .iter()
                     .map(|public_key_der| {
                         let certificate = synthetic_recipient_certificate_der(public_key_der)?;
-                        build_recipient_wrap_record_from_certificate_der(
-                            &certificate,
-                            &master_key,
-                            &archive_identity,
-                        )
+                        build_recipient_wrap_record_from_certificate_der(&certificate, &master_key, &archive_identity)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             )
@@ -779,39 +750,24 @@ pub fn create_tzap_from_manifest_with_context(
         TzapKeySource::Passphrase(_) | TzapKeySource::NoPassword => None,
     };
     let destination = destination.as_ref();
-    let mut sink = TzapArchiveFileSink::new(
-        destination,
-        options.replace_existing,
-        context.cancellation_token(),
-    )?;
-    let x509_signer = options
-        .x509_signing
-        .as_ref()
-        .map(load_x509_signer)
-        .transpose()?;
+    let mut sink = TzapArchiveFileSink::new(destination, options.replace_existing, context.cancellation_token())?;
+    let x509_signer = options.x509_signing.as_ref().map(load_x509_signer).transpose()?;
     let root_auth = x509_signer
         .as_ref()
         .map(X509RootAuthSigner::root_auth_writer_config)
         .transpose()
         .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
     let mut authenticator = |request: &RootAuthSigningRequest| {
-        x509_signer
-            .as_ref()
-            .ok_or(FormatError::WriterInvariant("missing X.509 signer"))
-            .and_then(|signer| {
-                signer
-                    .authenticator_value_for_request(request)
-                    .map_err(|_| FormatError::WriterUnsupported("X.509 RootAuth signing failed"))
-            })
+        x509_signer.as_ref().ok_or(FormatError::WriterInvariant("missing X.509 signer")).and_then(|signer| {
+            signer
+                .authenticator_value_for_request(request)
+                .map_err(|_| FormatError::WriterUnsupported("X.509 RootAuth signing failed"))
+        })
     };
-    let authenticator = root_auth.as_ref().map(|_| {
-        &mut authenticator
-            as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>
-    });
-    let file_sizes = file_sources
-        .iter()
-        .map(|file| (file.archive_path.clone(), file.size))
-        .collect::<BTreeMap<_, _>>();
+    let authenticator = root_auth
+        .as_ref()
+        .map(|_| &mut authenticator as &mut dyn FnMut(&RootAuthSigningRequest) -> Result<Vec<u8>, FormatError>);
+    let file_sizes = file_sources.iter().map(|file| (file.archive_path.clone(), file.size)).collect::<BTreeMap<_, _>>();
     let mut started_paths = BTreeSet::new();
     let mut finished_paths = BTreeSet::new();
     let mut processed_by_path = BTreeMap::<String, u64>::new();
@@ -873,12 +829,7 @@ pub fn create_tzap_from_manifest_with_context(
         }
     }
 
-    warnings.extend(
-        manifest
-            .warnings
-            .iter()
-            .map(|warning| warning.message.clone()),
-    );
+    warnings.extend(manifest.warnings.iter().map(|warning| warning.message.clone()));
 
     Ok(TzapCreateReport {
         written_entries: file_sources.len(),
@@ -895,27 +846,19 @@ fn tzap_output_volume_paths(destination: &Path, count: usize) -> Vec<PathBuf> {
         return vec![destination.to_path_buf()];
     }
 
-    (0..count)
-        .map(|index| tzap_output_volume_path(destination, index))
-        .collect()
+    (0..count).map(|index| tzap_output_volume_path(destination, index)).collect()
 }
 
 fn tzap_output_volume_path(destination: &Path, zero_based_index: usize) -> PathBuf {
     let Some(file_name) = destination.file_name().and_then(|name| name.to_str()) else {
         let mut path = destination.as_os_str().to_os_string();
-        path.push(format!(
-            "{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}"
-        ));
+        path.push(format!("{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}"));
         return PathBuf::from(path);
     };
     let base_name = tzap_multi_volume_base_name(file_name);
-    let volume_file_name = format!(
-        "{base_name}{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}"
-    );
-    match destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
+    let volume_file_name =
+        format!("{base_name}{TZAP_VOLUME_MARKER}{zero_based_index:0TZAP_VOLUME_INDEX_WIDTH$}{TZAP_EXTENSION_SUFFIX}");
+    match destination.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         Some(parent) => parent.join(volume_file_name),
         None => PathBuf::from(volume_file_name),
     }
@@ -938,36 +881,21 @@ fn unique_paths<'a>(left: &'a [PathBuf], right: &'a [PathBuf]) -> Vec<&'a Path> 
     let mut seen = BTreeSet::new();
     left.iter()
         .chain(right.iter())
-        .filter_map(|path| {
-            if seen.insert(path.clone()) {
-                Some(path.as_path())
-            } else {
-                None
-            }
-        })
+        .filter_map(|path| if seen.insert(path.clone()) { Some(path.as_path()) } else { None })
         .collect()
 }
 
 fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Result<(), TzapError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io_error(
-                path,
-                io::ErrorKind::IsADirectory,
-                format!("cannot replace directory {}", path.display()),
-            ))
+            Err(io_error(path, io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
         }
-        Ok(_) if !replace_existing => Err(io_error(
-            path,
-            io::ErrorKind::AlreadyExists,
-            format!("destination already exists: {}", path.display()),
-        )),
+        Ok(_) if !replace_existing => {
+            Err(io_error(path, io::ErrorKind::AlreadyExists, format!("destination already exists: {}", path.display())))
+        }
         Ok(_) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(TzapError::Io { path: path.to_path_buf(), source }),
     }
 }
 
@@ -989,43 +917,24 @@ fn remove_tzap_destinations_for_replace(
 fn remove_file_destination_for_replace(path: &Path) -> Result<(), TzapError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io_error(
-                path,
-                io::ErrorKind::IsADirectory,
-                format!("cannot replace directory {}", path.display()),
-            ))
+            Err(io_error(path, io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
         }
-        Ok(_) => fs::remove_file(path).map_err(|source| TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Ok(_) => fs::remove_file(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source }),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(TzapError::Io { path: path.to_path_buf(), source }),
     }
 }
 
 fn existing_tzap_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, TzapError> {
-    let parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = destination.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let Some(destination_file_name) = destination.file_name().and_then(|name| name.to_str()) else {
         return Ok(Vec::new());
     };
     let destination_base_name = tzap_multi_volume_base_name(destination_file_name);
 
     let mut paths = Vec::new();
-    for entry in fs::read_dir(parent).map_err(|source| TzapError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| TzapError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+    for entry in fs::read_dir(parent).map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })? {
+        let entry = entry.map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })?;
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else {
             continue;
@@ -1053,16 +962,11 @@ fn parse_tzap_volume_file_name(file_name: &str) -> Option<TzapVolumeFileName> {
         return None;
     }
 
-    Some(TzapVolumeFileName {
-        base: base.to_owned(),
-        volume_index: digits.parse().ok()?,
-    })
+    Some(TzapVolumeFileName { base: base.to_owned(), volume_index: digits.parse().ok()? })
 }
 
 fn tzap_multi_volume_base_name(file_name: &str) -> String {
-    strip_ascii_case_insensitive_suffix(file_name, TZAP_EXTENSION_SUFFIX)
-        .unwrap_or(file_name)
-        .to_owned()
+    strip_ascii_case_insensitive_suffix(file_name, TZAP_EXTENSION_SUFFIX).unwrap_or(file_name).to_owned()
 }
 
 fn strip_ascii_case_insensitive_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
@@ -1078,37 +982,24 @@ fn strip_ascii_case_insensitive_suffix<'a>(value: &'a str, suffix: &str) -> Opti
 }
 
 fn io_error(path: &Path, kind: io::ErrorKind, message: impl Into<String>) -> TzapError {
-    TzapError::Io {
-        path: path.to_path_buf(),
-        source: io::Error::new(kind, message.into()),
-    }
+    TzapError::Io { path: path.to_path_buf(), source: io::Error::new(kind, message.into()) }
 }
 
 fn load_x509_signer(options: &TzapX509SigningOptions) -> Result<X509RootAuthSigner, TzapError> {
     match options {
-        TzapX509SigningOptions::Pkcs12 { identity, password } => {
-            load_x509_signer_from_pkcs12(identity, password)
+        TzapX509SigningOptions::Pkcs12 { identity, password } => load_x509_signer_from_pkcs12(identity, password),
+        TzapX509SigningOptions::CertificateAndKey { signing_certificate, signing_private_key, signing_chain } => {
+            load_x509_signer_from_certificate_files(signing_certificate, signing_private_key, signing_chain)
         }
-        TzapX509SigningOptions::CertificateAndKey {
-            signing_certificate,
-            signing_private_key,
-            signing_chain,
-        } => load_x509_signer_from_certificate_files(
-            signing_certificate,
-            signing_private_key,
-            signing_chain,
-        ),
-        TzapX509SigningOptions::InMemory {
-            signing_certificate,
-            signing_private_key,
-            signing_chain,
-        } => X509RootAuthSigner::from_pem_or_der(
-            signing_certificate,
-            signing_private_key.expose_secret(),
-            signing_chain.clone(),
-            current_unix_seconds_i64()?,
-        )
-        .map_err(|source| TzapError::X509RootAuth(source.to_string())),
+        TzapX509SigningOptions::InMemory { signing_certificate, signing_private_key, signing_chain } => {
+            X509RootAuthSigner::from_pem_or_der(
+                signing_certificate,
+                signing_private_key.expose_secret(),
+                signing_chain.clone(),
+                current_unix_seconds_i64()?,
+            )
+            .map_err(|source| TzapError::X509RootAuth(source.to_string()))
+        }
     }
 }
 
@@ -1118,56 +1009,38 @@ fn load_x509_signer_from_certificate_files(
     signing_chain: &[PathBuf],
 ) -> Result<X509RootAuthSigner, TzapError> {
     let certificate = read_x509_input_file(signing_certificate)?;
-    let mut certificate_der = certificates_der_from_pem_or_der(&certificate)
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let mut certificate_der =
+        certificates_der_from_pem_or_der(&certificate).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
     let leaf_certificate_der = certificate_der.remove(0);
     let private_key = read_x509_input_file(signing_private_key)?;
     let mut chain_der = certificate_der;
     chain_der.extend(load_x509_certificate_files(signing_chain)?);
-    X509RootAuthSigner::from_pem_or_der(
-        &leaf_certificate_der,
-        &private_key,
-        chain_der,
-        current_unix_seconds_i64()?,
-    )
-    .map_err(|source| TzapError::X509RootAuth(source.to_string()))
+    X509RootAuthSigner::from_pem_or_der(&leaf_certificate_der, &private_key, chain_der, current_unix_seconds_i64()?)
+        .map_err(|source| TzapError::X509RootAuth(source.to_string()))
 }
 
-fn load_x509_signer_from_pkcs12(
-    identity: &Path,
-    password: &SecretString,
-) -> Result<X509RootAuthSigner, TzapError> {
+fn load_x509_signer_from_pkcs12(identity: &Path, password: &SecretString) -> Result<X509RootAuthSigner, TzapError> {
     let identity_bytes = read_x509_input_file(identity)?;
-    let pkcs12 = Pkcs12::from_der(&identity_bytes)
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
-    let parsed = pkcs12
-        .parse2(password.expose_secret())
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
-    let certificate = parsed
-        .cert
-        .ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no certificate".to_owned()))?;
-    let private_key = parsed
-        .pkey
-        .ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no private key".to_owned()))?;
+    let pkcs12 = Pkcs12::from_der(&identity_bytes).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let parsed =
+        pkcs12.parse2(password.expose_secret()).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let certificate =
+        parsed.cert.ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no certificate".to_owned()))?;
+    let private_key =
+        parsed.pkey.ok_or_else(|| TzapError::X509RootAuth("PKCS#12 identity has no private key".to_owned()))?;
     let chain_der = parsed
         .ca
         .map(|chain| {
             chain
                 .iter()
-                .map(|certificate| {
-                    certificate
-                        .to_der()
-                        .map_err(|source| TzapError::X509RootAuth(source.to_string()))
-                })
+                .map(|certificate| certificate.to_der().map_err(|source| TzapError::X509RootAuth(source.to_string())))
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?
         .unwrap_or_default();
 
     X509RootAuthSigner::new(
-        certificate
-            .to_der()
-            .map_err(|source| TzapError::X509RootAuth(source.to_string()))?,
+        certificate.to_der().map_err(|source| TzapError::X509RootAuth(source.to_string()))?,
         private_key,
         chain_der,
         current_unix_seconds_i64()?,
@@ -1179,30 +1052,25 @@ fn load_x509_certificate_files(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>, TzapEr
     let mut certificates = Vec::new();
     for path in paths {
         let bytes = read_x509_input_file(path)?;
-        let mut parsed = certificates_der_from_pem_or_der(&bytes)
-            .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+        let mut parsed =
+            certificates_der_from_pem_or_der(&bytes).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
         certificates.append(&mut parsed);
     }
     Ok(certificates)
 }
 
 fn read_x509_input_file(path: &Path) -> Result<Vec<u8>, TzapError> {
-    fs::read(path).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    fs::read(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })
 }
 
 fn load_x509_trusted_roots(trust: &TzapX509TrustOptions) -> Result<Vec<Vec<u8>>, TzapError> {
     let mut certificates = Vec::new();
     if trust.include_official_tzap_root {
-        certificates.push(
-            certificate_der_from_pem_or_der(OFFICIAL_TZAP_ROOT_CERT_PEM).map_err(|source| {
-                TzapError::X509RootAuth(format!(
-                    "failed to parse embedded TZAP root certificate {OFFICIAL_TZAP_ROOT_CERT_SHA256}: {source}"
-                ))
-            })?,
-        );
+        certificates.push(certificate_der_from_pem_or_der(OFFICIAL_TZAP_ROOT_CERT_PEM).map_err(|source| {
+            TzapError::X509RootAuth(format!(
+                "failed to parse embedded TZAP root certificate {OFFICIAL_TZAP_ROOT_CERT_SHA256}: {source}"
+            ))
+        })?);
     }
     certificates.extend(load_x509_certificate_files(&trust.trusted_ca_certificates)?);
     Ok(certificates)
@@ -1222,14 +1090,9 @@ fn build_recipient_wrap_record_from_certificate_path(
     master_key: &MasterKey,
     options: &mut WriterOptions,
 ) -> Result<RecipientRecordV1, TzapError> {
-    let recipient_certificate =
-        load_single_x509_certificate_file("recipient certificate", recipient_certificate_path)?;
+    let recipient_certificate = load_single_x509_certificate_file("recipient certificate", recipient_certificate_path)?;
     let archive_identity = recipient_wrap_archive_identity_for_writer(options);
-    build_recipient_wrap_record_from_certificate_der(
-        &recipient_certificate,
-        master_key,
-        &archive_identity,
-    )
+    build_recipient_wrap_record_from_certificate_der(&recipient_certificate, master_key, &archive_identity)
 }
 
 fn build_recipient_wrap_record_from_certificate_der(
@@ -1238,16 +1101,8 @@ fn build_recipient_wrap_record_from_certificate_der(
     archive_identity: &KeyWrapArchiveIdentity,
 ) -> Result<RecipientRecordV1, TzapError> {
     let master_key_bytes = master_key.0;
-    for suite in [
-        KeyWrapSuite::X25519HkdfSha256ChaCha20Poly1305,
-        KeyWrapSuite::P256HkdfSha256Aes256Gcm,
-    ] {
-        match wrap_master_key_for_recipient(
-            archive_identity.clone(),
-            recipient_certificate,
-            &master_key_bytes,
-            suite,
-        ) {
+    for suite in [KeyWrapSuite::X25519HkdfSha256ChaCha20Poly1305, KeyWrapSuite::P256HkdfSha256Aes256Gcm] {
+        match wrap_master_key_for_recipient(archive_identity.clone(), recipient_certificate, &master_key_bytes, suite) {
             Ok(record) => return Ok(record),
             Err(KeyWrapOutcome::InvalidRecord | KeyWrapOutcome::UnsupportedSuite) => {}
             Err(outcome) => return Err(key_wrap_outcome_error(&outcome)),
@@ -1259,63 +1114,37 @@ fn build_recipient_wrap_record_from_certificate_der(
 }
 
 fn synthetic_recipient_certificate_der(public_key_spki_der: &[u8]) -> Result<Vec<u8>, TzapError> {
-    let public_key =
-        PKey::<Public>::public_key_from_der(public_key_spki_der).map_err(|source| {
-            TzapError::KeyWrap(format!("recipient public key is invalid: {source}"))
-        })?;
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(|source| {
-        TzapError::KeyWrap(format!("recipient certificate key failed: {source}"))
-    })?;
-    let issuer_key = PKey::from_ec_key(EcKey::generate(&group).map_err(|source| {
-        TzapError::KeyWrap(format!("recipient certificate key failed: {source}"))
-    })?)
+    let public_key = PKey::<Public>::public_key_from_der(public_key_spki_der)
+        .map_err(|source| TzapError::KeyWrap(format!("recipient public key is invalid: {source}")))?;
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate key failed: {source}")))?;
+    let issuer_key = PKey::from_ec_key(
+        EcKey::generate(&group)
+            .map_err(|source| TzapError::KeyWrap(format!("recipient certificate key failed: {source}")))?,
+    )
     .map_err(|source| TzapError::KeyWrap(format!("recipient certificate key failed: {source}")))?;
-    let mut name = openssl::x509::X509NameBuilder::new().map_err(|source| {
-        TzapError::KeyWrap(format!("recipient certificate name failed: {source}"))
-    })?;
+    let mut name = openssl::x509::X509NameBuilder::new()
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate name failed: {source}")))?;
     name.append_entry_by_text("CN", "ZManager Contact Recipient")
-        .map_err(|source| {
-            TzapError::KeyWrap(format!("recipient certificate name failed: {source}"))
-        })?;
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate name failed: {source}")))?;
     let name = name.build();
-    let mut builder = X509::builder()
-        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate failed: {source}")))?;
-    builder
-        .set_version(2)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let mut builder =
+        X509::builder().map_err(|source| TzapError::KeyWrap(format!("recipient certificate failed: {source}")))?;
+    builder.set_version(2).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
     let serial = BigNum::from_u32(1)
         .and_then(|number| number.to_asn1_integer())
-        .map_err(|source| {
-            TzapError::KeyWrap(format!("recipient certificate serial failed: {source}"))
-        })?;
-    builder
-        .set_serial_number(&serial)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    builder
-        .set_subject_name(&name)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    builder
-        .set_issuer_name(&name)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    builder
-        .set_pubkey(&public_key)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    let not_before =
-        Asn1Time::days_from_now(0).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    let not_after =
-        Asn1Time::days_from_now(365).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    builder
-        .set_not_before(&not_before)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
-    builder
-        .set_not_after(&not_after)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate serial failed: {source}")))?;
+    builder.set_serial_number(&serial).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.set_subject_name(&name).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.set_issuer_name(&name).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.set_pubkey(&public_key).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let not_before = Asn1Time::days_from_now(0).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    let not_after = Asn1Time::days_from_now(365).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.set_not_before(&not_before).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.set_not_after(&not_after).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
     builder
         .append_extension(
-            BasicConstraints::new()
-                .critical()
-                .build()
-                .map_err(|source| TzapError::KeyWrap(source.to_string()))?,
+            BasicConstraints::new().critical().build().map_err(|source| TzapError::KeyWrap(source.to_string()))?,
         )
         .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
     builder
@@ -1329,46 +1158,26 @@ fn synthetic_recipient_certificate_der(public_key_spki_der: &[u8]) -> Result<Vec
         .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
     let subject_key_identifier = {
         let context = builder.x509v3_context(None, None);
-        SubjectKeyIdentifier::new()
-            .build(&context)
-            .map_err(|source| TzapError::KeyWrap(source.to_string()))?
+        SubjectKeyIdentifier::new().build(&context).map_err(|source| TzapError::KeyWrap(source.to_string()))?
     };
-    builder
-        .append_extension(subject_key_identifier)
-        .map_err(|source| TzapError::KeyWrap(source.to_string()))?;
+    builder.append_extension(subject_key_identifier).map_err(|source| TzapError::KeyWrap(source.to_string()))?;
     builder
         .sign(&issuer_key, MessageDigest::sha256())
-        .map_err(|source| {
-            TzapError::KeyWrap(format!("recipient certificate signing failed: {source}"))
-        })?;
-    builder
-        .build()
-        .to_der()
-        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate DER failed: {source}")))
+        .map_err(|source| TzapError::KeyWrap(format!("recipient certificate signing failed: {source}")))?;
+    builder.build().to_der().map_err(|source| TzapError::KeyWrap(format!("recipient certificate DER failed: {source}")))
 }
 
-fn load_single_x509_certificate_file(
-    label: &'static str,
-    path: &Path,
-) -> Result<Vec<u8>, TzapError> {
+fn load_single_x509_certificate_file(label: &'static str, path: &Path) -> Result<Vec<u8>, TzapError> {
     let bytes = read_x509_input_file(path)?;
-    let certificates = certificates_der_from_pem_or_der(&bytes).map_err(|source| {
-        TzapError::KeyWrap(format!(
-            "failed to parse {label} {}: {source}",
-            path.display()
-        ))
-    })?;
+    let certificates = certificates_der_from_pem_or_der(&bytes)
+        .map_err(|source| TzapError::KeyWrap(format!("failed to parse {label} {}: {source}", path.display())))?;
     match certificates.as_slice() {
         [certificate] => Ok(certificate.clone()),
-        [] | [_, _, ..] => Err(TzapError::KeyWrap(format!(
-            "{label} must contain exactly one X.509 certificate"
-        ))),
+        [] | [_, _, ..] => Err(TzapError::KeyWrap(format!("{label} must contain exactly one X.509 certificate"))),
     }
 }
 
-fn recipient_wrap_archive_identity_for_writer(
-    options: &mut WriterOptions,
-) -> KeyWrapArchiveIdentity {
+fn recipient_wrap_archive_identity_for_writer(options: &mut WriterOptions) -> KeyWrapArchiveIdentity {
     let archive_uuid = *options.archive_uuid.get_or_insert_with(random_16_bytes);
     let session_id = *options.session_id.get_or_insert_with(random_16_bytes);
     KeyWrapArchiveIdentity {
@@ -1387,30 +1196,30 @@ fn random_16_bytes() -> [u8; 16] {
 
 fn key_wrap_outcome_error(outcome: &KeyWrapOutcome) -> TzapError {
     match outcome {
-        KeyWrapOutcome::UnsupportedProfileId => TzapError::Format(FormatError::ReaderUnsupported(
-            "unsupported keywrap recipient profile",
-        )),
-        KeyWrapOutcome::UnsupportedArchiveIdentity => TzapError::Format(
-            FormatError::ReaderUnsupported("unsupported keywrap archive identity"),
-        ),
-        KeyWrapOutcome::UnsupportedRecipientIdentity => TzapError::Format(
-            FormatError::ReaderUnsupported("unsupported keywrap recipient identity"),
-        ),
-        KeyWrapOutcome::UnsupportedSuite => TzapError::Format(FormatError::ReaderUnsupported(
-            "unsupported keywrap recipient suite",
-        )),
-        KeyWrapOutcome::CertificatePolicyRejected => TzapError::Format(
-            FormatError::ReaderUnsupported("recipient certificate policy rejected"),
-        ),
-        KeyWrapOutcome::InvalidRecord => TzapError::Format(FormatError::InvalidArchive(
-            "invalid keywrap recipient record",
-        )),
+        KeyWrapOutcome::UnsupportedProfileId => {
+            TzapError::Format(FormatError::ReaderUnsupported("unsupported keywrap recipient profile"))
+        }
+        KeyWrapOutcome::UnsupportedArchiveIdentity => {
+            TzapError::Format(FormatError::ReaderUnsupported("unsupported keywrap archive identity"))
+        }
+        KeyWrapOutcome::UnsupportedRecipientIdentity => {
+            TzapError::Format(FormatError::ReaderUnsupported("unsupported keywrap recipient identity"))
+        }
+        KeyWrapOutcome::UnsupportedSuite => {
+            TzapError::Format(FormatError::ReaderUnsupported("unsupported keywrap recipient suite"))
+        }
+        KeyWrapOutcome::CertificatePolicyRejected => {
+            TzapError::Format(FormatError::ReaderUnsupported("recipient certificate policy rejected"))
+        }
+        KeyWrapOutcome::InvalidRecord => {
+            TzapError::Format(FormatError::InvalidArchive("invalid keywrap recipient record"))
+        }
         KeyWrapOutcome::NoMatchingPrivateKey => {
             TzapError::KeyWrap("no matching recipient private key for archive".to_owned())
         }
-        KeyWrapOutcome::UnwrappedCandidateMasterKey { .. } => TzapError::Format(
-            FormatError::WriterInvariant("keywrap success outcome cannot be converted to error"),
-        ),
+        KeyWrapOutcome::UnwrappedCandidateMasterKey { .. } => {
+            TzapError::Format(FormatError::WriterInvariant("keywrap success outcome cannot be converted to error"))
+        }
     }
 }
 
@@ -1438,13 +1247,8 @@ impl PrivateKeyLookup for TzapRecipientPrivateKeyLookup {
     }
 }
 
-fn load_recipient_private_key_lookup(
-    path: &Path,
-) -> Result<TzapRecipientPrivateKeyLookup, TzapError> {
-    let bytes = fs::read(path).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+fn load_recipient_private_key_lookup(path: &Path) -> Result<TzapRecipientPrivateKeyLookup, TzapError> {
+    let bytes = fs::read(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     load_recipient_private_key_lookup_from_bytes(&bytes, &path.display().to_string())
 }
 
@@ -1453,31 +1257,19 @@ fn load_recipient_private_key_lookup_from_bytes(
     description: &str,
 ) -> Result<TzapRecipientPrivateKeyLookup, TzapError> {
     if bytes.len() == 32 {
-        return Ok(TzapRecipientPrivateKeyLookup {
-            private_key_bytes: bytes.to_vec(),
-            private_key_spki_der: None,
-        });
+        return Ok(TzapRecipientPrivateKeyLookup { private_key_bytes: bytes.to_vec(), private_key_spki_der: None });
     }
     let private_key = if bytes.starts_with(b"-----BEGIN") {
         PKey::private_key_from_pem(bytes)
     } else {
         PKey::private_key_from_der(bytes)
     }
-    .map_err(|source| {
-        TzapError::KeyWrap(format!(
-            "failed to parse recipient private key {description}: {source}"
-        ))
-    })?;
+    .map_err(|source| TzapError::KeyWrap(format!("failed to parse recipient private key {description}: {source}")))?;
     let private_key_bytes = private_key.private_key_to_der().map_err(|source| {
-        TzapError::KeyWrap(format!(
-            "failed to normalize recipient private key {description}: {source}"
-        ))
+        TzapError::KeyWrap(format!("failed to normalize recipient private key {description}: {source}"))
     })?;
     let private_key_spki_der = private_key.public_key_to_der().ok();
-    Ok(TzapRecipientPrivateKeyLookup {
-        private_key_bytes,
-        private_key_spki_der,
-    })
+    Ok(TzapRecipientPrivateKeyLookup { private_key_bytes, private_key_spki_der })
 }
 
 #[derive(Debug, Default)]
@@ -1543,14 +1335,10 @@ fn recipient_wrap_open_error(source: FormatError, stats: &RecipientWrapOpenStats
         ));
     }
     if stats.records_seen == 0 {
-        return TzapError::KeyWrap(format!(
-            "{source}: recipient-wrap archive has no recipient records"
-        ));
+        return TzapError::KeyWrap(format!("{source}: recipient-wrap archive has no recipient records"));
     }
     if stats.no_matching_private_key > 0 && stats.invalid_record_or_unwrap == 0 {
-        return TzapError::KeyWrap(format!(
-            "{source}: no matching recipient private key for archive"
-        ));
+        return TzapError::KeyWrap(format!("{source}: no matching recipient private key for archive"));
     }
     TzapError::KeyWrap(format!(
         "{source}: recipient private key did not match any recipient record or failed recipient unwrap"
@@ -1562,8 +1350,7 @@ fn current_unix_seconds_i64() -> Result<i64, TzapError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|source| TzapError::X509RootAuth(source.to_string()))?
         .as_secs();
-    i64::try_from(seconds)
-        .map_err(|_| TzapError::X509RootAuth("current Unix time exceeds i64".to_owned()))
+    i64::try_from(seconds).map_err(|_| TzapError::X509RootAuth("current Unix time exceeds i64".to_owned()))
 }
 
 fn verify_opened_x509_root_auth(
@@ -1575,12 +1362,7 @@ fn verify_opened_x509_root_auth(
     let mut x509_error = None;
     let verification = opened
         .verify_root_auth_with(|footer, archive_root| {
-            match verify_root_auth_footer(
-                footer,
-                archive_root,
-                &trusted_roots_der,
-                trust.trusted_system_roots,
-            ) {
+            match verify_root_auth_footer(footer, archive_root, &trusted_roots_der, trust.trusted_system_roots) {
                 Ok(value) => {
                     report = Some(value);
                     Ok(true)
@@ -1598,14 +1380,10 @@ fn verify_opened_x509_root_auth(
                 TzapError::Format(source)
             }
         })?;
-    let report = report.ok_or(TzapError::Format(FormatError::InvalidArchive(
-        "missing X.509 RootAuth verification report",
-    )))?;
+    let report =
+        report.ok_or(TzapError::Format(FormatError::InvalidArchive("missing X.509 RootAuth verification report")))?;
 
-    Ok(x509_report_from_root_auth_verification(
-        &verification,
-        report,
-    ))
+    Ok(x509_report_from_root_auth_verification(&verification, report))
 }
 
 fn x509_report_from_root_auth_verification(
@@ -1649,17 +1427,11 @@ fn x509_report_from_public_no_key_verification(
 }
 
 fn root_auth_diagnostic_labels(diagnostics: &[RootAuthDiagnostic]) -> Vec<String> {
-    diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.label().to_owned())
-        .collect()
+    diagnostics.iter().map(|diagnostic| diagnostic.label().to_owned()).collect()
 }
 
 fn public_no_key_diagnostic_labels(diagnostics: &[PublicNoKeyDiagnostic]) -> Vec<String> {
-    diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.label().to_owned())
-        .collect()
+    diagnostics.iter().map(|diagnostic| diagnostic.label().to_owned()).collect()
 }
 
 /// Lists `.tzap` archive entries with a passphrase.
@@ -1667,10 +1439,7 @@ fn public_no_key_diagnostic_labels(diagnostics: &[PublicNoKeyDiagnostic]) -> Vec
 /// # Errors
 ///
 /// Returns [`TzapError`] when the archive cannot be opened or listed.
-pub fn list_tzap_with_password(
-    archive: impl AsRef<Path>,
-    password: &str,
-) -> Result<TzapListing, TzapError> {
+pub fn list_tzap_with_password(archive: impl AsRef<Path>, password: &str) -> Result<TzapListing, TzapError> {
     list_tzap_with_optional_password(archive, Some(password))
 }
 
@@ -1712,11 +1481,8 @@ pub fn list_tzap_index_with_optional_password(
     let indexed = opened.list_index_entries()?;
     let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
     let total_compressed_size = opened.observed_archive_bytes();
-    let total_ratio = if total_uncompressed_size > 0 {
-        total_compressed_size as f64 / total_uncompressed_size as f64
-    } else {
-        1.0
-    };
+    let total_ratio =
+        if total_uncompressed_size > 0 { total_compressed_size as f64 / total_uncompressed_size as f64 } else { 1.0 };
 
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
@@ -1751,11 +1517,7 @@ pub fn list_tzap_index_with_optional_password(
             gname: entry.gname,
         });
     }
-    Ok(TzapIndexListing {
-        entries,
-        encrypted,
-        kdf_algo: opened.crypto_header.kdf_algo,
-    })
+    Ok(TzapIndexListing { entries, encrypted, kdf_algo: opened.crypto_header.kdf_algo })
 }
 
 /// Lists only the immediate children of the requested directory.
@@ -1770,11 +1532,8 @@ pub fn list_tzap_directory_with_optional_password(
     let indexed = opened.list_directory_contents(dir_path)?;
     let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
     let total_compressed_size = opened.observed_archive_bytes();
-    let total_ratio = if total_uncompressed_size > 0 {
-        total_compressed_size as f64 / total_uncompressed_size as f64
-    } else {
-        1.0
-    };
+    let total_ratio =
+        if total_uncompressed_size > 0 { total_compressed_size as f64 / total_uncompressed_size as f64 } else { 1.0 };
 
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
@@ -1809,11 +1568,7 @@ pub fn list_tzap_directory_with_optional_password(
             gname: entry.gname,
         });
     }
-    Ok(TzapIndexListing {
-        entries,
-        encrypted,
-        kdf_algo: opened.crypto_header.kdf_algo,
-    })
+    Ok(TzapIndexListing { entries, encrypted, kdf_algo: opened.crypto_header.kdf_algo })
 }
 
 /// Lists recipient-wrapped `.tzap` archive entries with a private key.
@@ -1837,11 +1592,8 @@ pub fn list_tzap_index_with_recipient_key(
     let indexed = opened.list_index_entries()?;
     let total_uncompressed_size: u64 = indexed.iter().map(|e| e.file_data_size).sum();
     let total_compressed_size = opened.observed_archive_bytes();
-    let total_ratio = if total_uncompressed_size > 0 {
-        total_compressed_size as f64 / total_uncompressed_size as f64
-    } else {
-        1.0
-    };
+    let total_ratio =
+        if total_uncompressed_size > 0 { total_compressed_size as f64 / total_uncompressed_size as f64 } else { 1.0 };
 
     let mut entries = Vec::with_capacity(indexed.len());
     for entry in indexed {
@@ -1876,22 +1628,11 @@ pub fn list_tzap_index_with_recipient_key(
             gname: entry.gname,
         });
     }
-    Ok(TzapIndexListing {
-        entries,
-        encrypted: true,
-        kdf_algo: opened.crypto_header.kdf_algo,
-    })
+    Ok(TzapIndexListing { entries, encrypted: true, kdf_algo: opened.crypto_header.kdf_algo })
 }
 
-fn list_opened_tzap_archive(
-    opened: &OpenedArchive,
-    encrypted: bool,
-) -> Result<TzapListing, TzapError> {
-    let entries = opened
-        .list_files()?
-        .into_iter()
-        .map(tzap_entry_from_archive_entry)
-        .collect();
+fn list_opened_tzap_archive(opened: &OpenedArchive, encrypted: bool) -> Result<TzapListing, TzapError> {
+    let entries = opened.list_files()?.into_iter().map(tzap_entry_from_archive_entry).collect();
     Ok(TzapListing { entries, encrypted })
 }
 
@@ -2167,23 +1908,16 @@ pub fn extract_tzap_with_optional_password_and_context_fast_with_restore_options
     let opened = open_tzap_archive(archive, password)?;
     let entries = opened.list_files()?;
     opened.plan_metadata_restore(restore_options.core_options(false))?;
-    if matches!(
-        restore_options.policy,
-        TzapRestorePolicy::SameOs | TzapRestorePolicy::System
-    ) && !restore_options.allow_degraded
-        && entries
-            .iter()
-            .any(|entry| entry.kind != TarEntryKind::Regular)
+    if matches!(restore_options.policy, TzapRestorePolicy::SameOs | TzapRestorePolicy::System)
+        && !restore_options.allow_degraded
+        && entries.iter().any(|entry| entry.kind != TarEntryKind::Regular)
     {
         return Err(TzapError::Format(FormatError::ReaderUnsupported(
             "strict native metadata restore for non-regular entries is not supported by zmanager fast extraction; explicitly allow degraded restore",
         )));
     }
-    let destination_root =
-        crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
+    let destination_root = crate::safety::prepare_destination_root(destination)
+        .map_err(|source| TzapError::Io { path: destination.to_path_buf(), source })?;
     let planner = ExtractionSafetyPlanner::new(&destination_root, policy);
     let mut state = FastTzapExtractionState::new(&opened, planner, restore_options);
     state.extract_entries(&entries, context)?;
@@ -2220,35 +1954,21 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
         }
     }
 
-    fn extract_entries(
-        &mut self,
-        entries: &[ArchiveEntry],
-        context: &mut JobContext<'_>,
-    ) -> Result<(), TzapError> {
+    fn extract_entries(&mut self, entries: &[ArchiveEntry], context: &mut JobContext<'_>) -> Result<(), TzapError> {
         for entry in entries {
             self.extract_entry(entry, context)?;
         }
         Ok(())
     }
 
-    fn extract_entry(
-        &mut self,
-        entry: &ArchiveEntry,
-        context: &mut JobContext<'_>,
-    ) -> Result<(), TzapError> {
+    fn extract_entry(&mut self, entry: &ArchiveEntry, context: &mut JobContext<'_>) -> Result<(), TzapError> {
         context.check_cancelled()?;
-        append_metadata_diagnostics(
-            &entry.path,
-            &entry.diagnostics,
-            &mut self.report.warnings,
-            Some(context),
-        );
-        let preloaded_member =
-            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
-                self.opened.extract_member(&entry.path)?
-            } else {
-                None
-            };
+        append_metadata_diagnostics(&entry.path, &entry.diagnostics, &mut self.report.warnings, Some(context));
+        let preloaded_member = if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+            self.opened.extract_member(&entry.path)?
+        } else {
+            None
+        };
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
             kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
@@ -2258,46 +1978,39 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
         context.entry_started(&safety_entry.archive_path, Some(entry.file_data_size));
 
         match self.planner.validate_entry(&safety_entry)? {
-            ExtractionDecision::Write {
-                destination_path,
-                replace_existing,
-                link_target_path,
-                ..
-            } => match &safety_entry.kind {
-                ExtractionEntryKind::File => {
-                    self.extract_regular_entry(entry, &destination_path, replace_existing, context)
+            ExtractionDecision::Write { destination_path, replace_existing, link_target_path, .. } => {
+                match &safety_entry.kind {
+                    ExtractionEntryKind::File => {
+                        self.extract_regular_entry(entry, &destination_path, replace_existing, context)
+                    }
+                    ExtractionEntryKind::Directory => {
+                        fs::create_dir_all(&destination_path)
+                            .map_err(|source| TzapError::Io { path: destination_path.clone(), source })?;
+                        self.deferred_directory_metadata
+                            .push((destination_path, TzapPortableEntryMetadata::from_archive_entry(entry)));
+                        self.report.written_entries = self.report.written_entries.saturating_add(1);
+                        context.entry_finished(&safety_entry.archive_path, 0);
+                        Ok(())
+                    }
+                    ExtractionEntryKind::Symlink { .. } | ExtractionEntryKind::Hardlink { .. } => self
+                        .extract_link_entry(
+                            entry,
+                            preloaded_member,
+                            destination_path,
+                            replace_existing,
+                            link_target_path,
+                            context,
+                        ),
+                    ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
+                        self.record_skip(
+                            &safety_entry.archive_path,
+                            format!("skipped unsupported entry {}", safety_entry.archive_path),
+                            context,
+                        );
+                        Ok(())
+                    }
                 }
-                ExtractionEntryKind::Directory => {
-                    fs::create_dir_all(&destination_path).map_err(|source| TzapError::Io {
-                        path: destination_path.clone(),
-                        source,
-                    })?;
-                    self.deferred_directory_metadata.push((
-                        destination_path,
-                        TzapPortableEntryMetadata::from_archive_entry(entry),
-                    ));
-                    self.report.written_entries = self.report.written_entries.saturating_add(1);
-                    context.entry_finished(&safety_entry.archive_path, 0);
-                    Ok(())
-                }
-                ExtractionEntryKind::Symlink { .. } | ExtractionEntryKind::Hardlink { .. } => self
-                    .extract_link_entry(
-                        entry,
-                        preloaded_member,
-                        destination_path,
-                        replace_existing,
-                        link_target_path,
-                        context,
-                    ),
-                ExtractionEntryKind::Device | ExtractionEntryKind::Special => {
-                    self.record_skip(
-                        &safety_entry.archive_path,
-                        format!("skipped unsupported entry {}", safety_entry.archive_path),
-                        context,
-                    );
-                    Ok(())
-                }
-            },
+            }
             ExtractionDecision::Skip { reason, .. } => {
                 self.record_skip(
                     &safety_entry.archive_path,
@@ -2323,11 +2036,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
             None => self.opened.extract_member(&entry.path)?,
         };
         let Some(member) = member else {
-            self.record_skip(
-                &entry.path,
-                format!("skipped missing entry {}", entry.path),
-                context,
-            );
+            self.record_skip(&entry.path, format!("skipped missing entry {}", entry.path), context);
             return Ok(());
         };
         if member.kind == TarEntryKind::Hardlink {
@@ -2338,11 +2047,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
                     "hardlink target was not resolved by extraction safety planning",
                 ),
             })?;
-            self.deferred_hardlinks.push(DeferredTzapHardlink {
-                source_path,
-                destination_path,
-                replace_existing,
-            });
+            self.deferred_hardlinks.push(DeferredTzapHardlink { source_path, destination_path, replace_existing });
             context.entry_finished(&entry.path, 0);
             return Ok(());
         }
@@ -2353,9 +2058,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
             link_target_path.as_deref(),
             &mut self.report,
         )?;
-        if member.kind == TarEntryKind::Symlink
-            && should_restore_tzap_metadata(self.restore_options)
-        {
+        if member.kind == TarEntryKind::Symlink && should_restore_tzap_metadata(self.restore_options) {
             apply_tzap_symlink_mtime(&destination_path, entry.mtime)?;
         }
         context.bytes_processed(Some(&entry.path), processed);
@@ -2381,10 +2084,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
         ) {
             Ok(Some(processed)) => {
                 self.report.written_entries = self.report.written_entries.saturating_add(1);
-                self.report.written_bytes = self
-                    .report
-                    .written_bytes
-                    .saturating_add(processed.written_bytes);
+                self.report.written_bytes = self.report.written_bytes.saturating_add(processed.written_bytes);
                 for diagnostic in processed.metadata_diagnostics {
                     let warning = format!("metadata {}: {diagnostic}", entry.path);
                     self.report.warnings.push(warning.clone());
@@ -2394,19 +2094,11 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
                 Ok(())
             }
             Ok(None) => {
-                self.record_skip(
-                    &entry.path,
-                    format!("skipped missing entry {}", entry.path),
-                    context,
-                );
+                self.record_skip(&entry.path, format!("skipped missing entry {}", entry.path), context);
                 Ok(())
             }
             Err(TzapError::Format(FormatError::ReaderUnsupported(_))) => {
-                self.record_skip(
-                    &entry.path,
-                    format!("skipped unsupported entry {}", entry.path),
-                    context,
-                );
+                self.record_skip(&entry.path, format!("skipped unsupported entry {}", entry.path), context);
                 Ok(())
             }
             Err(error) => Err(error),
@@ -2422,10 +2114,7 @@ impl<'archive, 'resolver> FastTzapExtractionState<'archive, 'resolver> {
 
     fn finish(mut self) -> Result<TzapExtractReport, TzapError> {
         materialize_deferred_tzap_hardlinks(&self.deferred_hardlinks, &mut self.report)?;
-        apply_deferred_tzap_directory_metadata(
-            &self.deferred_directory_metadata,
-            self.restore_options,
-        )?;
+        apply_deferred_tzap_directory_metadata(&self.deferred_directory_metadata, self.restore_options)?;
         Ok(self.report)
     }
 }
@@ -2585,12 +2274,7 @@ pub fn test_tzap_with_password_filter_and_x509_trust(
     selector: impl Fn(&str) -> bool,
     x509_trust: Option<&TzapX509TrustOptions>,
 ) -> Result<TzapTestReport, TzapError> {
-    test_tzap_with_optional_password_filter_and_x509_trust(
-        archive,
-        Some(password),
-        selector,
-        x509_trust,
-    )
+    test_tzap_with_optional_password_filter_and_x509_trust(archive, Some(password), selector, x509_trust)
 }
 
 /// Tests `.tzap` archive readability and integrity with an optional passphrase.
@@ -2660,15 +2344,10 @@ fn test_opened_tzap_archive(
     })
 }
 
-fn should_verify_opened_x509_root_auth(
-    opened: &OpenedArchive,
-    trust: &TzapX509TrustOptions,
-) -> bool {
+fn should_verify_opened_x509_root_auth(opened: &OpenedArchive, trust: &TzapX509TrustOptions) -> bool {
     let explicit_trust = !trust.trusted_ca_certificates.is_empty() || trust.trusted_system_roots;
-    let has_x509_root_auth = opened
-        .root_auth_footer
-        .as_ref()
-        .is_some_and(|footer| footer.authenticator_id == X509_AUTHENTICATOR_ID);
+    let has_x509_root_auth =
+        opened.root_auth_footer.as_ref().is_some_and(|footer| footer.authenticator_id == X509_AUTHENTICATOR_ID);
     explicit_trust || has_x509_root_auth
 }
 
@@ -2686,9 +2365,7 @@ pub fn verify_tzap_x509_public_no_key(
     trust: &TzapX509TrustOptions,
 ) -> Result<TzapX509VerificationReport, TzapError> {
     if !trust.has_trust_source() {
-        return Err(TzapError::X509RootAuth(
-            "X.509 verification requires trusted roots".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 verification requires trusted roots".to_owned()));
     }
 
     let archive_path = archive.as_ref();
@@ -2699,16 +2376,9 @@ pub fn verify_tzap_x509_public_no_key(
     let mut x509_error = None;
     let verification = public_no_key_verify_volumes_with(&volume_refs, |footer, archive_root| {
         if footer.authenticator_id != X509_AUTHENTICATOR_ID {
-            return Err(FormatError::ReaderUnsupported(
-                "X.509 trust can only verify X.509 RootAuth",
-            ));
+            return Err(FormatError::ReaderUnsupported("X.509 trust can only verify X.509 RootAuth"));
         }
-        match verify_root_auth_footer(
-            footer,
-            archive_root,
-            &trusted_roots_der,
-            trust.trusted_system_roots,
-        ) {
+        match verify_root_auth_footer(footer, archive_root, &trusted_roots_der, trust.trusted_system_roots) {
             Ok(value) => {
                 report = Some(value);
                 Ok(true)
@@ -2726,14 +2396,10 @@ pub fn verify_tzap_x509_public_no_key(
             TzapError::Format(source)
         }
     })?;
-    let report = report.ok_or(TzapError::Format(FormatError::InvalidArchive(
-        "missing X.509 public no-key verification report",
-    )))?;
+    let report = report
+        .ok_or(TzapError::Format(FormatError::InvalidArchive("missing X.509 public no-key verification report")))?;
 
-    Ok(x509_report_from_public_no_key_verification(
-        &verification,
-        report,
-    ))
+    Ok(x509_report_from_public_no_key_verification(&verification, report))
 }
 
 /// Inspects a TZAP X.509 `RootAuth` signer without validating trust roots.
@@ -2800,22 +2466,18 @@ pub fn inspect_tzap_x509_public_no_key_signer(
     Ok(inspection)
 }
 
-fn inspect_opened_x509_signer(
-    opened: &OpenedArchive,
-) -> Result<TzapX509SignerInspection, TzapError> {
+fn inspect_opened_x509_signer(opened: &OpenedArchive) -> Result<TzapX509SignerInspection, TzapError> {
     let mut inspection = None;
     let mut x509_error = None;
     let verification = opened
-        .verify_root_auth_with(|footer, archive_root| {
-            match inspect_x509_root_auth_footer(footer, archive_root) {
-                Ok(value) => {
-                    inspection = Some(value);
-                    Ok(true)
-                }
-                Err(error) => {
-                    x509_error = Some(error.to_string());
-                    Ok(false)
-                }
+        .verify_root_auth_with(|footer, archive_root| match inspect_x509_root_auth_footer(footer, archive_root) {
+            Ok(value) => {
+                inspection = Some(value);
+                Ok(true)
+            }
+            Err(error) => {
+                x509_error = Some(error.to_string());
+                Ok(false)
             }
         })
         .map_err(|source| {
@@ -2825,9 +2487,8 @@ fn inspect_opened_x509_signer(
                 TzapError::Format(source)
             }
         })?;
-    let mut inspection = inspection.ok_or(TzapError::Format(FormatError::InvalidArchive(
-        "missing X.509 signer inspection report",
-    )))?;
+    let mut inspection =
+        inspection.ok_or(TzapError::Format(FormatError::InvalidArchive("missing X.509 signer inspection report")))?;
     inspection.diagnostics = root_auth_diagnostic_labels(&verification.diagnostics);
     Ok(inspection)
 }
@@ -2837,18 +2498,14 @@ fn inspect_x509_root_auth_footer(
     archive_root: &[u8; 32],
 ) -> Result<TzapX509SignerInspection, TzapError> {
     if footer.authenticator_id != X509_AUTHENTICATOR_ID {
-        return Err(TzapError::X509RootAuth(
-            "unsupported authenticator id".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("unsupported authenticator id".to_owned()));
     }
     if footer.signer_identity_type != X509_SIGNER_IDENTITY_TYPE_DER_CERT {
-        return Err(TzapError::X509RootAuth(
-            "unsupported signer identity type".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("unsupported signer identity type".to_owned()));
     }
 
-    let leaf_certificate = X509::from_der(&footer.signer_identity_bytes)
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let leaf_certificate =
+        X509::from_der(&footer.signer_identity_bytes).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
     let authenticator = parse_x509_authenticator_for_inspection(&footer.authenticator_value)?;
     let signing_input = signing_input(
         &footer.archive_uuid,
@@ -2857,21 +2514,13 @@ fn inspect_x509_root_auth_footer(
         authenticator.signed_at_unix_seconds,
         &authenticator.chain_digest,
     );
-    let leaf_public_key = leaf_certificate
-        .public_key()
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    let leaf_public_key =
+        leaf_certificate.public_key().map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
     let mut verifier = Verifier::new(MessageDigest::sha256(), &leaf_public_key)
         .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
-    verifier
-        .update(&signing_input)
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
-    if !verifier
-        .verify(&authenticator.signature)
-        .map_err(|source| TzapError::X509RootAuth(source.to_string()))?
-    {
-        return Err(TzapError::X509RootAuth(
-            "X.509 RootAuth signature failed".to_owned(),
-        ));
+    verifier.update(&signing_input).map_err(|source| TzapError::X509RootAuth(source.to_string()))?;
+    if !verifier.verify(&authenticator.signature).map_err(|source| TzapError::X509RootAuth(source.to_string()))? {
+        return Err(TzapError::X509RootAuth("X.509 RootAuth signature failed".to_owned()));
     }
 
     let fingerprint = leaf_certificate
@@ -2904,28 +2553,18 @@ struct X509AuthenticatorInspection {
     signature: Vec<u8>,
 }
 
-fn parse_x509_authenticator_for_inspection(
-    value: &[u8],
-) -> Result<X509AuthenticatorInspection, TzapError> {
+fn parse_x509_authenticator_for_inspection(value: &[u8]) -> Result<X509AuthenticatorInspection, TzapError> {
     if value.len() < X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator is too short".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator is too short".to_owned()));
     }
     if &value[0..4] != X509_ROOT_AUTH_MAGIC {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator magic mismatch".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator magic mismatch".to_owned()));
     }
     if read_x509_u16(value, 4)? != X509_ROOT_AUTH_VERSION {
-        return Err(TzapError::X509RootAuth(
-            "unsupported X.509 authenticator version".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("unsupported X.509 authenticator version".to_owned()));
     }
     if read_x509_u16(value, 6)? != X509_ROOT_AUTH_OPENSSL_SHA256_SCHEME {
-        return Err(TzapError::X509RootAuth(
-            "unsupported X.509 signature scheme".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("unsupported X.509 signature scheme".to_owned()));
     }
 
     let signed_at_unix_seconds = read_x509_i64(value, 8)?;
@@ -2938,23 +2577,17 @@ fn parse_x509_authenticator_for_inspection(
     let chain_count = usize::try_from(read_x509_u32(value, 56)?)
         .map_err(|_| TzapError::X509RootAuth("X.509 chain count overflow".to_owned()))?;
     if signature_len > signature_capacity {
-        return Err(TzapError::X509RootAuth(
-            "X.509 signature length exceeds capacity".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 signature length exceeds capacity".to_owned()));
     }
 
     let mut offset = X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN
         .checked_add(signature_capacity)
         .ok_or_else(|| TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned()))?;
     if value.len() < offset {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator signature is truncated".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator signature is truncated".to_owned()));
     }
     if chain_count > value.len().saturating_sub(offset) / 4 {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator chain count exceeds payload".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator chain count exceeds payload".to_owned()));
     }
 
     let signature_start = X509_ROOT_AUTH_FIXED_AUTHENTICATOR_LEN;
@@ -2962,40 +2595,29 @@ fn parse_x509_authenticator_for_inspection(
         .checked_add(signature_len)
         .ok_or_else(|| TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned()))?;
     if value[signature_end..offset].iter().any(|byte| *byte != 0) {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator signature padding is non-zero".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator signature padding is non-zero".to_owned()));
     }
     let signature = value[signature_start..signature_end].to_vec();
 
     for _ in 0..chain_count {
-        let cert_len = usize::try_from(read_x509_u32(value, offset)?).map_err(|_| {
-            TzapError::X509RootAuth("X.509 chain certificate length overflow".to_owned())
-        })?;
-        offset = offset.checked_add(4).ok_or_else(|| {
-            TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned())
-        })?;
-        let cert_end = offset.checked_add(cert_len).ok_or_else(|| {
-            TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned())
-        })?;
+        let cert_len = usize::try_from(read_x509_u32(value, offset)?)
+            .map_err(|_| TzapError::X509RootAuth("X.509 chain certificate length overflow".to_owned()))?;
+        offset = offset
+            .checked_add(4)
+            .ok_or_else(|| TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned()))?;
+        let cert_end = offset
+            .checked_add(cert_len)
+            .ok_or_else(|| TzapError::X509RootAuth("X.509 authenticator length overflow".to_owned()))?;
         if cert_end > value.len() {
-            return Err(TzapError::X509RootAuth(
-                "X.509 authenticator certificate chain is truncated".to_owned(),
-            ));
+            return Err(TzapError::X509RootAuth("X.509 authenticator certificate chain is truncated".to_owned()));
         }
         offset = cert_end;
     }
     if offset != value.len() {
-        return Err(TzapError::X509RootAuth(
-            "X.509 authenticator has trailing bytes".to_owned(),
-        ));
+        return Err(TzapError::X509RootAuth("X.509 authenticator has trailing bytes".to_owned()));
     }
 
-    Ok(X509AuthenticatorInspection {
-        signed_at_unix_seconds,
-        chain_digest,
-        signature,
-    })
+    Ok(X509AuthenticatorInspection { signed_at_unix_seconds, chain_digest, signature })
 }
 
 fn read_x509_u16(value: &[u8], offset: usize) -> Result<u16, TzapError> {
@@ -3016,19 +2638,14 @@ fn read_x509_i64(value: &[u8], offset: usize) -> Result<i64, TzapError> {
     let bytes = value
         .get(offset..offset + 8)
         .ok_or_else(|| TzapError::X509RootAuth("X.509 authenticator is truncated".to_owned()))?;
-    Ok(i64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+    Ok(i64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]))
 }
 
 fn read_tzap_input_volume_bytes(archive_path: &Path) -> Result<Vec<Vec<u8>>, TzapError> {
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
     let mut volume_bytes = Vec::with_capacity(volume_paths.len());
     for path in &volume_paths {
-        volume_bytes.push(fs::read(path).map_err(|source| TzapError::Io {
-            path: path.clone(),
-            source,
-        })?);
+        volume_bytes.push(fs::read(path).map_err(|source| TzapError::Io { path: path.clone(), source })?);
     }
     Ok(volume_bytes)
 }
@@ -3043,28 +2660,17 @@ fn read_tzap_input_volume_bytes(archive_path: &Path) -> Result<Vec<Vec<u8>>, Tza
 /// Returns an error when no TZAP volume can be found, the public headers are
 /// malformed, sibling volumes do not belong to the same archive, or filesystem
 /// metadata cannot be read.
-pub fn summarize_tzap_public_metadata(
-    archive_path: impl AsRef<Path>,
-) -> Result<TzapPublicMetadataSummary, TzapError> {
+pub fn summarize_tzap_public_metadata(archive_path: impl AsRef<Path>) -> Result<TzapPublicMetadataSummary, TzapError> {
     let requested_path = archive_path.as_ref();
     let discovered_volume_paths = discover_tzap_input_volume_paths(requested_path);
     let first_volume_path = discovered_volume_paths
         .iter()
         .find(|path| path.exists())
-        .ok_or_else(|| {
-            io_error(
-                requested_path,
-                io::ErrorKind::NotFound,
-                "no TZAP input volumes found",
-            )
-        })?;
+        .ok_or_else(|| io_error(requested_path, io::ErrorKind::NotFound, "no TZAP input volumes found"))?;
     let first_header = read_public_tzap_header(first_volume_path)?;
-    let expected_volume_count =
-        usize::try_from(first_header.volume_header.stripe_width).map_err(|_| {
-            TzapError::Format(FormatError::InvalidArchive("TZAP volume count overflow"))
-        })?;
-    let expected_paths =
-        expected_tzap_input_volume_paths(requested_path, first_volume_path, expected_volume_count);
+    let expected_volume_count = usize::try_from(first_header.volume_header.stripe_width)
+        .map_err(|_| TzapError::Format(FormatError::InvalidArchive("TZAP volume count overflow")))?;
+    let expected_paths = expected_tzap_input_volume_paths(requested_path, first_volume_path, expected_volume_count);
 
     let mut volumes = Vec::new();
     let mut missing_volume_indices = Vec::new();
@@ -3076,16 +2682,13 @@ pub fn summarize_tzap_public_metadata(
             continue;
         }
 
-        let metadata = fs::metadata(volume_path).map_err(|source| TzapError::Io {
-            path: volume_path.clone(),
-            source,
-        })?;
+        let metadata =
+            fs::metadata(volume_path).map_err(|source| TzapError::Io { path: volume_path.clone(), source })?;
         let header = read_public_tzap_header(volume_path)?;
         validate_public_tzap_volume_header(&first_header.volume_header, &header.volume_header)?;
 
-        let index = usize::try_from(header.volume_header.volume_index).map_err(|_| {
-            TzapError::Format(FormatError::InvalidArchive("TZAP volume index overflow"))
-        })?;
+        let index = usize::try_from(header.volume_header.volume_index)
+            .map_err(|_| TzapError::Format(FormatError::InvalidArchive("TZAP volume index overflow")))?;
         if index != expected_index {
             return Err(TzapError::Format(FormatError::InvalidArchive(
                 "TZAP volume index does not match expected path",
@@ -3093,14 +2696,8 @@ pub fn summarize_tzap_public_metadata(
         }
         total_size = total_size
             .checked_add(metadata.len())
-            .ok_or(TzapError::Format(FormatError::InvalidArchive(
-                "TZAP volume size overflow",
-            )))?;
-        volumes.push(TzapPublicVolumeSummary {
-            path: volume_path.clone(),
-            index,
-            size: metadata.len(),
-        });
+            .ok_or(TzapError::Format(FormatError::InvalidArchive("TZAP volume size overflow")))?;
+        volumes.push(TzapPublicVolumeSummary { path: volume_path.clone(), index, size: metadata.len() });
     }
 
     volumes.sort_by_key(|volume| volume.index);
@@ -3113,10 +2710,7 @@ pub fn summarize_tzap_public_metadata(
         total_size,
         expected_volume_size: first_header.crypto_header.expected_volume_size,
         volumes,
-        format: TzapPublicFormatSummary::from_headers(
-            &first_header.volume_header,
-            &first_header.crypto_header,
-        ),
+        format: TzapPublicFormatSummary::from_headers(&first_header.volume_header, &first_header.crypto_header),
     })
 }
 
@@ -3215,12 +2809,8 @@ fn copy_opened_tzap_files_to_writer(
     writer: &mut dyn io::Write,
 ) -> Result<TzapExtractReport, TzapError> {
     let entries = opened.list_index_entries()?;
-    let mut report = TzapExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        TzapExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
     for entry in entries {
         if !selector(&entry.path) {
             report.skipped_entries += 1;
@@ -3232,9 +2822,7 @@ fn copy_opened_tzap_files_to_writer(
             .map_err(|source| tzap_extract_error(&entry.path, source))?
         else {
             report.skipped_entries += 1;
-            report
-                .warnings
-                .push(format!("skipped missing entry {}", entry.path));
+            report.warnings.push(format!("skipped missing entry {}", entry.path));
             continue;
         };
         report.written_entries += 1;
@@ -3246,10 +2834,7 @@ fn copy_opened_tzap_files_to_writer(
 fn tzap_extract_error(path: &str, source: ExtractError) -> TzapError {
     match source {
         ExtractError::Format(source) => TzapError::Format(source),
-        ExtractError::Output(source) => TzapError::Io {
-            path: PathBuf::from(path),
-            source,
-        },
+        ExtractError::Output(source) => TzapError::Io { path: PathBuf::from(path), source },
     }
 }
 
@@ -3315,13 +2900,7 @@ pub fn extract_tzap_file_to_destination_with_optional_password_and_restore_optio
     restore_options: TzapRestoreOptions,
 ) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let opened = open_tzap_archive(archive, password)?;
-    extract_tzap_file_from_opened_archive(
-        &opened,
-        entry_path,
-        destination_path,
-        replace_existing,
-        restore_options,
-    )
+    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing, restore_options)
 }
 
 /// Extracts one regular recipient-wrapped `.tzap` member to an exact destination path.
@@ -3359,11 +2938,8 @@ fn extract_tzap_file_from_opened_archive(
         return Ok(None);
     };
     let temp_root = TemporaryTzapExtractionRoot::new(destination_path)?;
-    let Some(diagnostics) = opened.extract_file_to(
-        entry_path,
-        temp_root.path(),
-        restore_options.core_options(false),
-    )?
+    let Some(diagnostics) =
+        opened.extract_file_to(entry_path, temp_root.path(), restore_options.core_options(false))?
     else {
         return Ok(None);
     };
@@ -3404,18 +2980,10 @@ fn collect_archive_sources(
                         ManifestFileType::Other => unreachable!(),
                     },
                     link_target: entry.symlink_target.as_deref().map(path_bytes),
-                    size: if entry.file_type == ManifestFileType::File {
-                        entry.size
-                    } else {
-                        0
-                    },
+                    size: if entry.file_type == ManifestFileType::File { entry.size } else { 0 },
                     mode: if options.preserve_metadata {
                         entry.permissions.unix_mode.unwrap_or_else(|| {
-                            if entry.file_type == ManifestFileType::Directory {
-                                0o755
-                            } else {
-                                0o644
-                            }
+                            if entry.file_type == ManifestFileType::Directory { 0o755 } else { 0o644 }
                         }) & 0o7777
                     } else if entry.file_type == ManifestFileType::Directory {
                         0o755
@@ -3437,10 +3005,7 @@ fn collect_archive_sources(
                 });
             }
             ManifestFileType::Other => {
-                let warning = format!(
-                    "skipped {}: tzap backend does not write special files",
-                    entry.archive_path
-                );
+                let warning = format!("skipped {}: tzap backend does not write special files", entry.archive_path);
                 warnings.push(warning.clone());
                 context.warning(warning);
                 context.entry_finished(&entry.archive_path, 0);
@@ -3515,18 +3080,12 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
         }
-        append_metadata_diagnostics(
-            &entry.path,
-            &entry.diagnostics,
-            &mut self.report.warnings,
-            context.as_deref_mut(),
-        );
-        let preloaded_member =
-            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
-                self.opened.extract_member(&entry.path)?
-            } else {
-                None
-            };
+        append_metadata_diagnostics(&entry.path, &entry.diagnostics, &mut self.report.warnings, context.as_deref_mut());
+        let preloaded_member = if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+            self.opened.extract_member(&entry.path)?
+        } else {
+            None
+        };
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
             kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
@@ -3537,28 +3096,15 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
             context.entry_started(&entry.path, Some(entry.file_data_size));
         }
         match self.planner.validate_entry(&safety_entry)? {
-            ExtractionDecision::Write {
-                destination_path,
-                replace_existing,
-                link_target_path,
-                ..
-            } => self.write_entry(
+            ExtractionDecision::Write { destination_path, replace_existing, link_target_path, .. } => self.write_entry(
                 entry,
                 &safety_entry,
                 preloaded_member,
-                &TzapEntryWriteDecision {
-                    destination_path,
-                    replace_existing,
-                    link_target_path,
-                },
+                &TzapEntryWriteDecision { destination_path, replace_existing, link_target_path },
                 context,
             ),
             ExtractionDecision::Skip { reason, .. } => {
-                self.record_skip(
-                    &entry.path,
-                    format!("skipped {}: {reason}", entry.path),
-                    context,
-                );
+                self.record_skip(&entry.path, format!("skipped {}: {reason}", entry.path), context);
                 Ok(())
             }
         }
@@ -3610,16 +3156,13 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
             return Ok(());
         };
         if member.kind == TarEntryKind::Hardlink {
-            let source_path = decision
-                .link_target_path
-                .clone()
-                .ok_or_else(|| TzapError::Io {
-                    path: decision.destination_path.clone(),
-                    source: io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "hardlink target was not resolved by extraction safety planning",
-                    ),
-                })?;
+            let source_path = decision.link_target_path.clone().ok_or_else(|| TzapError::Io {
+                path: decision.destination_path.clone(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "hardlink target was not resolved by extraction safety planning",
+                ),
+            })?;
             self.deferred_hardlinks.push(DeferredTzapHardlink {
                 source_path,
                 destination_path: decision.destination_path.clone(),
@@ -3638,13 +3181,9 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
             &mut self.report,
         )?;
         if member.kind == TarEntryKind::Directory {
-            self.deferred_directory_metadata.push((
-                decision.destination_path.clone(),
-                TzapPortableEntryMetadata::from_archive_entry(entry),
-            ));
-        } else if member.kind == TarEntryKind::Symlink
-            && should_restore_tzap_metadata(self.restore_options)
-        {
+            self.deferred_directory_metadata
+                .push((decision.destination_path.clone(), TzapPortableEntryMetadata::from_archive_entry(entry)));
+        } else if member.kind == TarEntryKind::Symlink && should_restore_tzap_metadata(self.restore_options) {
             apply_tzap_symlink_mtime(&decision.destination_path, entry.mtime)?;
         }
         if let Some(context) = context {
@@ -3655,19 +3194,10 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
     }
 
     fn record_missing_entry(&mut self, entry_path: &str, context: Option<&mut JobContext<'_>>) {
-        self.record_skip(
-            entry_path,
-            format!("skipped missing entry {entry_path}"),
-            context,
-        );
+        self.record_skip(entry_path, format!("skipped missing entry {entry_path}"), context);
     }
 
-    fn record_skip(
-        &mut self,
-        entry_path: &str,
-        warning: String,
-        context: Option<&mut JobContext<'_>>,
-    ) {
+    fn record_skip(&mut self, entry_path: &str, warning: String, context: Option<&mut JobContext<'_>>) {
         self.report.skipped_entries += 1;
         self.report.warnings.push(warning.clone());
         if let Some(context) = context {
@@ -3678,10 +3208,7 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
 
     fn finish(mut self) -> Result<TzapExtractReport, TzapError> {
         materialize_deferred_tzap_hardlinks(&self.deferred_hardlinks, &mut self.report)?;
-        apply_deferred_tzap_directory_metadata(
-            &self.deferred_directory_metadata,
-            self.restore_options,
-        )?;
+        apply_deferred_tzap_directory_metadata(&self.deferred_directory_metadata, self.restore_options)?;
         Ok(self.report)
     }
 }
@@ -3702,26 +3229,18 @@ fn extract_tzap_inner(
         restore_options,
     } = options;
     let destination = destination.as_ref();
-    let destination_root =
-        crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
+    let destination_root = crate::safety::prepare_destination_root(destination)
+        .map_err(|source| TzapError::Io { path: destination.to_path_buf(), source })?;
     let opened = open_tzap_archive_with_key_options(
         archive,
         password,
         recipient_private_key,
-        recipient_private_key_secret
-            .map(super::secrets::SecretBytes::expose_secret)
-            .or(recipient_private_key_bytes),
+        recipient_private_key_secret.map(super::secrets::SecretBytes::expose_secret).or(recipient_private_key_bytes),
     )?;
     let entries = opened.list_files()?;
     if overwrite_resolver.is_none()
         && policy.strip_components == 0
-        && matches!(
-            policy.overwrite,
-            OverwritePolicy::Refuse | OverwritePolicy::Replace
-        )
+        && matches!(policy.overwrite, OverwritePolicy::Refuse | OverwritePolicy::Replace)
     {
         return extract_opened_tzap_with_core_restore(
             &opened,
@@ -3734,11 +3253,7 @@ fn extract_tzap_inner(
     }
     opened.plan_metadata_restore(restore_options.core_options(false))?;
     let planner = match overwrite_resolver {
-        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(
-            &destination_root,
-            policy,
-            resolver,
-        ),
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(&destination_root, policy, resolver),
         None => ExtractionSafetyPlanner::new(&destination_root, policy),
     };
     let mut state = TzapExtractionState::new(&opened, planner, restore_options);
@@ -3757,24 +3272,19 @@ fn extract_opened_tzap_with_core_restore(
     let replace_existing = policy.overwrite == OverwritePolicy::Replace;
     let mut planner = ExtractionSafetyPlanner::new(destination_root, policy);
     let mut selected = Vec::new();
-    let mut report = TzapExtractReport {
-        written_entries: 0,
-        skipped_entries: 0,
-        written_bytes: 0,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        TzapExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
 
     for entry in entries {
         if let Some(context) = context.as_deref_mut() {
             context.check_cancelled()?;
             context.entry_started(&entry.path, Some(entry.file_data_size));
         }
-        let preloaded_member =
-            if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
-                opened.extract_member(&entry.path)?
-            } else {
-                None
-            };
+        let preloaded_member = if matches!(entry.kind, TarEntryKind::Symlink | TarEntryKind::Hardlink) {
+            opened.extract_member(&entry.path)?
+        } else {
+            None
+        };
         let safety_entry = ExtractionEntry {
             archive_path: entry.path.clone(),
             kind: extraction_kind_from_tzap_entry(entry, preloaded_member.as_ref()),
@@ -3805,20 +3315,12 @@ fn extract_opened_tzap_with_core_restore(
         restore_options.core_options(replace_existing),
         1,
     )?;
-    let sizes = entries
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry.file_data_size))
-        .collect::<BTreeMap<_, _>>();
+    let sizes = entries.iter().map(|entry| (entry.path.as_str(), entry.file_data_size)).collect::<BTreeMap<_, _>>();
     for (path, diagnostics) in restored {
         let written_bytes = sizes.get(path.as_str()).copied().unwrap_or(0);
         report.written_entries = report.written_entries.saturating_add(1);
         report.written_bytes = report.written_bytes.saturating_add(written_bytes);
-        append_metadata_diagnostics(
-            &path,
-            &diagnostics,
-            &mut report.warnings,
-            context.as_deref_mut(),
-        );
+        append_metadata_diagnostics(&path, &diagnostics, &mut report.warnings, context.as_deref_mut());
         if let Some(context) = context.as_deref_mut() {
             context.bytes_processed(Some(&path), written_bytes);
             context.entry_finished(&path, written_bytes);
@@ -3847,29 +3349,17 @@ fn materialize_deferred_tzap_hardlinks(
 ) -> Result<(), TzapError> {
     let paths = hardlinks
         .iter()
-        .map(|hardlink| {
-            (
-                hardlink.source_path.clone(),
-                hardlink.destination_path.clone(),
-            )
-        })
+        .map(|hardlink| (hardlink.source_path.clone(), hardlink.destination_path.clone()))
         .collect::<Vec<_>>();
-    let order =
-        crate::safety::deferred_link_dependency_order(&paths).map_err(|source| TzapError::Io {
-            path: hardlinks
-                .first()
-                .map_or_else(PathBuf::new, |link| link.destination_path.clone()),
-            source,
-        })?;
+    let order = crate::safety::deferred_link_dependency_order(&paths).map_err(|source| TzapError::Io {
+        path: hardlinks.first().map_or_else(PathBuf::new, |link| link.destination_path.clone()),
+        source,
+    })?;
     for index in order {
         let hardlink = &hardlinks[index];
         if hardlink.replace_existing {
-            crate::safety::remove_destination_for_replace(&hardlink.destination_path).map_err(
-                |source| TzapError::Io {
-                    path: hardlink.destination_path.clone(),
-                    source,
-                },
-            )?;
+            crate::safety::remove_destination_for_replace(&hardlink.destination_path)
+                .map_err(|source| TzapError::Io { path: hardlink.destination_path.clone(), source })?;
         }
         write_hardlink(&hardlink.source_path, &hardlink.destination_path)?;
         report.written_entries += 1;
@@ -3879,10 +3369,7 @@ fn materialize_deferred_tzap_hardlinks(
 
 impl TzapPortableEntryMetadata {
     fn from_archive_entry(entry: &ArchiveEntry) -> Self {
-        Self {
-            mode: entry.mode,
-            mtime: entry.mtime,
-        }
+        Self { mode: entry.mode, mtime: entry.mtime }
     }
 }
 
@@ -3901,15 +3388,10 @@ fn stream_regular_member_to_destination(
     replace_existing: bool,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<StreamedTzapMember>, TzapError> {
-    let mut output =
-        AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io {
-            path: destination_path.to_path_buf(),
-            source,
-        })?;
-    let output_file = output.file_mut().map_err(|source| TzapError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })?;
+    let mut output = AtomicOutputFile::create(destination_path)
+        .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
+    let output_file =
+        output.file_mut().map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     let extracted = match context {
         Some(context) => {
             let mut progress = |archive_path: &str, bytes: u64| {
@@ -3926,21 +3408,14 @@ fn stream_regular_member_to_destination(
     };
 
     let metadata_diagnostics = opened
-        .restore_file_metadata_to_open_file(
-            entry_path,
-            output_file,
-            restore_options.core_options(false),
-        )?
+        .restore_file_metadata_to_open_file(entry_path, output_file, restore_options.core_options(false))?
         .ok_or(TzapError::Format(FormatError::InvalidArchive(
             "streamed archive entry disappeared before metadata restore",
         )))?;
 
     output
         .commit_with_replace(replace_existing)
-        .map_err(|source| TzapError::Io {
-            path: destination_path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     Ok(Some(StreamedTzapMember {
         written_bytes: entry_size,
         metadata_diagnostics: metadata_diagnostic_labels(&metadata_diagnostics),
@@ -3965,38 +3440,23 @@ fn apply_deferred_tzap_directory_metadata(
             } else {
                 metadata.mode & 0o1777
             };
-            fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
-                TzapError::Io {
-                    path: path.clone(),
-                    source,
-                }
-            })?;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .map_err(|source| TzapError::Io { path: path.clone(), source })?;
         }
 
         #[cfg(not(unix))]
         {
-            let mut permissions = fs::metadata(path)
-                .map_err(|source| TzapError::Io {
-                    path: path.clone(),
-                    source,
-                })?
-                .permissions();
+            let mut permissions =
+                fs::metadata(path).map_err(|source| TzapError::Io { path: path.clone(), source })?.permissions();
             permissions.set_readonly(metadata.mode & 0o222 == 0);
-            fs::set_permissions(path, permissions).map_err(|source| TzapError::Io {
-                path: path.clone(),
-                source,
-            })?;
+            fs::set_permissions(path, permissions).map_err(|source| TzapError::Io { path: path.clone(), source })?;
         }
 
-        let mtime =
-            archive_timestamp_file_time(metadata.mtime).map_err(|message| TzapError::Io {
-                path: path.clone(),
-                source: io::Error::new(io::ErrorKind::InvalidData, message),
-            })?;
-        filetime::set_file_mtime(path, mtime).map_err(|source| TzapError::Io {
+        let mtime = archive_timestamp_file_time(metadata.mtime).map_err(|message| TzapError::Io {
             path: path.clone(),
-            source,
+            source: io::Error::new(io::ErrorKind::InvalidData, message),
         })?;
+        filetime::set_file_mtime(path, mtime).map_err(|source| TzapError::Io { path: path.clone(), source })?;
     }
     Ok(())
 }
@@ -4005,26 +3465,15 @@ fn should_restore_tzap_metadata(restore_options: TzapRestoreOptions) -> bool {
     restore_options.policy != TzapRestorePolicy::Content
 }
 
-fn archive_timestamp_file_time(
-    timestamp: ArchiveTimestamp,
-) -> Result<filetime::FileTime, &'static str> {
+fn archive_timestamp_file_time(timestamp: ArchiveTimestamp) -> Result<filetime::FileTime, &'static str> {
     if timestamp.nanoseconds >= 1_000_000_000 {
         return Err("timestamp nanoseconds must be less than one billion");
     }
     if timestamp.seconds < 0 && timestamp.nanoseconds != 0 {
-        let seconds = timestamp
-            .seconds
-            .checked_sub(1)
-            .ok_or("timestamp is outside the filesystem time range")?;
-        return Ok(filetime::FileTime::from_unix_time(
-            seconds,
-            1_000_000_000 - timestamp.nanoseconds,
-        ));
+        let seconds = timestamp.seconds.checked_sub(1).ok_or("timestamp is outside the filesystem time range")?;
+        return Ok(filetime::FileTime::from_unix_time(seconds, 1_000_000_000 - timestamp.nanoseconds));
     }
-    Ok(filetime::FileTime::from_unix_time(
-        timestamp.seconds,
-        timestamp.nanoseconds,
-    ))
+    Ok(filetime::FileTime::from_unix_time(timestamp.seconds, timestamp.nanoseconds))
 }
 
 fn apply_tzap_symlink_mtime(path: &Path, timestamp: ArchiveTimestamp) -> Result<(), TzapError> {
@@ -4032,10 +3481,8 @@ fn apply_tzap_symlink_mtime(path: &Path, timestamp: ArchiveTimestamp) -> Result<
         path: path.to_path_buf(),
         source: io::Error::new(io::ErrorKind::InvalidData, message),
     })?;
-    filetime::set_symlink_file_times(path, file_time, file_time).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    filetime::set_symlink_file_times(path, file_time, file_time)
+        .map_err(|source| TzapError::Io { path: path.to_path_buf(), source })
 }
 
 fn append_metadata_diagnostics(
@@ -4061,12 +3508,8 @@ fn materialize_non_regular_member(
     report: &mut TzapExtractReport,
 ) -> Result<u64, TzapError> {
     if replace_existing && member.kind != TarEntryKind::Regular {
-        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
-            TzapError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            }
-        })?;
+        crate::safety::remove_destination_for_replace(destination_path)
+            .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     }
 
     match member.kind {
@@ -4076,33 +3519,23 @@ fn materialize_non_regular_member(
             )));
         }
         TarEntryKind::Directory => {
-            fs::create_dir_all(destination_path).map_err(|source| TzapError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            })?;
+            fs::create_dir_all(destination_path)
+                .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
             report.written_entries += 1;
             return Ok(0);
         }
         TarEntryKind::Symlink => {
             if crate::safety::should_skip_symlink_materialization(&ExtractionEntryKind::Symlink {
-                target: member
-                    .link_target
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .unwrap_or_default(),
+                target: member.link_target.as_deref().map(PathBuf::from).unwrap_or_default(),
             }) {
                 report.skipped_entries += 1;
-                report
-                    .warnings
-                    .push(crate::safety::unsupported_symlink_warning(&member.path));
+                report.warnings.push(crate::safety::unsupported_symlink_warning(&member.path));
             } else if let Some(target) = &member.link_target {
                 write_symlink(Path::new(target), destination_path)?;
                 report.written_entries += 1;
             } else {
                 report.skipped_entries += 1;
-                report
-                    .warnings
-                    .push(format!("skipped symlink {}: missing target", member.path));
+                report.warnings.push(format!("skipped symlink {}: missing target", member.path));
             }
         }
         TarEntryKind::Hardlink => {
@@ -4128,10 +3561,7 @@ fn materialize_non_regular_member(
     Ok(0)
 }
 
-fn open_tzap_archive(
-    archive: impl AsRef<Path>,
-    password: Option<&str>,
-) -> Result<OpenedArchive, TzapError> {
+fn open_tzap_archive(archive: impl AsRef<Path>, password: Option<&str>) -> Result<OpenedArchive, TzapError> {
     open_tzap_archive_with_key_options(archive, password, None, None)
 }
 
@@ -4150,22 +3580,13 @@ fn open_tzap_archive_with_key_options(
 ) -> Result<OpenedArchive, TzapError> {
     let archive_path = archive.as_ref();
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
-    let first_volume = volume_paths.first().ok_or_else(|| {
-        io_error(
-            archive_path,
-            io::ErrorKind::NotFound,
-            "no TZAP input volumes found",
-        )
-    })?;
+    let first_volume = volume_paths
+        .first()
+        .ok_or_else(|| io_error(archive_path, io::ErrorKind::NotFound, "no TZAP input volumes found"))?;
     let kdf_params = read_kdf_params_from_path(first_volume)?;
     let volume_files = volume_paths
         .iter()
-        .map(|path| {
-            File::open(path).map_err(|source| TzapError::Io {
-                path: path.clone(),
-                source,
-            })
-        })
+        .map(|path| File::open(path).map_err(|source| TzapError::Io { path: path.clone(), source }))
         .collect::<Result<Vec<_>, _>>()?;
     if matches!(kdf_params, KdfParams::RecipientWrap { .. }) {
         if password.is_some() {
@@ -4176,19 +3597,13 @@ fn open_tzap_archive_with_key_options(
         }
         let lookup = match (recipient_private_key, recipient_private_key_bytes) {
             (Some(path), None) => load_recipient_private_key_lookup(path)?,
-            (None, Some(bytes)) => {
-                load_recipient_private_key_lookup_from_bytes(bytes, "in-memory recipient key")?
-            }
+            (None, Some(bytes)) => load_recipient_private_key_lookup_from_bytes(bytes, "in-memory recipient key")?,
             _ => return Err(TzapError::Format(FormatError::KeyMaterialMismatch)),
         };
         let mut stats = RecipientWrapOpenStats::default();
         return open_seekable_archive_volumes_with_recipient_wrap_resolver_options(
             volume_files,
-            |context| {
-                Ok(recipient_wrap_candidates_for_record(
-                    &context, &lookup, &mut stats,
-                ))
-            },
+            |context| Ok(recipient_wrap_candidates_for_record(&context, &lookup, &mut stats)),
             ReaderOptions::default(),
         )
         .map_err(|source| recipient_wrap_open_error(source, &stats));
@@ -4198,9 +3613,7 @@ fn open_tzap_archive_with_key_options(
     }
     let master_key = match (&kdf_params, password) {
         (KdfParams::None, _) | (KdfParams::Raw, None | Some("")) => placeholder_master_key()?,
-        (KdfParams::Argon2id { .. }, Some(password)) => {
-            MasterKey::derive_from_passphrase(&kdf_params, password)?
-        }
+        (KdfParams::Argon2id { .. }, Some(password)) => MasterKey::derive_from_passphrase(&kdf_params, password)?,
         (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
         (KdfParams::Raw, Some(_)) => {
             return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
@@ -4208,10 +3621,7 @@ fn open_tzap_archive_with_key_options(
         (KdfParams::RecipientWrap { .. }, _) => unreachable!("recipient wrap handled above"),
     };
     if volume_files.len() == 1 {
-        let volume_file = volume_files
-            .into_iter()
-            .next()
-            .ok_or(FormatError::InvalidArchive("no volumes supplied"))?;
+        let volume_file = volume_files.into_iter().next().ok_or(FormatError::InvalidArchive("no volumes supplied"))?;
         return open_seekable_archive(volume_file, &master_key).map_err(Into::into);
     }
 
@@ -4248,10 +3658,7 @@ fn tzap_destination_path_from_volume_path(path: &Path) -> Option<PathBuf> {
 fn discover_tzap_sibling_volume_paths(path: &Path) -> Option<Vec<PathBuf>> {
     let file_name = path.file_name()?.to_str()?;
     let pattern = parse_tzap_volume_file_name(file_name)?;
-    Some(discover_tzap_volume_paths_by_base(
-        path.parent().unwrap_or_else(|| Path::new(".")),
-        &pattern.base,
-    ))
+    Some(discover_tzap_volume_paths_by_base(path.parent().unwrap_or_else(|| Path::new(".")), &pattern.base))
 }
 
 fn discover_tzap_volume_paths_for_destination(destination: &Path) -> Vec<PathBuf> {
@@ -4259,10 +3666,7 @@ fn discover_tzap_volume_paths_for_destination(destination: &Path) -> Vec<PathBuf
         return Vec::new();
     };
     let base_name = tzap_multi_volume_base_name(file_name);
-    discover_tzap_volume_paths_by_base(
-        destination.parent().unwrap_or_else(|| Path::new(".")),
-        &base_name,
-    )
+    discover_tzap_volume_paths_by_base(destination.parent().unwrap_or_else(|| Path::new(".")), &base_name)
 }
 
 fn discover_tzap_volume_paths_by_base(parent: &Path, base_name: &str) -> Vec<PathBuf> {
@@ -4315,21 +3719,16 @@ fn expected_tzap_input_volume_paths(
             }
         });
 
-    (0..expected_volume_count)
-        .map(|index| tzap_output_volume_path(&base_path, index))
-        .collect()
+    (0..expected_volume_count).map(|index| tzap_output_volume_path(&base_path, index)).collect()
 }
 
 fn read_public_tzap_header(path: &Path) -> Result<PublicTzapHeader, TzapError> {
     let (volume_header, crypto_header_bytes) = read_tzap_crypto_header_bytes(path)?;
-    let fixed_bytes =
-        crypto_header_bytes
-            .get(..CRYPTO_HEADER_FIXED_LEN)
-            .ok_or(FormatError::InvalidLength {
-                structure: "CryptoHeaderFixed",
-                expected: CRYPTO_HEADER_FIXED_LEN,
-                actual: crypto_header_bytes.len(),
-            })?;
+    let fixed_bytes = crypto_header_bytes.get(..CRYPTO_HEADER_FIXED_LEN).ok_or(FormatError::InvalidLength {
+        structure: "CryptoHeaderFixed",
+        expected: CRYPTO_HEADER_FIXED_LEN,
+        actual: crypto_header_bytes.len(),
+    })?;
     let crypto_header = CryptoHeaderFixed::parse(fixed_bytes, volume_header.crypto_header_length)?;
     if crypto_header.stripe_width != volume_header.stripe_width {
         return Err(TzapError::Format(FormatError::InvalidArchive(
@@ -4337,65 +3736,34 @@ fn read_public_tzap_header(path: &Path) -> Result<PublicTzapHeader, TzapError> {
         )));
     }
 
-    Ok(PublicTzapHeader {
-        volume_header,
-        crypto_header,
-    })
+    Ok(PublicTzapHeader { volume_header, crypto_header })
 }
 
 fn read_tzap_crypto_header_bytes(path: &Path) -> Result<(VolumeHeader, Vec<u8>), TzapError> {
-    let mut file = File::open(path).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let mut file = File::open(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     let mut header_bytes = [0u8; VOLUME_HEADER_LEN];
-    file.read_exact(&mut header_bytes)
-        .map_err(|source| TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    file.read_exact(&mut header_bytes).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     let volume_header = VolumeHeader::parse(&header_bytes)?;
     let offset = u64::from(volume_header.crypto_header_offset);
     let length = volume_header.crypto_header_length as usize;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|source| TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    file.seek(SeekFrom::Start(offset)).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     let mut crypto_header_bytes = vec![0u8; length];
-    file.read_exact(&mut crypto_header_bytes)
-        .map_err(|source| TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    file.read_exact(&mut crypto_header_bytes).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     Ok((volume_header, crypto_header_bytes))
 }
 
-fn validate_public_tzap_volume_header(
-    first: &VolumeHeader,
-    current: &VolumeHeader,
-) -> Result<(), TzapError> {
+fn validate_public_tzap_volume_header(first: &VolumeHeader, current: &VolumeHeader) -> Result<(), TzapError> {
     if first.archive_uuid != current.archive_uuid {
-        return Err(TzapError::Format(FormatError::InvalidArchive(
-            "TZAP volume archive UUID mismatch",
-        )));
+        return Err(TzapError::Format(FormatError::InvalidArchive("TZAP volume archive UUID mismatch")));
     }
     if first.session_id != current.session_id {
-        return Err(TzapError::Format(FormatError::InvalidArchive(
-            "TZAP volume session ID mismatch",
-        )));
+        return Err(TzapError::Format(FormatError::InvalidArchive("TZAP volume session ID mismatch")));
     }
     if first.stripe_width != current.stripe_width {
-        return Err(TzapError::Format(FormatError::InvalidArchive(
-            "TZAP volume count mismatch",
-        )));
+        return Err(TzapError::Format(FormatError::InvalidArchive("TZAP volume count mismatch")));
     }
-    if first.format_version != current.format_version
-        || first.volume_format_rev != current.volume_format_rev
-    {
-        return Err(TzapError::Format(FormatError::InvalidArchive(
-            "TZAP volume format mismatch",
-        )));
+    if first.format_version != current.format_version || first.volume_format_rev != current.volume_format_rev {
+        return Err(TzapError::Format(FormatError::InvalidArchive("TZAP volume format mismatch")));
     }
 
     Ok(())
@@ -4403,22 +3771,18 @@ fn validate_public_tzap_volume_header(
 
 fn read_kdf_params_from_path(path: &Path) -> Result<KdfParams, TzapError> {
     let (volume_header, crypto_header_bytes) = read_tzap_crypto_header_bytes(path)?;
-    let fixed_bytes =
-        crypto_header_bytes
-            .get(..CRYPTO_HEADER_FIXED_LEN)
-            .ok_or(FormatError::InvalidLength {
-                structure: "CryptoHeaderFixed",
-                expected: CRYPTO_HEADER_FIXED_LEN,
-                actual: crypto_header_bytes.len(),
-            })?;
+    let fixed_bytes = crypto_header_bytes.get(..CRYPTO_HEADER_FIXED_LEN).ok_or(FormatError::InvalidLength {
+        structure: "CryptoHeaderFixed",
+        expected: CRYPTO_HEADER_FIXED_LEN,
+        actual: crypto_header_bytes.len(),
+    })?;
     let fixed = CryptoHeaderFixed::parse(fixed_bytes, volume_header.crypto_header_length)?;
     if fixed.stripe_width != volume_header.stripe_width {
         return Err(TzapError::Format(FormatError::InvalidArchive(
             "VolumeHeader and CryptoHeader stripe_width differ",
         )));
     }
-    let crypto_header =
-        CryptoHeader::parse(&crypto_header_bytes, volume_header.crypto_header_length)?;
+    let crypto_header = CryptoHeader::parse(&crypto_header_bytes, volume_header.crypto_header_length)?;
     Ok(crypto_header.kdf_params)
 }
 
@@ -4455,36 +3819,21 @@ const fn kdf_algorithm_label(algorithm: KdfAlgo) -> &'static str {
     }
 }
 
-fn commit_extracted_file(
-    source_path: &Path,
-    destination_path: &Path,
-    replace_existing: bool,
-) -> Result<(), TzapError> {
+fn commit_extracted_file(source_path: &Path, destination_path: &Path, replace_existing: bool) -> Result<(), TzapError> {
     if let Some(parent) = destination_path.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent).map_err(|source| TzapError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent).map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })?;
     }
 
     if replace_existing {
-        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| {
-            TzapError::Io {
-                path: destination_path.to_path_buf(),
-                source,
-            }
-        })?;
-        fs::rename(source_path, destination_path).map_err(|source| TzapError::Io {
-            path: destination_path.to_path_buf(),
-            source,
-        })?;
+        crate::safety::remove_destination_for_replace(destination_path)
+            .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
+        fs::rename(source_path, destination_path)
+            .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     } else {
-        fs::hard_link(source_path, destination_path).map_err(|source| TzapError::Io {
-            path: destination_path.to_path_buf(),
-            source,
-        })?;
+        fs::hard_link(source_path, destination_path)
+            .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     }
     Ok(())
 }
@@ -4507,23 +3856,13 @@ struct TemporaryTzapExtractionRoot {
 impl TemporaryTzapExtractionRoot {
     fn new(destination_path: &Path) -> Result<Self, TzapError> {
         let parent = destination_path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent).map_err(|source| TzapError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let destination_name = destination_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("entry");
+        fs::create_dir_all(parent).map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+        let destination_name = destination_path.file_name().and_then(|name| name.to_str()).unwrap_or("entry");
 
         for attempt in 0..TZAP_TEMP_EXTRACT_ATTEMPTS {
-            let path = parent.join(format!(
-                "{TZAP_TEMP_EXTRACT_PREFIX}-{destination_name}-{}-{now}-{attempt}",
-                std::process::id()
-            ));
+            let path = parent
+                .join(format!("{TZAP_TEMP_EXTRACT_PREFIX}-{destination_name}-{}-{now}-{attempt}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { path }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -4533,11 +3872,7 @@ impl TemporaryTzapExtractionRoot {
             }
         }
 
-        Err(io_error(
-            parent,
-            io::ErrorKind::AlreadyExists,
-            "could not allocate temporary TZAP extraction root",
-        ))
+        Err(io_error(parent, io::ErrorKind::AlreadyExists, "could not allocate temporary TZAP extraction root"))
     }
 
     fn path(&self) -> &Path {
@@ -4566,15 +3901,12 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
     match key_source {
         TzapKeySource::Passphrase(passphrase) => {
             let kdf_params = create_kdf_params();
-            let master_key =
-                MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
+            let master_key = MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
             Ok((master_key, kdf_params))
         }
         TzapKeySource::RecipientCertificate(_)
         | TzapKeySource::RecipientCertificates(_)
-        | TzapKeySource::RecipientPublicKeys(_) => {
-            Ok((generate_random_master_key()?, KdfParams::None))
-        }
+        | TzapKeySource::RecipientPublicKeys(_) => Ok((generate_random_master_key()?, KdfParams::None)),
         TzapKeySource::NoPassword => Ok((placeholder_master_key()?, KdfParams::None)),
     }
 }
@@ -4597,20 +3929,12 @@ fn extraction_kind_from_tzap_entry(
         TarEntryKind::Regular => ExtractionEntryKind::File,
         TarEntryKind::Directory => ExtractionEntryKind::Directory,
         TarEntryKind::Symlink => ExtractionEntryKind::Symlink {
-            target: member
-                .and_then(|member| member.link_target.as_deref())
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+            target: member.and_then(|member| member.link_target.as_deref()).map(PathBuf::from).unwrap_or_default(),
         },
         TarEntryKind::Hardlink => ExtractionEntryKind::Hardlink {
-            target: member
-                .and_then(|member| member.link_target.as_deref())
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+            target: member.and_then(|member| member.link_target.as_deref()).map(PathBuf::from).unwrap_or_default(),
         },
-        TarEntryKind::CharacterDevice | TarEntryKind::BlockDevice | TarEntryKind::Fifo => {
-            ExtractionEntryKind::Special
-        }
+        TarEntryKind::CharacterDevice | TarEntryKind::BlockDevice | TarEntryKind::Fifo => ExtractionEntryKind::Special,
     }
 }
 
@@ -4697,16 +4021,10 @@ impl RegularFileSource for TzapRegularFileSource {
         let file = File::open(&self.source_path).map_err(|source| {
             ArchiveWriteError::Io(io::Error::new(
                 source.kind(),
-                format!(
-                    "failed to open TZAP source file {}: {source}",
-                    self.source_path.display()
-                ),
+                format!("failed to open TZAP source file {}: {source}", self.source_path.display()),
             ))
         })?;
-        Ok(Box::new(CancellationAwareReader {
-            inner: file,
-            token: self.cancellation_token.clone(),
-        }))
+        Ok(Box::new(CancellationAwareReader { inner: file, token: self.cancellation_token.clone() }))
     }
 
     fn open_auxiliary(&self, ordinal: usize) -> Result<Box<dyn io::Read + '_>, ArchiveWriteError> {
@@ -4715,25 +4033,18 @@ impl RegularFileSource for TzapRegularFileSource {
             .native
             .auxiliary_records
             .get(ordinal)
-            .ok_or(FormatError::WriterInvariant(
-                "auxiliary source ordinal is missing",
-            ))?;
+            .ok_or(FormatError::WriterInvariant("auxiliary source ordinal is missing"))?;
         if !record.is_streamed() {
             return Ok(Box::new(io::Cursor::new(record.payload.clone())));
         }
         #[cfg(target_os = "macos")]
         {
             if record.kind != "macos.resource-fork" {
-                return Err(FormatError::WriterUnsupported(
-                    "unsupported streamed macOS auxiliary source",
-                )
-                .into());
+                return Err(FormatError::WriterUnsupported("unsupported streamed macOS auxiliary source").into());
             }
             let identity = self
                 .macos_metadata_identity
-                .ok_or(FormatError::WriterInvariant(
-                    "macOS metadata identity is missing",
-                ))?;
+                .ok_or(FormatError::WriterInvariant("macOS metadata identity is missing"))?;
             tzap_core::macos_metadata::open_macos_resource_fork(
                 &self.source_path,
                 self.kind == SourceEntryKind::Symlink,
@@ -4743,10 +4054,7 @@ impl RegularFileSource for TzapRegularFileSource {
             .map_err(ArchiveWriteError::Io)
         }
         #[cfg(not(target_os = "macos"))]
-        Err(FormatError::WriterUnsupported(
-            "streamed auxiliary source is unsupported on this platform",
-        )
-        .into())
+        Err(FormatError::WriterUnsupported("streamed auxiliary source is unsupported on this platform").into())
     }
 }
 
@@ -4828,8 +4136,7 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
 
         if phase == JobPhase::EmittingPayload && !self.started_paths.contains(archive_path) {
             self.started_paths.insert(archive_path.to_owned());
-            self.context
-                .entry_started(archive_path, self.file_sizes.get(archive_path).copied());
+            self.context.entry_started(archive_path, self.file_sizes.get(archive_path).copied());
         }
 
         if let Some(batch) = self.phase_progress.record(Some(archive_path), bytes) {
@@ -4842,9 +4149,7 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
                 processed
             } else {
                 self.processed_by_path.insert(archive_path.to_owned(), 0);
-                self.processed_by_path
-                    .get_mut(archive_path)
-                    .expect("inserted TZAP progress path must exist")
+                self.processed_by_path.get_mut(archive_path).expect("inserted TZAP progress path must exist")
             };
             *processed = processed.saturating_add(bytes);
             if let Some(size) = self.file_sizes.get(archive_path).copied()
@@ -4861,9 +4166,7 @@ impl ArchiveWriteProgressSink for TzapWriteJobProgress<'_, '_, '_> {
 const fn phase_total_bytes(phase: JobPhase, total_source_bytes: u64) -> Option<u64> {
     match phase {
         JobPhase::PlanningPayload | JobPhase::EmittingPayload => Some(total_source_bytes),
-        JobPhase::PlanningMetadata | JobPhase::EmittingMetadata | JobPhase::CommittingOutput => {
-            None
-        }
+        JobPhase::PlanningMetadata | JobPhase::EmittingMetadata | JobPhase::CommittingOutput => None,
     }
 }
 
@@ -4907,9 +4210,7 @@ impl TzapArchiveFileSink {
         }
         let volume_count = self.volume_paths.len();
         if volume_count == 0 {
-            return Err(TzapError::Format(FormatError::WriterInvariant(
-                "no TZAP volumes emitted",
-            )));
+            return Err(TzapError::Format(FormatError::WriterInvariant("no TZAP volumes emitted")));
         }
         if self.outputs.len() != volume_count {
             return Err(TzapError::Format(FormatError::WriterInvariant(
@@ -4917,19 +4218,12 @@ impl TzapArchiveFileSink {
             )));
         }
 
-        remove_tzap_destinations_for_replace(
-            &self.destination,
-            &self.existing_volume_paths,
-            self.replace_existing,
-        )?;
+        remove_tzap_destinations_for_replace(&self.destination, &self.existing_volume_paths, self.replace_existing)?;
 
         for (output, volume_path) in self.outputs.into_iter().zip(self.volume_paths) {
             output
                 .commit_with_file_replace(self.replace_existing)
-                .map_err(|source| TzapError::Io {
-                    path: volume_path,
-                    source,
-                })?;
+                .map_err(|source| TzapError::Io { path: volume_path, source })?;
         }
 
         Ok(volume_count)
@@ -4940,9 +4234,7 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
     fn begin_archive(&mut self, volume_count: usize) -> Result<(), ArchiveWriteError> {
         check_tzap_write_cancelled(&self.cancellation_token)?;
         if volume_count == 0 {
-            return Err(ArchiveWriteError::Format(FormatError::WriterInvariant(
-                "no TZAP volumes emitted",
-            )));
+            return Err(ArchiveWriteError::Format(FormatError::WriterInvariant("no TZAP volumes emitted")));
         }
 
         let volume_paths = tzap_output_volume_paths(&self.destination, volume_count);
@@ -4959,10 +4251,7 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
             outputs.push(AtomicOutputFile::create(volume_path).map_err(|source| {
                 ArchiveWriteError::Io(io::Error::new(
                     source.kind(),
-                    format!(
-                        "failed to create TZAP output volume {}: {source}",
-                        volume_path.display()
-                    ),
+                    format!("failed to create TZAP output volume {}: {source}", volume_path.display()),
                 ))
             })?);
         }
@@ -4977,35 +4266,25 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
         let volume_path = self
             .volume_paths
             .get(volume_index)
-            .ok_or(FormatError::WriterInvariant(
-                "TZAP volume path index is out of bounds",
-            ))?
+            .ok_or(FormatError::WriterInvariant("TZAP volume path index is out of bounds"))?
             .clone();
         let output = self
             .outputs
             .get_mut(volume_index)
-            .ok_or(FormatError::WriterInvariant(
-                "TZAP volume sink index is out of bounds",
-            ))?;
+            .ok_or(FormatError::WriterInvariant("TZAP volume sink index is out of bounds"))?;
         output
             .file_mut()
             .map_err(|source| {
                 ArchiveWriteError::Io(io::Error::new(
                     source.kind(),
-                    format!(
-                        "failed to access TZAP output volume {}: {source}",
-                        volume_path.display()
-                    ),
+                    format!("failed to access TZAP output volume {}: {source}", volume_path.display()),
                 ))
             })?
             .write_all(bytes)
             .map_err(|source| {
                 ArchiveWriteError::Io(io::Error::new(
                     source.kind(),
-                    format!(
-                        "failed to write TZAP output volume {}: {source}",
-                        volume_path.display()
-                    ),
+                    format!("failed to write TZAP output volume {}: {source}", volume_path.display()),
                 ))
             })
     }
@@ -5016,11 +4295,7 @@ impl ArchiveWriteSink for TzapArchiveFileSink {
 }
 
 fn check_tzap_write_cancelled(token: &CancellationToken) -> Result<(), ArchiveWriteError> {
-    if token.is_cancelled() {
-        Err(ArchiveWriteError::Io(io::Error::other(JobCancelled)))
-    } else {
-        Ok(())
-    }
+    if token.is_cancelled() { Err(ArchiveWriteError::Io(io::Error::other(JobCancelled))) } else { Ok(()) }
 }
 
 fn tzap_archive_write_error(error: TzapError) -> ArchiveWriteError {
@@ -5041,16 +4316,10 @@ fn tzap_write_error(path: &Path, error: ArchiveWriteError) -> TzapError {
     match error {
         ArchiveWriteError::Format(source) => TzapError::Format(source),
         ArchiveWriteError::Io(source) => {
-            if source
-                .get_ref()
-                .is_some_and(|source| source.downcast_ref::<JobCancelled>().is_some())
-            {
+            if source.get_ref().is_some_and(|source| source.downcast_ref::<JobCancelled>().is_some()) {
                 TzapError::Cancelled
             } else {
-                TzapError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                }
+                TzapError::Io { path: path.to_path_buf(), source }
             }
         }
     }
@@ -5058,19 +4327,13 @@ fn tzap_write_error(path: &Path, error: ArchiveWriteError) -> TzapError {
 
 fn system_time_to_archive_timestamp(time: SystemTime) -> Option<ArchiveTimestamp> {
     match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => Some(ArchiveTimestamp::new(
-            i64::try_from(duration.as_secs()).ok()?,
-            duration.subsec_nanos(),
-        )),
+        Ok(duration) => Some(ArchiveTimestamp::new(i64::try_from(duration.as_secs()).ok()?, duration.subsec_nanos())),
         Err(error) => {
             let duration = error.duration();
             if duration.as_secs() == 0 && duration.subsec_nanos() != 0 {
                 return None;
             }
-            Some(ArchiveTimestamp::new(
-                i64::try_from(-i128::from(duration.as_secs())).ok()?,
-                duration.subsec_nanos(),
-            ))
+            Some(ArchiveTimestamp::new(i64::try_from(-i128::from(duration.as_secs())).ok()?, duration.subsec_nanos()))
         }
     }
 }
@@ -5083,44 +4346,23 @@ struct CapturedPortableFileMetadata {
 }
 
 fn portable_file_metadata(path: &Path) -> Result<CapturedPortableFileMetadata, TzapError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| TzapError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     let source_os = source_os_label().to_owned();
-    let created = metadata
-        .created()
-        .ok()
-        .and_then(system_time_to_archive_timestamp);
-    let accessed = metadata
-        .accessed()
-        .ok()
-        .and_then(system_time_to_archive_timestamp);
+    let created = metadata.created().ok().and_then(system_time_to_archive_timestamp);
+    let accessed = metadata.accessed().ok().and_then(system_time_to_archive_timestamp);
 
     #[cfg(target_os = "macos")]
-    let captured_macos =
-        tzap_core::macos_metadata::capture_macos_metadata(path, metadata.file_type().is_symlink())
-            .map_err(|source| TzapError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+    let captured_macos = tzap_core::macos_metadata::capture_macos_metadata(path, metadata.file_type().is_symlink())
+        .map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
 
     #[cfg(target_os = "macos")]
     let native = captured_macos.native;
     #[cfg(target_os = "linux")]
-    let native =
-        tzap_core::linux_metadata::capture_linux_metadata(path, metadata.file_type().is_symlink())
-            .map_err(|source| TzapError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+    let native = tzap_core::linux_metadata::capture_linux_metadata(path, metadata.file_type().is_symlink())
+        .map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     #[cfg(windows)]
-    let native = tzap_core::windows_metadata::capture_windows_metadata(path).map_err(|source| {
-        TzapError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
+    let native = tzap_core::windows_metadata::capture_windows_metadata(path)
+        .map_err(|source| TzapError::Io { path: path.to_path_buf(), source })?;
     #[cfg(all(not(target_os = "macos"), not(target_os = "linux"), not(windows)))]
     let native = tzap_core::NativeFileMetadata::default();
 
@@ -5128,11 +4370,7 @@ fn portable_file_metadata(path: &Path) -> Result<CapturedPortableFileMetadata, T
         metadata: PortableFileMetadata {
             source_os,
             source_filesystem: "unknown".to_owned(),
-            mode_origin: if cfg!(unix) {
-                PortableModeOrigin::Native
-            } else {
-                PortableModeOrigin::Projected
-            },
+            mode_origin: if cfg!(unix) { PortableModeOrigin::Native } else { PortableModeOrigin::Projected },
             posix_owner: portable_posix_owner(&metadata),
             attributes: portable_file_attributes(&metadata),
             created,
@@ -5317,44 +4555,35 @@ fn metadata_diagnostic_status_label(status: &MetadataDiagnosticStatus) -> &'stat
 
 #[cfg(unix)]
 fn write_symlink(target: &Path, destination_path: &Path) -> Result<(), TzapError> {
-    std::os::unix::fs::symlink(target, destination_path).map_err(|source| TzapError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    std::os::unix::fs::symlink(target, destination_path)
+        .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(not(unix))]
 fn write_symlink(_target: &Path, destination_path: &Path) -> Result<(), TzapError> {
     Err(TzapError::Io {
         path: destination_path.to_path_buf(),
-        source: io::Error::new(
-            io::ErrorKind::Unsupported,
-            "symlink extraction is not supported on this platform",
-        ),
+        source: io::Error::new(io::ErrorKind::Unsupported, "symlink extraction is not supported on this platform"),
     })
 }
 
 fn write_hardlink(source_path: &Path, destination_path: &Path) -> Result<(), TzapError> {
-    fs::hard_link(source_path, destination_path).map_err(|source| TzapError::Io {
-        path: destination_path.to_path_buf(),
-        source,
-    })
+    fs::hard_link(source_path, destination_path)
+        .map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy,
-        TzapX509SigningOptions, TzapX509TrustOptions,
-        copy_tzap_file_to_writer_with_optional_password,
+        TzapCreateOptions, TzapKeySource, TzapRestoreOptions, TzapRestorePolicy, TzapX509SigningOptions,
+        TzapX509TrustOptions, copy_tzap_file_to_writer_with_optional_password,
         copy_tzap_files_to_writer_with_optional_password, create_tzap_from_manifest_with_context,
         extract_tzap_file_to_destination, extract_tzap_with_optional_password_and_restore_options,
         extract_tzap_with_recipient_key, extract_tzap_with_recipient_key_bytes_and_restore_options,
-        is_tzap_archive_path, list_tzap_index_with_optional_password,
-        list_tzap_with_optional_password, list_tzap_with_password, list_tzap_with_recipient_key,
-        load_x509_trusted_roots, summarize_tzap_public_metadata,
-        test_tzap_with_password_filter_and_x509_trust,
-        test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
+        is_tzap_archive_path, list_tzap_index_with_optional_password, list_tzap_with_optional_password,
+        list_tzap_with_password, list_tzap_with_recipient_key, load_x509_trusted_roots, summarize_tzap_public_metadata,
+        test_tzap_with_password_filter_and_x509_trust, test_tzap_with_recipient_key_filter_and_x509_trust,
+        verify_tzap_x509_public_no_key,
     };
     #[cfg(unix)]
     use super::{
@@ -5437,12 +4666,7 @@ mod tests {
                 std::ptr::null_mut(),
             )
         };
-        assert_ne!(
-            result,
-            0,
-            "failed to create relative symlink fixture: {}",
-            std::io::Error::last_os_error()
-        );
+        assert_ne!(result, 0, "failed to create relative symlink fixture: {}", std::io::Error::last_os_error());
     }
 
     #[cfg(windows)]
@@ -5456,15 +4680,11 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt as _;
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_READ_ATTRIBUTES, FileBasicInfo, GetFileInformationByHandleEx,
+            FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FileBasicInfo, GetFileInformationByHandleEx,
         };
 
-        let mut flags = if directory {
-            FILE_FLAG_BACKUP_SEMANTICS
-        } else {
-            0
-        };
+        let mut flags = if directory { FILE_FLAG_BACKUP_SEMANTICS } else { 0 };
         if reparse_point {
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
         }
@@ -5472,12 +4692,7 @@ mod tests {
             .access_mode(FILE_READ_ATTRIBUTES)
             .custom_flags(flags)
             .open(path)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "failed to open {} for basic-info read: {error}",
-                    path.display()
-                )
-            });
+            .unwrap_or_else(|error| panic!("failed to open {} for basic-info read: {error}", path.display()));
         let mut info = FILE_BASIC_INFO::default();
         assert_ne!(
             unsafe {
@@ -5508,15 +4723,11 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt as _;
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_WRITE_ATTRIBUTES, FileBasicInfo, SetFileInformationByHandle,
+            FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_WRITE_ATTRIBUTES,
+            FileBasicInfo, SetFileInformationByHandle,
         };
 
-        let mut flags = if directory {
-            FILE_FLAG_BACKUP_SEMANTICS
-        } else {
-            0
-        };
+        let mut flags = if directory { FILE_FLAG_BACKUP_SEMANTICS } else { 0 };
         if reparse_point {
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
         }
@@ -5524,12 +4735,7 @@ mod tests {
             .access_mode(FILE_WRITE_ATTRIBUTES)
             .custom_flags(flags)
             .open(path)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "failed to open {} for basic-info write: {error}",
-                    path.display()
-                )
-            });
+            .unwrap_or_else(|error| panic!("failed to open {} for basic-info write: {error}", path.display()));
         assert_ne!(
             unsafe {
                 SetFileInformationByHandle(
@@ -5551,9 +4757,7 @@ mod tests {
     fn windows_process_is_elevated() -> bool {
         use std::mem::size_of;
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::Security::{
-            GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
-        };
+        use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
         let mut token = std::ptr::null_mut();
@@ -5588,20 +4792,11 @@ mod tests {
             DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetSecurityDescriptorLength,
             OWNER_SECURITY_INFORMATION,
         };
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        };
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
 
         let file = fs::OpenOptions::new()
             .read(true)
-            .custom_flags(
-                FILE_FLAG_OPEN_REPARSE_POINT
-                    | if directory {
-                        FILE_FLAG_BACKUP_SEMANTICS
-                    } else {
-                        0
-                    },
-            )
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | if directory { FILE_FLAG_BACKUP_SEMANTICS } else { 0 })
             .open(path)
             .unwrap();
         let mut descriptor = std::ptr::null_mut();
@@ -5617,12 +4812,7 @@ mod tests {
                 &mut descriptor,
             )
         };
-        assert_eq!(
-            status,
-            0,
-            "failed to read security descriptor for {}: {status}",
-            path.display()
-        );
+        assert_eq!(status, 0, "failed to read security descriptor for {}: {status}", path.display());
         let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
         assert!(length >= 20, "security descriptor is too short");
         let bytes = unsafe { std::slice::from_raw_parts(descriptor.cast::<u8>(), length) }.to_vec();
@@ -5671,11 +4861,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn security_descriptor_component(
-        descriptor: &[u8],
-        offset_field: usize,
-        acl: bool,
-    ) -> Option<&[u8]> {
+    fn security_descriptor_component(descriptor: &[u8], offset_field: usize, acl: bool) -> Option<&[u8]> {
         let offset_bytes = descriptor.get(offset_field..offset_field.checked_add(4)?)?;
         let offset = u32::from_le_bytes(offset_bytes.try_into().ok()?) as usize;
         if offset == 0 {
@@ -5698,18 +4884,13 @@ mod tests {
             allow_degraded: false,
             ..Default::default()
         }));
-        assert!(super::should_restore_tzap_metadata(
-            TzapRestoreOptions::default()
-        ));
+        assert!(super::should_restore_tzap_metadata(TzapRestoreOptions::default()));
     }
 
     #[test]
     fn system_restore_authorization_matches_process_elevation() {
-        let options = TzapRestoreOptions {
-            policy: TzapRestorePolicy::System,
-            ..Default::default()
-        }
-        .core_options(false);
+        let options =
+            TzapRestoreOptions { policy: TzapRestorePolicy::System, ..Default::default() }.core_options(false);
         assert_eq!(options.system_authorized, super::process_is_elevated());
     }
 
@@ -5762,22 +4943,12 @@ mod tests {
 
         let selected_volume_path = temp.path("sample.vol001.tzap");
         let listing = list_tzap_with_password(&selected_volume_path, "secret").unwrap();
-        assert!(
-            listing
-                .entries
-                .iter()
-                .any(|entry| entry.path == "nested/small.txt")
-        );
+        assert!(listing.entries.iter().any(|entry| entry.path == "nested/small.txt"));
 
         let destination = temp.path("out/selected.txt");
-        let written = extract_tzap_file_to_destination(
-            &selected_volume_path,
-            "secret",
-            "nested/small.txt",
-            &destination,
-            false,
-        )
-        .unwrap();
+        let written =
+            extract_tzap_file_to_destination(&selected_volume_path, "secret", "nested/small.txt", &destination, false)
+                .unwrap();
 
         assert_eq!(written, Some(12));
         assert_eq!(fs::read(&destination).unwrap(), b"small target");
@@ -5801,10 +4972,7 @@ mod tests {
         assert!(summary.format.password_required);
         assert_eq!(summary.format.volume_loss_tolerance, 0);
         assert_eq!(summary.format.bit_rot_buffer_percentage, 0);
-        assert_eq!(
-            summary.total_size,
-            archive.volumes.iter().map(Vec::len).sum::<usize>() as u64
-        );
+        assert_eq!(summary.total_size, archive.volumes.iter().map(Vec::len).sum::<usize>() as u64);
     }
 
     #[test]
@@ -5822,10 +4990,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 14,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 14,
@@ -5838,9 +5003,7 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        let report =
-            create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-                .unwrap();
+        let report = create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 1);
@@ -5868,14 +5031,8 @@ mod tests {
         fs::write(&empty_file, []).unwrap();
         fs::write(&payload, b"payload").unwrap();
 
-        let directory_permissions = PermissionSnapshot {
-            readonly: false,
-            unix_mode: Some(0o755),
-        };
-        let file_permissions = PermissionSnapshot {
-            readonly: false,
-            unix_mode: Some(0o644),
-        };
+        let directory_permissions = PermissionSnapshot { readonly: false, unix_mode: Some(0o755) };
+        let file_permissions = PermissionSnapshot { readonly: false, unix_mode: Some(0o644) };
         let manifest = ArchiveManifest {
             root: temp.root.clone(),
             entries: vec![
@@ -5924,45 +5081,25 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(
-            &manifest,
-            &archive,
-            &public_metadata_create_options(),
-            &mut context,
-        )
-        .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &public_metadata_create_options(), &mut context)
+            .unwrap();
 
         let full = list_tzap_with_optional_password(&archive, None).unwrap();
         let indexed = list_tzap_index_with_optional_password(&archive, None).unwrap();
-        let mut full_facts = full
-            .entries
-            .into_iter()
-            .map(|entry| (entry.path, entry.kind, entry.size))
-            .collect::<Vec<_>>();
-        let mut indexed_facts = indexed
-            .entries
-            .iter()
-            .map(|entry| (entry.path.clone(), entry.kind, entry.size))
-            .collect::<Vec<_>>();
+        let mut full_facts =
+            full.entries.into_iter().map(|entry| (entry.path, entry.kind, entry.size)).collect::<Vec<_>>();
+        let mut indexed_facts =
+            indexed.entries.iter().map(|entry| (entry.path.clone(), entry.kind, entry.size)).collect::<Vec<_>>();
         full_facts.sort_by(|left, right| left.0.cmp(&right.0));
         indexed_facts.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(indexed_facts, full_facts);
         assert!(indexed.entries.iter().all(|entry| {
-            if entry.kind == super::TzapEntryKind::File && entry.size > 0 {
-                entry.compressed_size > 0
-            } else {
-                true
-            }
+            if entry.kind == super::TzapEntryKind::File && entry.size > 0 { entry.compressed_size > 0 } else { true }
         }));
 
         let mut copied = Vec::new();
-        let report = copy_tzap_file_to_writer_with_optional_password(
-            &archive,
-            None,
-            "folder/payload.txt",
-            &mut copied,
-        )
-        .unwrap();
+        let report =
+            copy_tzap_file_to_writer_with_optional_password(&archive, None, "folder/payload.txt", &mut copied).unwrap();
         assert_eq!(copied, b"payload");
         assert_eq!(report.written_entries, 1);
         assert_eq!(report.written_bytes, 7);
@@ -6001,13 +5138,8 @@ mod tests {
         .unwrap();
         let old_copy_elapsed = old_copy_started.elapsed();
         let exact_copy_started = std::time::Instant::now();
-        let exact_copy = copy_tzap_file_to_writer_with_optional_password(
-            &archive,
-            None,
-            &copy_path,
-            &mut std::io::sink(),
-        )
-        .unwrap();
+        let exact_copy =
+            copy_tzap_file_to_writer_with_optional_password(&archive, None, &copy_path, &mut std::io::sink()).unwrap();
         let exact_copy_elapsed = exact_copy_started.elapsed();
         assert_eq!(exact_copy.written_bytes, old_copy.written_bytes);
         eprintln!(
@@ -6037,10 +5169,7 @@ mod tests {
                 // Windows `SystemTime` has 100-nanosecond precision, so use a
                 // timestamp that every supported platform can represent.
                 modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_700)),
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 7,
@@ -6062,8 +5191,7 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 1);
@@ -6076,9 +5204,7 @@ mod tests {
 
     #[test]
     fn converts_negative_archive_timestamp_to_filesystem_time() {
-        let time =
-            super::archive_timestamp_file_time(super::ArchiveTimestamp::new(-1, 500_000_000))
-                .unwrap();
+        let time = super::archive_timestamp_file_time(super::ArchiveTimestamp::new(-1, 500_000_000)).unwrap();
 
         assert_eq!(time, filetime::FileTime::from_unix_time(-2, 500_000_000));
     }
@@ -6100,10 +5226,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 7,
                 modified: Some(UNIX_EPOCH + Duration::new(1_700_000_000, 234_567_890)),
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o6751),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o6751) },
                 symlink_target: None,
             }],
             total_bytes: 7,
@@ -6124,8 +5247,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let extract_token = CancellationToken::new();
         let mut extract_events = |_| {};
@@ -6143,12 +5265,7 @@ mod tests {
         assert_eq!(metadata.mode() & 0o7777, 0o751);
         assert_eq!(metadata.mtime(), 1_700_000_000);
         assert_eq!(metadata.mtime_nsec(), 234_567_890);
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("setid-mode"))
-        );
+        assert!(report.warnings.iter().any(|warning| warning.contains("setid-mode")));
 
         let content_token = CancellationToken::new();
         let mut content_events = |_| {};
@@ -6158,11 +5275,7 @@ mod tests {
             temp.path("content-out"),
             ExtractionPolicy::default(),
             None,
-            TzapRestoreOptions {
-                policy: TzapRestorePolicy::Content,
-                allow_degraded: false,
-                ..Default::default()
-            },
+            TzapRestoreOptions { policy: TzapRestorePolicy::Content, allow_degraded: false, ..Default::default() },
             &mut content_context,
         )
         .unwrap();
@@ -6224,10 +5337,7 @@ mod tests {
                     file_type: ManifestFileType::Directory,
                     size: 0,
                     modified: Some(directory_time),
-                    permissions: PermissionSnapshot {
-                        readonly: false,
-                        unix_mode: Some(0o1750),
-                    },
+                    permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o1750) },
                     symlink_target: None,
                 },
                 ManifestEntry {
@@ -6236,10 +5346,7 @@ mod tests {
                     file_type: ManifestFileType::Symlink,
                     size: 0,
                     modified: Some(UNIX_EPOCH + Duration::new(1_675_000_000, 456_789_012)),
-                    permissions: PermissionSnapshot {
-                        readonly: false,
-                        unix_mode: Some(0o777),
-                    },
+                    permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o777) },
                     symlink_target: Some(PathBuf::from("file.txt")),
                 },
                 ManifestEntry {
@@ -6248,10 +5355,7 @@ mod tests {
                     file_type: ManifestFileType::File,
                     size: 7,
                     modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
-                    permissions: PermissionSnapshot {
-                        readonly: false,
-                        unix_mode: Some(0o640),
-                    },
+                    permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o640) },
                     symlink_target: None,
                 },
             ],
@@ -6265,8 +5369,7 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let extract_token = CancellationToken::new();
         let mut extract_events = |_| {};
@@ -6287,20 +5390,23 @@ mod tests {
         let link_path = temp.path("out/payload/link.txt");
         let link_metadata = fs::symlink_metadata(&link_path).unwrap();
         assert!(link_metadata.file_type().is_symlink());
-        assert_eq!(
-            fs::read_link(&link_path).unwrap(),
-            PathBuf::from("file.txt")
-        );
+        assert_eq!(fs::read_link(&link_path).unwrap(), PathBuf::from("file.txt"));
         assert_eq!(link_metadata.mtime(), 1_675_000_000);
         assert_eq!(link_metadata.mtime_nsec(), 456_789_012);
         let listing = list_tzap_with_optional_password(&archive, None).unwrap();
         assert_eq!(listing.entries.len(), 3);
-        assert!(listing.entries.iter().any(|entry| {
-            entry.path == "payload" && entry.kind == super::TzapEntryKind::Directory
-        }));
-        assert!(listing.entries.iter().any(|entry| {
-            entry.path == "payload/link.txt" && entry.kind == super::TzapEntryKind::Symlink
-        }));
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| { entry.path == "payload" && entry.kind == super::TzapEntryKind::Directory })
+        );
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| { entry.path == "payload/link.txt" && entry.kind == super::TzapEntryKind::Symlink })
+        );
     }
 
     #[test]
@@ -6314,18 +5420,10 @@ mod tests {
 
         let (recipient_cert, recipient_key) = test_p256_recipient_cert("ZManager Test Recipient");
         fs::write(&recipient_cert_path, recipient_cert.to_pem().unwrap()).unwrap();
-        fs::write(
-            &recipient_key_path,
-            recipient_key.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
+        fs::write(&recipient_key_path, recipient_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
 
         let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
-        let (signer_cert, signer_key) = test_leaf_cert(
-            "ZManager Test Signer",
-            root_cert.as_ref(),
-            root_key.as_ref(),
-        );
+        let (signer_cert, signer_key) = test_leaf_cert("ZManager Test Signer", root_cert.as_ref(), root_key.as_ref());
 
         let manifest = ArchiveManifest {
             root: temp.root.clone(),
@@ -6335,10 +5433,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 14,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 14,
@@ -6356,9 +5451,7 @@ mod tests {
             volume_loss_tolerance: 0,
             x509_signing: Some(TzapX509SigningOptions::InMemory {
                 signing_certificate: signer_cert.to_pem().unwrap(),
-                signing_private_key: SecretBytes::from(
-                    signer_key.private_key_to_pem_pkcs8().unwrap(),
-                ),
+                signing_private_key: SecretBytes::from(signer_key.private_key_to_pem_pkcs8().unwrap()),
                 signing_chain: vec![root_cert.to_der().unwrap()],
             }),
         };
@@ -6366,8 +5459,7 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let summary = summarize_tzap_public_metadata(&archive).unwrap();
         assert_eq!(summary.format.key_derivation, "recipient-wrap");
@@ -6381,29 +5473,16 @@ mod tests {
         assert_eq!(listing.entries.len(), 1);
         assert_eq!(listing.entries[0].path, "payload.txt");
 
-        let report = test_tzap_with_recipient_key_filter_and_x509_trust(
-            &archive,
-            &recipient_key_path,
-            |_| true,
-            None,
-        )
-        .unwrap();
+        let report =
+            test_tzap_with_recipient_key_filter_and_x509_trust(&archive, &recipient_key_path, |_| true, None).unwrap();
         assert_eq!(report.tested_entries, 1);
         assert_eq!(report.tested_bytes, 14);
 
         let out = temp.path("out");
-        let extract_report = extract_tzap_with_recipient_key(
-            &archive,
-            &out,
-            ExtractionPolicy::default(),
-            &recipient_key_path,
-        )
-        .unwrap();
+        let extract_report =
+            extract_tzap_with_recipient_key(&archive, &out, ExtractionPolicy::default(), &recipient_key_path).unwrap();
         assert_eq!(extract_report.written_entries, 1);
-        assert_eq!(
-            fs::read(out.join("payload.txt")).unwrap(),
-            b"sealed payload"
-        );
+        assert_eq!(fs::read(out.join("payload.txt")).unwrap(), b"sealed payload");
 
         let out_from_secure_store = temp.path("out-from-secure-store");
         let extract_report = extract_tzap_with_recipient_key_bytes_and_restore_options(
@@ -6415,10 +5494,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(extract_report.written_entries, 1);
-        assert_eq!(
-            fs::read(out_from_secure_store.join("payload.txt")).unwrap(),
-            b"sealed payload"
-        );
+        assert_eq!(fs::read(out_from_secure_store.join("payload.txt")).unwrap(), b"sealed payload");
     }
 
     #[test]
@@ -6431,26 +5507,12 @@ mod tests {
         let outsider_key_path = temp.path("outsider.key");
         fs::write(&source, b"shared payload").unwrap();
 
-        let (_recipient_one_cert, recipient_one_key) =
-            test_p256_recipient_cert("ZManager Test Recipient One");
-        let (_recipient_two_cert, recipient_two_key) =
-            test_p256_recipient_cert("ZManager Test Recipient Two");
+        let (_recipient_one_cert, recipient_one_key) = test_p256_recipient_cert("ZManager Test Recipient One");
+        let (_recipient_two_cert, recipient_two_key) = test_p256_recipient_cert("ZManager Test Recipient Two");
         let (_outsider_cert, outsider_key) = test_p256_recipient_cert("ZManager Test Outsider");
-        fs::write(
-            &recipient_one_key_path,
-            recipient_one_key.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            &recipient_two_key_path,
-            recipient_two_key.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            &outsider_key_path,
-            outsider_key.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
+        fs::write(&recipient_one_key_path, recipient_one_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+        fs::write(&recipient_two_key_path, recipient_two_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+        fs::write(&outsider_key_path, outsider_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
 
         let manifest = single_file_manifest(&temp, source, 14);
         let options = TzapCreateOptions {
@@ -6470,8 +5532,7 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         for recipient_key_path in [&recipient_one_key_path, &recipient_two_key_path] {
             let listing = list_tzap_with_recipient_key(&archive, recipient_key_path).unwrap();
@@ -6480,11 +5541,7 @@ mod tests {
         }
 
         let outsider_error = list_tzap_with_recipient_key(&archive, outsider_key_path).unwrap_err();
-        assert!(
-            outsider_error
-                .to_string()
-                .contains("no matching recipient private key")
-        );
+        assert!(outsider_error.to_string().contains("no matching recipient private key"));
     }
 
     #[test]
@@ -6503,10 +5560,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: payload.len() as u64,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: payload.len() as u64,
@@ -6528,9 +5582,7 @@ mod tests {
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
 
-        let report =
-            create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-                .unwrap();
+        let report = create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         assert!(report.volume_count > 1);
         assert!(!archive.exists());
@@ -6552,11 +5604,7 @@ mod tests {
         fs::write(&source, b"signed payload").unwrap();
 
         let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
-        let (signer_cert, signer_key) = test_leaf_cert(
-            "ZManager Test Signer",
-            root_cert.as_ref(),
-            root_key.as_ref(),
-        );
+        let (signer_cert, signer_key) = test_leaf_cert("ZManager Test Signer", root_cert.as_ref(), root_key.as_ref());
         fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
         let signer_certificate = signer_cert.to_pem().unwrap();
         let signer_private_key = signer_key.private_key_to_pem_pkcs8().unwrap();
@@ -6569,10 +5617,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 14,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 14,
@@ -6597,44 +5642,26 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
             include_official_tzap_root: false,
         };
-        let report = test_tzap_with_password_filter_and_x509_trust(
-            &archive,
-            "secret",
-            |_| true,
-            Some(&trust),
-        )
-        .unwrap();
+        let report = test_tzap_with_password_filter_and_x509_trust(&archive, "secret", |_| true, Some(&trust)).unwrap();
         let root_auth = report.x509_root_auth.unwrap();
 
         assert_eq!(report.tested_entries, 1);
         assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
         assert_eq!(root_auth.issuer, "CN=ZManager Test Root CA");
-        assert_eq!(
-            root_auth.trust_anchor_subject.as_deref(),
-            Some("CN=ZManager Test Root CA")
-        );
-        assert!(
-            root_auth
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic == "root_auth_content_verified")
-        );
+        assert_eq!(root_auth.trust_anchor_subject.as_deref(), Some("CN=ZManager Test Root CA"));
+        assert!(root_auth.diagnostics.iter().any(|diagnostic| diagnostic == "root_auth_content_verified"));
 
         let public_report = verify_tzap_x509_public_no_key(&archive, &trust).unwrap();
         assert_eq!(public_report.archive_root, root_auth.archive_root);
         assert_eq!(public_report.subject, "CN=ZManager Test Signer");
-        assert_eq!(
-            public_report.trust_anchor_subject.as_deref(),
-            Some("CN=ZManager Test Root CA")
-        );
+        assert_eq!(public_report.trust_anchor_subject.as_deref(), Some("CN=ZManager Test Root CA"));
         assert_eq!(
             public_report.diagnostics.first().map(String::as_str),
             Some("public_data_block_commitment_verified")
@@ -6652,25 +5679,15 @@ mod tests {
         fs::write(&source, b"signed payload").unwrap();
 
         let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
-        let (intermediate_cert, intermediate_key) = test_child_ca_cert(
-            "ZManager Test Intermediate CA",
-            root_cert.as_ref(),
-            root_key.as_ref(),
-        );
-        let (signer_cert, signer_key) = test_leaf_cert(
-            "ZManager Test Signer",
-            intermediate_cert.as_ref(),
-            intermediate_key.as_ref(),
-        );
+        let (intermediate_cert, intermediate_key) =
+            test_child_ca_cert("ZManager Test Intermediate CA", root_cert.as_ref(), root_key.as_ref());
+        let (signer_cert, signer_key) =
+            test_leaf_cert("ZManager Test Signer", intermediate_cert.as_ref(), intermediate_key.as_ref());
         fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
         let mut signer_bundle = signer_cert.to_pem().unwrap();
         signer_bundle.extend(intermediate_cert.to_pem().unwrap());
         fs::write(&signer_bundle_path, signer_bundle).unwrap();
-        fs::write(
-            &signer_key_path,
-            signer_key.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
+        fs::write(&signer_key_path, signer_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
 
         let manifest = ArchiveManifest {
             root: temp.root.clone(),
@@ -6680,10 +5697,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 14,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 14,
@@ -6708,21 +5722,14 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
             include_official_tzap_root: false,
         };
-        let report = test_tzap_with_password_filter_and_x509_trust(
-            &archive,
-            "secret",
-            |_| true,
-            Some(&trust),
-        )
-        .unwrap();
+        let report = test_tzap_with_password_filter_and_x509_trust(&archive, "secret", |_| true, Some(&trust)).unwrap();
         let root_auth = report.x509_root_auth.unwrap();
 
         assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
@@ -6735,10 +5742,7 @@ mod tests {
                 "CN=ZManager Test Root CA".to_owned(),
             ]
         );
-        assert_eq!(
-            root_auth.trust_anchor_subject.as_deref(),
-            Some("CN=ZManager Test Root CA")
-        );
+        assert_eq!(root_auth.trust_anchor_subject.as_deref(), Some("CN=ZManager Test Root CA"));
     }
 
     #[test]
@@ -6751,16 +5755,10 @@ mod tests {
         fs::write(&source, b"signed payload").unwrap();
 
         let (root_cert, root_key) = test_ca_cert("ZManager Test Root CA");
-        let (intermediate_cert, intermediate_key) = test_child_ca_cert(
-            "ZManager Test Intermediate CA",
-            root_cert.as_ref(),
-            root_key.as_ref(),
-        );
-        let (signer_cert, signer_key) = test_leaf_cert(
-            "ZManager Test Signer",
-            intermediate_cert.as_ref(),
-            intermediate_key.as_ref(),
-        );
+        let (intermediate_cert, intermediate_key) =
+            test_child_ca_cert("ZManager Test Intermediate CA", root_cert.as_ref(), root_key.as_ref());
+        let (signer_cert, signer_key) =
+            test_leaf_cert("ZManager Test Signer", intermediate_cert.as_ref(), intermediate_key.as_ref());
         fs::write(&root_ca_path, root_cert.to_pem().unwrap()).unwrap();
         let mut chain = Stack::new().unwrap();
         chain.push(intermediate_cert).unwrap();
@@ -6781,10 +5779,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: 14,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: 14,
@@ -6808,29 +5803,19 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let trust = TzapX509TrustOptions {
             trusted_ca_certificates: vec![root_ca_path],
             trusted_system_roots: false,
             include_official_tzap_root: false,
         };
-        let report = test_tzap_with_password_filter_and_x509_trust(
-            &archive,
-            "secret",
-            |_| true,
-            Some(&trust),
-        )
-        .unwrap();
+        let report = test_tzap_with_password_filter_and_x509_trust(&archive, "secret", |_| true, Some(&trust)).unwrap();
         let root_auth = report.x509_root_auth.unwrap();
 
         assert_eq!(root_auth.subject, "CN=ZManager Test Signer");
         assert_eq!(root_auth.issuer, "CN=ZManager Test Intermediate CA");
-        assert_eq!(
-            root_auth.trust_anchor_subject.as_deref(),
-            Some("CN=ZManager Test Root CA")
-        );
+        assert_eq!(root_auth.trust_anchor_subject.as_deref(), Some("CN=ZManager Test Root CA"));
     }
 
     #[cfg(windows)]
@@ -6853,16 +5838,9 @@ mod tests {
         fs::create_dir_all(&source_directory).unwrap();
         fs::write(&source_file, b"windows core metadata").unwrap();
         create_windows_relative_symlink(&source_link, r"scripts\payload.txt");
-        fs::write(
-            PathBuf::from(format!("{}:zmanager-core", source_file.display())),
-            b"file alternate data",
-        )
-        .unwrap();
-        fs::write(
-            PathBuf::from(format!("{}:zmanager-core", source_directory.display())),
-            b"directory alternate data",
-        )
-        .unwrap();
+        fs::write(PathBuf::from(format!("{}:zmanager-core", source_file.display())), b"file alternate data").unwrap();
+        fs::write(PathBuf::from(format!("{}:zmanager-core", source_directory.display())), b"directory alternate data")
+            .unwrap();
 
         let mut file_basic = windows_basic_info(&source_file, false, false);
         file_basic.CreationTime = WINDOWS_EPOCH_OFFSET - 40_000_000_000;
@@ -6899,10 +5877,7 @@ mod tests {
                 file_type: ManifestFileType::Directory,
                 size: 0,
                 modified: fs::symlink_metadata(&source_root).unwrap().modified().ok(),
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: None,
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: None },
                 symlink_target: None,
             },
             ManifestEntry {
@@ -6910,14 +5885,8 @@ mod tests {
                 source_path: source_directory.clone(),
                 file_type: ManifestFileType::Directory,
                 size: 0,
-                modified: fs::symlink_metadata(&source_directory)
-                    .unwrap()
-                    .modified()
-                    .ok(),
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: None,
-                },
+                modified: fs::symlink_metadata(&source_directory).unwrap().modified().ok(),
+                permissions: PermissionSnapshot { readonly: false, unix_mode: None },
                 symlink_target: None,
             },
             ManifestEntry {
@@ -6926,10 +5895,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size: b"windows core metadata".len() as u64,
                 modified: fs::symlink_metadata(&source_file).unwrap().modified().ok(),
-                permissions: PermissionSnapshot {
-                    readonly: true,
-                    unix_mode: None,
-                },
+                permissions: PermissionSnapshot { readonly: true, unix_mode: None },
                 symlink_target: None,
             },
             ManifestEntry {
@@ -6938,10 +5904,7 @@ mod tests {
                 file_type: ManifestFileType::Symlink,
                 size: 0,
                 modified: fs::symlink_metadata(&source_link).unwrap().modified().ok(),
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: None,
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: None },
                 symlink_target: Some(PathBuf::from(r"scripts\payload.txt")),
             },
         ];
@@ -6958,45 +5921,25 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let listing = list_entries(&archive).unwrap();
-        let listed_file = listing
-            .entries
-            .iter()
-            .find(|entry| entry.path == "project/scripts/payload.txt")
-            .unwrap();
+        let listed_file = listing.entries.iter().find(|entry| entry.path == "project/scripts/payload.txt").unwrap();
         assert_eq!(listed_file.kind, BrowserEntryKind::File);
         assert!(listed_file.created.is_some());
         assert!(listed_file.accessed.is_some());
         assert!(listed_file.attributes.is_some());
-        let listed_directory = listing
-            .entries
-            .iter()
-            .find(|entry| entry.path == "project/scripts")
-            .unwrap();
+        let listed_directory = listing.entries.iter().find(|entry| entry.path == "project/scripts").unwrap();
         assert_eq!(listed_directory.kind, BrowserEntryKind::Directory);
         assert!(listed_directory.created.is_some());
         assert!(listed_directory.accessed.is_some());
         assert!(listed_directory.attributes.is_some());
-        let listed_link = listing
-            .entries
-            .iter()
-            .find(|entry| entry.path == "project/current.txt")
-            .unwrap();
+        let listed_link = listing.entries.iter().find(|entry| entry.path == "project/current.txt").unwrap();
         assert_eq!(listed_link.kind, BrowserEntryKind::Symlink);
-        assert_eq!(
-            listed_link.link_target.as_deref(),
-            Some("scripts/payload.txt")
-        );
+        assert_eq!(listed_link.link_target.as_deref(), Some("scripts/payload.txt"));
 
         let policies: &[TzapRestorePolicy] = if windows_process_is_elevated() {
-            &[
-                TzapRestorePolicy::Portable,
-                TzapRestorePolicy::SameOs,
-                TzapRestorePolicy::System,
-            ]
+            &[TzapRestorePolicy::Portable, TzapRestorePolicy::SameOs, TzapRestorePolicy::System]
         } else {
             &[TzapRestorePolicy::Portable, TzapRestorePolicy::SameOs]
         };
@@ -7030,15 +5973,9 @@ mod tests {
             let actual_directory_basic = windows_basic_info(&restored_directory, true, false);
             let actual_link_basic = windows_basic_info(&restored_link, false, true);
             assert_eq!(fs::read(&restored_file).unwrap(), b"windows core metadata");
-            assert_eq!(
-                fs::read_link(&restored_link).unwrap(),
-                PathBuf::from("scripts/payload.txt")
-            );
-            let expected_attribute_mask = if policy == TzapRestorePolicy::Portable {
-                READONLY
-            } else {
-                MUTABLE_ATTRIBUTES
-            };
+            assert_eq!(fs::read_link(&restored_link).unwrap(), PathBuf::from("scripts/payload.txt"));
+            let expected_attribute_mask =
+                if policy == TzapRestorePolicy::Portable { READONLY } else { MUTABLE_ATTRIBUTES };
             assert_eq!(
                 actual_file_basic.FileAttributes & expected_attribute_mask,
                 file_basic.FileAttributes & expected_attribute_mask
@@ -7048,28 +5985,17 @@ mod tests {
                 directory_basic.FileAttributes & expected_attribute_mask
             );
             assert_eq!(actual_file_basic.LastWriteTime, file_basic.LastWriteTime);
-            assert_eq!(
-                actual_directory_basic.LastWriteTime,
-                directory_basic.LastWriteTime
-            );
+            assert_eq!(actual_directory_basic.LastWriteTime, directory_basic.LastWriteTime);
             assert_eq!(actual_link_basic.LastWriteTime, link_basic.LastWriteTime);
 
-            let restored_file_ads =
-                PathBuf::from(format!("{}:zmanager-core", restored_file.display()));
-            let restored_directory_ads =
-                PathBuf::from(format!("{}:zmanager-core", restored_directory.display()));
+            let restored_file_ads = PathBuf::from(format!("{}:zmanager-core", restored_file.display()));
+            let restored_directory_ads = PathBuf::from(format!("{}:zmanager-core", restored_directory.display()));
             if policy == TzapRestorePolicy::Portable {
                 assert!(fs::read(&restored_file_ads).is_err());
                 assert!(fs::read(&restored_directory_ads).is_err());
             } else {
-                assert_eq!(
-                    fs::read(&restored_file_ads).unwrap(),
-                    b"file alternate data"
-                );
-                assert_eq!(
-                    fs::read(&restored_directory_ads).unwrap(),
-                    b"directory alternate data"
-                );
+                assert_eq!(fs::read(&restored_file_ads).unwrap(), b"file alternate data");
+                assert_eq!(fs::read(&restored_directory_ads).unwrap(), b"directory alternate data");
                 for (actual, expected) in [
                     (actual_file_basic, file_basic),
                     (actual_directory_basic, directory_basic),
@@ -7127,19 +6053,10 @@ mod tests {
         #[cfg(target_os = "macos")]
         {
             xattr::set(&file_path, "com.tzap.test", b"zmanager metadata").unwrap();
-            xattr::set(
-                &directory_path,
-                "com.tzap.test",
-                b"zmanager directory metadata",
-            )
-            .unwrap();
+            xattr::set(&directory_path, "com.tzap.test", b"zmanager directory metadata").unwrap();
             xattr::set(&file_path, "com.apple.FinderInfo", &[0x5a; 32]).unwrap();
             xattr::set(&directory_path, "com.apple.FinderInfo", &[0x5b; 32]).unwrap();
-            fs::write(
-                file_path.join("..namedfork/rsrc"),
-                vec![0x6b; 2 * 1024 * 1024 + 31],
-            )
-            .unwrap();
+            fs::write(file_path.join("..namedfork/rsrc"), vec![0x6b; 2 * 1024 * 1024 + 31]).unwrap();
             let acl_status = std::process::Command::new("/bin/chmod")
                 .args(["+a", "everyone deny delete"])
                 .arg(&file_path)
@@ -7186,12 +6103,8 @@ mod tests {
             xattr::set(&file_path, "system.posix_acl_access", &file_acl).unwrap();
             xattr::set(&directory_path, "system.posix_acl_access", &directory_acl).unwrap();
             (
-                xattr::get(&file_path, "system.posix_acl_access")
-                    .unwrap()
-                    .unwrap(),
-                xattr::get(&directory_path, "system.posix_acl_access")
-                    .unwrap()
-                    .unwrap(),
+                xattr::get(&file_path, "system.posix_acl_access").unwrap().unwrap(),
+                xattr::get(&directory_path, "system.posix_acl_access").unwrap().unwrap(),
             )
         };
 
@@ -7232,10 +6145,7 @@ mod tests {
             file_type: ManifestFileType::File,
             size: payload.len() as u64,
             modified: file_modified,
-            permissions: PermissionSnapshot {
-                readonly: false,
-                unix_mode: Some(0o640),
-            },
+            permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o640) },
             symlink_target: None,
         }];
         entries.push(ManifestEntry {
@@ -7243,10 +6153,7 @@ mod tests {
             source_path: directory_path.clone(),
             file_type: ManifestFileType::Directory,
             size: 0,
-            modified: fs::symlink_metadata(&directory_path)
-                .unwrap()
-                .modified()
-                .ok(),
+            modified: fs::symlink_metadata(&directory_path).unwrap().modified().ok(),
             permissions: PermissionSnapshot {
                 readonly: false,
                 #[cfg(unix)]
@@ -7265,10 +6172,7 @@ mod tests {
                 file_type: ManifestFileType::Symlink,
                 size: 0,
                 modified: sym_modified,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o777),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o777) },
                 symlink_target: Some(symlink_target.into()),
             }
         });
@@ -7296,24 +6200,16 @@ mod tests {
         let token = CancellationToken::new();
         let mut events = |_| {};
         let mut context = JobContext::new(&token, &mut events);
-        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context)
-            .unwrap();
+        create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
 
         let listing = list_entries(&archive).unwrap();
-        let file_entry = listing
-            .entries
-            .iter()
-            .find(|e| e.path == "data.bin")
-            .unwrap();
+        let file_entry = listing.entries.iter().find(|e| e.path == "data.bin").unwrap();
 
         // --- name ---
         assert_eq!(file_entry.path, "data.bin");
 
         // --- kind ---
-        assert_eq!(
-            file_entry.kind,
-            crate::archive_browser::BrowserEntryKind::File
-        );
+        assert_eq!(file_entry.kind, crate::archive_browser::BrowserEntryKind::File);
 
         // --- size ---
         assert_eq!(file_entry.size, Some(payload.len() as u64));
@@ -7343,24 +6239,11 @@ mod tests {
             assert_eq!(file_gid, source_file_metadata.gid());
 
             // owner / group — name resolution
-            assert!(
-                file_entry.owner.is_some(),
-                "owner name should be resolved from uid"
-            );
-            assert!(
-                file_entry.group.is_some(),
-                "group name should be resolved from gid"
-            );
+            assert!(file_entry.owner.is_some(), "owner name should be resolved from uid");
+            assert!(file_entry.group.is_some(), "group name should be resolved from gid");
 
-            let directory = listing
-                .entries
-                .iter()
-                .find(|entry| entry.path == "folder")
-                .unwrap();
-            assert_eq!(
-                directory.kind,
-                crate::archive_browser::BrowserEntryKind::Directory
-            );
+            let directory = listing.entries.iter().find(|entry| entry.path == "folder").unwrap();
+            assert_eq!(directory.kind, crate::archive_browser::BrowserEntryKind::Directory);
             assert_eq!(directory.mode, Some(0o750));
             assert_eq!(directory.uid, file_entry.uid);
             assert_eq!(directory.gid, file_entry.gid);
@@ -7368,22 +6251,10 @@ mod tests {
             assert_eq!(directory.group, file_entry.group);
 
             // symlink
-            let sym = listing
-                .entries
-                .iter()
-                .find(|e| e.path == "link.txt")
-                .unwrap();
-            assert_eq!(
-                sym.kind,
-                crate::archive_browser::BrowserEntryKind::Symlink,
-                "symlink kind"
-            );
+            let sym = listing.entries.iter().find(|e| e.path == "link.txt").unwrap();
+            assert_eq!(sym.kind, crate::archive_browser::BrowserEntryKind::Symlink, "symlink kind");
             assert_eq!(sym.mode, Some(0o777), "symlink mode");
-            assert_eq!(
-                sym.link_target.as_deref(),
-                Some(symlink_target),
-                "link target"
-            );
+            assert_eq!(sym.link_target.as_deref(), Some(symlink_target), "link target");
             assert!(sym.uid.is_some(), "symlink uid");
             assert!(sym.gid.is_some(), "symlink gid");
         }
@@ -7408,29 +6279,18 @@ mod tests {
             TzapRestoreOptions::default(),
         )
         .expect("portable extraction must not reject native flags");
-        assert_eq!(
-            fs::read(portable_destination.join("data.bin")).unwrap(),
-            payload
-        );
+        assert_eq!(fs::read(portable_destination.join("data.bin")).unwrap(), payload);
         assert!(portable_destination.join("folder").is_dir());
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
             assert_eq!(
-                fs::symlink_metadata(portable_destination.join("data.bin"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o7777,
+                fs::symlink_metadata(portable_destination.join("data.bin")).unwrap().permissions().mode() & 0o7777,
                 0o640
             );
             assert_eq!(
-                fs::symlink_metadata(portable_destination.join("folder"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o7777,
+                fs::symlink_metadata(portable_destination.join("folder")).unwrap().permissions().mode() & 0o7777,
                 0o750
             );
             assert_eq!(
@@ -7439,36 +6299,18 @@ mod tests {
             );
             let restored = fs::symlink_metadata(portable_destination.join("data.bin")).unwrap();
             let source = fs::symlink_metadata(&file_path).unwrap();
-            assert_eq!(
-                (restored.mtime(), restored.mtime_nsec()),
-                (source.mtime(), source.mtime_nsec())
-            );
+            assert_eq!((restored.mtime(), restored.mtime_nsec()), (source.mtime(), source.mtime_nsec()));
         }
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(
-                xattr::get(portable_destination.join("data.bin"), "com.tzap.test").unwrap(),
-                None
-            );
-            assert_eq!(
-                xattr::get(portable_destination.join("folder"), "com.tzap.test").unwrap(),
-                None
-            );
-            assert_eq!(
-                xattr::get(portable_destination.join("link.txt"), "com.tzap.link").unwrap(),
-                None
-            );
+            assert_eq!(xattr::get(portable_destination.join("data.bin"), "com.tzap.test").unwrap(), None);
+            assert_eq!(xattr::get(portable_destination.join("folder"), "com.tzap.test").unwrap(), None);
+            assert_eq!(xattr::get(portable_destination.join("link.txt"), "com.tzap.link").unwrap(), None);
         }
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(
-                xattr::get(portable_destination.join("data.bin"), "user.zmanager.test").unwrap(),
-                None
-            );
-            assert_eq!(
-                xattr::get(portable_destination.join("folder"), "user.zmanager.test").unwrap(),
-                None
-            );
+            assert_eq!(xattr::get(portable_destination.join("data.bin"), "user.zmanager.test").unwrap(), None);
+            assert_eq!(xattr::get(portable_destination.join("folder"), "user.zmanager.test").unwrap(), None);
         }
 
         #[cfg(target_os = "macos")]
@@ -7492,14 +6334,9 @@ mod tests {
             let restored = native_destination.join("data.bin");
             let restored_directory = native_destination.join("folder");
             let restored_link = native_destination.join("link.txt");
+            assert_eq!(fs::metadata(&restored).unwrap().st_flags(), fs::metadata(&file_path).unwrap().st_flags());
             assert_eq!(
-                fs::metadata(&restored).unwrap().st_flags(),
-                fs::metadata(&file_path).unwrap().st_flags()
-            );
-            assert_eq!(
-                fs::symlink_metadata(&restored_directory)
-                    .unwrap()
-                    .st_flags(),
+                fs::symlink_metadata(&restored_directory).unwrap().st_flags(),
                 fs::symlink_metadata(&directory_path).unwrap().st_flags()
             );
             assert_eq!(
@@ -7507,10 +6344,7 @@ mod tests {
                 fs::symlink_metadata(&symlink_path).unwrap().st_flags()
             );
             assert_eq!(
-                (
-                    fs::metadata(&restored).unwrap().st_birthtime(),
-                    fs::metadata(&restored).unwrap().st_birthtime_nsec(),
-                ),
+                (fs::metadata(&restored).unwrap().st_birthtime(), fs::metadata(&restored).unwrap().st_birthtime_nsec(),),
                 (
                     fs::metadata(&file_path).unwrap().st_birthtime(),
                     fs::metadata(&file_path).unwrap().st_birthtime_nsec(),
@@ -7521,39 +6355,21 @@ mod tests {
                 Some(b"zmanager metadata".as_slice())
             );
             assert_eq!(
-                xattr::get(&restored_directory, "com.tzap.test")
-                    .unwrap()
-                    .as_deref(),
+                xattr::get(&restored_directory, "com.tzap.test").unwrap().as_deref(),
                 Some(b"zmanager directory metadata".as_slice())
             );
             assert_eq!(
-                xattr::get(&restored_link, "com.tzap.link")
-                    .unwrap()
-                    .as_deref(),
+                xattr::get(&restored_link, "com.tzap.link").unwrap().as_deref(),
                 Some(b"zmanager link metadata".as_slice())
             );
+            assert_eq!(xattr::get(&restored, "com.apple.FinderInfo").unwrap().as_deref(), Some([0x5a; 32].as_slice()));
             assert_eq!(
-                xattr::get(&restored, "com.apple.FinderInfo")
-                    .unwrap()
-                    .as_deref(),
-                Some([0x5a; 32].as_slice())
-            );
-            assert_eq!(
-                xattr::get(&restored_directory, "com.apple.FinderInfo")
-                    .unwrap()
-                    .as_deref(),
+                xattr::get(&restored_directory, "com.apple.FinderInfo").unwrap().as_deref(),
                 Some([0x5b; 32].as_slice())
             );
-            assert_eq!(
-                fs::read(restored.join("..namedfork/rsrc")).unwrap(),
-                vec![0x6b; 2 * 1024 * 1024 + 31]
-            );
+            assert_eq!(fs::read(restored.join("..namedfork/rsrc")).unwrap(), vec![0x6b; 2 * 1024 * 1024 + 31]);
             for restored_path in [&restored, &restored_directory, &restored_link] {
-                let acl = std::process::Command::new("/bin/ls")
-                    .args(["-lde"])
-                    .arg(restored_path)
-                    .output()
-                    .unwrap();
+                let acl = std::process::Command::new("/bin/ls").args(["-lde"]).arg(restored_path).output().unwrap();
                 assert!(acl.status.success());
                 assert!(String::from_utf8_lossy(&acl.stdout).contains("everyone deny delete"));
             }
@@ -7572,11 +6388,9 @@ mod tests {
                     },
                 )
                 .expect("system extraction");
-                for (relative, source) in [
-                    ("data.bin", &file_path),
-                    ("folder", &directory_path),
-                    ("link.txt", &symlink_path),
-                ] {
+                for (relative, source) in
+                    [("data.bin", &file_path), ("folder", &directory_path), ("link.txt", &symlink_path)]
+                {
                     use std::os::unix::fs::MetadataExt as _;
                     let actual = fs::symlink_metadata(system_destination.join(relative)).unwrap();
                     let expected = fs::symlink_metadata(source).unwrap();
@@ -7621,41 +6435,27 @@ mod tests {
                 assert_eq!(restored_file.permissions().mode() & 0o7777, 0o640);
                 assert_eq!(restored_directory.permissions().mode() & 0o7777, 0o750);
                 assert!(restored_link.file_type().is_symlink());
+                assert_eq!(fs::read_link(destination.join("link.txt")).unwrap(), std::path::Path::new(symlink_target));
                 assert_eq!(
-                    fs::read_link(destination.join("link.txt")).unwrap(),
-                    std::path::Path::new(symlink_target)
-                );
-                assert_eq!(
-                    xattr::get(destination.join("data.bin"), "user.zmanager.test")
-                        .unwrap()
-                        .as_deref(),
+                    xattr::get(destination.join("data.bin"), "user.zmanager.test").unwrap().as_deref(),
                     Some(b"file metadata".as_slice())
                 );
                 assert_eq!(
-                    xattr::get(destination.join("folder"), "user.zmanager.test")
-                        .unwrap()
-                        .as_deref(),
+                    xattr::get(destination.join("folder"), "user.zmanager.test").unwrap().as_deref(),
                     Some(b"directory metadata".as_slice())
                 );
                 assert_eq!(
-                    xattr::get(destination.join("data.bin"), "system.posix_acl_access")
-                        .unwrap()
-                        .as_deref(),
+                    xattr::get(destination.join("data.bin"), "system.posix_acl_access").unwrap().as_deref(),
                     Some(expected_file_acl.as_slice())
                 );
                 assert_eq!(
-                    xattr::get(destination.join("folder"), "system.posix_acl_access")
-                        .unwrap()
-                        .as_deref(),
+                    xattr::get(destination.join("folder"), "system.posix_acl_access").unwrap().as_deref(),
                     Some(expected_directory_acl.as_slice())
                 );
                 if policy == TzapRestorePolicy::System {
                     for (actual, source) in [
                         (restored_file, fs::symlink_metadata(&file_path).unwrap()),
-                        (
-                            restored_directory,
-                            fs::symlink_metadata(&directory_path).unwrap(),
-                        ),
+                        (restored_directory, fs::symlink_metadata(&directory_path).unwrap()),
                         (restored_link, fs::symlink_metadata(&symlink_path).unwrap()),
                     ] {
                         assert_eq!(actual.uid(), source.uid());
@@ -7667,12 +6467,7 @@ mod tests {
     }
 
     fn create_test_tzap_archive(files: &[RegularFile<'_>]) -> tzap_core::writer::WrittenArchive {
-        let kdf = KdfParams::Argon2id {
-            t_cost: 1,
-            m_cost_kib: 8,
-            parallelism: 1,
-            salt: b"12345678".to_vec(),
-        };
+        let kdf = KdfParams::Argon2id { t_cost: 1, m_cost_kib: 8, parallelism: 1, salt: b"12345678".to_vec() };
         let key = MasterKey::derive_from_passphrase(&kdf, "secret").unwrap();
         let options = WriterOptions {
             stripe_width: 4,
@@ -7693,10 +6488,7 @@ mod tests {
                 file_type: ManifestFileType::File,
                 size,
                 modified: None,
-                permissions: PermissionSnapshot {
-                    readonly: false,
-                    unix_mode: Some(0o644),
-                },
+                permissions: PermissionSnapshot { readonly: false, unix_mode: Some(0o644) },
                 symlink_target: None,
             }],
             total_bytes: size,
@@ -7717,34 +6509,15 @@ mod tests {
         builder.set_subject_name(&name).unwrap();
         builder.set_issuer_name(&name).unwrap();
         builder.set_pubkey(&key).unwrap();
-        builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-            .unwrap();
-        builder
-            .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_cert_sign()
-                    .crl_sign()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+        builder.append_extension(BasicConstraints::new().critical().ca().build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
         builder.sign(&key, MessageDigest::sha256()).unwrap();
         (builder.build(), key)
     }
 
-    fn test_child_ca_cert(
-        common_name: &str,
-        ca_cert: &X509Ref,
-        ca_key: &PKeyRef<Private>,
-    ) -> (X509, PKey<Private>) {
+    fn test_child_ca_cert(common_name: &str, ca_cert: &X509Ref, ca_key: &PKeyRef<Private>) -> (X509, PKey<Private>) {
         let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", common_name).unwrap();
@@ -7755,34 +6528,15 @@ mod tests {
         builder.set_subject_name(&name).unwrap();
         builder.set_issuer_name(ca_cert.subject_name()).unwrap();
         builder.set_pubkey(&key).unwrap();
-        builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-            .unwrap();
-        builder
-            .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_cert_sign()
-                    .crl_sign()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+        builder.append_extension(BasicConstraints::new().critical().ca().build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
         builder.sign(ca_key, MessageDigest::sha256()).unwrap();
         (builder.build(), key)
     }
 
-    fn test_leaf_cert(
-        common_name: &str,
-        ca_cert: &X509Ref,
-        ca_key: &PKeyRef<Private>,
-    ) -> (X509, PKey<Private>) {
+    fn test_leaf_cert(common_name: &str, ca_cert: &X509Ref, ca_key: &PKeyRef<Private>) -> (X509, PKey<Private>) {
         let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", common_name).unwrap();
@@ -7793,24 +6547,10 @@ mod tests {
         builder.set_subject_name(&name).unwrap();
         builder.set_issuer_name(ca_cert.subject_name()).unwrap();
         builder.set_pubkey(&key).unwrap();
-        builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-            .unwrap();
-        builder
-            .append_extension(BasicConstraints::new().build().unwrap())
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .digital_signature()
-                    .build()
-                    .unwrap(),
-            )
-            .unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+        builder.append_extension(BasicConstraints::new().build().unwrap()).unwrap();
+        builder.append_extension(KeyUsage::new().critical().digital_signature().build().unwrap()).unwrap();
         builder.sign(ca_key, MessageDigest::sha256()).unwrap();
         (builder.build(), key)
     }
@@ -7827,24 +6567,11 @@ mod tests {
         builder.set_subject_name(&name).unwrap();
         builder.set_issuer_name(&name).unwrap();
         builder.set_pubkey(&key).unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+        builder.append_extension(BasicConstraints::new().build().unwrap()).unwrap();
         builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-            .unwrap();
-        builder
-            .append_extension(BasicConstraints::new().build().unwrap())
-            .unwrap();
-        builder
-            .append_extension(
-                KeyUsage::new()
-                    .critical()
-                    .key_agreement()
-                    .digital_signature()
-                    .build()
-                    .unwrap(),
-            )
+            .append_extension(KeyUsage::new().critical().key_agreement().digital_signature().build().unwrap())
             .unwrap();
         builder.sign(&key, MessageDigest::sha256()).unwrap();
         (builder.build(), key)
@@ -7884,12 +6611,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
             Self { root }
         }

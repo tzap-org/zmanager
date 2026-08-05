@@ -1,20 +1,18 @@
 //! Certificate renewal, revocation, and local device-retirement flows.
 
 use crate::auth_client::{
-    SESSION_AUDIENCE_LOGIN_TZAP, SESSION_AUDIENCE_SIGN_TZAP, TzapAuthError, TzapAuthHttpMethod,
-    TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport, TzapBearerToken,
-    TzapSessionRecord,
+    SESSION_AUDIENCE_LOGIN_TZAP, SESSION_AUDIENCE_SIGN_TZAP, TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest,
+    TzapAuthHttpResponse, TzapAuthHttpTransport, TzapBearerToken, TzapSessionRecord,
 };
 use crate::enrollment_client::{
-    ENROLLMENT_CHALLENGE_CANONICALIZATION, ENROLLMENT_CHALLENGES_PATH,
-    TzapEnrollmentCertificateValidator, TzapEnrollmentError, TzapEnrollmentRequest,
-    canonicalize_local_staging_server_json_bytes, csr_der_to_pem, csr_fingerprint,
-    parse_enrollment_response, requested_validity_days,
+    ENROLLMENT_CHALLENGE_CANONICALIZATION, ENROLLMENT_CHALLENGES_PATH, TzapEnrollmentCertificateValidator,
+    TzapEnrollmentError, TzapEnrollmentRequest, canonicalize_local_staging_server_json_bytes, csr_der_to_pem,
+    csr_fingerprint, parse_enrollment_response, requested_validity_days,
 };
 use crate::jcs;
 use crate::local_identity_store::{
-    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
-    TzapLocalIdentityStore, TzapLocalIdentityStoreError, TzapOrganizationDeviceRetirement,
+    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityStore,
+    TzapLocalIdentityStoreError, TzapOrganizationDeviceRetirement,
 };
 use crate::p256_signature;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -114,10 +112,7 @@ impl fmt::Display for TzapCertificateLifecycleError {
             Self::DeviceLinkagePending => write!(f, "device linkage is pending"),
             Self::DeviceLinkageConflict => write!(f, "device linkage conflict"),
             Self::HttpStatus { status_code } => {
-                write!(
-                    f,
-                    "certificate lifecycle HTTP request failed with status {status_code}"
-                )
+                write!(f, "certificate lifecycle HTTP request failed with status {status_code}")
             }
             Self::Crypto(reason) => write!(f, "certificate lifecycle crypto failed: {reason}"),
         }
@@ -160,11 +155,7 @@ pub struct TzapCertificateLifecycleClient<'a, T> {
 
 impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     #[must_use]
-    pub fn new(
-        sign_base_url: impl Into<String>,
-        login_base_url: impl Into<String>,
-        transport: &'a T,
-    ) -> Self {
+    pub fn new(sign_base_url: impl Into<String>, login_base_url: impl Into<String>, transport: &'a T) -> Self {
         Self::with_wire_profile(
             sign_base_url,
             login_base_url,
@@ -219,8 +210,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapEnrolledCertificateRecord, TzapCertificateLifecycleError> {
         let previous = Self::precheck_renewal(store, request)?;
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
-        let challenge =
-            self.request_renewal_challenge(session, request, new_signing_key, csr_der)?;
+        let challenge = self.request_renewal_challenge(session, request, new_signing_key, csr_der)?;
         validate_renewal_challenge(
             self.wire_profile,
             challenge.canonicalization.as_deref(),
@@ -228,27 +218,18 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             &challenge.payload,
         )?;
         let old_signature = match request.renewal_policy {
-            TzapRenewalPolicy::SameKeyRequired => Some(sign_old_certificate_challenge(
-                self.wire_profile,
-                previous_signing_key,
-                &challenge.payload,
-            )?),
+            TzapRenewalPolicy::SameKeyRequired => {
+                Some(sign_old_certificate_challenge(self.wire_profile, previous_signing_key, &challenge.payload)?)
+            }
             TzapRenewalPolicy::KeyRotationAllowed => None,
         };
-        let response = self.submit_renewal(
-            session,
-            request,
-            new_signing_key,
-            csr_der,
-            &challenge,
-            old_signature.as_deref(),
-        )?;
+        let response =
+            self.submit_renewal(session, request, new_signing_key, csr_der, &challenge, old_signature.as_deref())?;
         parse_renewal_barriers(&response.body)?;
         let payload = parse_enrollment_response(&response.body)?;
         let chain = payload.certificate_chain_der();
-        let public_metadata = validator
-            .validate_certificate_chain(&chain)
-            .map_err(TzapCertificateLifecycleError::Enrollment)?;
+        let public_metadata =
+            validator.validate_certificate_chain(&chain).map_err(TzapCertificateLifecycleError::Enrollment)?;
         let enrollment_request = TzapEnrollmentRequest {
             account_key: request.account_key.clone(),
             org_id: request.org_id.clone(),
@@ -256,11 +237,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             now_unix_seconds: request.now_unix_seconds,
         };
         let new_record = payload
-            .into_store_record(
-                &enrollment_request,
-                &new_signing_key.key_id,
-                public_metadata,
-            )
+            .into_store_record(&enrollment_request, &new_signing_key.key_id, public_metadata)
             .map_err(TzapCertificateLifecycleError::Enrollment)?;
         let mut inventory = store.load_inventory(&request.account_key)?;
         inventory.enrolled_certificates.push(new_record.clone());
@@ -286,13 +263,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapRetirementCompletion, TzapCertificateLifecycleError> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let path = format!("/v1/certificates/{certificate_id}{CERTIFICATE_REVOKE_PATH_SUFFIX}");
-        let response = self.send(
-            TzapAuthHttpMethod::Post,
-            &self.sign_base_url,
-            &path,
-            Some(session.access_token.clone()),
-            None,
-        )?;
+        let response =
+            self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
         let completion = revocation_completion(&response)?;
         if matches!(completion, TzapRetirementCompletion::Complete) {
             mark_certificate_revoked(store, account_key, certificate_id)?;
@@ -307,13 +279,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapRetirementCompletion, TzapCertificateLifecycleError> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let path = format!("{SIGN_DEVICE_REVOKE_PATH_PREFIX}{sign_device_id}/revoke");
-        let response = self.send(
-            TzapAuthHttpMethod::Post,
-            &self.sign_base_url,
-            &path,
-            Some(session.access_token.clone()),
-            None,
-        )?;
+        let response =
+            self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
         revocation_completion(&response)
     }
 
@@ -325,11 +292,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapRetirementReport, TzapCertificateLifecycleError> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let inventory = store.load_inventory(account_key)?;
-        let sign_device_ids = inventory
-            .active_personal_sign_device_ids()
-            .into_iter()
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
+        let sign_device_ids =
+            inventory.active_personal_sign_device_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<_>>();
         let mut incomplete_reasons = Vec::new();
         for sign_device_id in &sign_device_ids {
             let path = format!("{SIGN_DEVICE_REVOKE_PATH_PREFIX}{sign_device_id}/revoke");
@@ -340,10 +304,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 Some(session.access_token.clone()),
                 None,
             )?;
-            if !matches!(
-                revocation_completion(&response)?,
-                TzapRetirementCompletion::Complete
-            ) {
+            if !matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
                 incomplete_reasons.push(sign_device_id.clone());
             }
         }
@@ -372,10 +333,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             let lookup = self.lookup_organization_device(session, route)?;
             match lookup {
                 OrganizationDeviceLookup::Found(login_device_id) => {
-                    let path = format!(
-                        "{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices/{login_device_id}/revoke",
-                        route.org_id
-                    );
+                    let path =
+                        format!("{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices/{login_device_id}/revoke", route.org_id);
                     let response = self.send(
                         TzapAuthHttpMethod::Post,
                         &self.login_base_url,
@@ -383,10 +342,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                         Some(session.access_token.clone()),
                         None,
                     )?;
-                    if !matches!(
-                        revocation_completion(&response)?,
-                        TzapRetirementCompletion::Complete
-                    ) {
+                    if !matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
                         incomplete_reasons.push(route.sign_device_id.clone());
                     }
                 }
@@ -399,10 +355,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             } else {
                 TzapRetirementCompletion::Incomplete
             },
-            attempted_sign_device_ids: routes
-                .into_iter()
-                .map(|route| route.sign_device_id)
-                .collect(),
+            attempted_sign_device_ids: routes.into_iter().map(|route| route.sign_device_id).collect(),
             incomplete_reasons,
         })
     }
@@ -413,8 +366,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         request: &TzapRenewalRequest,
         signing_key: &TzapDeviceSigningKeyRecord,
         csr_der: &[u8],
-    ) -> Result<crate::enrollment_client::TzapEnrollmentChallenge, TzapCertificateLifecycleError>
-    {
+    ) -> Result<crate::enrollment_client::TzapEnrollmentChallenge, TzapCertificateLifecycleError> {
         let body = match self.wire_profile {
             TzapCertificateLifecycleWireProfile::Spec => json!({
                 "operation": RENEW_OPERATION,
@@ -453,10 +405,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         challenge: &crate::enrollment_client::TzapEnrollmentChallenge,
         old_certificate_signature: Option<&str>,
     ) -> Result<TzapAuthHttpResponse, TzapCertificateLifecycleError> {
-        let path = format!(
-            "/v1/certificates/{}{}",
-            request.previous_certificate_id, CERTIFICATE_RENEW_PATH_SUFFIX
-        );
+        let path = format!("/v1/certificates/{}{}", request.previous_certificate_id, CERTIFICATE_RENEW_PATH_SUFFIX);
         let body = match self.wire_profile {
             TzapCertificateLifecycleWireProfile::Spec => json!({
                 "operation": RENEW_OPERATION,
@@ -467,8 +416,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 "old_certificate_signature": old_certificate_signature,
             }),
             TzapCertificateLifecycleWireProfile::LocalStagingServer => {
-                let challenge_signature =
-                    sign_new_key_challenge_staging(signing_key, &challenge.payload)?;
+                let challenge_signature = sign_new_key_challenge_staging(signing_key, &challenge.payload)?;
                 let org_id = optional_string_from_payload(&challenge.payload, "org_id")?;
                 json!({
                     "operation": RENEW_OPERATION,
@@ -485,13 +433,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 })
             }
         };
-        self.send(
-            TzapAuthHttpMethod::Post,
-            &self.sign_base_url,
-            &path,
-            Some(session.access_token.clone()),
-            Some(body),
-        )
+        self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), Some(body))
     }
 
     fn precheck_renewal(
@@ -507,21 +449,14 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                     && record.certificate_sha256 == request.previous_certificate_sha256
             })
             .ok_or(TzapCertificateLifecycleError::CertificateNotFound)?;
-        let root_sha256 = certificate
-            .intermediate_chain_der
-            .last()
-            .map(|der| sha256_identifier(der));
+        let root_sha256 = certificate.intermediate_chain_der.last().map(|der| sha256_identifier(der));
         if inventory
             .emergency_blocklist
             .blocked_issuer_sha256
             .iter()
             .any(|issuer| issuer == &certificate.issuer_certificate_sha256)
             || root_sha256.is_some_and(|root| {
-                inventory
-                    .emergency_blocklist
-                    .blocked_root_sha256
-                    .iter()
-                    .any(|blocked| blocked == &root)
+                inventory.emergency_blocklist.blocked_root_sha256.iter().any(|blocked| blocked == &root)
             })
         {
             return Err(TzapCertificateLifecycleError::CertificateNotRenewable);
@@ -541,10 +476,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         session: &TzapSessionRecord,
         route: &TzapOrganizationDeviceRetirement,
     ) -> Result<OrganizationDeviceLookup, TzapCertificateLifecycleError> {
-        let path = format!(
-            "{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices?sign_device_id={}",
-            route.org_id, route.sign_device_id
-        );
+        let path =
+            format!("{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices?sign_device_id={}", route.org_id, route.sign_device_id);
         let response = self.send_raw(
             TzapAuthHttpMethod::Get,
             &self.login_base_url,
@@ -553,23 +486,16 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             None,
         )?;
         if response.status_code == 404 {
-            return Ok(OrganizationDeviceLookup::Incomplete(format!(
-                "{}:not_found",
-                route.sign_device_id
-            )));
+            return Ok(OrganizationDeviceLookup::Incomplete(format!("{}:not_found", route.sign_device_id)));
         }
-        if response.status_code == 409
-            && body_error_code(&response.body)? == "device_linkage_pending"
-        {
+        if response.status_code == 409 && body_error_code(&response.body)? == "device_linkage_pending" {
             return Ok(OrganizationDeviceLookup::Incomplete(format!(
                 "{}:device_linkage_pending",
                 route.sign_device_id
             )));
         }
         if !(200..=299).contains(&response.status_code) {
-            return Err(TzapCertificateLifecycleError::HttpStatus {
-                status_code: response.status_code,
-            });
+            return Err(TzapCertificateLifecycleError::HttpStatus { status_code: response.status_code });
         }
         let value: Value = serde_json::from_slice(&response.body)?;
         let object = json_object(&value, "$")?;
@@ -588,9 +514,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapAuthHttpResponse, TzapCertificateLifecycleError> {
         let response = self.send_raw(method, base_url, path, bearer_token, body)?;
         if !(200..=299).contains(&response.status_code) {
-            return Err(TzapCertificateLifecycleError::HttpStatus {
-                status_code: response.status_code,
-            });
+            return Err(TzapCertificateLifecycleError::HttpStatus { status_code: response.status_code });
         }
         Ok(response)
     }
@@ -634,11 +558,7 @@ fn validate_renewal_challenge(
     let object = json_object(payload, "challenge_payload")?;
     match wire_profile {
         TzapCertificateLifecycleWireProfile::Spec => {
-            expect_string(
-                object,
-                "canonicalization",
-                ENROLLMENT_CHALLENGE_CANONICALIZATION,
-            )?;
+            expect_string(object, "canonicalization", ENROLLMENT_CHALLENGE_CANONICALIZATION)?;
         }
         TzapCertificateLifecycleWireProfile::LocalStagingServer => {
             if canonicalization != Some(ENROLLMENT_CHALLENGE_CANONICALIZATION) {
@@ -647,11 +567,7 @@ fn validate_renewal_challenge(
         }
     }
     expect_string(object, "operation", RENEW_OPERATION)?;
-    expect_string(
-        object,
-        "renewal_of_certificate_sha256",
-        &request.previous_certificate_sha256,
-    )?;
+    expect_string(object, "renewal_of_certificate_sha256", &request.previous_certificate_sha256)?;
     expect_string(object, "certificate_id", &request.previous_certificate_id)?;
     expect_optional_string(object, "org_id", request.org_id.as_deref())?;
     Ok(())
@@ -663,16 +579,11 @@ fn parse_renewal_challenge_response(
     let value: Value = serde_json::from_slice(bytes)?;
     let object = json_object(&value, "$")?;
     Ok(crate::enrollment_client::TzapEnrollmentChallenge {
-        challenge_id: optional_string(object, "challenge_id")?.ok_or(
-            TzapCertificateLifecycleError::InvalidField {
-                field: "challenge_id",
-            },
-        )?,
+        challenge_id: optional_string(object, "challenge_id")?
+            .ok_or(TzapCertificateLifecycleError::InvalidField { field: "challenge_id" })?,
         payload: object
             .get("challenge_payload")
-            .ok_or(TzapCertificateLifecycleError::InvalidField {
-                field: "challenge_payload",
-            })?
+            .ok_or(TzapCertificateLifecycleError::InvalidField { field: "challenge_payload" })?
             .clone(),
         canonicalization: optional_string(object, "canonicalization")?,
     })
@@ -684,18 +595,15 @@ fn sign_old_certificate_challenge(
     challenge_payload: &Value,
 ) -> Result<String, TzapCertificateLifecycleError> {
     let canonical = match wire_profile {
-        TzapCertificateLifecycleWireProfile::Spec => {
-            jcs::canonicalize_json_bytes(challenge_payload)
-                .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?
-        }
+        TzapCertificateLifecycleWireProfile::Spec => jcs::canonicalize_json_bytes(challenge_payload)
+            .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?,
         TzapCertificateLifecycleWireProfile::LocalStagingServer => {
             canonicalize_local_staging_server_json_bytes(challenge_payload)
                 .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?
         }
     };
-    let private_key =
-        PKey::<Private>::private_key_from_der(previous_signing_key.private_key_der.expose_secret())
-            .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
+    let private_key = PKey::<Private>::private_key_from_der(previous_signing_key.private_key_der.expose_secret())
+        .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
     let signature = p256_signature::sign_p256_sha256_p1363(&private_key, &canonical)
         .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
     Ok(URL_SAFE_NO_PAD.encode(signature))
@@ -707,9 +615,8 @@ fn sign_new_key_challenge_staging(
 ) -> Result<String, TzapCertificateLifecycleError> {
     let canonical = canonicalize_local_staging_server_json_bytes(challenge_payload)
         .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
-    let private_key =
-        PKey::<Private>::private_key_from_der(signing_key.private_key_der.expose_secret())
-            .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
+    let private_key = PKey::<Private>::private_key_from_der(signing_key.private_key_der.expose_secret())
+        .map_err(|error| TzapCertificateLifecycleError::Crypto(error.to_string()))?;
     let signature = p256_signature::sign_p256_sha256_p1363(&private_key, &canonical)
         .map_err(|error| TzapCertificateLifecycleError::Crypto(format!("{error:?}")))?;
     Ok(URL_SAFE_NO_PAD.encode(signature))
@@ -719,13 +626,9 @@ fn parse_renewal_barriers(bytes: &[u8]) -> Result<(), TzapCertificateLifecycleEr
     let value: Value = serde_json::from_slice(bytes)?;
     let object = json_object(&value, "$")?;
     match optional_string(object, "status")?.as_deref() {
-        Some("device_approval_required") => {
-            Err(TzapCertificateLifecycleError::RenewalPendingApproval)
-        }
+        Some("device_approval_required") => Err(TzapCertificateLifecycleError::RenewalPendingApproval),
         Some("device_linkage_pending") => Err(TzapCertificateLifecycleError::DeviceLinkagePending),
-        Some("device_linkage_conflict") => {
-            Err(TzapCertificateLifecycleError::DeviceLinkageConflict)
-        }
+        Some("device_linkage_conflict") => Err(TzapCertificateLifecycleError::DeviceLinkageConflict),
         _ => Ok(()),
     }
 }
@@ -738,13 +641,11 @@ fn revocation_completion(
     }
     let value: Value = serde_json::from_slice(&response.body)?;
     let object = json_object(&value, "$")?;
-    Ok(
-        if optional_string(object, "result")?.as_deref() == Some("revocation_pending_sync") {
-            TzapRetirementCompletion::Incomplete
-        } else {
-            TzapRetirementCompletion::Complete
-        },
-    )
+    Ok(if optional_string(object, "result")?.as_deref() == Some("revocation_pending_sync") {
+        TzapRetirementCompletion::Incomplete
+    } else {
+        TzapRetirementCompletion::Complete
+    })
 }
 
 fn mark_certificate_revoked(
@@ -778,9 +679,7 @@ fn json_object<'a>(
     value: &'a Value,
     field: &'static str,
 ) -> Result<&'a Map<String, Value>, TzapCertificateLifecycleError> {
-    value
-        .as_object()
-        .ok_or(TzapCertificateLifecycleError::InvalidField { field })
+    value.as_object().ok_or(TzapCertificateLifecycleError::InvalidField { field })
 }
 
 fn optional_string(
@@ -814,11 +713,7 @@ fn expect_optional_string(
     expected: Option<&str>,
 ) -> Result<(), TzapCertificateLifecycleError> {
     let actual = optional_string(object, field)?;
-    if actual.as_deref() == expected {
-        Ok(())
-    } else {
-        Err(TzapCertificateLifecycleError::RenewalTargetMismatch)
-    }
+    if actual.as_deref() == expected { Ok(()) } else { Err(TzapCertificateLifecycleError::RenewalTargetMismatch) }
 }
 
 fn trim_trailing_slash(value: &str) -> &str {
@@ -828,21 +723,19 @@ fn trim_trailing_slash(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        RENEW_OPERATION, TzapCertificateLifecycleClient, TzapCertificateLifecycleError,
-        TzapRenewalPolicy, TzapRenewalRequest, TzapRetirementCompletion,
+        RENEW_OPERATION, TzapCertificateLifecycleClient, TzapCertificateLifecycleError, TzapRenewalPolicy,
+        TzapRenewalRequest, TzapRetirementCompletion,
     };
     use crate::auth_client::{
-        SESSION_AUDIENCE_LOGIN_TZAP, SESSION_AUDIENCE_SIGN_TZAP, TzapAuthError,
-        TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport, TzapBearerToken,
-        TzapSessionRecord,
+        SESSION_AUDIENCE_LOGIN_TZAP, SESSION_AUDIENCE_SIGN_TZAP, TzapAuthError, TzapAuthHttpRequest,
+        TzapAuthHttpResponse, TzapAuthHttpTransport, TzapBearerToken, TzapSessionRecord,
     };
     use crate::device_identity::{TzapDeviceCsrOptions, generate_device_signing_key_and_csr};
     use crate::enrollment_client::{TzapEnrollmentCertificateValidator, TzapEnrollmentError};
     use crate::local_identity_store::{
-        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, InMemoryTzapLocalIdentityStore,
-        TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord,
-        TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
-        TzapSignDeviceRouting,
+        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord,
+        TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord, TzapLocalCertificateState,
+        TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapSignDeviceRouting,
     };
     use crate::trust::{self, TzapCertificatePublicMetadata};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -857,11 +750,7 @@ mod tests {
             renewal_challenge_response(&fixture, None),
             renewal_certificate_response(),
         ]);
-        let client = TzapCertificateLifecycleClient::new(
-            "https://sign.tzap.org",
-            "https://login.tzap.org",
-            &transport,
-        );
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
 
         let renewed = client
@@ -877,25 +766,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(renewed.certificate_id, "cert_new");
-        let inventory = store
-            .load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT)
-            .unwrap();
+        let inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
         assert_eq!(inventory.enrolled_certificates.len(), 2);
         let requests = transport.requests();
-        assert_eq!(
-            requests[1].url,
-            "https://sign.tzap.org/v1/certificates/cert_old/renew"
-        );
-        assert!(
-            requests[1]
-                .body
-                .as_ref()
-                .unwrap()
-                .get("old_certificate_signature")
-                .unwrap()
-                .as_str()
-                .is_some()
-        );
+        assert_eq!(requests[1].url, "https://sign.tzap.org/v1/certificates/cert_old/renew");
+        assert!(requests[1].body.as_ref().unwrap().get("old_certificate_signature").unwrap().as_str().is_some());
     }
 
     #[test]
@@ -906,11 +781,7 @@ mod tests {
             renewal_challenge_response(&fixture, None),
             renewal_certificate_response(),
         ]);
-        let client = TzapCertificateLifecycleClient::new(
-            "https://sign.tzap.org",
-            "https://login.tzap.org",
-            &transport,
-        );
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
 
         client
@@ -927,21 +798,9 @@ mod tests {
 
         let body = transport.requests()[1].body.clone().unwrap();
         assert!(body.get("old_certificate_signature").unwrap().is_null());
-        let inventory = store
-            .load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT)
-            .unwrap();
-        assert!(
-            inventory
-                .enrolled_certificates
-                .iter()
-                .any(|record| record.certificate_id == "cert_old")
-        );
-        assert!(
-            inventory
-                .enrolled_certificates
-                .iter()
-                .any(|record| record.certificate_id == "cert_new")
-        );
+        let inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+        assert!(inventory.enrolled_certificates.iter().any(|record| record.certificate_id == "cert_old"));
+        assert!(inventory.enrolled_certificates.iter().any(|record| record.certificate_id == "cert_new"));
     }
 
     #[test]
@@ -954,16 +813,10 @@ mod tests {
             let fixture = LifecycleFixture::new();
             let transport = FakeLifecycleTransport::new(vec![
                 renewal_challenge_response(&fixture, None),
-                TzapAuthHttpResponse {
-                    status_code: 200,
-                    body: json!({"status": status}).to_string().into_bytes(),
-                },
+                TzapAuthHttpResponse { status_code: 200, body: json!({"status": status}).to_string().into_bytes() },
             ]);
-            let client = TzapCertificateLifecycleClient::new(
-                "https://sign.tzap.org",
-                "https://login.tzap.org",
-                &transport,
-            );
+            let client =
+                TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
             let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
             let error = client
                 .renew_certificate(
@@ -977,18 +830,9 @@ mod tests {
                 )
                 .unwrap_err();
             match expected {
-                "approval" => assert!(matches!(
-                    error,
-                    TzapCertificateLifecycleError::RenewalPendingApproval
-                )),
-                "pending" => assert!(matches!(
-                    error,
-                    TzapCertificateLifecycleError::DeviceLinkagePending
-                )),
-                "conflict" => assert!(matches!(
-                    error,
-                    TzapCertificateLifecycleError::DeviceLinkageConflict
-                )),
+                "approval" => assert!(matches!(error, TzapCertificateLifecycleError::RenewalPendingApproval)),
+                "pending" => assert!(matches!(error, TzapCertificateLifecycleError::DeviceLinkagePending)),
+                "conflict" => assert!(matches!(error, TzapCertificateLifecycleError::DeviceLinkageConflict)),
                 _ => unreachable!(),
             }
         }
@@ -998,11 +842,7 @@ mod tests {
             &fixture,
             Some(trust::format_certificate_sha256(&[0x99; 32])),
         )]);
-        let client = TzapCertificateLifecycleClient::new(
-            "https://sign.tzap.org",
-            "https://login.tzap.org",
-            &transport,
-        );
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
         let error = client
             .renew_certificate(
@@ -1015,10 +855,7 @@ mod tests {
                 &fixture.csr_der,
             )
             .unwrap_err();
-        assert!(matches!(
-            error,
-            TzapCertificateLifecycleError::RenewalTargetMismatch
-        ));
+        assert!(matches!(error, TzapCertificateLifecycleError::RenewalTargetMismatch));
     }
 
     #[test]
@@ -1026,34 +863,25 @@ mod tests {
         for block in ["issuer", "root"] {
             let fixture = LifecycleFixture::new();
             let transport = FakeLifecycleTransport::new(Vec::new());
-            let client = TzapCertificateLifecycleClient::new(
-                "https://sign.tzap.org",
-                "https://login.tzap.org",
-                &transport,
-            );
+            let client =
+                TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
             let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
-            let mut inventory = store
-                .load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT)
-                .unwrap();
+            let mut inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
             let cert = inventory.enrolled_certificates.first().unwrap();
             match block {
                 "issuer" => {
-                    inventory
-                        .emergency_blocklist
-                        .blocked_issuer_sha256
-                        .push(cert.issuer_certificate_sha256.clone());
+                    inventory.emergency_blocklist.blocked_issuer_sha256.push(cert.issuer_certificate_sha256.clone());
                 }
                 "root" => {
                     let root_der = cert.intermediate_chain_der.last().unwrap();
-                    inventory.emergency_blocklist.blocked_root_sha256.push(
-                        trust::format_sha256_identifier(&Sha256::digest(root_der).into()),
-                    );
+                    inventory
+                        .emergency_blocklist
+                        .blocked_root_sha256
+                        .push(trust::format_sha256_identifier(&Sha256::digest(root_der).into()));
                 }
                 _ => unreachable!(),
             }
-            store
-                .save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory)
-                .unwrap();
+            store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
 
             let error = client
                 .renew_certificate(
@@ -1067,10 +895,7 @@ mod tests {
                 )
                 .unwrap_err();
 
-            assert!(matches!(
-                error,
-                TzapCertificateLifecycleError::CertificateNotRenewable
-            ));
+            assert!(matches!(error, TzapCertificateLifecycleError::CertificateNotRenewable));
             assert!(transport.requests().is_empty());
         }
     }
@@ -1081,22 +906,14 @@ mod tests {
         let transport = FakeLifecycleTransport::new(vec![
             TzapAuthHttpResponse {
                 status_code: 200,
-                body: json!({"result": "already_revoked"})
-                    .to_string()
-                    .into_bytes(),
+                body: json!({"result": "already_revoked"}).to_string().into_bytes(),
             },
             TzapAuthHttpResponse {
                 status_code: 202,
-                body: json!({"result": "revocation_pending_sync"})
-                    .to_string()
-                    .into_bytes(),
+                body: json!({"result": "revocation_pending_sync"}).to_string().into_bytes(),
             },
         ]);
-        let client = TzapCertificateLifecycleClient::new(
-            "https://sign.tzap.org",
-            "https://login.tzap.org",
-            &transport,
-        );
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
 
         let cert_completion = client
@@ -1109,66 +926,39 @@ mod tests {
             .unwrap();
         assert_eq!(cert_completion, TzapRetirementCompletion::Complete);
         let store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
-        let device_report = client
-            .retire_personal_devices(
-                &store,
-                &fixture.sign_session,
-                DEFAULT_IDENTITY_INVENTORY_ACCOUNT,
-            )
-            .unwrap();
-        assert_eq!(
-            device_report.completion,
-            TzapRetirementCompletion::Incomplete
-        );
-        assert_eq!(
-            device_report.attempted_sign_device_ids,
-            vec!["sign-device-old"]
-        );
+        let device_report =
+            client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+        assert_eq!(device_report.completion, TzapRetirementCompletion::Incomplete);
+        assert_eq!(device_report.attempted_sign_device_ids, vec!["sign-device-old"]);
     }
 
     #[test]
     fn organization_retirement_uses_login_routes_and_keeps_404_and_linkage_pending_incomplete() {
         for response in [
-            TzapAuthHttpResponse {
-                status_code: 404,
-                body: b"{}".to_vec(),
-            },
+            TzapAuthHttpResponse { status_code: 404, body: b"{}".to_vec() },
             TzapAuthHttpResponse {
                 status_code: 409,
-                body: json!({"error": "device_linkage_pending"})
-                    .to_string()
-                    .into_bytes(),
+                body: json!({"error": "device_linkage_pending"}).to_string().into_bytes(),
             },
         ] {
             let fixture = LifecycleFixture::new();
             let transport = FakeLifecycleTransport::new(vec![response]);
-            let client = TzapCertificateLifecycleClient::new(
-                "https://sign.tzap.org",
-                "https://login.tzap.org",
-                &transport,
-            );
+            let client =
+                TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
             let store = fixture.store_with_certificate(TzapSignDeviceRouting::Organization {
                 org_id: "org_123".to_owned(),
                 login_organization_device_id: "login-org-device-1".to_owned(),
             });
 
             let report = client
-                .retire_organization_devices(
-                    &store,
-                    &fixture.login_session,
-                    DEFAULT_IDENTITY_INVENTORY_ACCOUNT,
-                )
+                .retire_organization_devices(&store, &fixture.login_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT)
                 .unwrap();
             assert_eq!(report.completion, TzapRetirementCompletion::Incomplete);
-            let urls = transport
-                .requests()
-                .into_iter()
-                .map(|request| request.url)
-                .collect::<Vec<_>>();
+            let urls = transport.requests().into_iter().map(|request| request.url).collect::<Vec<_>>();
             assert_eq!(urls.len(), 1);
-            assert!(urls[0].starts_with(
-                "https://login.tzap.org/v1/orgs/org_123/devices?sign_device_id=sign-device-old"
-            ));
+            assert!(
+                urls[0].starts_with("https://login.tzap.org/v1/orgs/org_123/devices?sign_device_id=sign-device-old")
+            );
             assert!(!urls[0].contains("https://sign.tzap.org/v1/devices"));
         }
     }
@@ -1182,8 +972,7 @@ mod tests {
 
     impl LifecycleFixture {
         fn new() -> Self {
-            let material =
-                generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+            let material = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
             let signing_key = TzapDeviceSigningKeyRecord {
                 key_id: "device-key-1".to_owned(),
                 public_key_fingerprint: material.public_key_fingerprint,
@@ -1212,20 +1001,13 @@ mod tests {
             }
         }
 
-        fn store_with_certificate(
-            &self,
-            routing: TzapSignDeviceRouting,
-        ) -> InMemoryTzapLocalIdentityStore {
+        fn store_with_certificate(&self, routing: TzapSignDeviceRouting) -> InMemoryTzapLocalIdentityStore {
             let mut store = InMemoryTzapLocalIdentityStore::new();
             let mut inventory = TzapLocalIdentityInventory::empty();
             inventory.device_signing_keys.push(self.signing_key.clone());
-            inventory
-                .enrolled_certificates
-                .push(certificate_record(routing));
+            inventory.enrolled_certificates.push(certificate_record(routing));
             inventory.emergency_blocklist = TzapEmergencyBlocklistState::default();
-            store
-                .save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory)
-                .unwrap();
+            store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
             store
         }
     }
@@ -1260,12 +1042,8 @@ mod tests {
         }
     }
 
-    fn renewal_challenge_response(
-        fixture: &LifecycleFixture,
-        target_override: Option<String>,
-    ) -> TzapAuthHttpResponse {
-        let target =
-            target_override.unwrap_or_else(|| trust::format_certificate_sha256(&[0x03; 32]));
+    fn renewal_challenge_response(fixture: &LifecycleFixture, target_override: Option<String>) -> TzapAuthHttpResponse {
+        let target = target_override.unwrap_or_else(|| trust::format_certificate_sha256(&[0x03; 32]));
         TzapAuthHttpResponse {
             status_code: 200,
             body: json!({
@@ -1334,10 +1112,7 @@ mod tests {
 
     impl FakeLifecycleTransport {
         fn new(responses: Vec<TzapAuthHttpResponse>) -> Self {
-            Self {
-                responses: RefCell::new(responses.into_iter().rev().collect()),
-                requests: RefCell::new(Vec::new()),
-            }
+            Self { responses: RefCell::new(responses.into_iter().rev().collect()), requests: RefCell::new(Vec::new()) }
         }
 
         fn requests(&self) -> Vec<TzapAuthHttpRequest> {
@@ -1346,15 +1121,9 @@ mod tests {
     }
 
     impl TzapAuthHttpTransport for FakeLifecycleTransport {
-        fn send(
-            &self,
-            request: &TzapAuthHttpRequest,
-        ) -> Result<TzapAuthHttpResponse, TzapAuthError> {
+        fn send(&self, request: &TzapAuthHttpRequest) -> Result<TzapAuthHttpResponse, TzapAuthError> {
             self.requests.borrow_mut().push(request.clone());
-            self.responses
-                .borrow_mut()
-                .pop()
-                .ok_or(TzapAuthError::HttpStatus { status_code: 599 })
+            self.responses.borrow_mut().pop().ok_or(TzapAuthError::HttpStatus { status_code: 599 })
         }
     }
 }

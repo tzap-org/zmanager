@@ -21,9 +21,7 @@ pub struct TzapDeviceCsrOptions {
 
 impl Default for TzapDeviceCsrOptions {
     fn default() -> Self {
-        Self {
-            common_name: DEVICE_CSR_COMMON_NAME.to_owned(),
-        }
+        Self { common_name: DEVICE_CSR_COMMON_NAME.to_owned() }
     }
 }
 
@@ -108,8 +106,7 @@ pub fn generate_device_csr_from_private_key(
     Ok(build_device_csr(&private_key, options)?)
 }
 
-pub fn generate_recipient_encryption_key()
--> Result<TzapRecipientEncryptionKeyMaterial, TzapDeviceIdentityError> {
+pub fn generate_recipient_encryption_key() -> Result<TzapRecipientEncryptionKeyMaterial, TzapDeviceIdentityError> {
     let private_key = generate_p256_private_key()?;
     let public_key_spki_der = private_key.public_key_to_der()?;
     let public_key_fingerprint = spki_fingerprint(&public_key_spki_der);
@@ -139,10 +136,7 @@ fn generate_p256_private_key() -> Result<PKey<Private>, ErrorStack> {
     PKey::from_ec_key(key)
 }
 
-fn build_device_csr(
-    private_key: &PKey<Private>,
-    options: &TzapDeviceCsrOptions,
-) -> Result<Vec<u8>, ErrorStack> {
+fn build_device_csr(private_key: &PKey<Private>, options: &TzapDeviceCsrOptions) -> Result<Vec<u8>, ErrorStack> {
     let mut name = X509NameBuilder::new()?;
     name.append_entry_by_text("CN", &options.common_name)?;
 
@@ -166,10 +160,9 @@ fn csr_fingerprint(csr_der: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEVICE_CSR_COMMON_NAME, RECIPIENT_ENCRYPTION_KEY_ALGORITHM, TzapDeviceCsrOptions,
-        TzapDeviceIdentityError, ensure_recipient_key_is_distinct_from_signing_key,
-        generate_device_csr_from_private_key, generate_device_signing_key_and_csr,
-        generate_recipient_encryption_key,
+        DEVICE_CSR_COMMON_NAME, RECIPIENT_ENCRYPTION_KEY_ALGORITHM, TzapDeviceCsrOptions, TzapDeviceIdentityError,
+        ensure_recipient_key_is_distinct_from_signing_key, generate_device_csr_from_private_key,
+        generate_device_signing_key_and_csr, generate_recipient_encryption_key,
     };
     use crate::trust;
     use openssl::nid::Nid;
@@ -179,33 +172,22 @@ mod tests {
 
     #[test]
     fn device_signing_key_generation_returns_p256_key_and_csr() {
-        let material =
-            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+        let material = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
 
         assert!(!material.private_key_der.is_empty());
         assert!(!material.public_key_spki_der.is_empty());
         assert!(trust::parse_spki_sha256(&material.public_key_fingerprint).is_ok());
         assert!(trust::parse_csr_sha256(&material.csr_sha256).is_ok());
-        assert_eq!(
-            format!("{:?}", material.private_key_der),
-            "SecretBytes([redacted])"
-        );
+        assert_eq!(format!("{:?}", material.private_key_der), "SecretBytes([redacted])");
 
-        let private_key =
-            PKey::private_key_from_der(material.private_key_der.expose_secret()).unwrap();
-        assert_eq!(
-            private_key.ec_key().unwrap().group().curve_name().unwrap(),
-            Nid::X9_62_PRIME256V1
-        );
+        let private_key = PKey::private_key_from_der(material.private_key_der.expose_secret()).unwrap();
+        assert_eq!(private_key.ec_key().unwrap().group().curve_name().unwrap(), Nid::X9_62_PRIME256V1);
 
         let csr = X509Req::from_der(&material.csr_der).unwrap();
         assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
         let subject = csr.subject_name();
         let common_name = subject.entries_by_nid(Nid::COMMONNAME).next().unwrap();
-        assert_eq!(
-            common_name.data().to_string().unwrap(),
-            DEVICE_CSR_COMMON_NAME
-        );
+        assert_eq!(common_name.data().to_string().unwrap(), DEVICE_CSR_COMMON_NAME);
 
         let csr_digest: [u8; 32] = Sha256::digest(&material.csr_der).into();
         assert_eq!(material.csr_sha256, trust::format_csr_sha256(&csr_digest));
@@ -214,36 +196,26 @@ mod tests {
     #[test]
     fn device_csr_options_reject_empty_common_name() {
         assert!(matches!(
-            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions {
-                common_name: String::new()
-            }),
+            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions { common_name: String::new() }),
             Err(TzapDeviceIdentityError::EmptyCommonName)
         ));
     }
 
     #[test]
     fn existing_device_key_can_rebuild_a_valid_csr() {
-        let material =
-            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+        let material = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
 
-        let rebuilt = generate_device_csr_from_private_key(
-            &material.private_key_der,
-            &TzapDeviceCsrOptions::default(),
-        )
-        .unwrap();
+        let rebuilt =
+            generate_device_csr_from_private_key(&material.private_key_der, &TzapDeviceCsrOptions::default()).unwrap();
         let csr = X509Req::from_der(&rebuilt).unwrap();
 
         assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
-        assert_eq!(
-            csr.public_key().unwrap().public_key_to_der().unwrap(),
-            material.public_key_spki_der
-        );
+        assert_eq!(csr.public_key().unwrap().public_key_to_der().unwrap(), material.public_key_spki_der);
     }
 
     #[test]
     fn recipient_encryption_key_generation_is_separate_from_signing_keys() {
-        let signing_key =
-            generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+        let signing_key = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
         let recipient_key = generate_recipient_encryption_key().unwrap();
 
         assert_eq!(recipient_key.algorithm, RECIPIENT_ENCRYPTION_KEY_ALGORITHM);
@@ -256,12 +228,8 @@ mod tests {
         )
         .unwrap();
 
-        let private_key =
-            PKey::private_key_from_der(recipient_key.private_key_der.expose_secret()).unwrap();
-        assert_eq!(
-            private_key.ec_key().unwrap().group().curve_name().unwrap(),
-            Nid::X9_62_PRIME256V1
-        );
+        let private_key = PKey::private_key_from_der(recipient_key.private_key_der.expose_secret()).unwrap();
+        assert_eq!(private_key.ec_key().unwrap().group().curve_name().unwrap(), Nid::X9_62_PRIME256V1);
     }
 
     #[test]

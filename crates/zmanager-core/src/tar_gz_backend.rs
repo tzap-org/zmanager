@@ -1,7 +1,5 @@
 use crate::jobs::{JobCancelled, JobContext};
-use crate::manifest::{
-    ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive,
-};
+use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::fmt;
@@ -24,11 +22,7 @@ pub struct TarGzCreateOptions {
 
 impl Default for TarGzCreateOptions {
     fn default() -> Self {
-        Self {
-            level: 6,
-            preserve_metadata: true,
-            replace_existing: false,
-        }
+        Self { level: 6, preserve_metadata: true, replace_existing: false }
     }
 }
 
@@ -140,52 +134,25 @@ fn create_tar_gz_from_manifest_inner(
     mut context: Option<&mut JobContext<'_>>,
 ) -> Result<TarGzCreateReport, TarGzError> {
     let destination = destination.as_ref();
-    let mut output =
-        crate::atomic_file::AtomicOutputFile::create(destination).map_err(|source| {
-            TarGzError::Io {
-                path: destination.to_path_buf(),
-                source,
-            }
-        })?;
-    let file = output.file_mut().map_err(|source| TarGzError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let mut output = crate::atomic_file::AtomicOutputFile::create(destination)
+        .map_err(|source| TarGzError::Io { path: destination.to_path_buf(), source })?;
+    let file = output.file_mut().map_err(|source| TarGzError::Io { path: destination.to_path_buf(), source })?;
 
     let encoder = GzEncoder::new(file, Compression::new(options.level.cast_unsigned()));
     let mut builder = Builder::new(encoder);
     builder.follow_symlinks(false);
-    let mut report = TarGzCreateReport {
-        written_entries: 0,
-        written_bytes: 0,
-        level: options.level,
-        warnings: Vec::new(),
-    };
+    let mut report =
+        TarGzCreateReport { written_entries: 0, written_bytes: 0, level: options.level, warnings: Vec::new() };
 
     for entry in &manifest.entries {
-        append_manifest_entry(
-            &mut builder,
-            entry,
-            options.preserve_metadata,
-            &mut report,
-            context.as_deref_mut(),
-        )?;
+        append_manifest_entry(&mut builder, entry, options.preserve_metadata, &mut report, context.as_deref_mut())?;
     }
 
-    let encoder = builder.into_inner().map_err(|source| TarGzError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
-    encoder.finish().map_err(|source| TarGzError::Io {
-        path: destination.to_path_buf(),
-        source,
-    })?;
+    let encoder = builder.into_inner().map_err(|source| TarGzError::Io { path: destination.to_path_buf(), source })?;
+    encoder.finish().map_err(|source| TarGzError::Io { path: destination.to_path_buf(), source })?;
     output
         .commit_with_file_replace(options.replace_existing)
-        .map_err(|source| TarGzError::Io {
-            path: destination.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| TarGzError::Io { path: destination.to_path_buf(), source })?;
 
     Ok(report)
 }
@@ -210,10 +177,7 @@ fn append_manifest_entry<W: io::Write>(
             if preserve_metadata {
                 builder
                     .append_dir(&entry.archive_path, &entry.source_path)
-                    .map_err(|source| TarGzError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                    .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
             } else {
                 let mut header = Header::new_gnu();
                 header.set_entry_type(EntryType::Directory);
@@ -223,10 +187,7 @@ fn append_manifest_entry<W: io::Write>(
                 header.set_cksum();
                 builder
                     .append_data(&mut header, &entry.archive_path, io::empty())
-                    .map_err(|source| TarGzError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                    .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
             }
             report.written_entries += 1;
             0
@@ -235,16 +196,10 @@ fn append_manifest_entry<W: io::Write>(
             if preserve_metadata {
                 builder
                     .append_path_with_name(&entry.source_path, &entry.archive_path)
-                    .map_err(|source| TarGzError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                    .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
             } else {
-                let mut source =
-                    File::open(&entry.source_path).map_err(|source| TarGzError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                let mut source = File::open(&entry.source_path)
+                    .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
                 let mut header = Header::new_gnu();
                 header.set_entry_type(EntryType::Regular);
                 header.set_size(entry.size);
@@ -253,10 +208,7 @@ fn append_manifest_entry<W: io::Write>(
                 header.set_cksum();
                 builder
                     .append_data(&mut header, &entry.archive_path, &mut source)
-                    .map_err(|source| TarGzError::Io {
-                        path: entry.source_path.clone(),
-                        source,
-                    })?;
+                    .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
             }
             report.written_entries += 1;
             report.written_bytes += entry.size;
@@ -307,12 +259,8 @@ fn append_manifest_mtime<W: io::Write>(
     if !preserve_metadata || entry.file_type == ManifestFileType::Other {
         return Ok(());
     }
-    crate::tar_metadata::append_pax_mtime(builder, entry.modified).map_err(|source| {
-        TarGzError::Io {
-            path: entry.source_path.clone(),
-            source,
-        }
-    })
+    crate::tar_metadata::append_pax_mtime(builder, entry.modified)
+        .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })
 }
 
 fn append_symlink<W: io::Write>(
@@ -327,9 +275,7 @@ fn append_symlink<W: io::Write>(
     if preserve_metadata && let Some(mode) = entry.permissions.unix_mode {
         header.set_mode(mode & 0o7777);
     }
-    if preserve_metadata
-        && let Some(modified) = entry.modified.and_then(system_time_to_unix_seconds)
-    {
+    if preserve_metadata && let Some(modified) = entry.modified.and_then(system_time_to_unix_seconds) {
         header.set_mtime(modified);
     }
     if !preserve_metadata {
@@ -338,10 +284,7 @@ fn append_symlink<W: io::Write>(
     }
     builder
         .append_link(&mut header, &entry.archive_path, target)
-        .map_err(|source| TarGzError::Io {
-            path: entry.source_path.clone(),
-            source,
-        })
+        .map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })
 }
 
 fn system_time_to_unix_seconds(time: SystemTime) -> Option<u64> {
@@ -366,23 +309,15 @@ mod tests {
         temp.write_file("project/hello cafe.txt", b"unicode");
         let archive = temp.path("archive.tar.gz");
 
-        let create_report = create_tar_gz_from_path(
-            temp.path("project"),
-            &archive,
-            &TarGzCreateOptions::default(),
-        )
-        .unwrap();
+        let create_report =
+            create_tar_gz_from_path(temp.path("project"), &archive, &TarGzCreateOptions::default()).unwrap();
 
-        let extract_report =
-            extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        let extract_report = extract_archive(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
 
         assert_eq!(create_report.level, 6);
         assert_eq!(create_report.written_entries, 5);
         assert_eq!(extract_report.written_entries, 5);
-        assert_eq!(
-            fs::read_to_string(temp.path("out/project/src/main.rs")).unwrap(),
-            "fn main() {}\n"
-        );
+        assert_eq!(fs::read_to_string(temp.path("out/project/src/main.rs")).unwrap(), "fn main() {}\n");
     }
 
     #[test]
@@ -406,10 +341,7 @@ mod tests {
         create_tar_gz_from_path(
             temp.path("project"),
             &archive,
-            &TarGzCreateOptions {
-                preserve_metadata: true,
-                ..TarGzCreateOptions::default()
-            },
+            &TarGzCreateOptions { preserve_metadata: true, ..TarGzCreateOptions::default() },
         )
         .unwrap();
 
@@ -466,10 +398,7 @@ mod tests {
         create_tar_gz_from_path(
             temp.path("project"),
             &archive,
-            &TarGzCreateOptions {
-                preserve_metadata: false,
-                ..TarGzCreateOptions::default()
-            },
+            &TarGzCreateOptions { preserve_metadata: false, ..TarGzCreateOptions::default() },
         )
         .unwrap();
 
@@ -504,10 +433,7 @@ mod tests {
         let report = create_tar_gz_from_path(
             temp.path("project"),
             &archive,
-            &TarGzCreateOptions {
-                level: 3,
-                ..TarGzCreateOptions::default()
-            },
+            &TarGzCreateOptions { level: 3, ..TarGzCreateOptions::default() },
         )
         .unwrap();
 
@@ -520,12 +446,8 @@ mod tests {
 
     impl TestDir {
         fn new(name: &str) -> Self {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("zmanager-{name}-{}-{now}", std::process::id()));
             fs::create_dir_all(&root).unwrap();
 
             Self { root }

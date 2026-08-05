@@ -52,17 +52,8 @@ const FSREDIR_JUNCTION: u32 = 3;
 const FSREDIR_HARDLINK: u32 = 4;
 const FSREDIR_FILECOPY: u32 = 5;
 
-type ListCallback = extern "C" fn(
-    *mut c_void,
-    *const c_char,
-    u64,
-    u64,
-    c_uint,
-    c_uint,
-    *const c_char,
-    u32,
-    u64,
-) -> c_int;
+type ListCallback =
+    extern "C" fn(*mut c_void, *const c_char, u64, u64, c_uint, c_uint, *const c_char, u32, u64) -> c_int;
 
 type ExtractCallback = extern "C" fn(
     *mut c_void,
@@ -182,16 +173,10 @@ pub fn large_dictionary_allowed_bytes(bytes: u64) -> bool {
 /// # Errors
 ///
 /// Returns [`UnrarError`] when the archive cannot be opened, decrypted, or read.
-pub fn list_archive(
-    archive: impl AsRef<Path>,
-    password: Option<&str>,
-) -> Result<Vec<RarEntry>, UnrarError> {
+pub fn list_archive(archive: impl AsRef<Path>, password: Option<&str>) -> Result<Vec<RarEntry>, UnrarError> {
     let archive = path_to_cstring(archive.as_ref())?;
     let password = optional_password_to_c_buffer(password)?;
-    let mut context = ListContext {
-        entries: Vec::new(),
-        error: None,
-    };
+    let mut context = ListContext { entries: Vec::new(), error: None };
 
     let code = unsafe {
         zmu_unrar_list(
@@ -244,11 +229,7 @@ pub fn extract_selected_with_progress(
 ) -> Result<(), UnrarError> {
     let archive = path_to_cstring(archive.as_ref())?;
     let password = optional_password_to_c_buffer(password)?;
-    let mut context = ExtractContext {
-        selections,
-        error: None,
-        progress,
-    };
+    let mut context = ExtractContext { selections, error: None, progress };
 
     let code = unsafe {
         zmu_unrar_extract(
@@ -349,9 +330,7 @@ extern "C" fn extract_callback(
     };
     let bytes = destination_string.as_bytes_with_nul();
     if bytes.len() > destination_size {
-        context.error = Some(UnrarError::DestinationTooLong {
-            path: destination_path.clone(),
-        });
+        context.error = Some(UnrarError::DestinationTooLong { path: destination_path.clone() });
         return -2;
     }
 
@@ -379,37 +358,23 @@ fn optional_c_path_to_string(path: *const c_char) -> Result<Option<String>, Unra
     if path.is_null() {
         return Ok(None);
     }
-    let value = unsafe { CStr::from_ptr(path) }
-        .to_str()
-        .map_err(|_| UnrarError::InvalidEntryName)?;
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value.to_owned()))
-    }
+    let value = unsafe { CStr::from_ptr(path) }.to_str().map_err(|_| UnrarError::InvalidEntryName)?;
+    if value.is_empty() { Ok(None) } else { Ok(Some(value.to_owned())) }
 }
 
 fn c_path_to_string(path: *const c_char) -> Option<String> {
     if path.is_null() {
         return None;
     }
-    unsafe { CStr::from_ptr(path) }
-        .to_str()
-        .ok()
-        .map(ToOwned::to_owned)
+    unsafe { CStr::from_ptr(path) }.to_str().ok().map(ToOwned::to_owned)
 }
 
 fn path_to_cstring(path: &Path) -> Result<CString, UnrarError> {
     let Some(text) = path.to_str() else {
-        return Err(UnrarError::InvalidPath {
-            path: path.to_path_buf(),
-            reason: "path is not valid UTF-8".to_owned(),
-        });
+        return Err(UnrarError::InvalidPath { path: path.to_path_buf(), reason: "path is not valid UTF-8".to_owned() });
     };
-    CString::new(text).map_err(|source| UnrarError::InvalidPath {
-        path: path.to_path_buf(),
-        reason: source.to_string(),
-    })
+    CString::new(text)
+        .map_err(|source| UnrarError::InvalidPath { path: path.to_path_buf(), reason: source.to_string() })
 }
 
 fn destination_to_cstring(path: &Path) -> Result<CString, UnrarError> {
@@ -419,15 +384,11 @@ fn destination_to_cstring(path: &Path) -> Result<CString, UnrarError> {
             reason: "path is not valid UTF-8".to_owned(),
         });
     };
-    CString::new(text).map_err(|source| UnrarError::InvalidDestination {
-        path: path.to_path_buf(),
-        reason: source.to_string(),
-    })
+    CString::new(text)
+        .map_err(|source| UnrarError::InvalidDestination { path: path.to_path_buf(), reason: source.to_string() })
 }
 
-fn optional_password_to_c_buffer(
-    password: Option<&str>,
-) -> Result<Option<Zeroizing<Vec<u8>>>, UnrarError> {
+fn optional_password_to_c_buffer(password: Option<&str>) -> Result<Option<Zeroizing<Vec<u8>>>, UnrarError> {
     password
         .filter(|password| !password.is_empty())
         .map(|password| {
@@ -455,16 +416,10 @@ fn check_status(code: c_int) -> Result<(), UnrarError> {
     }
 
     if code == ZMU_UNRAR_DESTINATION_TOO_LONG {
-        return Err(UnrarError::Status {
-            code,
-            message: "destination path too long",
-        });
+        return Err(UnrarError::Status { code, message: "destination path too long" });
     }
 
-    Err(UnrarError::Status {
-        code,
-        message: status_message(code),
-    })
+    Err(UnrarError::Status { code, message: status_message(code) })
 }
 
 const fn status_message(code: c_int) -> &'static str {
@@ -493,12 +448,8 @@ mod tests {
 
     #[test]
     fn large_dictionary_policy_allows_up_to_512_mib() {
-        assert!(large_dictionary_allowed_bytes(
-            MAX_LARGE_DICTIONARY_BYTES - 1
-        ));
+        assert!(large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES - 1));
         assert!(large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES));
-        assert!(!large_dictionary_allowed_bytes(
-            MAX_LARGE_DICTIONARY_BYTES + 1
-        ));
+        assert!(!large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES + 1));
     }
 }

@@ -8,10 +8,7 @@ fn get_git_rev() -> Option<String> {
         }
     }
 
-    let output = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()?;
+    let output = Command::new("git").args(["rev-parse", "--short", "HEAD"]).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -27,11 +24,7 @@ fn get_git_rev() -> Option<String> {
         .output()
         .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
 
-    if is_dirty {
-        Some(format!("{sha}-dirty"))
-    } else {
-        Some(sha)
-    }
+    if is_dirty { Some(format!("{sha}-dirty")) } else { Some(sha) }
 }
 
 fn main() {

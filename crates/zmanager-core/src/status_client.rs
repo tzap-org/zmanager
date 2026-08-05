@@ -1,12 +1,10 @@
 //! Public TZAP trust distribution, status, bulk-status, and CRL client helpers.
 
 use crate::auth_client::{
-    TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse,
-    TzapAuthHttpTransport,
+    TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport,
 };
 use crate::document_verification::{
-    TzapDocumentVerificationResult, TzapOfflineVerificationOptions,
-    verify_tzap_document_envelope_offline,
+    TzapDocumentVerificationResult, TzapOfflineVerificationOptions, verify_tzap_document_envelope_offline,
 };
 use crate::trust::{self, TzapCertificateStatus, TzapTrustAnchorType, TzapVerificationState};
 use openssl::x509::{X509, X509Crl};
@@ -72,10 +70,7 @@ pub struct TzapStatusClient<'a, T> {
 impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
     #[must_use]
     pub fn new(sign_base_url: impl Into<String>, transport: &'a T) -> Self {
-        Self {
-            sign_base_url: sign_base_url.into(),
-            transport,
-        }
+        Self { sign_base_url: sign_base_url.into(), transport }
     }
 
     pub fn trust_roots(&self) -> Result<Value, TzapStatusClientError> {
@@ -83,11 +78,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
     }
 
     pub fn trust_root_pem(&self, root_sha256: &str) -> Result<Vec<u8>, TzapStatusClientError> {
-        let path = trust::trust_root_pem_path(root_sha256).map_err(|_| {
-            TzapStatusClientError::InvalidField {
-                field: "root_sha256",
-            }
-        })?;
+        let path = trust::trust_root_pem_path(root_sha256)
+            .map_err(|_| TzapStatusClientError::InvalidField { field: "root_sha256" })?;
         self.get_bytes(&path)
     }
 
@@ -95,28 +87,15 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
         self.get_json(trust::TRUST_INTERMEDIATES_PATH)
     }
 
-    pub fn trust_intermediate_pem(
-        &self,
-        issuer_sha256: &str,
-    ) -> Result<Vec<u8>, TzapStatusClientError> {
-        let path = trust::trust_intermediate_pem_path(issuer_sha256).map_err(|_| {
-            TzapStatusClientError::InvalidField {
-                field: "issuer_sha256",
-            }
-        })?;
+    pub fn trust_intermediate_pem(&self, issuer_sha256: &str) -> Result<Vec<u8>, TzapStatusClientError> {
+        let path = trust::trust_intermediate_pem_path(issuer_sha256)
+            .map_err(|_| TzapStatusClientError::InvalidField { field: "issuer_sha256" })?;
         self.get_bytes(&path)
     }
 
-    pub fn status_by_fingerprint(
-        &self,
-        certificate_sha256: &str,
-    ) -> Result<TzapStatusResponse, TzapStatusClientError> {
-        let path =
-            trust::status_certificate_by_fingerprint_path(certificate_sha256).map_err(|_| {
-                TzapStatusClientError::InvalidField {
-                    field: "certificate_sha256",
-                }
-            })?;
+    pub fn status_by_fingerprint(&self, certificate_sha256: &str) -> Result<TzapStatusResponse, TzapStatusClientError> {
+        let path = trust::status_certificate_by_fingerprint_path(certificate_sha256)
+            .map_err(|_| TzapStatusClientError::InvalidField { field: "certificate_sha256" })?;
         let bytes = self.get_bytes(&path)?;
         TzapStatusResponse::from_json_bytes(&bytes)
     }
@@ -126,11 +105,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
         issuer_sha256: &str,
         serial_number: &str,
     ) -> Result<TzapStatusResponse, TzapStatusClientError> {
-        let path = trust::status_certificate_by_issuer_path(issuer_sha256, serial_number).map_err(
-            |_| TzapStatusClientError::InvalidField {
-                field: "issuer_serial",
-            },
-        )?;
+        let path = trust::status_certificate_by_issuer_path(issuer_sha256, serial_number)
+            .map_err(|_| TzapStatusClientError::InvalidField { field: "issuer_serial" })?;
         let bytes = self.get_bytes(&path)?;
         TzapStatusResponse::from_json_bytes(&bytes)
     }
@@ -143,11 +119,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
         let body = json!({
             "lookups": lookups.iter().map(TzapBulkStatusLookup::to_json).collect::<Vec<_>>(),
         });
-        let response = self.send_json(
-            TzapAuthHttpMethod::Post,
-            trust::STATUS_BULK_PATH,
-            Some(body),
-        )?;
+        let response = self.send_json(TzapAuthHttpMethod::Post, trust::STATUS_BULK_PATH, Some(body))?;
         parse_bulk_status_response(&response.body, lookups)
     }
 
@@ -157,11 +129,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
     }
 
     pub fn crl_der(&self, issuer_sha256: &str) -> Result<Vec<u8>, TzapStatusClientError> {
-        let path = trust::status_crl_pem_path(issuer_sha256).map_err(|_| {
-            TzapStatusClientError::InvalidField {
-                field: "issuer_sha256",
-            }
-        })?;
+        let path = trust::status_crl_pem_path(issuer_sha256)
+            .map_err(|_| TzapStatusClientError::InvalidField { field: "issuer_sha256" })?;
         crl_download_to_der(&self.get_bytes(&path)?)
     }
 
@@ -187,9 +156,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
             body,
         })?;
         if !(200..=299).contains(&response.status_code) {
-            return Err(TzapStatusClientError::HttpStatus {
-                status_code: response.status_code,
-            });
+            return Err(TzapStatusClientError::HttpStatus { status_code: response.status_code });
         }
         Ok(response)
     }
@@ -197,13 +164,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapStatusClient<'a, T> {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TzapBulkStatusLookupForm {
-    CertificateFingerprint {
-        certificate_sha256: String,
-    },
-    IssuerSerial {
-        issuer_certificate_sha256: String,
-        serial_number: String,
-    },
+    CertificateFingerprint { certificate_sha256: String },
+    IssuerSerial { issuer_certificate_sha256: String, serial_number: String },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -214,15 +176,10 @@ pub struct TzapBulkStatusLookup {
 
 impl TzapBulkStatusLookup {
     #[must_use]
-    pub fn by_fingerprint(
-        lookup_id: impl Into<String>,
-        certificate_sha256: impl Into<String>,
-    ) -> Self {
+    pub fn by_fingerprint(lookup_id: impl Into<String>, certificate_sha256: impl Into<String>) -> Self {
         Self {
             lookup_id: lookup_id.into(),
-            form: TzapBulkStatusLookupForm::CertificateFingerprint {
-                certificate_sha256: certificate_sha256.into(),
-            },
+            form: TzapBulkStatusLookupForm::CertificateFingerprint { certificate_sha256: certificate_sha256.into() },
         }
     }
 
@@ -247,10 +204,7 @@ impl TzapBulkStatusLookup {
                 "lookup_id": self.lookup_id,
                 "certificate_sha256": certificate_sha256,
             }),
-            TzapBulkStatusLookupForm::IssuerSerial {
-                issuer_certificate_sha256,
-                serial_number,
-            } => json!({
+            TzapBulkStatusLookupForm::IssuerSerial { issuer_certificate_sha256, serial_number } => json!({
                 "lookup_id": self.lookup_id,
                 "issuer_certificate_sha256": issuer_certificate_sha256,
                 "serial_number": serial_number,
@@ -383,33 +337,15 @@ impl TzapStatusResponse {
             | TzapCertificateStatus::IssuerSuspended
             | TzapCertificateStatus::IssuerRevoked => {
                 require_some(self.certificate_sha256.as_ref(), "certificate_sha256")?;
-                require_some(
-                    self.issuer_certificate_sha256.as_ref(),
-                    "issuer_certificate_sha256",
-                )?;
+                require_some(self.issuer_certificate_sha256.as_ref(), "issuer_certificate_sha256")?;
                 require_some(self.issuer_key_identifier.as_ref(), "issuer_key_identifier")?;
                 require_some(self.serial_number.as_ref(), "serial_number")?;
-                require_some(
-                    self.not_before_unix_seconds.as_ref(),
-                    "not_before_unix_seconds",
-                )?;
-                require_some(
-                    self.not_after_unix_seconds.as_ref(),
-                    "not_after_unix_seconds",
-                )?;
-                require_some(
-                    self.this_update_unix_seconds.as_ref(),
-                    "this_update_unix_seconds",
-                )?;
-                require_some(
-                    self.next_update_unix_seconds.as_ref(),
-                    "next_update_unix_seconds",
-                )?;
+                require_some(self.not_before_unix_seconds.as_ref(), "not_before_unix_seconds")?;
+                require_some(self.not_after_unix_seconds.as_ref(), "not_after_unix_seconds")?;
+                require_some(self.this_update_unix_seconds.as_ref(), "this_update_unix_seconds")?;
+                require_some(self.next_update_unix_seconds.as_ref(), "next_update_unix_seconds")?;
                 if self.status == TzapCertificateStatus::Revoked {
-                    require_some(
-                        self.revoked_at_unix_seconds.as_ref(),
-                        "revoked_at_unix_seconds",
-                    )?;
+                    require_some(self.revoked_at_unix_seconds.as_ref(), "revoked_at_unix_seconds")?;
                     require_some(self.revocation_reason.as_ref(), "revocation_reason")?;
                 }
             }
@@ -417,26 +353,16 @@ impl TzapStatusResponse {
             | TzapCertificateStatus::UnknownIssuer
             | TzapCertificateStatus::MalformedLookup
             | TzapCertificateStatus::UnsupportedLookupForm => {
-                require_some(
-                    self.this_update_unix_seconds.as_ref(),
-                    "this_update_unix_seconds",
-                )?;
-                require_some(
-                    self.next_update_unix_seconds.as_ref(),
-                    "next_update_unix_seconds",
-                )?;
+                require_some(self.this_update_unix_seconds.as_ref(), "this_update_unix_seconds")?;
+                require_some(self.next_update_unix_seconds.as_ref(), "next_update_unix_seconds")?;
                 if self.certificate_sha256.is_some()
                     || self.issuer_certificate_sha256.is_some()
                     || self.issuer_key_identifier.is_some()
                     || self.serial_number.is_some()
                 {
-                    return Err(TzapStatusClientError::InvalidField {
-                        field: "unknown_leaf_fields",
-                    });
+                    return Err(TzapStatusClientError::InvalidField { field: "unknown_leaf_fields" });
                 }
-                if self.query.certificate_sha256.is_none()
-                    && self.query.issuer_certificate_sha256.is_none()
-                {
+                if self.query.certificate_sha256.is_none() && self.query.issuer_certificate_sha256.is_none() {
                     return Err(TzapStatusClientError::InvalidField { field: "query" });
                 }
             }
@@ -474,11 +400,7 @@ pub fn online_verification_result_from_status(
         && status_matches_document(expected, status)
         && status.is_fresh_valid_for_valid_now(verifier_time_unix_seconds)
     {
-        return TzapDocumentVerificationResult {
-            state: TzapVerificationState::ValidNow,
-            reason: None,
-            ..offline
-        };
+        return TzapDocumentVerificationResult { state: TzapVerificationState::ValidNow, reason: None, ..offline };
     }
     TzapDocumentVerificationResult {
         state: TzapVerificationState::Invalid,
@@ -487,14 +409,9 @@ pub fn online_verification_result_from_status(
     }
 }
 
-fn status_matches_document(
-    expected: &TzapDocumentStatusTarget,
-    status: &TzapStatusResponse,
-) -> bool {
-    let leaf_fields_match = status.certificate_sha256.as_deref()
-        == Some(expected.certificate_sha256.as_str())
-        && status.issuer_certificate_sha256.as_deref()
-            == Some(expected.issuer_certificate_sha256.as_str())
+fn status_matches_document(expected: &TzapDocumentStatusTarget, status: &TzapStatusResponse) -> bool {
+    let leaf_fields_match = status.certificate_sha256.as_deref() == Some(expected.certificate_sha256.as_str())
+        && status.issuer_certificate_sha256.as_deref() == Some(expected.issuer_certificate_sha256.as_str())
         && status.issuer_key_identifier.as_deref() == Some(expected.issuer_key_identifier.as_str())
         && status.serial_number.as_deref() == Some(expected.serial_number.as_str());
     let query_matches = if status.query.certificate_sha256.is_none()
@@ -504,8 +421,7 @@ fn status_matches_document(
         true
     } else {
         status.query.certificate_sha256.as_deref() == Some(expected.certificate_sha256.as_str())
-            || (status.query.issuer_certificate_sha256.as_deref()
-                == Some(expected.issuer_certificate_sha256.as_str())
+            || (status.query.issuer_certificate_sha256.as_deref() == Some(expected.issuer_certificate_sha256.as_str())
                 && status.query.serial_number.as_deref() == Some(expected.serial_number.as_str()))
     };
     leaf_fields_match && query_matches
@@ -519,12 +435,7 @@ pub fn verify_tzap_document_envelope_valid_now(
 ) -> TzapDocumentVerificationResult {
     let offline = verify_tzap_document_envelope_offline(envelope, offline_options);
     let expected = TzapDocumentStatusTarget::from_envelope(envelope);
-    online_verification_result_from_status(
-        offline,
-        &expected,
-        status,
-        offline_options.verifier_time_unix_seconds,
-    )
+    online_verification_result_from_status(offline, &expected, status, offline_options.verifier_time_unix_seconds)
 }
 
 pub fn validate_crl_der_against_manifest(
@@ -533,74 +444,46 @@ pub fn validate_crl_der_against_manifest(
     issuer_certificate_der: &[u8],
 ) -> Result<(), TzapStatusClientError> {
     if sha256_identifier(crl_der) != entry.crl_sha256 {
-        return Err(TzapStatusClientError::CrlValidation {
-            reason: "DER SHA-256 does not match manifest".to_owned(),
-        });
+        return Err(TzapStatusClientError::CrlValidation { reason: "DER SHA-256 does not match manifest".to_owned() });
     }
-    let crl = X509Crl::from_der(crl_der).map_err(|error| TzapStatusClientError::CrlValidation {
-        reason: error.to_string(),
-    })?;
+    let crl = X509Crl::from_der(crl_der)
+        .map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
     let parsed_crl = parse_crl_der(crl_der)?;
     validate_crl_manifest_fields(entry, &parsed_crl)?;
-    let issuer = X509::from_der(issuer_certificate_der).map_err(|error| {
-        TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        }
-    })?;
+    let issuer = X509::from_der(issuer_certificate_der)
+        .map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
     let name_order = crl
         .issuer_name()
         .try_cmp(issuer.subject_name())
-        .map_err(|error| TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
     if name_order != std::cmp::Ordering::Equal {
         return Err(TzapStatusClientError::CrlValidation {
             reason: "CRL issuer does not match issuer certificate subject".to_owned(),
         });
     }
-    let issuer_key = issuer
-        .public_key()
-        .map_err(|error| TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        })?;
-    if !crl
-        .verify(&issuer_key)
-        .map_err(|error| TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        })?
-    {
-        return Err(TzapStatusClientError::CrlValidation {
-            reason: "CRL signature did not verify".to_owned(),
-        });
+    let issuer_key =
+        issuer.public_key().map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
+    if !crl.verify(&issuer_key).map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })? {
+        return Err(TzapStatusClientError::CrlValidation { reason: "CRL signature did not verify".to_owned() });
     }
     Ok(())
 }
 
 fn parse_crl_der(crl_der: &[u8]) -> Result<CertificateRevocationList<'_>, TzapStatusClientError> {
-    let (remaining, crl) = CertificateRevocationList::from_der(crl_der).map_err(|error| {
-        TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        }
-    })?;
+    let (remaining, crl) = CertificateRevocationList::from_der(crl_der)
+        .map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
     if remaining.is_empty() {
         Ok(crl)
     } else {
-        Err(TzapStatusClientError::CrlValidation {
-            reason: "CRL has trailing DER bytes".to_owned(),
-        })
+        Err(TzapStatusClientError::CrlValidation { reason: "CRL has trailing DER bytes".to_owned() })
     }
 }
 
 fn crl_download_to_der(bytes: &[u8]) -> Result<Vec<u8>, TzapStatusClientError> {
     if let Ok(crl) = X509Crl::from_pem(bytes) {
-        crl.to_der()
-            .map_err(|error| TzapStatusClientError::CrlValidation {
-                reason: error.to_string(),
-            })
+        crl.to_der().map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })
     } else {
-        X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation {
-            reason: error.to_string(),
-        })?;
+        X509Crl::from_der(bytes).map_err(|error| TzapStatusClientError::CrlValidation { reason: error.to_string() })?;
         Ok(bytes.to_vec())
     }
 }
@@ -609,15 +492,12 @@ fn validate_crl_manifest_fields(
     entry: &TzapCrlManifestEntry,
     crl: &CertificateRevocationList<'_>,
 ) -> Result<(), TzapStatusClientError> {
-    let crl_number = crl.crl_number().map(canonical_biguint_hex).ok_or_else(|| {
-        TzapStatusClientError::CrlValidation {
-            reason: "CRL number is missing".to_owned(),
-        }
-    })?;
+    let crl_number = crl
+        .crl_number()
+        .map(canonical_biguint_hex)
+        .ok_or_else(|| TzapStatusClientError::CrlValidation { reason: "CRL number is missing".to_owned() })?;
     if crl_number != entry.crl_number {
-        return Err(TzapStatusClientError::CrlValidation {
-            reason: "CRL number does not match manifest".to_owned(),
-        });
+        return Err(TzapStatusClientError::CrlValidation { reason: "CRL number does not match manifest".to_owned() });
     }
     if crl.last_update().timestamp() != entry.this_update_unix_seconds {
         return Err(TzapStatusClientError::CrlValidation {
@@ -626,9 +506,7 @@ fn validate_crl_manifest_fields(
     }
     let next_update = crl
         .next_update()
-        .ok_or_else(|| TzapStatusClientError::CrlValidation {
-            reason: "CRL nextUpdate is missing".to_owned(),
-        })?
+        .ok_or_else(|| TzapStatusClientError::CrlValidation { reason: "CRL nextUpdate is missing".to_owned() })?
         .timestamp();
     if next_update != entry.next_update_unix_seconds {
         return Err(TzapStatusClientError::CrlValidation {
@@ -648,9 +526,7 @@ fn canonical_biguint_hex(value: &num_bigint::BigUint) -> String {
 
 fn validate_bulk_lookups(lookups: &[TzapBulkStatusLookup]) -> Result<(), TzapStatusClientError> {
     if !(MIN_BULK_LOOKUPS..=MAX_BULK_LOOKUPS).contains(&lookups.len()) {
-        return Err(TzapStatusClientError::InvalidBulkLookup {
-            reason: "lookup count must be 1-100",
-        });
+        return Err(TzapStatusClientError::InvalidBulkLookup { reason: "lookup count must be 1-100" });
     }
     let mut ids = HashSet::new();
     for lookup in lookups {
@@ -662,25 +538,15 @@ fn validate_bulk_lookups(lookups: &[TzapBulkStatusLookup]) -> Result<(), TzapSta
         match &lookup.form {
             TzapBulkStatusLookupForm::CertificateFingerprint { certificate_sha256 } => {
                 trust::parse_certificate_sha256(certificate_sha256).map_err(|_| {
-                    TzapStatusClientError::InvalidBulkLookup {
-                        reason: "certificate_sha256 is invalid",
-                    }
+                    TzapStatusClientError::InvalidBulkLookup { reason: "certificate_sha256 is invalid" }
                 })?;
             }
-            TzapBulkStatusLookupForm::IssuerSerial {
-                issuer_certificate_sha256,
-                serial_number,
-            } => {
+            TzapBulkStatusLookupForm::IssuerSerial { issuer_certificate_sha256, serial_number } => {
                 trust::parse_issuer_sha256(issuer_certificate_sha256).map_err(|_| {
-                    TzapStatusClientError::InvalidBulkLookup {
-                        reason: "issuer_certificate_sha256 is invalid",
-                    }
+                    TzapStatusClientError::InvalidBulkLookup { reason: "issuer_certificate_sha256 is invalid" }
                 })?;
-                trust::parse_serial_hex(serial_number).map_err(|_| {
-                    TzapStatusClientError::InvalidBulkLookup {
-                        reason: "serial_number is invalid",
-                    }
-                })?;
+                trust::parse_serial_hex(serial_number)
+                    .map_err(|_| TzapStatusClientError::InvalidBulkLookup { reason: "serial_number is invalid" })?;
             }
         }
     }
@@ -709,12 +575,9 @@ fn parse_bulk_status_response(
             if lookup_id != lookup.lookup_id {
                 return Err(TzapStatusClientError::InvalidField { field: "lookup_id" });
             }
-            let response_value =
-                item_object
-                    .get("status_response")
-                    .ok_or(TzapStatusClientError::InvalidField {
-                        field: "status_response",
-                    })?;
+            let response_value = item_object
+                .get("status_response")
+                .ok_or(TzapStatusClientError::InvalidField { field: "status_response" })?;
             Ok(TzapBulkStatusItem {
                 lookup_id: lookup_id.to_owned(),
                 response: TzapStatusResponse::from_json_value(response_value)?,
@@ -737,11 +600,7 @@ fn parse_crl_manifest(bytes: &[u8]) -> Result<Vec<TzapCrlManifestEntry>, TzapSta
             let parsed = TzapCrlManifestEntry {
                 crl_scope: required_string(entry_object, "crl_scope")?.to_owned(),
                 crl_url: required_string(entry_object, "crl_url")?.to_owned(),
-                issuer_certificate_sha256: required_string(
-                    entry_object,
-                    "issuer_certificate_sha256",
-                )?
-                .to_owned(),
+                issuer_certificate_sha256: required_string(entry_object, "issuer_certificate_sha256")?.to_owned(),
                 crl_sha256: required_string(entry_object, "crl_sha256")?.to_owned(),
                 crl_number: required_string(entry_object, "crl_number")?.to_owned(),
                 this_update_unix_seconds: required_unix_or_rfc3339(
@@ -760,41 +619,26 @@ fn parse_crl_manifest(bytes: &[u8]) -> Result<Vec<TzapCrlManifestEntry>, TzapSta
             if parsed.crl_scope != trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA {
                 return Err(TzapStatusClientError::InvalidField { field: "crl_scope" });
             }
-            trust::parse_issuer_sha256(&parsed.issuer_certificate_sha256).map_err(|_| {
-                TzapStatusClientError::InvalidField {
-                    field: "issuer_certificate_sha256",
-                }
-            })?;
+            trust::parse_issuer_sha256(&parsed.issuer_certificate_sha256)
+                .map_err(|_| TzapStatusClientError::InvalidField { field: "issuer_certificate_sha256" })?;
             let expected_crl_url = trust::status_crl_pem_path(&parsed.issuer_certificate_sha256)
-                .map_err(|_| TzapStatusClientError::InvalidField {
-                    field: "issuer_certificate_sha256",
-                })?;
+                .map_err(|_| TzapStatusClientError::InvalidField { field: "issuer_certificate_sha256" })?;
             if parsed.crl_url != expected_crl_url {
                 return Err(TzapStatusClientError::InvalidField { field: "crl_url" });
             }
-            trust::parse_crl_sha256(&parsed.crl_sha256).map_err(|_| {
-                TzapStatusClientError::InvalidField {
-                    field: "crl_sha256",
-                }
-            })?;
-            trust::parse_serial_hex(&parsed.crl_number).map_err(|_| {
-                TzapStatusClientError::InvalidField {
-                    field: "crl_number",
-                }
-            })?;
+            trust::parse_crl_sha256(&parsed.crl_sha256)
+                .map_err(|_| TzapStatusClientError::InvalidField { field: "crl_sha256" })?;
+            trust::parse_serial_hex(&parsed.crl_number)
+                .map_err(|_| TzapStatusClientError::InvalidField { field: "crl_number" })?;
             if parsed.next_update_unix_seconds <= parsed.this_update_unix_seconds {
-                return Err(TzapStatusClientError::InvalidField {
-                    field: "next_update_unix_seconds",
-                });
+                return Err(TzapStatusClientError::InvalidField { field: "next_update_unix_seconds" });
             }
             Ok(parsed)
         })
         .collect()
 }
 
-fn parse_query_echo(
-    response_object: &Map<String, Value>,
-) -> Result<TzapStatusQueryEcho, TzapStatusClientError> {
+fn parse_query_echo(response_object: &Map<String, Value>) -> Result<TzapStatusQueryEcho, TzapStatusClientError> {
     let Some(value) = response_object.get("query") else {
         return Ok(TzapStatusQueryEcho::default());
     };
@@ -807,15 +651,10 @@ fn parse_query_echo(
 }
 
 fn object(value: &Value) -> Result<&Map<String, Value>, TzapStatusClientError> {
-    value
-        .as_object()
-        .ok_or(TzapStatusClientError::InvalidField { field: "object" })
+    value.as_object().ok_or(TzapStatusClientError::InvalidField { field: "object" })
 }
 
-fn required_string<'a>(
-    object: &'a Map<String, Value>,
-    field: &'static str,
-) -> Result<&'a str, TzapStatusClientError> {
+fn required_string<'a>(object: &'a Map<String, Value>, field: &'static str) -> Result<&'a str, TzapStatusClientError> {
     object
         .get(field)
         .and_then(Value::as_str)
@@ -823,10 +662,7 @@ fn required_string<'a>(
         .ok_or(TzapStatusClientError::InvalidField { field })
 }
 
-fn optional_string(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<Option<String>, TzapStatusClientError> {
+fn optional_string(object: &Map<String, Value>, field: &'static str) -> Result<Option<String>, TzapStatusClientError> {
     object
         .get(field)
         .map(|value| {
@@ -839,18 +675,8 @@ fn optional_string(
         .transpose()
 }
 
-fn optional_i64(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<Option<i64>, TzapStatusClientError> {
-    object
-        .get(field)
-        .map(|value| {
-            value
-                .as_i64()
-                .ok_or(TzapStatusClientError::InvalidField { field })
-        })
-        .transpose()
+fn optional_i64(object: &Map<String, Value>, field: &'static str) -> Result<Option<i64>, TzapStatusClientError> {
+    object.get(field).map(|value| value.as_i64().ok_or(TzapStatusClientError::InvalidField { field })).transpose()
 }
 
 fn required_unix_or_rfc3339(
@@ -887,11 +713,7 @@ fn optional_unix_or_rfc3339(
 }
 
 fn require_some<T>(value: Option<&T>, field: &'static str) -> Result<(), TzapStatusClientError> {
-    if value.is_some() {
-        Ok(())
-    } else {
-        Err(TzapStatusClientError::InvalidField { field })
-    }
+    if value.is_some() { Ok(()) } else { Err(TzapStatusClientError::InvalidField { field }) }
 }
 
 fn is_printable_ascii(value: &str) -> bool {
@@ -915,8 +737,7 @@ mod tests {
         online_verification_result_from_status, validate_bulk_lookups,
     };
     use crate::auth_client::{
-        TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse,
-        TzapAuthHttpTransport,
+        TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport,
     };
     use crate::document_verification::TzapDocumentVerificationResult;
     use crate::trust::{self, TzapCertificateStatus, TzapTrustAnchorType, TzapVerificationState};
@@ -926,8 +747,7 @@ mod tests {
     #[test]
     fn status_client_uses_percent_encoded_paths_and_parses_fresh_valid_status() {
         let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
-        let transport =
-            FakeStatusTransport::new(vec![json_response(&valid_status(&certificate_sha256))]);
+        let transport = FakeStatusTransport::new(vec![json_response(&valid_status(&certificate_sha256))]);
         let client = TzapStatusClient::new("https://sign.example/", &transport);
 
         let status = client.status_by_fingerprint(&certificate_sha256).unwrap();
@@ -941,22 +761,10 @@ mod tests {
     fn status_response_accepts_server_iso_timestamps() {
         let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
         let mut value = valid_status(&certificate_sha256);
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("not_before_unix_seconds");
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("not_after_unix_seconds");
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("this_update_unix_seconds");
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("next_update_unix_seconds");
+        value.as_object_mut().unwrap().remove("not_before_unix_seconds");
+        value.as_object_mut().unwrap().remove("not_after_unix_seconds");
+        value.as_object_mut().unwrap().remove("this_update_unix_seconds");
+        value.as_object_mut().unwrap().remove("next_update_unix_seconds");
         value["not_before"] = json!("1970-01-01T00:01:40Z");
         value["not_after"] = json!("1970-01-01T00:33:20Z");
         value["this_update"] = json!("1970-01-01T00:15:00Z");
@@ -976,30 +784,16 @@ mod tests {
         let certificate_sha256 = trust::format_certificate_sha256(&[0x0b; 32]);
         let mut stale = valid_status(&certificate_sha256);
         stale["next_update_unix_seconds"] = json!(600);
-        assert!(
-            !TzapStatusResponse::from_json_value(&stale)
-                .unwrap()
-                .is_fresh_valid_for_valid_now(1_000)
-        );
+        assert!(!TzapStatusResponse::from_json_value(&stale).unwrap().is_fresh_valid_for_valid_now(1_000));
 
-        for status in [
-            "suspended",
-            "issuer_revoked",
-            "revoked",
-            "expired",
-            "not_yet_valid",
-        ] {
+        for status in ["suspended", "issuer_revoked", "revoked", "expired", "not_yet_valid"] {
             let mut value = valid_status(&certificate_sha256);
             value["status"] = json!(status);
             if status == "revoked" {
                 value["revoked_at_unix_seconds"] = json!(900);
                 value["revocation_reason"] = json!("key_compromise");
             }
-            assert!(
-                !TzapStatusResponse::from_json_value(&value)
-                    .unwrap()
-                    .is_fresh_valid_for_valid_now(1_000)
-            );
+            assert!(!TzapStatusResponse::from_json_value(&value).unwrap().is_fresh_valid_for_valid_now(1_000));
         }
 
         let unknown = json!({
@@ -1009,16 +803,11 @@ mod tests {
             "next_update_unix_seconds": 1_800
         });
         assert_eq!(
-            TzapStatusResponse::from_json_value(&unknown)
-                .unwrap()
-                .status,
+            TzapStatusResponse::from_json_value(&unknown).unwrap().status,
             TzapCertificateStatus::UnknownCertificate
         );
         let mut underspecified_unknown = unknown.clone();
-        underspecified_unknown
-            .as_object_mut()
-            .unwrap()
-            .remove("next_update_unix_seconds");
+        underspecified_unknown.as_object_mut().unwrap().remove("next_update_unix_seconds");
         assert!(TzapStatusResponse::from_json_value(&underspecified_unknown).is_err());
 
         let malformed = json!({
@@ -1028,9 +817,7 @@ mod tests {
             "next_update_unix_seconds": 1_800
         });
         assert_eq!(
-            TzapStatusResponse::from_json_value(&malformed)
-                .unwrap()
-                .status,
+            TzapStatusResponse::from_json_value(&malformed).unwrap().status,
             TzapCertificateStatus::MalformedLookup
         );
 
@@ -1044,11 +831,7 @@ mod tests {
                 "this_update_unix_seconds": 900,
                 "next_update_unix_seconds": 1_800
             });
-            assert!(
-                !TzapStatusResponse::from_json_value(&value)
-                    .unwrap()
-                    .is_fresh_valid_for_valid_now(1_000)
-            );
+            assert!(!TzapStatusResponse::from_json_value(&value).unwrap().is_fresh_valid_for_valid_now(1_000));
         }
     }
 
@@ -1060,11 +843,7 @@ mod tests {
         validate_bulk_lookups(&[duplicate_target.clone(), second.clone()]).unwrap();
         assert!(validate_bulk_lookups(&[duplicate_target.clone(), duplicate_target]).is_err());
         assert!(
-            validate_bulk_lookups(&[TzapBulkStatusLookup::by_fingerprint(
-                "\n",
-                certificate_sha256.clone()
-            )])
-            .is_err()
+            validate_bulk_lookups(&[TzapBulkStatusLookup::by_fingerprint("\n", certificate_sha256.clone())]).is_err()
         );
 
         let response = json!({
@@ -1076,10 +855,7 @@ mod tests {
         let transport = FakeStatusTransport::new(vec![json_response(&response)]);
         let client = TzapStatusClient::new("https://sign.example", &transport);
         let results = client
-            .bulk_status(&[
-                second_lookup("a", &certificate_sha256),
-                second_lookup("b", &certificate_sha256),
-            ])
+            .bulk_status(&[second_lookup("a", &certificate_sha256), second_lookup("b", &certificate_sha256)])
             .unwrap();
 
         assert_eq!(results[0].lookup_id, "a");
@@ -1103,19 +879,14 @@ mod tests {
             issuer_key_identifier: "AQIDBA".to_owned(),
             serial_number: "01".to_owned(),
         };
-        let valid =
-            TzapStatusResponse::from_json_value(&valid_status(&certificate_sha256)).unwrap();
-        let valid_now =
-            online_verification_result_from_status(offline.clone(), &expected, &valid, 1_000);
+        let valid = TzapStatusResponse::from_json_value(&valid_status(&certificate_sha256)).unwrap();
+        let valid_now = online_verification_result_from_status(offline.clone(), &expected, &valid, 1_000);
         assert_eq!(valid_now.state, TzapVerificationState::ValidNow);
         assert_eq!(valid_now.reason, None);
-        let mismatched = TzapStatusResponse::from_json_value(&valid_status(
-            &trust::format_certificate_sha256(&[0x55; 32]),
-        ))
-        .unwrap();
+        let mismatched =
+            TzapStatusResponse::from_json_value(&valid_status(&trust::format_certificate_sha256(&[0x55; 32]))).unwrap();
         assert_eq!(
-            online_verification_result_from_status(offline.clone(), &expected, &mismatched, 1_000)
-                .state,
+            online_verification_result_from_status(offline.clone(), &expected, &mismatched, 1_000).state,
             TzapVerificationState::Invalid
         );
 
@@ -1142,13 +913,8 @@ mod tests {
                 "next_update_unix_seconds": 1_200
             }]
         });
-        let entries =
-            super::parse_crl_manifest(serde_json::to_string(&manifest).unwrap().as_bytes())
-                .unwrap();
-        assert_eq!(
-            entries[0].crl_scope,
-            trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA
-        );
+        let entries = super::parse_crl_manifest(serde_json::to_string(&manifest).unwrap().as_bytes()).unwrap();
+        assert_eq!(entries[0].crl_scope, trust::TZAP_CRL_SCOPE_ALL_CERTIFICATES_ISSUED_BY_CA);
 
         let iso_manifest = json!({
             "crls": [{
@@ -1161,25 +927,18 @@ mod tests {
                 "next_update": "1970-01-01T00:20:00Z"
             }]
         });
-        let iso_entries =
-            super::parse_crl_manifest(serde_json::to_string(&iso_manifest).unwrap().as_bytes())
-                .unwrap();
+        let iso_entries = super::parse_crl_manifest(serde_json::to_string(&iso_manifest).unwrap().as_bytes()).unwrap();
         assert_eq!(iso_entries[0].this_update_unix_seconds, 900);
         assert_eq!(iso_entries[0].next_update_unix_seconds, 1_200);
 
         let mut bad = manifest;
         bad["crls"][0]["next_update_unix_seconds"] = json!(800);
-        assert!(
-            super::parse_crl_manifest(serde_json::to_string(&bad).unwrap().as_bytes()).is_err()
-        );
+        assert!(super::parse_crl_manifest(serde_json::to_string(&bad).unwrap().as_bytes()).is_err());
 
         let mut bad_scope = bad.clone();
         bad_scope["crls"][0]["next_update_unix_seconds"] = json!(1_200);
         bad_scope["crls"][0]["crl_scope"] = json!("issuer");
-        assert!(
-            super::parse_crl_manifest(serde_json::to_string(&bad_scope).unwrap().as_bytes())
-                .is_err()
-        );
+        assert!(super::parse_crl_manifest(serde_json::to_string(&bad_scope).unwrap().as_bytes()).is_err());
     }
 
     #[test]
@@ -1194,10 +953,11 @@ mod tests {
         let crl_der = client.crl_der(&issuer_sha256).unwrap();
 
         assert!(openssl::x509::X509Crl::from_der(&crl_der).is_ok());
-        assert!(transport.requests()[0].url.ends_with(&format!(
-            "/v1/status/crls/{}/pem",
-            trust::percent_encode_path_param(&issuer_sha256)
-        )));
+        assert!(
+            transport.requests()[0]
+                .url
+                .ends_with(&format!("/v1/status/crls/{}/pem", trust::percent_encode_path_param(&issuer_sha256)))
+        );
     }
 
     fn valid_status(certificate_sha256: &str) -> serde_json::Value {
@@ -1219,10 +979,7 @@ mod tests {
     }
 
     fn json_response(body: &serde_json::Value) -> TzapAuthHttpResponse {
-        TzapAuthHttpResponse {
-            status_code: 200,
-            body: serde_json::to_vec(body).unwrap(),
-        }
+        TzapAuthHttpResponse { status_code: 200, body: serde_json::to_vec(body).unwrap() }
     }
 
     const TEST_CRL_PEM: &str = "-----BEGIN X509 CRL-----\nMIIBajBUAgEBMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBlRlc3RDQRcNMjYw\nNjI2MDQwOTQ1WhcNMjYwNjI3MDQwOTQ1WqAPMA0wCwYDVR0UBAQCAhAAMA0GCSqG\nSIb3DQEBCwUAA4IBAQBvjtd1d23B5m454FBHAuBiy7Q+BnXBDEK5txSMSe30g9Zt\nm+1/WhHsqMp1biNSyQhVQYwLsJoWimzqcgR4CygJyFaVM3gT1QpN4yFxxs6tmEyi\nAgDD+ngO6GtY+ouzRpsnsrd5g9PTPbchGjjDjbwjCwcqcWY6n7cxMwJc0OBxj6BU\nYaz++TmBFD9a7p3HOL2SJWfSaT4JACRofsmGfiSQa6xBum91/NbVYDtDly8sp8si\n1d4lPYtpBr3r+PKMKEilx+vHOo0kUIOcKQkJx85revQeZhQXRJfPphMn+iJkp8QQ\n6lNu5AzDf/eH7pjDm8htQOlZil25T3BXhEMzc/ts\n-----END X509 CRL-----\n";
@@ -1234,10 +991,7 @@ mod tests {
 
     impl FakeStatusTransport {
         fn new(responses: Vec<TzapAuthHttpResponse>) -> Self {
-            Self {
-                responses: RefCell::new(responses.into_iter().rev().collect()),
-                requests: RefCell::new(Vec::new()),
-            }
+            Self { responses: RefCell::new(responses.into_iter().rev().collect()), requests: RefCell::new(Vec::new()) }
         }
 
         fn requests(&self) -> Vec<TzapAuthHttpRequest> {
@@ -1246,15 +1000,9 @@ mod tests {
     }
 
     impl TzapAuthHttpTransport for FakeStatusTransport {
-        fn send(
-            &self,
-            request: &TzapAuthHttpRequest,
-        ) -> Result<TzapAuthHttpResponse, TzapAuthError> {
+        fn send(&self, request: &TzapAuthHttpRequest) -> Result<TzapAuthHttpResponse, TzapAuthError> {
             self.requests.borrow_mut().push(request.clone());
-            self.responses
-                .borrow_mut()
-                .pop()
-                .ok_or(TzapAuthError::HttpStatus { status_code: 599 })
+            self.responses.borrow_mut().pop().ok_or(TzapAuthError::HttpStatus { status_code: 599 })
         }
     }
 }

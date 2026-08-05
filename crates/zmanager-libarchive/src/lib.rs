@@ -42,14 +42,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Archive {
-                status,
-                errno,
-                message,
-            } => write!(
-                f,
-                "libarchive operation failed with status {status}, errno {errno}: {message}"
-            ),
+            Self::Archive { status, errno, message } => {
+                write!(f, "libarchive operation failed with status {status}, errno {errno}: {message}")
+            }
             Self::NullArchive => write!(f, "libarchive returned a null archive pointer"),
             Self::NullEntry => write!(f, "libarchive returned a null entry pointer"),
             Self::InteriorNul(source) => write!(f, "input contains an interior NUL byte: {source}"),
@@ -259,35 +254,25 @@ impl ReadArchive {
 
     fn add_passphrase(&self, passphrase: &str) -> Result<()> {
         let passphrase = CString::new(passphrase)?;
-        self.check_status(unsafe {
-            sys::archive_read_add_passphrase(self.as_ptr(), passphrase.as_ptr())
-        })?;
+        self.check_status(unsafe { sys::archive_read_add_passphrase(self.as_ptr(), passphrase.as_ptr()) })?;
         Ok(())
     }
 
     fn open_paths(&self, paths: &[PathBuf]) -> Result<()> {
-        if paths.len() == 1 {
-            self.open_path(&paths[0])
-        } else {
-            self.open_multi_path(paths)
-        }
+        if paths.len() == 1 { self.open_path(&paths[0]) } else { self.open_multi_path(paths) }
     }
 
     #[cfg(windows)]
     fn open_path(&self, path: &Path) -> Result<()> {
         let wide = wide_path(path);
-        self.check_status(unsafe {
-            sys::archive_read_open_filename_w(self.as_ptr(), wide.as_ptr(), BLOCK_SIZE)
-        })?;
+        self.check_status(unsafe { sys::archive_read_open_filename_w(self.as_ptr(), wide.as_ptr(), BLOCK_SIZE) })?;
         Ok(())
     }
 
     #[cfg(not(windows))]
     fn open_path(&self, path: &Path) -> Result<()> {
         let path = c_path(path)?;
-        self.check_status(unsafe {
-            sys::archive_read_open_filename(self.as_ptr(), path.as_ptr(), BLOCK_SIZE)
-        })?;
+        self.check_status(unsafe { sys::archive_read_open_filename(self.as_ptr(), path.as_ptr(), BLOCK_SIZE) })?;
         Ok(())
     }
 
@@ -297,27 +282,18 @@ impl ReadArchive {
         let mut pointers = wide_paths.iter().map(Vec::as_ptr).collect::<Vec<_>>();
         pointers.push(ptr::null());
 
-        self.check_status(unsafe {
-            sys::archive_read_open_filenames_w(self.as_ptr(), pointers.as_ptr(), BLOCK_SIZE)
-        })?;
+        self.check_status(unsafe { sys::archive_read_open_filenames_w(self.as_ptr(), pointers.as_ptr(), BLOCK_SIZE) })?;
         Ok(())
     }
 
     #[cfg(not(windows))]
     fn open_multi_path(&self, paths: &[PathBuf]) -> Result<()> {
-        let c_paths = paths
-            .iter()
-            .map(|path| c_path(path))
-            .collect::<Result<Vec<_>>>()?;
+        let c_paths = paths.iter().map(|path| c_path(path)).collect::<Result<Vec<_>>>()?;
         let mut pointers = c_paths.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
         pointers.push(ptr::null());
 
         self.check_status(unsafe {
-            sys::archive_read_open_filenames(
-                self.as_ptr(),
-                pointers.as_mut_ptr() as *mut *const i8,
-                BLOCK_SIZE,
-            )
+            sys::archive_read_open_filenames(self.as_ptr(), pointers.as_mut_ptr() as *mut *const i8, BLOCK_SIZE)
         })?;
         Ok(())
     }
@@ -332,8 +308,7 @@ impl ReadArchive {
     pub fn next_entry(&mut self) -> Result<Option<Entry>> {
         let _locale = locale::Utf8LocaleGuard::new();
         let mut entry = ptr::null_mut();
-        let status =
-            unsafe { sys::archive_read_next_header(self.as_ptr(), std::ptr::addr_of_mut!(entry)) };
+        let status = unsafe { sys::archive_read_next_header(self.as_ptr(), std::ptr::addr_of_mut!(entry)) };
         if status == sys::ARCHIVE_EOF.try_into().unwrap() {
             return Ok(None);
         }
@@ -349,13 +324,8 @@ impl ReadArchive {
     ///
     /// Returns [`Error`] if libarchive reports a read failure.
     pub fn read_data(&mut self, buffer: &mut [u8]) -> Result<usize> {
-        let read = unsafe {
-            sys::archive_read_data(
-                self.as_ptr(),
-                buffer.as_mut_ptr().cast::<libc::c_void>(),
-                buffer.len(),
-            )
-        };
+        let read =
+            unsafe { sys::archive_read_data(self.as_ptr(), buffer.as_mut_ptr().cast::<libc::c_void>(), buffer.len()) };
         if read < 0 {
             let status = c_int::try_from(read).unwrap_or(sys::ARCHIVE_FATAL);
             Err(self.error_from_archive(status))
@@ -380,22 +350,14 @@ impl ReadArchive {
     }
 
     fn check_status(&self, status: c_int) -> Result<c_int> {
-        if status < sys::ARCHIVE_OK.try_into().unwrap() {
-            Err(self.error_from_archive(status))
-        } else {
-            Ok(status)
-        }
+        if status < sys::ARCHIVE_OK.try_into().unwrap() { Err(self.error_from_archive(status)) } else { Ok(status) }
     }
 
     fn error_from_archive(&self, status: c_int) -> Error {
         let errno = unsafe { sys::archive_errno(self.as_ptr()) };
         let message = unsafe { nullable_c_string(sys::archive_error_string(self.as_ptr())) }
             .unwrap_or_else(|| "unknown libarchive error".to_owned());
-        Error::Archive {
-            status,
-            errno,
-            message,
-        }
+        Error::Archive { status, errno, message }
     }
 }
 
@@ -409,41 +371,21 @@ fn read_entry(entry: NonNull<sys::archive_entry>) -> Entry {
     let entry = entry.as_ptr();
     let mode = unsafe { sys::archive_entry_mode(entry) };
     Entry {
-        path: entry_string(
-            entry,
-            sys::archive_entry_pathname_utf8,
-            sys::archive_entry_pathname,
-        ),
+        path: entry_string(entry, sys::archive_entry_pathname_utf8, sys::archive_entry_pathname),
         size: unsafe { sys::archive_entry_size(entry) },
         mode: entry_mode(mode),
         file_type: file_type(unsafe { sys::archive_entry_filetype(entry) }),
         modified: modified_time(entry),
-        symlink: entry_string(
-            entry,
-            sys::archive_entry_symlink_utf8,
-            sys::archive_entry_symlink,
-        ),
-        hardlink: entry_string(
-            entry,
-            sys::archive_entry_hardlink_utf8,
-            sys::archive_entry_hardlink,
-        ),
+        symlink: entry_string(entry, sys::archive_entry_symlink_utf8, sys::archive_entry_symlink),
+        hardlink: entry_string(entry, sys::archive_entry_hardlink_utf8, sys::archive_entry_hardlink),
         data_encrypted: unsafe { sys::archive_entry_is_data_encrypted(entry) != 0 },
         metadata_encrypted: unsafe { sys::archive_entry_is_metadata_encrypted(entry) != 0 },
         uid: (unsafe { sys::archive_entry_uid_is_set(entry) } != 0)
             .then(|| unsafe { sys::archive_entry_uid(entry) }.cast_unsigned()),
         gid: (unsafe { sys::archive_entry_gid_is_set(entry) } != 0)
             .then(|| unsafe { sys::archive_entry_gid(entry) }.cast_unsigned()),
-        uname: entry_string(
-            entry,
-            sys::archive_entry_uname_utf8,
-            sys::archive_entry_uname,
-        ),
-        gname: entry_string(
-            entry,
-            sys::archive_entry_gname_utf8,
-            sys::archive_entry_gname,
-        ),
+        uname: entry_string(entry, sys::archive_entry_uname_utf8, sys::archive_entry_uname),
+        gname: entry_string(entry, sys::archive_entry_gname_utf8, sys::archive_entry_gname),
     }
 }
 
@@ -456,15 +398,7 @@ fn entry_string(
 }
 
 unsafe fn nullable_c_string(pointer: *const c_char) -> Option<String> {
-    if pointer.is_null() {
-        None
-    } else {
-        Some(
-            unsafe { CStr::from_ptr(pointer) }
-                .to_string_lossy()
-                .into_owned(),
-        )
-    }
+    if pointer.is_null() { None } else { Some(unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned()) }
 }
 
 fn file_type(value: sys::mode_t) -> FileType {
@@ -499,10 +433,7 @@ fn modified_time(entry: *mut sys::archive_entry) -> Option<SystemTime> {
     system_time_from_unix_timestamp(seconds, nanoseconds)
 }
 
-fn system_time_from_unix_timestamp(
-    seconds: libc::time_t,
-    nanoseconds: libc::c_long,
-) -> Option<SystemTime> {
+fn system_time_from_unix_timestamp(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<SystemTime> {
     let nanoseconds = u32::try_from(nanoseconds).ok()?;
     if nanoseconds >= 1_000_000_000 {
         return None;
@@ -510,13 +441,9 @@ fn system_time_from_unix_timestamp(
     let subsecond = Duration::from_nanos(u64::from(nanoseconds));
     if seconds >= 0 {
         let seconds = u64::try_from(seconds).ok()?;
-        UNIX_EPOCH
-            .checked_add(Duration::from_secs(seconds))?
-            .checked_add(subsecond)
+        UNIX_EPOCH.checked_add(Duration::from_secs(seconds))?.checked_add(subsecond)
     } else {
-        UNIX_EPOCH
-            .checked_sub(Duration::from_secs(seconds.unsigned_abs()))?
-            .checked_add(subsecond)
+        UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))?.checked_add(subsecond)
     }
 }
 
@@ -531,10 +458,7 @@ fn c_path(path: &Path) -> Result<CString> {
 fn wide_path(path: &Path) -> Vec<sys::wchar_t> {
     use std::os::windows::ffi::OsStrExt;
 
-    path.as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
+    path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Returns the linked libarchive version string.
