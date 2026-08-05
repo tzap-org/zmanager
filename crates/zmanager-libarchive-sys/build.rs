@@ -75,9 +75,9 @@ fn link_system_libarchive() {
     }
 
     pkg_config::Config::new()
-        .atleast_version("3.8.8")
+        .atleast_version("3.8.9")
         .probe("libarchive")
-        .expect("system libarchive >= 3.8.8 was not found");
+        .expect("system libarchive >= 3.8.9 was not found");
 }
 
 fn build_bundled_libarchive() {

@@ -72,12 +72,12 @@ subcommands are there for readable scripts.
 
 - Extracts a broad range of archive, package, disk-image, and raw compression
   formats with safety checks enabled by default.
-- Creates `.zip`, `.tzst` (`.tar.zst`), `.tgz` (`.tar.gz`), `.tzap`, and `.7z` archives
+- Creates `.zip`, `.tzst` (`.tar.zst`), `.tgz` (`.tar.gz`), `.tzap`, `.7z`, and `.aar`/`.aea` (Apple Archive) archives
   with focused defaults.
 - Opens common desktop, developer, package, and mobile archive formats by name:
   ZIP, ZIPX, JAR, WAR, IPA, APK, APPX, XPI, 7z, TAR, compressed TAR, RAR,
-  CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, and raw
-  compressed files.
+  CPIO, CPGZ, ISO, XAR, CAB, AR, DEB, RPM, SPK-style tar packages, Apple
+  Archives (.aar/.aea), and raw compressed files.
 - Supports passworded ZIP, 7z, TZAP, and RAR workflows through stdin or
   prompts; new encrypted ZIP, TZAP, and 7z archives use AES-256 encryption
   paths.
@@ -93,7 +93,8 @@ ZManager treats extraction and creation differently:
   developer archives without knowing which backend normally handles them.
 - **Create deliberately.** New archives should use practical, well-supported formats:
   ZIP for universal sharing, TZST (`.tar.zst`) for fast compression, TGZ (`.tar.gz`) for compatibility,
-  TZAP for encrypted recoverable archives, and 7z for high-compression encrypted archives.
+  TZAP for encrypted recoverable archives, 7z for high-compression encrypted archives, and Apple Archive (`.aar`/`.aea`) for Apple platforms.
+- **A modern RAR alternative.** The `.tzap` format is designed as a fast, secure, and resilient competitor to RAR, featuring state-of-the-art cryptographic signatures, multi-recipient encryption, and robust error recovery.
 - **Avoid legacy creation paths.** Old compression methods matter for reading
   existing files, but new archives should use safer and faster defaults.
 - **Use strong password protection.** Encrypted ZIP, TZAP, and 7z creation use
@@ -119,7 +120,7 @@ Passwords are not accepted as command arguments. Use the prompt or
 
 | Workflow | Formats |
 | --- | --- |
-| Create archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.tgz` (`.tar.gz`) with gzip, `.tzap` with Zstandard plus encryption/recovery metadata, `.7z` with LZMA2 and AES-256 encryption |
+| Create archives | `.zip` with Deflate/store and AES-256 encryption, `.tzst` (`.tar.zst`) with Zstandard, `.tgz` (`.tar.gz`) with gzip, `.tzap` with Zstandard plus encryption/recovery metadata, `.7z` with LZMA2 and AES-256 encryption, `.aar`/`.aea` (Apple Archive) |
 | ZIP family | `.zip`, `.zipx`, `.jar`, `.war`, `.ipa`, `.apk`, `.appx`, `.xpi`, ZIP-content `.exe` files |
 | 7z | `.7z`, including encrypted 7z archives |
 | RAR | `.rar`, `.cbr`, split `.partN.rar` volumes, RAR4/RAR5, passworded RAR data, encrypted RAR5 headers, Unicode paths, symlinks, hardlinks, and file-reference entries |

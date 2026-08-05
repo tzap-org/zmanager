@@ -141,12 +141,12 @@ def collect_bundled_notices(workspace: Path, license_dir: Path, notice_path: Pat
     entries = [
         {
             "name": "libarchive",
-            "version": "3.8.8",
-            "source": "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8",
+            "version": "3.8.9",
+            "source": "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.9",
             "license": "BSD-2-Clause-style with file-specific exceptions; see COPYING",
             "files": [
-                workspace / "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8/COPYING",
-                workspace / "vendor/libarchive/libarchive-3.8.8/COPYING",
+                workspace / "crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.9/COPYING",
+                workspace / "vendor/libarchive/libarchive-3.8.9/COPYING",
             ],
             "notes": "Built into zm for broad archive listing and extraction.",
         },
@@ -327,7 +327,7 @@ def render_notices(
             f"- Workspace: `{workspace}`",
             "- Cargo metadata command: `cargo metadata --format-version 1 --locked`",
             "- Bundled license inputs:",
-            "  `crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.8/COPYING`,",
+            "  `crates/zmanager-libarchive-sys/vendor/libarchive/libarchive-3.8.9/COPYING`,",
             "  `crates/zmanager-unrar/vendor/unrar/license.txt`",
             "",
         ]

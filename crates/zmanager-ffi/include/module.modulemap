@@ -1,4 +1,0 @@
-module ZManagerFFI {
-  header "zmanager_ffi.h"
-  export *
-}

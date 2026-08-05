@@ -19,8 +19,8 @@ binding path.
 - CMake.
 - vcpkg at `C:\vcpkg`.
 
-The libarchive wrapper builds the vendored libarchive 3.8.8 source from
-`vendor/libarchive/libarchive-3.8.8`. vcpkg supplies the compression and crypto
+The libarchive wrapper builds the vendored libarchive 3.8.9 source from
+`vendor/libarchive/libarchive-3.8.9`. vcpkg supplies the compression and crypto
 dependencies used by that build:
 
 ```powershell
@@ -63,7 +63,7 @@ To create the release zip locally, add `-Package -OutDir dist`.
 
 ## Build Behavior
 
-`crates/zmanager-libarchive-sys` builds libarchive 3.8.8 through CMake with a
+`crates/zmanager-libarchive-sys` builds libarchive 3.8.9 through CMake with a
 narrow set of owned FFI declarations. The safe Rust wrapper in
 `crates/zmanager-libarchive` exposes only the read/list/extract operations that
 `zmanager-core` uses.

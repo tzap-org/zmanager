@@ -647,7 +647,7 @@ fn release_packaging_generates_third_party_notices() {
 
     for required in [
         "cargo metadata",
-        "vendor/libarchive/libarchive-3.8.8/COPYING",
+        "vendor/libarchive/libarchive-3.8.9/COPYING",
         "vendor/unrar/license.txt",
         "VCPKG_PORTS",
         "Rust Crate License Inventory",
