@@ -308,6 +308,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
     fn json_ok(status_code: u16, body: Value) -> Result<crate::auth_client::TzapAuthHttpResponse, TzapAuthError> {
         Ok(crate::auth_client::TzapAuthHttpResponse { status_code, body: serde_json::to_vec(&body).unwrap(), headers: Vec::new() })
     }

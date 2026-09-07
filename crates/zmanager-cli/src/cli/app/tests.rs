@@ -22,11 +22,22 @@ fn native_auth_defaults_match_registered_zmanager_cli_redirect() {
 #[test]
 fn hosted_http_transport_accepts_https_urls() {
     let client = reqwest::blocking::Client::new();
-    let request = build_hosted_http_request(&client, "GET", "https://staging.tzap.org/v1/me", None, None).unwrap();
+    let request = build_hosted_http_request(&client, "GET", "https://staging.tzap.org/v1/me", None, None, &[]).unwrap();
 
     assert_eq!(request.url().scheme(), "https");
     assert_eq!(request.url().host_str(), Some("staging.tzap.org"));
     assert_eq!(request.url().path(), "/v1/me");
+}
+
+#[cfg(feature = "tzap-online")]
+#[test]
+fn hosted_http_transport_attaches_headers_and_supports_all_methods() {
+    let client = reqwest::blocking::Client::new();
+    let headers = vec![("If-Match".to_string(), "\"etag-123\"".to_string())];
+    let request = build_hosted_http_request(&client, "PUT", "https://staging.tzap.org/v1/backup", None, None, &headers).unwrap();
+
+    assert_eq!(request.method(), reqwest::Method::PUT);
+    assert_eq!(request.headers().get("if-match").and_then(|v| v.to_str().ok()), Some("\"etag-123\""));
 }
 
 #[test]

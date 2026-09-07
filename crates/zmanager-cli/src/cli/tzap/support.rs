@@ -216,7 +216,7 @@ pub(super) fn exchange_handoff_code(
 
 #[cfg(feature = "tzap-online")]
 pub(super) fn http_post_json(url: &str, body: &Value) -> Result<Value, String> {
-    let response = http_json_request("POST", url, None, Some(body), &zmanager_tzap_hosted::auth_client::TzapAuthRequestOptions::default())?;
+    let response = http_json_request("POST", url, None, Some(body), &[], &zmanager_tzap_hosted::auth_client::TzapAuthRequestOptions::default())?;
     if !(200..=299).contains(&response.status_code) {
         return Err(format!("hosted auth exchange failed with HTTP {}", response.status_code));
     }
@@ -236,12 +236,15 @@ impl zmanager_tzap_hosted::auth_client::TzapAuthHttpTransport for CliHttpJsonTra
         let method = match request.method {
             zmanager_tzap_hosted::auth_client::TzapAuthHttpMethod::Get => "GET",
             zmanager_tzap_hosted::auth_client::TzapAuthHttpMethod::Post => "POST",
+            zmanager_tzap_hosted::auth_client::TzapAuthHttpMethod::Put => "PUT",
+            zmanager_tzap_hosted::auth_client::TzapAuthHttpMethod::Delete => "DELETE",
         };
         http_json_request(
             method,
             &request.url,
             request.bearer_token.as_ref().map(zmanager_tzap_hosted::auth_client::TzapBearerToken::expose),
             request.body.as_ref(),
+            &request.headers,
             &request.options,
         )
         .map_err(|message| zmanager_tzap_hosted::auth_client::TzapAuthError::Transport { message })
@@ -254,6 +257,7 @@ pub(super) fn http_json_request(
     url: &str,
     bearer_token: Option<&str>,
     body: Option<&Value>,
+    headers: &[(String, String)],
     options: &zmanager_tzap_hosted::auth_client::TzapAuthRequestOptions,
 ) -> Result<zmanager_tzap_hosted::auth_client::TzapAuthHttpResponse, String> {
     if options.cancellation.as_ref().is_some_and(zmanager_tzap_hosted::auth_client::TzapAuthCancellation::is_cancelled) {
@@ -265,14 +269,16 @@ pub(super) fn http_json_request(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("could not initialize hosted HTTPS client: {error}"))?;
-    let request = build_hosted_http_request(&client, method, url, bearer_token, body)?;
+    let request = build_hosted_http_request(&client, method, url, bearer_token, body, headers)?;
     let response = client.execute(request).map_err(|error| format!("hosted HTTPS request failed: {error}"))?;
     if options.cancellation.as_ref().is_some_and(zmanager_tzap_hosted::auth_client::TzapAuthCancellation::is_cancelled) {
         return Err("hosted HTTPS request was cancelled".to_owned());
     }
     let status_code = response.status().as_u16();
+    let response_headers =
+        response.headers().iter().filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_owned(), value.to_owned()))).collect();
     let response_body = response.bytes().map_err(|error| format!("could not read hosted HTTPS response: {error}"))?.to_vec();
-    Ok(zmanager_tzap_hosted::auth_client::TzapAuthHttpResponse { status_code, body: response_body })
+    Ok(zmanager_tzap_hosted::auth_client::TzapAuthHttpResponse { status_code, body: response_body, headers: response_headers })
 }
 
 #[cfg(feature = "tzap-online")]
@@ -282,11 +288,15 @@ pub(crate) fn build_hosted_http_request(
     url: &str,
     bearer_token: Option<&str>,
     body: Option<&Value>,
+    headers: &[(String, String)],
 ) -> Result<reqwest::blocking::Request, String> {
     let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| format!("invalid hosted HTTP method: {error}"))?;
     let mut request = client.request(method, url).header(reqwest::header::ACCEPT, "application/json");
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
+    }
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
     }
     if let Some(body) = body {
         request = request.json(body);

@@ -299,7 +299,7 @@ fn build_catalog_from_legacy(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    catalog.removed_contacts = inventory.removed_contacts.clone();
+    catalog.removed_contacts.clone_from(&inventory.removed_contacts);
     catalog.status_cache = inventory
         .certificate_status_cache
         .iter()

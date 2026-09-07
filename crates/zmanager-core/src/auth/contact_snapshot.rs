@@ -63,7 +63,7 @@ pub struct TzapContactSnapshotEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_id: Option<String>,
     /// Full signed contact card container JSON (version, payload,
-    /// signature_algorithm, signature) (design §8.3).
+    /// `signature_algorithm`, signature) (design §8.3).
     pub card: Value,
     /// Local alias chosen by the user, if any (design §4, §8.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,25 +77,25 @@ impl TzapContactSnapshotEntry {
     /// Resolves the contact's ID, preferring explicit `contact_id` and falling
     /// back to the recipient key fingerprint in the card payload.
     pub fn resolved_contact_id(&self) -> Result<String, TzapContactSnapshotError> {
-        if let Some(ref id) = self.contact_id {
-            if !id.trim().is_empty() {
-                return Ok(id.trim().to_owned());
-            }
+        if let Some(ref id) = self.contact_id
+            && !id.trim().is_empty()
+        {
+            return Ok(id.trim().to_owned());
         }
         let payload = if let Some(p) = self.card.get("payload") {
             p
         } else {
             &self.card
         };
-        if let Some(fp) = payload.get("recipient_key_fingerprint").and_then(Value::as_str) {
-            if !fp.trim().is_empty() {
-                return Ok(fp.trim().to_owned());
-            }
+        if let Some(fp) = payload.get("recipient_key_fingerprint").and_then(Value::as_str)
+            && !fp.trim().is_empty()
+        {
+            return Ok(fp.trim().to_owned());
         }
-        if let Some(pk_b64) = payload.get("recipient_public_key").and_then(Value::as_str) {
-            if let Ok(der) = URL_SAFE_NO_PAD.decode(pk_b64) {
-                return Ok(crate::trust::certificate_sha256_identifier_for_der(&der));
-            }
+        if let Some(pk_b64) = payload.get("recipient_public_key").and_then(Value::as_str)
+            && let Ok(der) = URL_SAFE_NO_PAD.decode(pk_b64)
+        {
+            return Ok(crate::trust::certificate_sha256_identifier_for_der(&der));
         }
         Err(TzapContactSnapshotError::InvalidSnapshot(
             "contact entry card missing recipient key fingerprint".to_owned(),
@@ -294,15 +294,20 @@ pub fn build_contact_snapshot(
 
     let mut contacts = BTreeMap::<String, TzapContactSnapshotEntry>::new();
     for contact in &inventory.contacts {
+        // Bare compatibility keys are intentionally local-only. A snapshot
+        // entry is a signed card and must never manufacture an unsigned card
+        // that another device could mistake for an accepted contact.
+        if contact.trust_anchor_type == crate::trust::TzapTrustAnchorType::Untrusted {
+            continue;
+        }
         // Check if there is a tombstone for this contact.
         if let Some(&removed_at) = tombstone_map.get(&contact.contact_id) {
             if removed_at >= contact.accepted_at_unix_seconds {
                 // Tombstone is newer than local contact: do not include contact.
                 continue;
-            } else {
-                // Local contact is newer than tombstone: drop the tombstone.
-                tombstone_map.remove(&contact.contact_id);
             }
+            // Local contact is newer than tombstone: drop the tombstone.
+            tombstone_map.remove(&contact.contact_id);
         }
 
         let card = if let Some(ref c) = contact.card {
@@ -384,11 +389,11 @@ pub fn apply_contact_snapshot(
 
     let mut contacts_to_keep = Vec::new();
     for contact in inventory.contacts.drain(..) {
-        if let Some(&removed_at) = tombstone_map.get(&contact.contact_id) {
-            if contact.accepted_at_unix_seconds <= removed_at {
-                report.removed_contact_ids.push(contact.contact_id);
-                continue;
-            }
+        if let Some(&removed_at) = tombstone_map.get(&contact.contact_id)
+            && contact.accepted_at_unix_seconds <= removed_at
+        {
+            report.removed_contact_ids.push(contact.contact_id);
+            continue;
         }
         contacts_to_keep.push(contact);
     }
@@ -409,10 +414,10 @@ pub fn apply_contact_snapshot(
         };
 
         // If a tombstone in the snapshot is newer, do not restore this contact.
-        if let Some(&removed_at) = tombstone_map.get(&contact_id) {
-            if removed_at >= entry.accepted_at {
-                continue;
-            }
+        if let Some(&removed_at) = tombstone_map.get(&contact_id)
+            && removed_at >= entry.accepted_at
+        {
+            continue;
         }
 
         // If local inventory already holds a newer or equal version of this contact, keep local.
@@ -506,6 +511,27 @@ mod tests {
         prune_tombstones(&mut tombstones, now);
         let ids: Vec<_> = tombstones.iter().map(|t| t.contact_id.as_str()).collect();
         assert_eq!(ids, vec!["recent", "borderline"]);
+    }
+
+    #[test]
+    fn build_snapshot_excludes_unverified_bare_keys() {
+        let mut inventory = crate::local_identity_store::TzapLocalIdentityInventory::empty();
+        inventory.contacts.push(crate::local_identity_store::TzapContactRecord {
+            contact_id: crate::trust::sha256_identifier(&[0x01]),
+            display_name: "Unverified key".to_owned(),
+            signing_certificate_sha256: crate::trust::sha256_identifier(&[0x02]),
+            recipient_public_key_fingerprint: crate::trust::sha256_identifier(&[0x01]),
+            trust_anchor_type: crate::trust::TzapTrustAnchorType::Untrusted,
+            verification_state: crate::trust::TzapVerificationState::NotRecorded,
+            missing_status_caveat: true,
+            contact_card_payload: json!({"unverified": true}),
+            accepted_at_unix_seconds: 100,
+            local_alias: None,
+            card: None,
+        });
+
+        let snapshot = build_contact_snapshot(&inventory, &[], 200).unwrap();
+        assert!(snapshot.contacts.is_empty());
     }
 
     #[test]
