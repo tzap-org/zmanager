@@ -73,10 +73,7 @@ impl fmt::Display for TzapIntermediateResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OfflineMiss { issuer_key_identifier, reason } => {
-                write!(
-                    f,
-                    "intermediate certificate for issuer '{issuer_key_identifier}' is not cached and could not be fetched (offline: {reason})"
-                )
+                write!(f, "intermediate certificate for issuer '{issuer_key_identifier}' is not cached and could not be fetched (offline: {reason})")
             }
             Self::NotFound { issuer_key_identifier } => {
                 write!(f, "intermediate certificate for issuer '{issuer_key_identifier}' was not found")
@@ -121,12 +118,9 @@ impl TzapIntermediateCache {
     /// Computes the SHA-256 fingerprint, ensures the directory exists, writes
     /// the DER bytes, and returns the canonical `sha256:...` fingerprint.
     pub fn store(&self, cert_der: &[u8]) -> Result<String, TzapIntermediateCacheError> {
-        let (_, cert) = X509Certificate::from_der(cert_der)
-            .map_err(|error| TzapIntermediateCacheError::CertificateParse(error.to_string()))?;
+        let (_, cert) = X509Certificate::from_der(cert_der).map_err(|error| TzapIntermediateCacheError::CertificateParse(error.to_string()))?;
         if subject_key_identifier(&cert).is_none() {
-            return Err(TzapIntermediateCacheError::CertificateParse(
-                "intermediate certificate is missing SubjectKeyIdentifier extension".to_owned(),
-            ));
+            return Err(TzapIntermediateCacheError::CertificateParse("intermediate certificate is missing SubjectKeyIdentifier extension".to_owned()));
         }
         let digest: [u8; 32] = Sha256::digest(cert_der).into();
         let fingerprint = format_certificate_sha256(&digest);
@@ -139,8 +133,7 @@ impl TzapIntermediateCache {
 
     /// Retrieves an intermediate certificate by its `sha256:...` fingerprint.
     pub fn get_by_fingerprint(&self, fingerprint: &str) -> Result<Option<Vec<u8>>, TzapIntermediateCacheError> {
-        let digest = parse_certificate_sha256(fingerprint)
-            .map_err(|_| TzapIntermediateCacheError::InvalidFingerprint(fingerprint.to_owned()))?;
+        let digest = parse_certificate_sha256(fingerprint).map_err(|_| TzapIntermediateCacheError::InvalidFingerprint(fingerprint.to_owned()))?;
         let hex_name = crate::hex::hex_lower(&digest);
         let file_path = self.cache_dir.join(format!("{hex_name}.der"));
         if file_path.exists() {
@@ -200,8 +193,7 @@ impl TzapIntermediateCache {
 
 impl TzapIntermediateResolver for TzapIntermediateCache {
     fn resolve_intermediate(&self, aki: &[u8]) -> Result<Option<Vec<u8>>, TzapIntermediateResolveError> {
-        self.get_by_aki(aki)
-            .map_err(|error| TzapIntermediateResolveError::Storage(error.to_string()))
+        self.get_by_aki(aki).map_err(|error| TzapIntermediateResolveError::Storage(error.to_string()))
     }
 }
 

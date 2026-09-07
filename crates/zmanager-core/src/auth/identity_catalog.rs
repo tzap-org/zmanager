@@ -4,9 +4,9 @@
 //! and compatibility. New readers should use this module so public metadata
 //! never requires hydrating private key bytes.
 
+use crate::contact_snapshot::TzapContactTombstone;
 pub use crate::identity_migration::{FileTzapSecretMaterialStore, load_inventory_from_catalog, store_inventory_as_catalog};
 pub use crate::identity_migration::{PendingMutation, TzapLegacyMigrationReport, migrate_legacy_inventory};
-use crate::contact_snapshot::TzapContactTombstone;
 use crate::local_identity_store::{TzapLocalIdentityStoreError, TzapSignDeviceRouting};
 use crate::secrets::SecretBytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::contact_card::{self, TzapContactCardImportOptions};
-use crate::local_identity_store::{
-    TzapContactRecord, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-};
+use crate::local_identity_store::{TzapContactRecord, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError};
 
 /// Format identifier for the plaintext snapshot envelope (design §8.2, §8.5).
 pub const CONTACT_SNAPSHOT_FORMAT_PLAIN: &str = "plain";
@@ -47,12 +45,7 @@ impl TzapContactSnapshot {
     /// Creates a new contact snapshot with format `"plain"` and version 1.
     #[must_use]
     pub fn new(contacts: Vec<TzapContactSnapshotEntry>, removed: Vec<TzapContactTombstone>) -> Self {
-        Self {
-            format: CONTACT_SNAPSHOT_FORMAT_PLAIN.to_owned(),
-            version: CONTACT_SNAPSHOT_SCHEMA_VERSION,
-            contacts,
-            removed,
-        }
+        Self { format: CONTACT_SNAPSHOT_FORMAT_PLAIN.to_owned(), version: CONTACT_SNAPSHOT_SCHEMA_VERSION, contacts, removed }
     }
 }
 
@@ -82,11 +75,7 @@ impl TzapContactSnapshotEntry {
         {
             return Ok(id.trim().to_owned());
         }
-        let payload = if let Some(p) = self.card.get("payload") {
-            p
-        } else {
-            &self.card
-        };
+        let payload = if let Some(p) = self.card.get("payload") { p } else { &self.card };
         if let Some(fp) = payload.get("recipient_key_fingerprint").and_then(Value::as_str)
             && !fp.trim().is_empty()
         {
@@ -97,9 +86,7 @@ impl TzapContactSnapshotEntry {
         {
             return Ok(crate::trust::certificate_sha256_identifier_for_der(&der));
         }
-        Err(TzapContactSnapshotError::InvalidSnapshot(
-            "contact entry card missing recipient key fingerprint".to_owned(),
-        ))
+        Err(TzapContactSnapshotError::InvalidSnapshot("contact entry card missing recipient key fingerprint".to_owned()))
     }
 }
 
@@ -171,9 +158,7 @@ impl From<serde_json::Error> for TzapContactSnapshotError {
 /// Prunes tombstones older than 1 year (365 days) relative to `now_unix_seconds`
 /// (design §8.3, §14).
 pub fn prune_tombstones(tombstones: &mut Vec<TzapContactTombstone>, now_unix_seconds: u64) {
-    tombstones.retain(|tombstone| {
-        now_unix_seconds.saturating_sub(tombstone.removed_at) <= TOMBSTONE_RETENTION_SECONDS
-    });
+    tombstones.retain(|tombstone| now_unix_seconds.saturating_sub(tombstone.removed_at) <= TOMBSTONE_RETENTION_SECONDS);
 }
 
 /// Merges two contact snapshots by union, resolving per contact by the later of
@@ -190,25 +175,16 @@ pub fn merge_contact_snapshots(
     now_unix_seconds: u64,
 ) -> Result<TzapContactSnapshot, TzapContactSnapshotError> {
     if base.format != CONTACT_SNAPSHOT_FORMAT_PLAIN {
-        return Err(TzapContactSnapshotError::InvalidFormat {
-            expected: CONTACT_SNAPSHOT_FORMAT_PLAIN,
-            actual: base.format.clone(),
-        });
+        return Err(TzapContactSnapshotError::InvalidFormat { expected: CONTACT_SNAPSHOT_FORMAT_PLAIN, actual: base.format.clone() });
     }
     if incoming.format != CONTACT_SNAPSHOT_FORMAT_PLAIN {
-        return Err(TzapContactSnapshotError::InvalidFormat {
-            expected: CONTACT_SNAPSHOT_FORMAT_PLAIN,
-            actual: incoming.format.clone(),
-        });
+        return Err(TzapContactSnapshotError::InvalidFormat { expected: CONTACT_SNAPSHOT_FORMAT_PLAIN, actual: incoming.format.clone() });
     }
 
     // 1. Collect all tombstones, keeping the newest removed_at per contact_id.
     let mut tombstones = BTreeMap::<String, u64>::new();
     for t in base.removed.iter().chain(incoming.removed.iter()) {
-        tombstones
-            .entry(t.contact_id.clone())
-            .and_modify(|existing| *existing = (*existing).max(t.removed_at))
-            .or_insert(t.removed_at);
+        tombstones.entry(t.contact_id.clone()).and_modify(|existing| *existing = (*existing).max(t.removed_at)).or_insert(t.removed_at);
     }
 
     // 2. Collect all live contacts, resolving collisions by newer accepted_at.
@@ -285,10 +261,7 @@ pub fn build_contact_snapshot(
     for t in tombstones {
         // Prune expired tombstones at build time.
         if now_unix_seconds.saturating_sub(t.removed_at) <= TOMBSTONE_RETENTION_SECONDS {
-            tombstone_map
-                .entry(t.contact_id.clone())
-                .and_modify(|existing| *existing = (*existing).max(t.removed_at))
-                .or_insert(t.removed_at);
+            tombstone_map.entry(t.contact_id.clone()).and_modify(|existing| *existing = (*existing).max(t.removed_at)).or_insert(t.removed_at);
         }
     }
 
@@ -334,10 +307,7 @@ pub fn build_contact_snapshot(
         );
     }
 
-    let removed = tombstone_map
-        .into_iter()
-        .map(|(contact_id, removed_at)| TzapContactTombstone { contact_id, removed_at })
-        .collect();
+    let removed = tombstone_map.into_iter().map(|(contact_id, removed_at)| TzapContactTombstone { contact_id, removed_at }).collect();
 
     Ok(TzapContactSnapshot {
         format: CONTACT_SNAPSHOT_FORMAT_PLAIN.to_owned(),
@@ -363,10 +333,7 @@ pub fn apply_contact_snapshot(
     now_unix_seconds: u64,
 ) -> Result<TzapContactSnapshotApplyReport, TzapContactSnapshotError> {
     if snapshot.format != CONTACT_SNAPSHOT_FORMAT_PLAIN {
-        return Err(TzapContactSnapshotError::InvalidFormat {
-            expected: CONTACT_SNAPSHOT_FORMAT_PLAIN,
-            actual: snapshot.format.clone(),
-        });
+        return Err(TzapContactSnapshotError::InvalidFormat { expected: CONTACT_SNAPSHOT_FORMAT_PLAIN, actual: snapshot.format.clone() });
     }
 
     let mut inventory = store.load_inventory(account_key)?;
@@ -380,10 +347,7 @@ pub fn apply_contact_snapshot(
     let mut tombstone_map = BTreeMap::<String, u64>::new();
     for t in inventory.removed_contacts.iter().chain(snapshot.removed.iter()) {
         if now_unix_seconds.saturating_sub(t.removed_at) <= TOMBSTONE_RETENTION_SECONDS {
-            tombstone_map
-                .entry(t.contact_id.clone())
-                .and_modify(|existing| *existing = (*existing).max(t.removed_at))
-                .or_insert(t.removed_at);
+            tombstone_map.entry(t.contact_id.clone()).and_modify(|existing| *existing = (*existing).max(t.removed_at)).or_insert(t.removed_at);
         }
     }
 
@@ -404,11 +368,7 @@ pub fn apply_contact_snapshot(
         let contact_id = match entry.resolved_contact_id() {
             Ok(id) => id,
             Err(e) => {
-                report.failed_contacts.push(TzapContactSnapshotRestoreFailure {
-                    contact_id: "unknown".to_owned(),
-                    display_name: None,
-                    error: e.to_string(),
-                });
+                report.failed_contacts.push(TzapContactSnapshotRestoreFailure { contact_id: "unknown".to_owned(), display_name: None, error: e.to_string() });
                 continue;
             }
         };
@@ -454,16 +414,8 @@ pub fn apply_contact_snapshot(
                 report.restored_contacts.push(record);
             }
             Err(error) => {
-                let display_name = entry
-                    .card
-                    .pointer("/payload/display_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                report.failed_contacts.push(TzapContactSnapshotRestoreFailure {
-                    contact_id,
-                    display_name,
-                    error: error.to_string(),
-                });
+                let display_name = entry.card.pointer("/payload/display_name").and_then(Value::as_str).map(str::to_owned);
+                report.failed_contacts.push(TzapContactSnapshotRestoreFailure { contact_id, display_name, error: error.to_string() });
             }
         }
     }
@@ -471,10 +423,7 @@ pub fn apply_contact_snapshot(
     // 3. Persist the merged tombstone set so a later build_contact_snapshot on
     //    this device (§8.3) re-uploads removals learned from this restore too,
     //    not only ones made locally.
-    inventory.removed_contacts = tombstone_map
-        .into_iter()
-        .map(|(contact_id, removed_at)| TzapContactTombstone { contact_id, removed_at })
-        .collect();
+    inventory.removed_contacts = tombstone_map.into_iter().map(|(contact_id, removed_at)| TzapContactTombstone { contact_id, removed_at }).collect();
 
     store.save_inventory(account_key, inventory)?;
     Ok(report)
@@ -490,22 +439,10 @@ mod tests {
     fn prune_tombstones_drops_entries_older_than_one_year() {
         let now = 2_000_000_000;
         let mut tombstones = vec![
-            TzapContactTombstone {
-                contact_id: "recent".to_owned(),
-                removed_at: now - 100,
-            },
-            TzapContactTombstone {
-                contact_id: "borderline".to_owned(),
-                removed_at: now - TOMBSTONE_RETENTION_SECONDS,
-            },
-            TzapContactTombstone {
-                contact_id: "expired".to_owned(),
-                removed_at: now - TOMBSTONE_RETENTION_SECONDS - 1,
-            },
-            TzapContactTombstone {
-                contact_id: "very_old".to_owned(),
-                removed_at: now - 40_000_000,
-            },
+            TzapContactTombstone { contact_id: "recent".to_owned(), removed_at: now - 100 },
+            TzapContactTombstone { contact_id: "borderline".to_owned(), removed_at: now - TOMBSTONE_RETENTION_SECONDS },
+            TzapContactTombstone { contact_id: "expired".to_owned(), removed_at: now - TOMBSTONE_RETENTION_SECONDS - 1 },
+            TzapContactTombstone { contact_id: "very_old".to_owned(), removed_at: now - 40_000_000 },
         ];
 
         prune_tombstones(&mut tombstones, now);
@@ -553,10 +490,7 @@ mod tests {
                     accepted_at: 100,
                 },
             ],
-            vec![TzapContactTombstone {
-                contact_id: "c3".to_owned(),
-                removed_at: 50,
-            }],
+            vec![TzapContactTombstone { contact_id: "c3".to_owned(), removed_at: 50 }],
         );
 
         let snapshot_b = TzapContactSnapshot::new(
@@ -576,10 +510,7 @@ mod tests {
                     accepted_at: 120,
                 },
             ],
-            vec![TzapContactTombstone {
-                contact_id: "c2".to_owned(),
-                removed_at: 150,
-            }],
+            vec![TzapContactTombstone { contact_id: "c2".to_owned(), removed_at: 150 }],
         );
 
         let merged = merge_contact_snapshots(&snapshot_a, &snapshot_b, now).unwrap();
@@ -601,20 +532,8 @@ mod tests {
         let stale_time = now - TOMBSTONE_RETENTION_SECONDS - 500;
         let recent_time = now - 500;
 
-        let a = TzapContactSnapshot::new(
-            vec![],
-            vec![TzapContactTombstone {
-                contact_id: "stale".to_owned(),
-                removed_at: stale_time,
-            }],
-        );
-        let b = TzapContactSnapshot::new(
-            vec![],
-            vec![TzapContactTombstone {
-                contact_id: "recent".to_owned(),
-                removed_at: recent_time,
-            }],
-        );
+        let a = TzapContactSnapshot::new(vec![], vec![TzapContactTombstone { contact_id: "stale".to_owned(), removed_at: stale_time }]);
+        let b = TzapContactSnapshot::new(vec![], vec![TzapContactTombstone { contact_id: "recent".to_owned(), removed_at: recent_time }]);
 
         let merged = merge_contact_snapshots(&a, &b, now).unwrap();
         assert_eq!(merged.removed.len(), 1);
@@ -643,10 +562,7 @@ mod tests {
 
         // 3. Build snapshot from source store.
         let inv = source_store.load_inventory(account_key).unwrap();
-        let tombstones = vec![TzapContactTombstone {
-            contact_id: "old-contact-9".to_owned(),
-            removed_at: 950,
-        }];
+        let tombstones = vec![TzapContactTombstone { contact_id: "old-contact-9".to_owned(), removed_at: 950 }];
         let snapshot = build_contact_snapshot(&inv, &tombstones, 1_060).unwrap();
         assert_eq!(snapshot.format, CONTACT_SNAPSHOT_FORMAT_PLAIN);
         assert_eq!(snapshot.contacts.len(), 1);
@@ -840,9 +756,9 @@ mod tests {
         let parsed: TzapContactSnapshot = serde_json::from_str(json_str).unwrap();
         assert_eq!(parsed.format, "plain");
         assert_eq!(parsed.contacts[0].contact_id.as_deref(), Some("contact-abc"));
-        assert_eq!(parsed.contacts[0].accepted_at, 123456);
+        assert_eq!(parsed.contacts[0].accepted_at, 123_456);
         assert_eq!(parsed.removed[0].contact_id, "contact-xyz");
-        assert_eq!(parsed.removed[0].removed_at, 789101);
+        assert_eq!(parsed.removed[0].removed_at, 789_101);
 
         let serialized = serde_json::to_string(&parsed).unwrap();
         let roundtrip: TzapContactSnapshot = serde_json::from_str(&serialized).unwrap();

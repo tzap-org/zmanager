@@ -208,10 +208,7 @@ pub fn verify_tzap_contact_card_with_missing_status_caveat(
                         });
                     }
                     Err(error) => {
-                        return Err(TzapContactCardError::IntermediateCacheMiss {
-                            issuer_key_identifier: aki_b64,
-                            reason: error.to_string(),
-                        });
+                        return Err(TzapContactCardError::IntermediateCacheMiss { issuer_key_identifier: aki_b64, reason: error.to_string() });
                     }
                 }
             } else {
@@ -384,12 +381,8 @@ fn contact_card_payload(
         },
     });
     if !request.compact {
-        payload["intermediate_chain_der"] = json!(
-            trust::public_intermediate_chain_der(&certificate.intermediate_chain_der)
-                .iter()
-                .map(|der| URL_SAFE_NO_PAD.encode(der))
-                .collect::<Vec<_>>()
-        );
+        payload["intermediate_chain_der"] =
+            json!(trust::public_intermediate_chain_der(&certificate.intermediate_chain_der).iter().map(|der| URL_SAFE_NO_PAD.encode(der)).collect::<Vec<_>>());
     }
     payload
 }

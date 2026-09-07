@@ -26,11 +26,7 @@ pub const DEFAULT_ARGON2ID_T_COST: u32 = 3;
 pub const DEFAULT_ARGON2ID_PARALLELISM: u32 = 1;
 
 /// Fast Argon2id parameters suitable for automated unit tests.
-pub const TEST_ARGON2ID_PARAMS: TzapKeyBackupKdfParams = TzapKeyBackupKdfParams {
-    m_cost_kib: 1024,
-    t_cost: 1,
-    parallelism: 1,
-};
+pub const TEST_ARGON2ID_PARAMS: TzapKeyBackupKdfParams = TzapKeyBackupKdfParams { m_cost_kib: 1024, t_cost: 1, parallelism: 1 };
 
 pub const SALT_LEN_BYTES: usize = 16;
 pub const DATA_KEY_LEN_BYTES: usize = 32;
@@ -89,11 +85,7 @@ pub struct TzapKeyBackupKdfParams {
 
 impl Default for TzapKeyBackupKdfParams {
     fn default() -> Self {
-        Self {
-            m_cost_kib: DEFAULT_ARGON2ID_M_COST_KIB,
-            t_cost: DEFAULT_ARGON2ID_T_COST,
-            parallelism: DEFAULT_ARGON2ID_PARALLELISM,
-        }
+        Self { m_cost_kib: DEFAULT_ARGON2ID_M_COST_KIB, t_cost: DEFAULT_ARGON2ID_T_COST, parallelism: DEFAULT_ARGON2ID_PARALLELISM }
     }
 }
 
@@ -205,24 +197,11 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     buf
 }
 
-fn derive_wrapping_key(
-    password: &str,
-    salt: &[u8],
-    params: &TzapKeyBackupKdfParams,
-) -> Result<[u8; DATA_KEY_LEN_BYTES], TzapKeyBackupError> {
-    let argon2_params = argon2::Params::new(
-        params.m_cost_kib,
-        params.t_cost,
-        params.parallelism,
-        Some(DATA_KEY_LEN_BYTES),
-    )
-    .map_err(|err| TzapKeyBackupError::Crypto(format!("invalid argon2 params: {err}")))?;
+fn derive_wrapping_key(password: &str, salt: &[u8], params: &TzapKeyBackupKdfParams) -> Result<[u8; DATA_KEY_LEN_BYTES], TzapKeyBackupError> {
+    let argon2_params = argon2::Params::new(params.m_cost_kib, params.t_cost, params.parallelism, Some(DATA_KEY_LEN_BYTES))
+        .map_err(|err| TzapKeyBackupError::Crypto(format!("invalid argon2 params: {err}")))?;
 
-    let argon2 = argon2::Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        argon2_params,
-    );
+    let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, argon2_params);
     let mut derived_key = [0u8; DATA_KEY_LEN_BYTES];
     argon2
         .hash_password_into(password.as_bytes(), salt, &mut derived_key)
@@ -230,22 +209,11 @@ fn derive_wrapping_key(
     Ok(derived_key)
 }
 
-fn encrypt_aes_256_gcm(
-    key: &[u8; DATA_KEY_LEN_BYTES],
-    nonce: &[u8; GCM_NONCE_LEN_BYTES],
-    plaintext: &[u8],
-) -> Result<Vec<u8>, TzapKeyBackupError> {
+fn encrypt_aes_256_gcm(key: &[u8; DATA_KEY_LEN_BYTES], nonce: &[u8; GCM_NONCE_LEN_BYTES], plaintext: &[u8]) -> Result<Vec<u8>, TzapKeyBackupError> {
     let cipher = openssl::symm::Cipher::aes_256_gcm();
     let mut tag = [0u8; GCM_TAG_LEN_BYTES];
-    let mut ciphertext = openssl::symm::encrypt_aead(
-        cipher,
-        key,
-        Some(nonce),
-        &[],
-        plaintext,
-        &mut tag,
-    )
-    .map_err(|err| TzapKeyBackupError::Crypto(format!("aes-256-gcm encrypt failed: {err}")))?;
+    let mut ciphertext = openssl::symm::encrypt_aead(cipher, key, Some(nonce), &[], plaintext, &mut tag)
+        .map_err(|err| TzapKeyBackupError::Crypto(format!("aes-256-gcm encrypt failed: {err}")))?;
     ciphertext.extend_from_slice(&tag);
     Ok(ciphertext)
 }
@@ -260,14 +228,7 @@ fn decrypt_aes_256_gcm(
     }
     let (ciphertext, tag) = combined_ciphertext.split_at(combined_ciphertext.len() - GCM_TAG_LEN_BYTES);
     let cipher = openssl::symm::Cipher::aes_256_gcm();
-    openssl::symm::decrypt_aead(
-        cipher,
-        key,
-        Some(nonce),
-        &[],
-        ciphertext,
-        tag,
-    )
+    openssl::symm::decrypt_aead(cipher, key, Some(nonce), &[], ciphertext, tag)
 }
 
 // --- Primary API ---
@@ -288,10 +249,7 @@ pub fn seal_recipient_keys_backup(
 
     // 1. Construct payload JSON
     let entries: Vec<TzapRecipientKeyBackupEntry> = keys.iter().map(TzapRecipientKeyBackupEntry::from).collect();
-    let payload = TzapRecipientKeysBackupPayload {
-        format: RECIPIENT_KEYS_BACKUP_PAYLOAD_FORMAT_V1.to_string(),
-        keys: entries,
-    };
+    let payload = TzapRecipientKeysBackupPayload { format: RECIPIENT_KEYS_BACKUP_PAYLOAD_FORMAT_V1.to_string(), keys: entries };
     let payload_bytes = serde_json::to_vec(&payload)?;
 
     // 2. Generate random 32-byte data key
@@ -315,11 +273,7 @@ pub fn seal_recipient_keys_backup(
 
     Ok(TzapKeyBackupEnvelope {
         format: KEY_BACKUP_FORMAT_V1.to_string(),
-        kdf: TzapKeyBackupKdf {
-            algorithm: KEY_BACKUP_KDF_ALGO_ARGON2ID.to_string(),
-            salt: URL_SAFE_NO_PAD.encode(salt),
-            params: kdf_params,
-        },
+        kdf: TzapKeyBackupKdf { algorithm: KEY_BACKUP_KDF_ALGO_ARGON2ID.to_string(), salt: URL_SAFE_NO_PAD.encode(salt), params: kdf_params },
         wrapped_data_key_password: TzapWrappedDataKey {
             nonce: URL_SAFE_NO_PAD.encode(wrap_nonce),
             ciphertext: URL_SAFE_NO_PAD.encode(wrapped_data_key_ciphertext),
@@ -333,15 +287,9 @@ pub fn seal_recipient_keys_backup(
 /// Unseals a key-backup envelope and returns the parsed payload.
 ///
 /// Fails with [`TzapKeyBackupError::WrongPassword`] if the password is incorrect.
-pub fn unseal_recipient_keys_backup_payload(
-    envelope: &TzapKeyBackupEnvelope,
-    password: &str,
-) -> Result<TzapRecipientKeysBackupPayload, TzapKeyBackupError> {
+pub fn unseal_recipient_keys_backup_payload(envelope: &TzapKeyBackupEnvelope, password: &str) -> Result<TzapRecipientKeysBackupPayload, TzapKeyBackupError> {
     if envelope.format != KEY_BACKUP_FORMAT_V1 {
-        return Err(TzapKeyBackupError::InvalidFormat(format!(
-            "unsupported envelope format '{}', expected '{}'",
-            envelope.format, KEY_BACKUP_FORMAT_V1
-        )));
+        return Err(TzapKeyBackupError::InvalidFormat(format!("unsupported envelope format '{}', expected '{}'", envelope.format, KEY_BACKUP_FORMAT_V1)));
     }
     if envelope.kdf.algorithm != KEY_BACKUP_KDF_ALGO_ARGON2ID {
         return Err(TzapKeyBackupError::InvalidFormat(format!(
@@ -351,18 +299,14 @@ pub fn unseal_recipient_keys_backup_payload(
     }
 
     // 1. Decode salt
-    let salt = crate::trust::decode_base64url_no_padding(&envelope.kdf.salt)
-        .map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid kdf salt: {err}")))?;
+    let salt =
+        crate::trust::decode_base64url_no_padding(&envelope.kdf.salt).map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid kdf salt: {err}")))?;
 
     // 2. Decode wrapped data key nonce and ciphertext
     let wrap_nonce_bytes = crate::trust::decode_base64url_no_padding(&envelope.wrapped_data_key_password.nonce)
         .map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid wrapped_data_key_password nonce: {err}")))?;
     if wrap_nonce_bytes.len() != GCM_NONCE_LEN_BYTES {
-        return Err(TzapKeyBackupError::InvalidFormat(format!(
-            "invalid wrap nonce length {}, expected {}",
-            wrap_nonce_bytes.len(),
-            GCM_NONCE_LEN_BYTES
-        )));
+        return Err(TzapKeyBackupError::InvalidFormat(format!("invalid wrap nonce length {}, expected {}", wrap_nonce_bytes.len(), GCM_NONCE_LEN_BYTES)));
     }
     let mut wrap_nonce = [0u8; GCM_NONCE_LEN_BYTES];
     wrap_nonce.copy_from_slice(&wrap_nonce_bytes);
@@ -374,8 +318,7 @@ pub fn unseal_recipient_keys_backup_payload(
     let mut wrapping_key = derive_wrapping_key(password, &salt, &envelope.kdf.params)?;
 
     // 4. Unwrap data key
-    let unwrapped_data_key_bytes = decrypt_aes_256_gcm(&wrapping_key, &wrap_nonce, &wrapped_data_key_ct)
-        .map_err(|_| TzapKeyBackupError::WrongPassword)?;
+    let unwrapped_data_key_bytes = decrypt_aes_256_gcm(&wrapping_key, &wrap_nonce, &wrapped_data_key_ct).map_err(|_| TzapKeyBackupError::WrongPassword)?;
     wrapping_key.zeroize();
 
     if unwrapped_data_key_bytes.len() != DATA_KEY_LEN_BYTES {
@@ -389,34 +332,27 @@ pub fn unseal_recipient_keys_backup_payload(
     data_key.copy_from_slice(&unwrapped_data_key_bytes);
 
     // 5. Decode payload nonce and ciphertext
-    let payload_nonce_bytes = crate::trust::decode_base64url_no_padding(&envelope.nonce)
-        .map_err(|err| {
-            data_key.zeroize();
-            TzapKeyBackupError::InvalidFormat(format!("invalid payload nonce: {err}"))
-        })?;
+    let payload_nonce_bytes = crate::trust::decode_base64url_no_padding(&envelope.nonce).map_err(|err| {
+        data_key.zeroize();
+        TzapKeyBackupError::InvalidFormat(format!("invalid payload nonce: {err}"))
+    })?;
     if payload_nonce_bytes.len() != GCM_NONCE_LEN_BYTES {
         data_key.zeroize();
-        return Err(TzapKeyBackupError::InvalidFormat(format!(
-            "invalid payload nonce length {}, expected {}",
-            payload_nonce_bytes.len(),
-            GCM_NONCE_LEN_BYTES
-        )));
+        return Err(TzapKeyBackupError::InvalidFormat(format!("invalid payload nonce length {}, expected {}", payload_nonce_bytes.len(), GCM_NONCE_LEN_BYTES)));
     }
     let mut payload_nonce = [0u8; GCM_NONCE_LEN_BYTES];
     payload_nonce.copy_from_slice(&payload_nonce_bytes);
 
-    let payload_ct = crate::trust::decode_base64url_no_padding(&envelope.ciphertext)
-        .map_err(|err| {
-            data_key.zeroize();
-            TzapKeyBackupError::InvalidFormat(format!("invalid payload ciphertext: {err}"))
-        })?;
+    let payload_ct = crate::trust::decode_base64url_no_padding(&envelope.ciphertext).map_err(|err| {
+        data_key.zeroize();
+        TzapKeyBackupError::InvalidFormat(format!("invalid payload ciphertext: {err}"))
+    })?;
 
     // 6. Decrypt payload
-    let payload_bytes = decrypt_aes_256_gcm(&data_key, &payload_nonce, &payload_ct)
-        .map_err(|err| {
-            data_key.zeroize();
-            TzapKeyBackupError::Crypto(format!("failed to decrypt payload ciphertext (corrupted or tampered): {err}"))
-        })?;
+    let payload_bytes = decrypt_aes_256_gcm(&data_key, &payload_nonce, &payload_ct).map_err(|err| {
+        data_key.zeroize();
+        TzapKeyBackupError::Crypto(format!("failed to decrypt payload ciphertext (corrupted or tampered): {err}"))
+    })?;
     data_key.zeroize();
 
     // 7. Parse payload JSON
@@ -432,10 +368,7 @@ pub fn unseal_recipient_keys_backup_payload(
 }
 
 /// Unseals a key-backup envelope and converts entries into inventory key records.
-pub fn unseal_recipient_keys_backup(
-    envelope: &TzapKeyBackupEnvelope,
-    password: &str,
-) -> Result<Vec<TzapRecipientEncryptionKeyRecord>, TzapKeyBackupError> {
+pub fn unseal_recipient_keys_backup(envelope: &TzapKeyBackupEnvelope, password: &str) -> Result<Vec<TzapRecipientEncryptionKeyRecord>, TzapKeyBackupError> {
     let payload = unseal_recipient_keys_backup_payload(envelope, password)?;
     payload.keys.iter().map(TzapRecipientKeyBackupEntry::to_record).collect()
 }
@@ -451,10 +384,7 @@ pub fn rekey_backup_envelope(
         return Err(TzapKeyBackupError::InvalidFormat("new password cannot be empty".to_string()));
     }
     if envelope.format != KEY_BACKUP_FORMAT_V1 {
-        return Err(TzapKeyBackupError::InvalidFormat(format!(
-            "unsupported envelope format '{}', expected '{}'",
-            envelope.format, KEY_BACKUP_FORMAT_V1
-        )));
+        return Err(TzapKeyBackupError::InvalidFormat(format!("unsupported envelope format '{}', expected '{}'", envelope.format, KEY_BACKUP_FORMAT_V1)));
     }
     if envelope.kdf.algorithm != KEY_BACKUP_KDF_ALGO_ARGON2ID {
         return Err(TzapKeyBackupError::InvalidFormat(format!(
@@ -464,8 +394,8 @@ pub fn rekey_backup_envelope(
     }
 
     // 1. Unwrap data key using old password
-    let old_salt = crate::trust::decode_base64url_no_padding(&envelope.kdf.salt)
-        .map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid kdf salt: {err}")))?;
+    let old_salt =
+        crate::trust::decode_base64url_no_padding(&envelope.kdf.salt).map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid kdf salt: {err}")))?;
 
     let old_wrap_nonce_bytes = crate::trust::decode_base64url_no_padding(&envelope.wrapped_data_key_password.nonce)
         .map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid wrapped_data_key_password nonce: {err}")))?;
@@ -479,8 +409,8 @@ pub fn rekey_backup_envelope(
         .map_err(|err| TzapKeyBackupError::InvalidFormat(format!("invalid wrapped_data_key_password ciphertext: {err}")))?;
 
     let mut old_wrapping_key = derive_wrapping_key(old_password, &old_salt, &envelope.kdf.params)?;
-    let unwrapped_data_key_bytes = decrypt_aes_256_gcm(&old_wrapping_key, &old_wrap_nonce, &wrapped_data_key_ct)
-        .map_err(|_| TzapKeyBackupError::WrongPassword)?;
+    let unwrapped_data_key_bytes =
+        decrypt_aes_256_gcm(&old_wrapping_key, &old_wrap_nonce, &wrapped_data_key_ct).map_err(|_| TzapKeyBackupError::WrongPassword)?;
     old_wrapping_key.zeroize();
 
     if unwrapped_data_key_bytes.len() != DATA_KEY_LEN_BYTES {
@@ -502,11 +432,7 @@ pub fn rekey_backup_envelope(
     // 3. Assemble new envelope preserving payload nonce and ciphertext verbatim
     Ok(TzapKeyBackupEnvelope {
         format: envelope.format.clone(),
-        kdf: TzapKeyBackupKdf {
-            algorithm: KEY_BACKUP_KDF_ALGO_ARGON2ID.to_string(),
-            salt: URL_SAFE_NO_PAD.encode(new_salt),
-            params: kdf_params,
-        },
+        kdf: TzapKeyBackupKdf { algorithm: KEY_BACKUP_KDF_ALGO_ARGON2ID.to_string(), salt: URL_SAFE_NO_PAD.encode(new_salt), params: kdf_params },
         wrapped_data_key_password: TzapWrappedDataKey {
             nonce: URL_SAFE_NO_PAD.encode(new_wrap_nonce),
             ciphertext: URL_SAFE_NO_PAD.encode(new_wrapped_data_key_ct),
@@ -535,10 +461,7 @@ mod tests {
 
     #[test]
     fn seal_and_unseal_round_trip() {
-        let keys = vec![
-            sample_key_record("key-1", Some("Phone A Active")),
-            sample_key_record("key-2", Some("Phone A Retired")),
-        ];
+        let keys = vec![sample_key_record("key-1", Some("Phone A Active")), sample_key_record("key-2", Some("Phone A Retired"))];
 
         let password = "correct horse battery staple";
         let envelope = seal_recipient_keys_backup(&keys, password, Some(TEST_ARGON2ID_PARAMS)).unwrap();
@@ -575,29 +498,17 @@ mod tests {
         let keys = vec![sample_key_record("key-1", Some("Initial"))];
         let original_envelope = seal_recipient_keys_backup(&keys, "old-password", Some(TEST_ARGON2ID_PARAMS)).unwrap();
 
-        let rekeyed_envelope = rekey_backup_envelope(
-            &original_envelope,
-            "old-password",
-            "new-password",
-            Some(TEST_ARGON2ID_PARAMS),
-        )
-        .unwrap();
+        let rekeyed_envelope = rekey_backup_envelope(&original_envelope, "old-password", "new-password", Some(TEST_ARGON2ID_PARAMS)).unwrap();
 
         // Payload ciphertext and nonce are byte-for-byte identical
         assert_eq!(original_envelope.nonce, rekeyed_envelope.nonce);
         assert_eq!(original_envelope.ciphertext, rekeyed_envelope.ciphertext);
 
         // Wrapper ciphertext changed (new salt and new nonce)
-        assert_ne!(
-            original_envelope.wrapped_data_key_password.ciphertext,
-            rekeyed_envelope.wrapped_data_key_password.ciphertext
-        );
+        assert_ne!(original_envelope.wrapped_data_key_password.ciphertext, rekeyed_envelope.wrapped_data_key_password.ciphertext);
 
         // Old password now fails on rekeyed envelope
-        assert!(matches!(
-            unseal_recipient_keys_backup(&rekeyed_envelope, "old-password"),
-            Err(TzapKeyBackupError::WrongPassword)
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&rekeyed_envelope, "old-password"), Err(TzapKeyBackupError::WrongPassword)));
 
         // New password succeeds on rekeyed envelope
         let restored = unseal_recipient_keys_backup(&rekeyed_envelope, "new-password").unwrap();
@@ -635,10 +546,7 @@ mod tests {
 
         let mut value = envelope.to_value().unwrap();
         // Add unknown future field
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("future_server_metadata".to_string(), serde_json::json!({"extra": 42}));
+        value.as_object_mut().unwrap().insert("future_server_metadata".to_string(), serde_json::json!({"extra": 42}));
 
         let parsed = TzapKeyBackupEnvelope::from_value(value).unwrap();
         let restored = unseal_recipient_keys_backup(&parsed, "password").unwrap();
@@ -647,33 +555,21 @@ mod tests {
         // Future format version rejected
         let mut unsupported_version = envelope.clone();
         unsupported_version.format = "v2".to_string();
-        assert!(matches!(
-            unseal_recipient_keys_backup(&unsupported_version, "password"),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&unsupported_version, "password"), Err(TzapKeyBackupError::InvalidFormat(_))));
 
         // Unsupported KDF algorithm rejected
         let mut unsupported_kdf = envelope.clone();
         unsupported_kdf.kdf.algorithm = "pbkdf2".to_string();
-        assert!(matches!(
-            unseal_recipient_keys_backup(&unsupported_kdf, "password"),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&unsupported_kdf, "password"), Err(TzapKeyBackupError::InvalidFormat(_))));
     }
 
     #[test]
     fn empty_password_rejected() {
         let keys = vec![sample_key_record("key-1", None)];
-        assert!(matches!(
-            seal_recipient_keys_backup(&keys, "", Some(TEST_ARGON2ID_PARAMS)),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(seal_recipient_keys_backup(&keys, "", Some(TEST_ARGON2ID_PARAMS)), Err(TzapKeyBackupError::InvalidFormat(_))));
 
         let envelope = seal_recipient_keys_backup(&keys, "valid-password", Some(TEST_ARGON2ID_PARAMS)).unwrap();
-        assert!(matches!(
-            rekey_backup_envelope(&envelope, "valid-password", "", Some(TEST_ARGON2ID_PARAMS)),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(rekey_backup_envelope(&envelope, "valid-password", "", Some(TEST_ARGON2ID_PARAMS)), Err(TzapKeyBackupError::InvalidFormat(_))));
     }
 
     #[test]
@@ -692,25 +588,16 @@ mod tests {
         // Invalid salt base64
         let mut bad_salt = envelope.clone();
         bad_salt.kdf.salt = "not-valid-base64!".to_string();
-        assert!(matches!(
-            unseal_recipient_keys_backup(&bad_salt, "pass"),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&bad_salt, "pass"), Err(TzapKeyBackupError::InvalidFormat(_))));
 
         // Invalid wrap nonce length
         let mut bad_nonce = envelope.clone();
         bad_nonce.wrapped_data_key_password.nonce = URL_SAFE_NO_PAD.encode(b"too-short");
-        assert!(matches!(
-            unseal_recipient_keys_backup(&bad_nonce, "pass"),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&bad_nonce, "pass"), Err(TzapKeyBackupError::InvalidFormat(_))));
 
         // Invalid payload nonce length
         let mut bad_payload_nonce = envelope.clone();
         bad_payload_nonce.nonce = URL_SAFE_NO_PAD.encode(b"short");
-        assert!(matches!(
-            unseal_recipient_keys_backup(&bad_payload_nonce, "pass"),
-            Err(TzapKeyBackupError::InvalidFormat(_))
-        ));
+        assert!(matches!(unseal_recipient_keys_backup(&bad_payload_nonce, "pass"), Err(TzapKeyBackupError::InvalidFormat(_))));
     }
 }

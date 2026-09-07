@@ -21,10 +21,6 @@ pub use certificate_profile::{
     TzapCertificateProfileError, TzapCertificateProfileOptions, TzapCertificateProfileValidation, TzapCertificatePublicMetadata, TzapOfficialRootPinKind,
     public_intermediate_chain_der, validate_custom_tzap_certificate_chain_der, validate_official_tzap_certificate_chain_der,
 };
-pub use intermediate_cache::{
-    TzapIntermediateCache, TzapIntermediateCacheError, TzapIntermediateResolveError, TzapIntermediateResolver, extract_authority_key_identifier,
-    extract_subject_key_identifier,
-};
 pub(crate) use identifiers::candidate_chains;
 pub use identifiers::{
     TrustIdentifierError, canonical_serial_hex, decode_base64url_no_padding, format_certificate_sha256, format_csr_sha256, format_issuer_sha256,
@@ -32,6 +28,10 @@ pub use identifiers::{
     is_valid_public_signer_id, is_valid_serial_hex, is_valid_sha256_identifier, parse_certificate_sha256, parse_crl_sha256, parse_csr_sha256,
     parse_issuer_sha256, parse_serial_hex, parse_sha256_identifier, parse_spki_sha256, percent_encode_path_param, sha256_identifier,
     status_certificate_by_fingerprint_path, status_crl_pem_path, validate_base64url_no_padding,
+};
+pub use intermediate_cache::{
+    TzapIntermediateCache, TzapIntermediateCacheError, TzapIntermediateResolveError, TzapIntermediateResolver, extract_authority_key_identifier,
+    extract_subject_key_identifier,
 };
 
 /// Domain separator used by TZAP document envelopes.

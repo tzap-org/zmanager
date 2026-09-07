@@ -276,7 +276,7 @@ pub(crate) fn create_and_store_staging_enrollment_key<S: TzapLocalIdentityStore>
     let label = staging_enrollment_key_label(request.org_id.as_deref());
     if let Some(record) = inventory.device_signing_keys.iter().find(|record| record.label.as_deref() == Some(label.as_str())) {
         if inventory.enrolled_certificates.iter().any(|certificate| certificate.signing_key_id == record.key_id) {
-            return Err(format!("an enrollment key already has a certificate for {}; use `zm auth cert renew --certificate-id <id>`", label));
+            return Err(format!("an enrollment key already has a certificate for {label}; use `zm auth cert renew --certificate-id <id>`"));
         }
         let csr_der = zmanager_core::device_identity::generate_device_csr_from_private_key(
             &record.private_key_der,
