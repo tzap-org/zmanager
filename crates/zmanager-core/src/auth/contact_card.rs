@@ -289,6 +289,7 @@ pub fn import_tzap_contact_card(
         signing_certificate_sha256: verified.signing_certificate_sha256,
         recipient_public_key_fingerprint: verified.recipient_public_key_fingerprint,
         trust_anchor_type: verified.trust_anchor_type,
+        source: String::new(),
         verification_state: verified.verification_state,
         missing_status_caveat: verified.missing_status_caveat,
         contact_card_payload: verified.payload,

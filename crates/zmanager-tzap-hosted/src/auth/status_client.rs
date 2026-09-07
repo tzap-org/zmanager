@@ -172,6 +172,89 @@ pub struct TzapStatusResponse {
     pub query: TzapStatusQueryEcho,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TzapContactStatusDisposition {
+    VerifiedNow,
+    VerifiedOffline,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TzapContactStatusDecision {
+    pub disposition: TzapContactStatusDisposition,
+    pub verification_state: &'static str,
+    pub missing_status_caveat: bool,
+}
+
+/// Applies the shared contact-status policy to an already cryptographically
+/// verified contact card. Platform adapters persist only the returned public
+/// state; they must not duplicate freshness or terminal-status rules.
+#[must_use]
+pub fn classify_contact_status(
+    offline_verification_state: &str,
+    certificate_not_after_unix_seconds: Option<u64>,
+    expected_certificate_sha256: &str,
+    status: Option<&TzapStatusResponse>,
+    verifier_time_unix_seconds: i64,
+) -> TzapContactStatusDecision {
+    if certificate_not_after_unix_seconds.is_some_and(|not_after| not_after <= verifier_time_unix_seconds.max(0) as u64) {
+        return TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::Blocked,
+            verification_state: "status_expired",
+            missing_status_caveat: false,
+        };
+    }
+    if !matches!(offline_verification_state, "valid_now" | "valid_at_trusted_time" | "cryptographically_intact_offline") {
+        return TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "invalid", missing_status_caveat: false };
+    }
+    let Some(status) = status else {
+        return TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::VerifiedOffline,
+            verification_state: "cryptographically_intact_offline",
+            missing_status_caveat: true,
+        };
+    };
+    if status.certificate_sha256.as_deref() != Some(expected_certificate_sha256) {
+        return TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::Blocked,
+            verification_state: "status_mismatch",
+            missing_status_caveat: false,
+        };
+    }
+    match status.status {
+        TzapCertificateStatus::Valid if status.is_fresh_valid_for_valid_now(verifier_time_unix_seconds) => {
+            TzapContactStatusDecision { disposition: TzapContactStatusDisposition::VerifiedNow, verification_state: "valid_now", missing_status_caveat: false }
+        }
+        TzapCertificateStatus::Valid => TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::VerifiedOffline,
+            verification_state: "cryptographically_intact_offline",
+            missing_status_caveat: true,
+        },
+        TzapCertificateStatus::Revoked => {
+            TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_revoked", missing_status_caveat: false }
+        }
+        TzapCertificateStatus::Suspended | TzapCertificateStatus::IssuerSuspended => TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::Blocked,
+            verification_state: "status_suspended",
+            missing_status_caveat: false,
+        },
+        TzapCertificateStatus::Expired | TzapCertificateStatus::NotYetValid => {
+            TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_expired", missing_status_caveat: false }
+        }
+        TzapCertificateStatus::IssuerRevoked => {
+            TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_revoked", missing_status_caveat: false }
+        }
+        TzapCertificateStatus::UnknownCertificate
+        | TzapCertificateStatus::UnknownIssuer
+        | TzapCertificateStatus::MalformedLookup
+        | TzapCertificateStatus::UnsupportedLookupForm => TzapContactStatusDecision {
+            disposition: TzapContactStatusDisposition::Blocked,
+            verification_state: "status_unavailable",
+            missing_status_caveat: false,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapDocumentStatusTarget {
     pub certificate_sha256: String,
@@ -695,8 +778,8 @@ fn is_printable_ascii(value: &str) -> bool {
 mod tests {
     use super::{
         TzapArchiveRevocationOutcome, TzapArchiveStatusTarget, TzapBulkStatusLookup, TzapDocumentStatusTarget, TzapStatusClient, TzapStatusResponse,
-        archive_status_matches, classify_archive_revocation, compose_tzap_archive_verification_with_status, online_verification_result_from_status,
-        validate_bulk_lookups,
+        archive_status_matches, classify_archive_revocation, classify_contact_status, compose_tzap_archive_verification_with_status,
+        online_verification_result_from_status, validate_bulk_lookups,
     };
     use crate::auth_client::{TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport};
     use crate::document_verification::TzapDocumentVerificationResult;
@@ -724,6 +807,36 @@ mod tests {
         assert_eq!(status.status, TzapCertificateStatus::Valid);
         assert!(status.is_fresh_valid_for_valid_now(1_000));
         assert!(transport.requests()[0].url.contains("sha256%3A"));
+    }
+
+    #[test]
+    fn contact_status_classifier_preserves_offline_cards_for_missing_or_stale_status() {
+        let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
+        let status = TzapStatusResponse::from_json_value(&valid_status(&certificate_sha256)).unwrap();
+        let fresh = classify_contact_status("valid_now", None, &certificate_sha256, Some(&status), 1_000);
+        assert_eq!(fresh.disposition, super::TzapContactStatusDisposition::VerifiedNow);
+        let stale = classify_contact_status("valid_now", None, &certificate_sha256, Some(&status), 2_000);
+        assert_eq!(stale.disposition, super::TzapContactStatusDisposition::VerifiedOffline);
+        assert!(stale.missing_status_caveat);
+        let missing = classify_contact_status("valid_now", None, &certificate_sha256, None, 1_000);
+        assert_eq!(missing.disposition, super::TzapContactStatusDisposition::VerifiedOffline);
+    }
+
+    #[test]
+    fn contact_status_classifier_blocks_terminal_or_mismatched_status() {
+        let certificate_sha256 = trust::format_certificate_sha256(&[0x0a; 32]);
+        let mut revoked = valid_status(&certificate_sha256);
+        revoked["status"] = json!("revoked");
+        revoked["revoked_at_unix_seconds"] = json!(950);
+        revoked["revocation_reason"] = json!("compromise");
+        let revoked = TzapStatusResponse::from_json_value(&revoked).unwrap();
+        assert_eq!(
+            classify_contact_status("valid_now", None, &certificate_sha256, Some(&revoked), 1_000).disposition,
+            super::TzapContactStatusDisposition::Blocked
+        );
+        let other = trust::format_certificate_sha256(&[0x0b; 32]);
+        let mismatched = TzapStatusResponse::from_json_value(&valid_status(&other)).unwrap();
+        assert_eq!(classify_contact_status("valid_now", None, &certificate_sha256, Some(&mismatched), 1_000).verification_state, "status_mismatch");
     }
 
     #[test]

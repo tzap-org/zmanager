@@ -287,6 +287,9 @@ pub struct TzapContactRecord {
     pub signing_certificate_sha256: String,
     pub recipient_public_key_fingerprint: String,
     pub trust_anchor_type: trust::TzapTrustAnchorType,
+    /// Origin of the locally stored contact, such as `phone_sync` or an
+    /// empty value for a contact accepted directly on this device.
+    pub source: String,
     pub verification_state: trust::TzapVerificationState,
     pub missing_status_caveat: bool,
     pub contact_card_payload: Value,
@@ -670,6 +673,7 @@ fn contact_from_json(value: &Value) -> Result<TzapContactRecord, TzapLocalIdenti
         signing_certificate_sha256: required_string(object, "signing_certificate_sha256")?,
         recipient_public_key_fingerprint: required_string(object, "recipient_public_key_fingerprint")?,
         trust_anchor_type,
+        source: optional_string(object, "source")?.unwrap_or_default(),
         verification_state,
         missing_status_caveat,
         contact_card_payload: required_field(object, "contact_card_payload")?.clone(),
@@ -1080,6 +1084,7 @@ mod tests {
                 signing_certificate_sha256: canonical_sha(0x07),
                 recipient_public_key_fingerprint: canonical_sha(0x08),
                 trust_anchor_type: trust::TzapTrustAnchorType::Custom,
+                source: String::new(),
                 verification_state: trust::TzapVerificationState::CryptographicallyIntactOffline,
                 missing_status_caveat: true,
                 contact_card_payload: json!({

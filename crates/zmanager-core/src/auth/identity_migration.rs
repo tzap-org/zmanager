@@ -290,6 +290,7 @@ fn build_catalog_from_legacy(
                 recipient_public_key_fingerprint: contact.recipient_public_key_fingerprint.clone(),
                 recipient_public_key_der,
                 trust_source: contact.trust_anchor_type.as_str().to_owned(),
+                source: contact.source.clone(),
                 verification_state: contact.verification_state.as_str().to_owned(),
                 missing_status_caveat: contact.missing_status_caveat,
                 contact_card_payload: contact.contact_card_payload.clone(),
@@ -465,6 +466,8 @@ pub fn store_inventory_as_catalog(
     catalog.pending_mutations.retain(|mutation| !matches!(mutation, PendingMutation::LegacyMigration { .. }));
 
     let existing = catalog_store.load_catalog(account_key)?;
+    let mut obsolete_signing_refs = Vec::new();
+    let mut obsolete_recipient_refs = Vec::new();
     if let Some(existing) = &existing {
         for identity in &existing.signing_identities {
             let Some(key_id) = identity.legacy_key_id.clone() else { continue };
@@ -492,15 +495,17 @@ pub fn store_inventory_as_catalog(
         let current_recipient: HashSet<&str> = catalog.recipient_keys.iter().map(|key| key.private_key_ref.as_str()).collect();
         for identity in &existing.signing_identities {
             if !current_signing.contains(identity.signing_key_ref.as_str()) {
-                let _ = secret_store.delete(TzapSecretPurpose::SigningKey, &identity.signing_key_ref);
+                obsolete_signing_refs.push(identity.signing_key_ref.clone());
             }
         }
         for key in &existing.recipient_keys {
             if !current_recipient.contains(key.private_key_ref.as_str()) {
-                let _ = secret_store.delete(TzapSecretPurpose::RecipientKey, &key.private_key_ref);
+                obsolete_recipient_refs.push(key.private_key_ref.clone());
             }
         }
     }
+
+    preserve_default_signing_identity(existing.as_ref(), &mut catalog);
 
     for record in &inventory.device_signing_keys {
         let reference = signing_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "facade.signing_refs" })?;
@@ -514,7 +519,46 @@ pub fn store_inventory_as_catalog(
     let expected_revision = existing.as_ref().map(|catalog| catalog.revision);
     catalog.revision = expected_revision.map_or(1, |revision| revision.saturating_add(1));
     catalog_store.save_catalog(account_key, expected_revision, catalog)?;
+    // Deleting old secrets is safe only after the catalog atomically points at
+    // the replacement inventory. If the commit failed, the old catalog still
+    // retains these references and they must remain resolvable.
+    for reference in obsolete_signing_refs {
+        let _ = secret_store.delete(TzapSecretPurpose::SigningKey, &reference);
+    }
+    for reference in obsolete_recipient_refs {
+        let _ = secret_store.delete(TzapSecretPurpose::RecipientKey, &reference);
+    }
     Ok(())
+}
+
+/// Keeps the catalog's selected signing identity stable across legacy-inventory
+/// writes. A renewal replaces the active certificate while retaining the
+/// backing signing key, so a revoked default must migrate to the active
+/// replacement with the same key and public scope.
+fn preserve_default_signing_identity(existing: Option<&TzapIdentityCatalog>, next: &mut TzapIdentityCatalog) {
+    let Some(existing) = existing else { return };
+    let Some(default_id) = existing.default_signing_identity_id.as_deref() else { return };
+
+    if next.signing_identities.iter().any(|identity| identity.id == default_id && identity.lifecycle == "active") {
+        next.default_signing_identity_id = Some(default_id.to_owned());
+        return;
+    }
+
+    let Some(previous) = existing.signing_identities.iter().find(|identity| identity.id == default_id) else {
+        next.default_signing_identity_id = None;
+        return;
+    };
+    next.default_signing_identity_id = next
+        .signing_identities
+        .iter()
+        .find(|candidate| {
+            candidate.id != default_id
+                && candidate.lifecycle == "active"
+                && candidate.legacy_key_id == previous.legacy_key_id
+                && candidate.public_device_id == previous.public_device_id
+                && candidate.public_org_id == previous.public_org_id
+        })
+        .map(|candidate| candidate.id.clone());
 }
 
 /// Loads a legacy-shaped inventory from the catalog, hydrating private key
@@ -538,36 +582,54 @@ pub fn load_inventory_from_catalog(
             created_at_unix_seconds: identity.signing_key_created_at_unix_seconds.unwrap_or(0),
             label: identity.local_alias.clone(),
         });
-        if let Some(certificate_id) = &identity.certificate_id {
+        if let (
+            Some(certificate_id),
+            Some(certificate_sha256),
+            Some(issuer_certificate_sha256),
+            Some(issuer_key_identifier),
+            Some(serial_number),
+            Some(not_before_unix_seconds),
+            Some(not_after_unix_seconds),
+            Some(public_signer_id),
+            Some(public_device_id),
+            Some(assurance_level),
+            Some(sign_device_id),
+        ) = (
+            identity.certificate_id.as_ref(),
+            identity.certificate_sha256.as_ref(),
+            identity.issuer_certificate_sha256.as_ref(),
+            identity.issuer_key_identifier.as_ref(),
+            identity.serial_number.as_ref(),
+            identity.not_before_unix_seconds,
+            identity.not_after_unix_seconds,
+            identity.public_signer_id.as_ref(),
+            identity.public_device_id.as_ref(),
+            identity.assurance_level.as_deref(),
+            identity.sign_device_id.as_ref(),
+        ) {
             let mut chain = identity.certificate_chain_der.clone();
             let leaf = chain.drain(..1).next().unwrap_or_default();
             inventory.enrolled_certificates.push(TzapEnrolledCertificateRecord {
                 certificate_id: certificate_id.clone(),
-                certificate_sha256: identity.certificate_sha256.clone().unwrap_or_default(),
-                issuer_certificate_sha256: identity.issuer_certificate_sha256.clone().unwrap_or_default(),
-                issuer_key_identifier: identity.issuer_key_identifier.clone().unwrap_or_default(),
-                serial_number: identity.serial_number.clone().unwrap_or_default(),
+                certificate_sha256: certificate_sha256.clone(),
+                issuer_certificate_sha256: issuer_certificate_sha256.clone(),
+                issuer_key_identifier: issuer_key_identifier.clone(),
+                serial_number: serial_number.clone(),
                 leaf_certificate_der: leaf,
                 intermediate_chain_der: chain,
-                not_before_unix_seconds: identity.not_before_unix_seconds.unwrap_or(0),
-                not_after_unix_seconds: identity.not_after_unix_seconds.unwrap_or(0),
+                not_before_unix_seconds,
+                not_after_unix_seconds,
                 renewal_grace_period_days: identity.renewal_grace_period_days,
                 renewal_recommended_within_days: identity.renewal_recommended_within_days,
                 public_metadata: crate::trust::TzapCertificatePublicMetadata {
                     version: identity.metadata_version.unwrap_or(u64::from(crate::trust::TZAP_ENVELOPE_VERSION)),
-                    public_signer_id: identity.public_signer_id.clone().unwrap_or_default(),
+                    public_signer_id: public_signer_id.clone(),
                     public_org_id: identity.public_org_id.clone(),
-                    public_device_id: identity.public_device_id.clone().unwrap_or_default(),
-                    assurance_level: identity
-                        .assurance_level
-                        .as_deref()
-                        .map(str::parse)
-                        .transpose()
-                        .map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "assurance_level" })?
-                        .ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "assurance_level" })?,
+                    public_device_id: public_device_id.clone(),
+                    assurance_level: assurance_level.parse().map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "assurance_level" })?,
                     policy_oid: identity.policy_oid.clone().unwrap_or_else(|| crate::trust::TZAP_OID_LEAF_POLICY.to_owned()),
                 },
-                sign_device_id: identity.sign_device_id.clone().unwrap_or_default(),
+                sign_device_id: sign_device_id.clone(),
                 sign_device_routing: identity.sign_device_routing.clone().unwrap_or(TzapSignDeviceRouting::Personal),
                 signing_key_id: key_id,
                 state: TzapLocalCertificateState::from_wire_value(&identity.lifecycle).unwrap_or(TzapLocalCertificateState::Active),
@@ -589,12 +651,21 @@ pub fn load_inventory_from_catalog(
     }
 
     for contact in &catalog.contacts {
+        let (trust_source, source) = if contact.trust_source == "phone_sync" {
+            // Older desktop catalogs overloaded trust_source with the
+            // synchronization origin. Preserve those contacts while moving
+            // the origin into the dedicated source field.
+            ("official_tzap", if contact.source.is_empty() { "phone_sync" } else { contact.source.as_str() })
+        } else {
+            (contact.trust_source.as_str(), contact.source.as_str())
+        };
         inventory.contacts.push(TzapContactRecord {
             contact_id: contact.contact_id.clone(),
             display_name: contact.display_name.clone(),
             signing_certificate_sha256: contact.signing_certificate_sha256.clone(),
             recipient_public_key_fingerprint: contact.recipient_public_key_fingerprint.clone(),
-            trust_anchor_type: contact.trust_source.parse().map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "contacts.trust_source" })?,
+            trust_anchor_type: trust_source.parse().map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "contacts.trust_source" })?,
+            source: source.to_owned(),
             verification_state: contact
                 .verification_state
                 .parse()
@@ -634,4 +705,114 @@ fn verify_private_matches_public_key(private_key: &SecretBytes, public_key_der: 
         return Err(TzapIdentityCatalogError::InvalidCatalog { field: "private_key_public_key_match" });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity_catalog::{InMemoryTzapIdentityCatalogStore, InMemoryTzapSecretMaterialStore, TzapPublicRecipientKeyRecord};
+
+    fn signing_identity(id: &str, lifecycle: &str, key_id: &str) -> TzapPublicSigningIdentityRecord {
+        TzapPublicSigningIdentityRecord {
+            id: id.to_owned(),
+            local_alias: Some("Desktop".to_owned()),
+            certificate_id: Some(id.to_owned()),
+            certificate_sha256: None,
+            issuer_certificate_sha256: None,
+            issuer_key_identifier: None,
+            serial_number: None,
+            certificate_chain_der: Vec::new(),
+            not_before_unix_seconds: None,
+            not_after_unix_seconds: None,
+            renewal_grace_period_days: None,
+            renewal_recommended_within_days: None,
+            public_signer_id: Some("signer-1".to_owned()),
+            public_org_id: Some("org-1".to_owned()),
+            public_device_id: Some("device-1".to_owned()),
+            assurance_level: Some("enrolled".to_owned()),
+            sign_device_id: Some("sign-device-1".to_owned()),
+            sign_device_routing: Some(TzapSignDeviceRouting::Organization {
+                org_id: "org-1".to_owned(),
+                login_organization_device_id: "login-device-1".to_owned(),
+            }),
+            signing_key_created_at_unix_seconds: Some(1),
+            legacy_key_id: Some(key_id.to_owned()),
+            metadata_version: Some(1),
+            policy_oid: Some("policy".to_owned()),
+            signing_key_ref: TzapSecretRef::generate(),
+            lifecycle: lifecycle.to_owned(),
+        }
+    }
+
+    #[test]
+    fn default_identity_survives_inventory_round_trip() {
+        let mut existing = TzapIdentityCatalog::empty();
+        existing.default_signing_identity_id = Some("identity-1".to_owned());
+        existing.signing_identities.push(signing_identity("identity-1", "active", "key-1"));
+        let mut next = TzapIdentityCatalog::empty();
+        next.signing_identities.push(signing_identity("identity-1", "active", "key-1"));
+
+        preserve_default_signing_identity(Some(&existing), &mut next);
+
+        assert_eq!(next.default_signing_identity_id.as_deref(), Some("identity-1"));
+    }
+
+    #[test]
+    fn default_identity_moves_to_active_same_key_renewal() {
+        let mut existing = TzapIdentityCatalog::empty();
+        existing.default_signing_identity_id = Some("certificate-old".to_owned());
+        existing.signing_identities.push(signing_identity("certificate-old", "active", "key-1"));
+        let mut next = TzapIdentityCatalog::empty();
+        next.signing_identities.push(signing_identity("certificate-old", "revoked", "key-1"));
+        next.signing_identities.push(signing_identity("certificate-new", "active", "key-1"));
+
+        preserve_default_signing_identity(Some(&existing), &mut next);
+
+        assert_eq!(next.default_signing_identity_id.as_deref(), Some("certificate-new"));
+    }
+
+    struct FailingCatalogStore {
+        inner: InMemoryTzapIdentityCatalogStore,
+    }
+
+    impl TzapIdentityCatalogStore for FailingCatalogStore {
+        fn load_catalog(&self, account_key: &str) -> Result<Option<TzapIdentityCatalog>, TzapIdentityCatalogError> {
+            self.inner.load_catalog(account_key)
+        }
+
+        fn save_catalog(&mut self, _account_key: &str, _expected_revision: Option<u64>, _catalog: TzapIdentityCatalog) -> Result<(), TzapIdentityCatalogError> {
+            Err(TzapIdentityCatalogError::ConcurrentWrite)
+        }
+
+        fn clear_catalog(&mut self, account_key: &str) -> Result<(), TzapIdentityCatalogError> {
+            self.inner.clear_catalog(account_key)
+        }
+    }
+
+    #[test]
+    fn failed_catalog_commit_keeps_old_secret_references_resolvable() {
+        let old_reference = TzapSecretRef::generate();
+        let mut existing = TzapIdentityCatalog::empty();
+        existing.recipient_keys.push(TzapPublicRecipientKeyRecord {
+            id: "recipient-1".to_owned(),
+            local_label: None,
+            algorithm: "x25519".to_owned(),
+            public_key_der: vec![1, 2, 3],
+            fingerprint: format!("sha256:{}", "a".repeat(64)),
+            private_key_ref: old_reference.clone(),
+            lifecycle: "active".to_owned(),
+            created_at_unix_seconds: 1,
+            retired_at_unix_seconds: None,
+        });
+        let mut inner = InMemoryTzapIdentityCatalogStore::new();
+        inner.save_catalog("default", None, existing).unwrap();
+        let mut catalogs = FailingCatalogStore { inner };
+        let mut secrets = InMemoryTzapSecretMaterialStore::new();
+        secrets.put_at(TzapSecretPurpose::RecipientKey, &old_reference, SecretBytes::from(vec![7])).unwrap();
+
+        let result = store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &TzapLocalIdentityInventory::empty(), 2);
+
+        assert!(result.is_err());
+        assert!(secrets.resolve(TzapSecretPurpose::RecipientKey, &old_reference).is_ok());
+    }
 }

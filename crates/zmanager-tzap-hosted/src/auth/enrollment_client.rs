@@ -63,6 +63,11 @@ pub struct TzapEnrollmentCertificatePayload {
     pub renewal_recommended_within_days: Option<u64>,
     pub sign_device_id: String,
     pub login_organization_device_id: Option<String>,
+    /// Present on renewal responses/list entries when the server can identify
+    /// the certificate that was superseded. Reconciliation must use this (or
+    /// the predecessor fingerprint) before installing an uncertain result.
+    pub predecessor_certificate_id: Option<String>,
+    pub predecessor_certificate_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -202,22 +207,38 @@ pub struct TzapEnrollmentClient<'a, T> {
     sign_base_url: String,
     transport: &'a T,
     wire_profile: crate::wire_profile::TzapWireProfile,
+    device_name: String,
 }
 
 impl<'a, T: TzapAuthHttpTransport> TzapEnrollmentClient<'a, T> {
     #[must_use]
     pub fn new(sign_base_url: impl Into<String>, transport: &'a T) -> Self {
-        Self::with_wire_profile(sign_base_url, transport, crate::wire_profile::TzapWireProfile::Spec)
+        Self::with_device_name(sign_base_url, transport, DEFAULT_ENROLLMENT_DEVICE_NAME)
+    }
+
+    #[must_use]
+    pub fn with_device_name(sign_base_url: impl Into<String>, transport: &'a T, device_name: impl Into<String>) -> Self {
+        Self::with_wire_profile(sign_base_url, transport, crate::wire_profile::TzapWireProfile::Spec, device_name)
     }
 
     #[must_use]
     pub fn local_staging_server(sign_base_url: impl Into<String>, transport: &'a T) -> Self {
-        Self::with_wire_profile(sign_base_url, transport, crate::wire_profile::TzapWireProfile::LocalStagingServer)
+        Self::local_staging_server_with_device_name(sign_base_url, transport, DEFAULT_ENROLLMENT_DEVICE_NAME)
     }
 
     #[must_use]
-    pub(crate) fn with_wire_profile(sign_base_url: impl Into<String>, transport: &'a T, wire_profile: crate::wire_profile::TzapWireProfile) -> Self {
-        Self { sign_base_url: sign_base_url.into(), transport, wire_profile }
+    pub fn local_staging_server_with_device_name(sign_base_url: impl Into<String>, transport: &'a T, device_name: impl Into<String>) -> Self {
+        Self::with_wire_profile(sign_base_url, transport, crate::wire_profile::TzapWireProfile::LocalStagingServer, device_name)
+    }
+
+    #[must_use]
+    pub(crate) fn with_wire_profile(
+        sign_base_url: impl Into<String>,
+        transport: &'a T,
+        wire_profile: crate::wire_profile::TzapWireProfile,
+        device_name: impl Into<String>,
+    ) -> Self {
+        Self { sign_base_url: sign_base_url.into(), transport, wire_profile, device_name: device_name.into() }
     }
 
     pub fn request_enrollment_challenge(
@@ -284,7 +305,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapEnrollmentClient<'a, T> {
                 "challenge_signature": URL_SAFE_NO_PAD.encode(signature),
                 "old_certificate_signature": Value::Null,
                 "csr_pem": csr_der_to_pem(csr_der),
-                "device_name": DEFAULT_ENROLLMENT_DEVICE_NAME,
+                "device_name": self.device_name,
                 "device_public_key_fingerprint": signing_key.public_key_fingerprint,
                 "org_id": optional_string::<TzapEnrollmentError>(json_object::<TzapEnrollmentError>(&challenge.payload, "challenge_payload")?, "org_id")?,
                 "requested_validity_days": required_u64::<TzapEnrollmentError>(json_object::<TzapEnrollmentError>(&challenge.payload, "challenge_payload")?, "requested_validity_days")?,
@@ -351,7 +372,7 @@ impl TzapEnrollmentCertificatePayload {
         chain
     }
 
-    fn replace_certificate_chain_der(&mut self, chain_der: &[Vec<u8>]) -> Result<(), TzapEnrollmentError> {
+    pub(crate) fn replace_certificate_chain_der(&mut self, chain_der: &[Vec<u8>]) -> Result<(), TzapEnrollmentError> {
         let Some((leaf, intermediates)) = chain_der.split_first() else {
             return Err(TzapEnrollmentError::InvalidField { field: "certificate_chain_der" });
         };
@@ -547,6 +568,12 @@ fn parse_certificate_payload(value: &Value) -> Result<TzapEnrollmentCertificateP
         renewal_recommended_within_days: optional_u64::<TzapEnrollmentError>(object, "renewal_recommended_within_days")?,
         sign_device_id: required_string::<TzapEnrollmentError>(object, "sign_device_id")?,
         login_organization_device_id: optional_string::<TzapEnrollmentError>(object, "login_organization_device_id")?,
+        predecessor_certificate_id: optional_string::<TzapEnrollmentError>(object, "predecessor_certificate_id")?
+            .or(optional_string::<TzapEnrollmentError>(object, "renewed_from_certificate_id")?)
+            .or(optional_string::<TzapEnrollmentError>(object, "renewal_of_certificate_id")?),
+        predecessor_certificate_sha256: optional_string::<TzapEnrollmentError>(object, "predecessor_certificate_sha256")?
+            .or(optional_string::<TzapEnrollmentError>(object, "renewed_from_certificate_sha256")?)
+            .or(optional_string::<TzapEnrollmentError>(object, "renewal_of_certificate_sha256")?),
     })
 }
 
@@ -576,6 +603,12 @@ fn parse_pem_certificate_payload(object: &Map<String, Value>) -> Result<TzapEnro
         renewal_recommended_within_days: optional_u64::<TzapEnrollmentError>(object, "renewal_recommended_within_days")?,
         sign_device_id: required_string::<TzapEnrollmentError>(object, "sign_device_id")?,
         login_organization_device_id: optional_string::<TzapEnrollmentError>(object, "login_organization_device_id")?,
+        predecessor_certificate_id: optional_string::<TzapEnrollmentError>(object, "predecessor_certificate_id")?
+            .or(optional_string::<TzapEnrollmentError>(object, "renewed_from_certificate_id")?)
+            .or(optional_string::<TzapEnrollmentError>(object, "renewal_of_certificate_id")?),
+        predecessor_certificate_sha256: optional_string::<TzapEnrollmentError>(object, "predecessor_certificate_sha256")?
+            .or(optional_string::<TzapEnrollmentError>(object, "renewed_from_certificate_sha256")?)
+            .or(optional_string::<TzapEnrollmentError>(object, "renewal_of_certificate_sha256")?),
     })
 }
 

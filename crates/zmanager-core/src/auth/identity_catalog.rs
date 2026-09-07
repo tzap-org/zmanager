@@ -225,6 +225,11 @@ pub struct TzapPublicContactRecord {
     pub recipient_public_key_fingerprint: String,
     pub recipient_public_key_der: Vec<u8>,
     pub trust_source: String,
+    /// Origin of the stored contact, independent from its certificate trust
+    /// anchor. This preserves desktop-only sources such as `phone_sync` when
+    /// the catalog is adapted through the shared inventory interface.
+    #[serde(default)]
+    pub source: String,
     pub verification_state: String,
     pub missing_status_caveat: bool,
     pub contact_card_payload: Value,
@@ -701,5 +706,44 @@ mod tests {
         assert!(secrets.resolve(TzapSecretPurpose::SigningKey, &signing_ref).is_ok());
         assert!(secrets.resolve(TzapSecretPurpose::RecipientKey, &recipient_ref).is_ok());
         assert!(catalogs.load_catalog("default").unwrap().unwrap().pending_mutations.is_empty());
+    }
+
+    #[test]
+    fn catalog_round_trip_preserves_contact_source_without_treating_it_as_trust_anchor() {
+        let inventory = TzapLocalIdentityInventory {
+            contacts: vec![crate::local_identity_store::TzapContactRecord {
+                contact_id: format!("sha256:{}", "a".repeat(64)),
+                display_name: "Phone contact".to_owned(),
+                signing_certificate_sha256: format!("sha256:{}", "b".repeat(64)),
+                recipient_public_key_fingerprint: format!("sha256:{}", "c".repeat(64)),
+                trust_anchor_type: crate::trust::TzapTrustAnchorType::OfficialTzap,
+                source: "phone_sync".to_owned(),
+                verification_state: crate::trust::TzapVerificationState::CryptographicallyIntactOffline,
+                missing_status_caveat: true,
+                contact_card_payload: serde_json::json!({"recipient_public_key": "AQID"}),
+                accepted_at_unix_seconds: 10,
+                local_alias: None,
+                card: None,
+            }],
+            ..TzapLocalIdentityInventory::empty()
+        };
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        let mut secrets = InMemoryTzapSecretMaterialStore::new();
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 20).unwrap();
+
+        let catalog = catalogs.load_catalog("default").unwrap().unwrap();
+        assert_eq!(catalog.contacts[0].trust_source, "official_tzap");
+        assert_eq!(catalog.contacts[0].source, "phone_sync");
+        let loaded = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
+        assert_eq!(loaded.contacts[0].source, "phone_sync");
+
+        let mut legacy_catalog = catalog.clone();
+        legacy_catalog.contacts[0].trust_source = "phone_sync".to_owned();
+        legacy_catalog.contacts[0].source.clear();
+        let mut legacy_catalogs = InMemoryTzapIdentityCatalogStore::new();
+        legacy_catalogs.save_catalog("default", None, legacy_catalog).unwrap();
+        let migrated = load_inventory_from_catalog(&legacy_catalogs, &secrets, "default").unwrap().unwrap();
+        assert_eq!(migrated.contacts[0].trust_anchor_type, crate::trust::TzapTrustAnchorType::OfficialTzap);
+        assert_eq!(migrated.contacts[0].source, "phone_sync");
     }
 }
