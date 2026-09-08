@@ -272,6 +272,10 @@ fn build_catalog_from_legacy(
     let mut catalog = TzapIdentityCatalog::empty();
     catalog.revision = 1;
     catalog.signing_identities = signing_identities;
+    // A fresh catalog has no prior user selection to preserve. Make the first
+    // active certificate usable by default, matching the existing local and
+    // imported-identity flows.
+    catalog.default_signing_identity_id = catalog.signing_identities.iter().find(|identity| identity.lifecycle == "active").map(|identity| identity.id.clone());
     catalog.recipient_keys = recipient_keys;
     catalog.contacts = inventory
         .contacts

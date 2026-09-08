@@ -490,7 +490,7 @@ pub trait TzapAuthHttpTransport {
 pub struct TzapCurrentUser {
     pub display_name: String,
     pub public_signer_id: Option<String>,
-    pub assurance_level: trust::TzapIdentityAssurance,
+    pub assurance_level: Option<trust::TzapIdentityAssurance>,
     pub selected_org_id: Option<String>,
 }
 
@@ -506,7 +506,10 @@ impl TzapCurrentUser {
         Ok(Self {
             display_name: required_string_field(object, "$", "display_name")?,
             public_signer_id: optional_string_field(object, "$", "public_signer_id")?,
-            assurance_level: parse_assurance_level(object, "$", "assurance_level")?,
+            assurance_level: match object.get("assurance_level") {
+                Some(Value::Null) | None => None,
+                Some(_) => Some(parse_assurance_level(object, "$", "assurance_level")?),
+            },
             selected_org_id: optional_string_field(object, "$", "selected_org_id")?,
         })
     }
@@ -853,9 +856,10 @@ mod tests {
     use super::{
         AUTH_HANDOFF_LIFETIME_SECONDS, InMemoryTzapSessionStore, LOGIN_TZAP_BASE_URL, PKCE_METHOD_S256, SESSION_AUDIENCE_LOGIN_TZAP,
         SESSION_AUDIENCE_SIGN_TZAP, SIGN_TZAP_BASE_URL, TzapAuthCancellation, TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse,
-        TzapAuthHttpTransport, TzapAuthRequestOptions, TzapBearerToken, TzapHostedAuthCallback, TzapHostedAuthEnvironment, TzapHostedAuthLaunchConfig,
-        TzapOAuthStateTracker, TzapPendingAuthState, TzapPkcePair, TzapSessionRecord, TzapSessionStore, complete_hosted_auth_handoff,
-        complete_hosted_auth_handoff_for_audience, fetch_current_user, fetch_current_user_for_audience, pkce_s256_challenge, validate_pkce_verifier,
+        TzapAuthHttpTransport, TzapAuthRequestOptions, TzapBearerToken, TzapCurrentUser, TzapHostedAuthCallback, TzapHostedAuthEnvironment,
+        TzapHostedAuthLaunchConfig, TzapOAuthStateTracker, TzapPendingAuthState, TzapPkcePair, TzapSessionRecord, TzapSessionStore,
+        complete_hosted_auth_handoff, complete_hosted_auth_handoff_for_audience, fetch_current_user, fetch_current_user_for_audience, pkce_s256_challenge,
+        validate_pkce_verifier,
     };
     use crate::http_client::send_json_request_with_options;
     use crate::trust;
@@ -1142,6 +1146,17 @@ mod tests {
         login_session.audience = SESSION_AUDIENCE_LOGIN_TZAP.to_owned();
         let login_user = fetch_current_user_for_audience(&transport, SIGN_TZAP_BASE_URL, &login_session, SESSION_AUDIENCE_LOGIN_TZAP).unwrap();
         assert_eq!(login_user.selected_org_id.as_deref(), Some("org_123"));
+    }
+
+    #[test]
+    fn current_user_accepts_legacy_endpoint_without_assurance() {
+        let value = json!({
+            "display_name": "Ada Lovelace",
+            "public_signer_id": "psign_0123456789ABCDEFGH",
+            "selected_org_id": "org_123"
+        });
+        let current_user = TzapCurrentUser::from_json_value(&value).unwrap();
+        assert_eq!(current_user.assurance_level, None);
     }
 
     fn pending_auth_state() -> TzapPendingAuthState {
