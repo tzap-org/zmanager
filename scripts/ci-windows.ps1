@@ -480,6 +480,28 @@ function New-FullReleasePackage {
 }
 
 Import-VisualStudioEnvironment -Architecture $VcArch -RequiredComponent $VsComponent
+
+# ring requires Clang for Windows ARM64. Visual Studio's vcvarsall resets PATH,
+# so restore a standard standalone LLVM installation after importing MSVC.
+if (-not (Get-Command clang.exe -ErrorAction SilentlyContinue)) {
+    $llvmCandidates = @(
+        (Join-Path ${env:ProgramFiles} "LLVM\bin"),
+        (Join-Path ${env:ProgramFiles(x86)} "LLVM\bin")
+    ) | Where-Object { Test-Path (Join-Path $_ "clang.exe") }
+
+    if ($llvmCandidates) {
+        $env:Path = "$($llvmCandidates[0]);$env:Path"
+    }
+}
+
+$clang = Get-Command clang.exe -ErrorAction SilentlyContinue
+if ($Target -eq "aarch64-pc-windows-msvc" -and -not $clang) {
+    throw "Clang is required for Windows ARM64 builds but was not found. Install LLVM or add its bin directory to PATH."
+}
+if ($clang) {
+    Write-Host ("clang: " + $clang.Source)
+}
+
 Ensure-Vcpkg
 
 Write-Host "rustc:"
