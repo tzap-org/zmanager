@@ -2544,7 +2544,7 @@ impl NativeReadAdapter for DmgListAdapter {
                 method: None,
                 crc: None,
                 comment: None,
-                link_target: None,
+                link_target: entry.link_target,
                 ..EngineEntry::default()
             })
             .collect();
@@ -2605,7 +2605,7 @@ impl NativeReadAdapter for PkgListAdapter {
                 method: None,
                 crc: None,
                 comment: None,
-                link_target: None,
+                link_target: entry.link_target,
                 ..EngineEntry::default()
             })
             .collect();

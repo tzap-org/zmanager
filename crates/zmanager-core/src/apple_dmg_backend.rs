@@ -15,6 +15,8 @@ pub struct DmgListEntry {
     pub kind: DmgEntryKind,
     /// Declared uncompressed size.
     pub size: u64,
+    /// Target path for a symbolic link, when the image exposes one.
+    pub link_target: Option<String>,
 }
 
 /// Kind of a [`DmgListEntry`].
@@ -126,21 +128,27 @@ pub fn list_dmg(archive_path: impl AsRef<Path>) -> Result<Vec<DmgListEntry>, Dmg
 
     let entries = fs.walk().map_err(|e| DmgBackendError::Dpp(e.to_string()))?;
 
-    Ok(entries
+    let entries = entries
         .into_iter()
-        .filter_map(|entry| {
+        .map(|entry| {
             let path = entry.path.strip_prefix('/').unwrap_or(&entry.path).to_string();
             if path.is_empty() || is_reserved_volume_entry(&path) {
-                return None;
+                return Ok(None);
             }
             let kind = match entry.entry.kind {
                 dpp::FsEntryKind::File => DmgEntryKind::File,
                 dpp::FsEntryKind::Directory => DmgEntryKind::Directory,
                 dpp::FsEntryKind::Symlink => DmgEntryKind::Symlink,
             };
-            Some(DmgListEntry { path, kind, size: entry.entry.size })
+            let link_target = (kind == DmgEntryKind::Symlink)
+                .then(|| fs.read_file(&entry.path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+                .transpose()
+                .map_err(|e| DmgBackendError::Dpp(e.to_string()))?;
+            Ok(Some(DmgListEntry { path, kind, size: entry.entry.size, link_target }))
         })
-        .collect())
+        .collect::<Result<Vec<_>, DmgBackendError>>()?;
+
+    Ok(entries.into_iter().flatten().collect())
 }
 
 /// Extracts a `.dmg` archive with an overwrite resolver.
@@ -317,6 +325,7 @@ mod tests {
         assert_eq!(readme.size, 25);
         let link = listing.iter().find(|entry| entry.path == "payload/nested/readme-link.txt").unwrap();
         assert_eq!(link.kind, DmgEntryKind::Symlink);
+        assert_eq!(link.link_target.as_deref(), Some("../README.txt"));
     }
 
     #[test]

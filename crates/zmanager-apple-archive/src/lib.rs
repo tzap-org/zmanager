@@ -1083,6 +1083,12 @@ mod platform {
             }
         }
 
+        // iOS app sandboxes cannot change file ownership, even for files the
+        // app just created. Simulator execution is more permissive, so do not
+        // let a UID/GID field turn an otherwise valid extraction into a
+        // device-only `EPERM` failure. Portable mode and timestamps are still
+        // applied by the shared extraction layer.
+        #[cfg(not(target_os = "ios"))]
         if metadata.uid.is_some() || metadata.gid.is_some() {
             let uid = metadata.uid.map_or(u32::MAX, |value| value) as libc::uid_t;
             let gid = metadata.gid.map_or(u32::MAX, |value| value) as libc::gid_t;

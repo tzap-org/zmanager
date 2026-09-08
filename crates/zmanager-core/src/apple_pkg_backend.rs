@@ -15,6 +15,8 @@ pub struct PkgListEntry {
     pub kind: PkgEntryKind,
     /// Declared uncompressed size.
     pub size: u64,
+    /// Symlink target when the payload entry is symbolic.
+    pub link_target: Option<String>,
 }
 
 /// Kind of a [`PkgListEntry`].
@@ -193,7 +195,8 @@ pub fn list_pkg(archive_path: impl AsRef<Path>) -> Result<Vec<PkgListEntry>, Pkg
             } else {
                 PkgEntryKind::File
             };
-            Some(PkgListEntry { path, kind, size: entry.size })
+            let link_target = entry.is_symlink.then(|| String::from_utf8_lossy(entry.data.as_deref().unwrap_or_default()).into_owned());
+            Some(PkgListEntry { path, kind, size: entry.size, link_target })
         })
         .collect())
 }
@@ -336,6 +339,8 @@ mod tests {
         assert!(paths.contains(&"payload/nested/file.txt"), "{paths:?}");
         assert!(paths.contains(&"payload/nested/empty-dir"), "{paths:?}");
         assert!(paths.contains(&"payload/dir with spaces/file with spaces.txt"), "{paths:?}");
+        let link = listing.iter().find(|entry| entry.path == "payload/nested/readme-link.txt").expect("missing symlink");
+        assert_eq!(link.link_target.as_deref(), Some("../README.txt"));
         assert!(paths.contains(&"payload/unicode/こんにちは.txt"), "{paths:?}");
         assert!(listing.iter().all(|entry| !entry.path.starts_with('/') && !entry.path.starts_with("./")), "pkg paths must be normalized: {paths:?}");
 
