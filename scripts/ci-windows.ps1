@@ -490,7 +490,8 @@ if (-not (Get-Command clang.exe -ErrorAction SilentlyContinue)) {
     ) | Where-Object { Test-Path (Join-Path $_ "clang.exe") }
 
     if ($llvmCandidates) {
-        $env:Path = "$($llvmCandidates[0]);$env:Path"
+        $llvmBin = $llvmCandidates | Select-Object -First 1
+        $env:Path = "$llvmBin;$env:Path"
     }
 }
 
