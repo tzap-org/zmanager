@@ -201,8 +201,13 @@ pub fn merge_contact_snapshots(
                 if entry_to_insert.accepted_at > existing.accepted_at {
                     *existing = entry_to_insert;
                 } else if entry_to_insert.accepted_at == existing.accepted_at {
-                    // Prefer whichever entry has a local_alias, if one does.
-                    if existing.local_alias.is_none() && entry_to_insert.local_alias.is_some() {
+                    // Alias edits do not change the original acceptance
+                    // timestamp. Treat a non-empty alias from the incoming
+                    // device as authoritative, while preserving an existing
+                    // alias when the incoming snapshot has no alias. A future
+                    // snapshot format can add an alias-edit timestamp if
+                    // equal-time edits need ordering independent of merge order.
+                    if entry_to_insert.local_alias.is_some() {
                         existing.local_alias = entry_to_insert.local_alias;
                     }
                 }
@@ -497,6 +502,14 @@ mod tests {
 
         let snapshot_b = TzapContactSnapshot::new(
             vec![
+                // An alias edit keeps the original acceptance timestamp, so
+                // the incoming explicit alias must win an equal-time tie.
+                TzapContactSnapshotEntry {
+                    contact_id: Some("c1".to_owned()),
+                    card: json!({"payload": {"recipient_key_fingerprint": "c1"}}),
+                    local_alias: Some("Alice Phone".to_owned()),
+                    accepted_at: 100,
+                },
                 // c2 deleted on device B at t=150 (newer than acceptance t=100) -> tombstone wins
                 // c3 re-accepted on device B at t=200 (newer than tombstone t=50) -> acceptance wins
                 TzapContactSnapshotEntry {
@@ -523,9 +536,9 @@ mod tests {
         let removed_ids: Vec<_> = merged.removed.iter().map(|t| t.contact_id.as_str()).collect();
         assert_eq!(removed_ids, vec!["c2"]);
 
-        // Verify c1 preserved its alias
+        // Verify c1 took the explicit incoming alias on an equal-time tie.
         let c1 = merged.contacts.iter().find(|c| c.contact_id.as_deref() == Some("c1")).unwrap();
-        assert_eq!(c1.local_alias.as_deref(), Some("Alice Work"));
+        assert_eq!(c1.local_alias.as_deref(), Some("Alice Phone"));
     }
 
     #[test]
