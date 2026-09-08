@@ -23,6 +23,7 @@ use tzap_core::{
     ArchiveTimestamp, ArchiveWriteError, ArchiveWritePhase, ArchiveWriteProgressSink, ArchiveWriteSink, KdfParams, MasterKey, PortableFileMetadata,
     RegularFileSource, RootAuthSigningRequest, SourceEntryKind, WriterOptions,
     volume_file::{discover_sibling_volume_paths, multi_volume_base_name, volume_output_path},
+    write_archive_sources_to_sink_ordered_parallel_with_kdf_params_and_recipient_wrap_records_and_progress,
     write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress, write_archive_sources_to_sink_with_progress,
 };
 use tzap_plugin_signing::x509_chain::X509RootAuthSigner;
@@ -71,6 +72,9 @@ pub enum TzapKeySource {
     RecipientCertificates(Vec<PathBuf>),
     /// Wrap a random archive master key to multiple recipient public keys.
     RecipientPublicKeys(Vec<Vec<u8>>),
+    /// Derive the archive master key from a passphrase and also wrap that same
+    /// key to multiple recipient public keys.
+    PassphraseAndRecipientPublicKeys { passphrase: SecretString, recipient_public_keys: Vec<Vec<u8>> },
     /// Create the archive without password-based encryption.
     NoPassword,
 }
@@ -151,16 +155,30 @@ pub fn create_tzap_from_manifest_with_context(
             phase_progress: ProgressCoalescer::new(None),
         };
         let result = if let Some(recipient_records) = recipient_records {
-            write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress(
-                &file_sources,
-                &master_key,
-                writer_options,
-                recipient_records,
-                root_auth,
-                authenticator,
-                &mut sink,
-                &mut progress,
-            )
+            if matches!(kdf_params, KdfParams::Argon2idRecipientWrap { .. }) {
+                write_archive_sources_to_sink_ordered_parallel_with_kdf_params_and_recipient_wrap_records_and_progress(
+                    &file_sources,
+                    &master_key,
+                    writer_options,
+                    &kdf_params,
+                    recipient_records,
+                    root_auth,
+                    authenticator,
+                    &mut sink,
+                    &mut progress,
+                )
+            } else {
+                write_archive_sources_to_sink_ordered_parallel_with_recipient_wrap_records_and_progress(
+                    &file_sources,
+                    &master_key,
+                    writer_options,
+                    recipient_records,
+                    root_auth,
+                    authenticator,
+                    &mut sink,
+                    &mut progress,
+                )
+            }
         } else {
             write_archive_sources_to_sink_with_progress(
                 &file_sources,
@@ -237,8 +255,7 @@ fn build_recipient_records(
                     .collect::<Result<Vec<_>, _>>()?,
             )
         }
-        TzapKeySource::RecipientPublicKeys(recipient_public_keys) => {
-            validate_recipient_wrap_create_options(options)?;
+        TzapKeySource::RecipientPublicKeys(recipient_public_keys) | TzapKeySource::PassphraseAndRecipientPublicKeys { recipient_public_keys, .. } => {
             if recipient_public_keys.is_empty() {
                 return Err(TzapError::KeyWrap("at least one recipient public key is required".to_owned()));
             }
@@ -401,6 +418,28 @@ fn create_key_material(key_source: &TzapKeySource) -> Result<(MasterKey, KdfPara
             let kdf_params = create_kdf_params();
             let master_key = MasterKey::derive_from_passphrase(&kdf_params, passphrase.expose_secret())?;
             Ok((master_key, kdf_params))
+        }
+        TzapKeySource::PassphraseAndRecipientPublicKeys { passphrase, recipient_public_keys } => {
+            let argon_params = create_kdf_params();
+            let master_key = MasterKey::derive_from_passphrase(&argon_params, passphrase.expose_secret())?;
+            let KdfParams::Argon2id { t_cost, m_cost_kib, parallelism, salt } = argon_params else {
+                unreachable!("create_kdf_params always returns Argon2id");
+            };
+            let key_wrap_table_record_count =
+                u32::try_from(recipient_public_keys.len()).map_err(|_| TzapError::KeyWrap("too many recipient keys".to_owned()))?;
+            Ok((
+                master_key,
+                KdfParams::Argon2idRecipientWrap {
+                    t_cost,
+                    m_cost_kib,
+                    parallelism,
+                    salt,
+                    key_wrap_table_length: 0,
+                    key_wrap_table_record_count,
+                    key_wrap_table_version: 1,
+                    key_wrap_table_digest: [0u8; 32],
+                },
+            ))
         }
         TzapKeySource::RecipientCertificate(_) | TzapKeySource::RecipientCertificates(_) | TzapKeySource::RecipientPublicKeys(_) => {
             Ok((generate_random_master_key()?, KdfParams::None))

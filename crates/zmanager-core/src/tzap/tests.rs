@@ -907,6 +907,58 @@ fn multi_recipient_public_keys_can_open_same_archive() {
 }
 
 #[test]
+fn password_and_multiple_recipients_can_open_a_split_archive() {
+    let temp = TestDir::new("tzap_combined_password_recipient_split_create");
+    let source = temp.path("payload.txt");
+    let archive = temp.path("sealed.tzap");
+    let recipient_one_key_path = temp.path("recipient-one.key");
+    let recipient_two_key_path = temp.path("recipient-two.key");
+    fs::write(&source, b"combined password and recipient payload").unwrap();
+
+    let (_recipient_one_cert, recipient_one_key) = test_p256_recipient_cert("ZManager Combined Recipient One");
+    let (_recipient_two_cert, recipient_two_key) = test_p256_recipient_cert("ZManager Combined Recipient Two");
+    fs::write(&recipient_one_key_path, recipient_one_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+    fs::write(&recipient_two_key_path, recipient_two_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+
+    let password = "combined archive password";
+    let manifest = single_file_manifest(&temp, source, 39);
+    let options = TzapCreateOptions {
+        key_source: TzapKeySource::PassphraseAndRecipientPublicKeys {
+            passphrase: SecretString::from(password),
+            recipient_public_keys: vec![recipient_one_key.public_key_to_der().unwrap(), recipient_two_key.public_key_to_der().unwrap()],
+        },
+        level: 1,
+        preserve_metadata: true,
+        replace_existing: false,
+        volume_size: None,
+        volume_count: Some(2),
+        recovery_percentage: 0,
+        volume_loss_tolerance: 0,
+        x509_signing: None,
+        emit_bootstrap_sidecar: false,
+    };
+    let token = CancellationToken::new();
+    let mut events = |_| {};
+    let mut context = JobContext::new(&token, &mut events);
+
+    let report = create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
+    assert_eq!(report.volume_count, 2);
+
+    let password_listing = list_tzap_with_password(&archive, password).unwrap();
+    assert_eq!(password_listing.entries.len(), 1);
+    assert_eq!(password_listing.entries[0].path, "payload.txt");
+
+    for recipient_key_path in [&recipient_one_key_path, &recipient_two_key_path] {
+        let listing = list_tzap_with_recipient_key(&archive, recipient_key_path).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "payload.txt");
+    }
+
+    let wrong_password = list_tzap_with_password(&archive, "wrong combined password").unwrap_err();
+    assert!(!wrong_password.to_string().is_empty());
+}
+
+#[test]
 fn signed_tzap_with_recipient_public_keys_opens_with_the_matching_key() {
     let temp = TestDir::new("tzap_signed_recipient_public_key");
     let source = temp.path("payload.txt");
