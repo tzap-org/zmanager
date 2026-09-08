@@ -6349,7 +6349,6 @@ dependencies = [
  "memchr",
  "msi",
  "mtree",
- "num-bigint",
  "openssl",
  "rand",
  "rayon",
@@ -6381,7 +6380,6 @@ version = "2.1.2"
 dependencies = [
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror",
  "tzap-core",
  "tzap-plugin-signing",
@@ -6413,7 +6411,6 @@ dependencies = [
  "openssl",
  "rand",
  "reqwest",
- "serde",
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",

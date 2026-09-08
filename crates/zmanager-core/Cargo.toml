@@ -33,7 +33,6 @@ lzma-rust2 = { version = "0.16.2", default-features = false, features = ["lzip",
 # Pure-Rust LZO1X block decompressor (SecurityRonin family, Apache-2.0);
 # the lzop container framing around the blocks lives in `lzop_decoder.rs`.
 lzo = "0.1.3"
-num-bigint = "0.4.6"
 openssl = "0.10.80"
 rand = "0.9.0"
 serde = { version = "1", features = ["derive"] }
