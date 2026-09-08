@@ -673,8 +673,6 @@ pub enum TzapKeySource {
     RecipientCertificates(Vec<PathBuf>),
     /// Multiple recipient public keys.
     RecipientPublicKeys(Vec<Vec<u8>>),
-    /// Password-derived key also wrapped to multiple recipient public keys.
-    PassphraseAndRecipientPublicKeys { passphrase: crate::secrets::SecretString, recipient_public_keys: Vec<Vec<u8>> },
     /// Unencrypted archive.
     NoPassword,
 }

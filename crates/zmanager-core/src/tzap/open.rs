@@ -50,7 +50,7 @@ impl TzapPublicFormatSummary {
             encryption_algorithm: aead_algorithm_label(crypto_header.aead_algo),
             recovery_algorithm: fec_algorithm_label(crypto_header.fec_algo),
             key_derivation: kdf_algorithm_label(crypto_header.kdf_algo),
-            password_required: matches!(crypto_header.kdf_algo, KdfAlgo::Argon2id | KdfAlgo::Argon2idRecipientWrap),
+            password_required: crypto_header.kdf_algo == KdfAlgo::Argon2id,
             bit_rot_buffer_percentage: crypto_header.bit_rot_buffer_pct,
             volume_loss_tolerance: crypto_header.volume_loss_tolerance,
             data_shard_count: crypto_header.fec_data_shards,
@@ -273,21 +273,7 @@ pub(crate) fn open_tzap_archive_with_key_options_multi(
     let kdf_params = read_kdf_params_from_path(first_volume)?;
     let volume_files =
         volume_paths.iter().map(|path| File::open(path).map_err(|source| TzapError::Io { path: path.clone(), source })).collect::<Result<Vec<_>, _>>()?;
-    if matches!(kdf_params, KdfParams::RecipientWrap { .. } | KdfParams::Argon2idRecipientWrap { .. }) {
-        if matches!(kdf_params, KdfParams::Argon2idRecipientWrap { .. }) && password.is_some() {
-            let master_key = match password {
-                Some(password) => MasterKey::derive_from_passphrase(&kdf_params, password)?,
-                None => unreachable!("combined profile password branch requires a password"),
-            };
-            if recipient_private_key.is_some() || recipient_private_key_bytes_list.is_some() {
-                return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
-            }
-            if volume_files.len() == 1 {
-                let volume_file = volume_files.into_iter().next().ok_or(FormatError::InvalidArchive("no volumes supplied"))?;
-                return open_seekable_archive(volume_file, &master_key).map_err(Into::into);
-            }
-            return open_seekable_archive_volumes(volume_files, &master_key).map_err(Into::into);
-        }
+    if matches!(kdf_params, KdfParams::RecipientWrap { .. }) {
         if password.is_some() {
             return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
         }
@@ -318,8 +304,8 @@ pub(crate) fn open_tzap_archive_with_key_options_multi(
         // Callers that want confidentiality must reject empty input before
         // reaching this point.
         (KdfParams::None, _) | (KdfParams::Raw, None | Some("")) => placeholder_master_key()?,
-        (KdfParams::Argon2id { .. } | KdfParams::Argon2idRecipientWrap { .. }, Some(password)) => MasterKey::derive_from_passphrase(&kdf_params, password)?,
-        (KdfParams::Argon2id { .. } | KdfParams::Argon2idRecipientWrap { .. }, None) => return Err(TzapError::PasswordRequired),
+        (KdfParams::Argon2id { .. }, Some(password)) => MasterKey::derive_from_passphrase(&kdf_params, password)?,
+        (KdfParams::Argon2id { .. }, None) => return Err(TzapError::PasswordRequired),
         (KdfParams::Raw, Some(_)) => {
             return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
         }
@@ -508,7 +494,6 @@ const fn kdf_algorithm_label(algorithm: KdfAlgo) -> &'static str {
         KdfAlgo::Raw => "raw",
         KdfAlgo::Argon2id => "argon2id",
         KdfAlgo::RecipientWrap => "recipient-wrap",
-        KdfAlgo::Argon2idRecipientWrap => "argon2id + recipient-wrap",
     }
 }
 

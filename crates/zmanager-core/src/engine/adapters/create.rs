@@ -179,9 +179,6 @@ impl From<crate::engine::types::TzapKeySource> for crate::tzap::TzapKeySource {
             crate::engine::types::TzapKeySource::RecipientCertificate(path) => Self::RecipientCertificate(path),
             crate::engine::types::TzapKeySource::RecipientCertificates(paths) => Self::RecipientCertificates(paths),
             crate::engine::types::TzapKeySource::RecipientPublicKeys(keys) => Self::RecipientPublicKeys(keys),
-            crate::engine::types::TzapKeySource::PassphraseAndRecipientPublicKeys { passphrase, recipient_public_keys } => {
-                Self::PassphraseAndRecipientPublicKeys { passphrase, recipient_public_keys }
-            }
             crate::engine::types::TzapKeySource::NoPassword => Self::NoPassword,
         }
     }
@@ -194,9 +191,6 @@ impl From<crate::tzap::TzapKeySource> for crate::engine::types::TzapKeySource {
             crate::tzap::TzapKeySource::RecipientCertificate(path) => Self::RecipientCertificate(path),
             crate::tzap::TzapKeySource::RecipientCertificates(paths) => Self::RecipientCertificates(paths),
             crate::tzap::TzapKeySource::RecipientPublicKeys(keys) => Self::RecipientPublicKeys(keys),
-            crate::tzap::TzapKeySource::PassphraseAndRecipientPublicKeys { passphrase, recipient_public_keys } => {
-                Self::PassphraseAndRecipientPublicKeys { passphrase, recipient_public_keys }
-            }
             crate::tzap::TzapKeySource::NoPassword => Self::NoPassword,
         }
     }

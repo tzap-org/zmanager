@@ -368,7 +368,12 @@ pub(crate) fn load_x509_trusted_roots(trust: &TzapX509TrustOptions) -> Result<Ve
     Ok(certificates)
 }
 
-pub(crate) fn validate_recipient_wrap_create_options(_options: &TzapCreateOptions) -> Result<(), TzapError> {
+pub(crate) fn validate_recipient_wrap_create_options(options: &TzapCreateOptions) -> Result<(), TzapError> {
+    if options.volume_size.is_some() || options.volume_count.is_some_and(|count| count > 1) || options.volume_loss_tolerance != 0 {
+        return Err(TzapError::Format(FormatError::WriterUnsupported(
+            "recipient certificate encryption is currently supported only for single-volume TZAP create",
+        )));
+    }
     Ok(())
 }
 
