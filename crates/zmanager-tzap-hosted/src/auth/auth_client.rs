@@ -276,6 +276,8 @@ pub struct TzapHostedAuthCallback {
     pub redirect_uri: String,
     pub pkce_verifier: String,
     pub callback_url: Option<String>,
+    /// Rust-internal serialized session handoff envelope. This is never read
+    /// from the native callback URL or exposed as a frontend field.
     pub relay_body: Vec<u8>,
 }
 
@@ -286,10 +288,24 @@ pub fn complete_hosted_auth_handoff(
     callback: &TzapHostedAuthCallback,
     now_unix_seconds: u64,
 ) -> Result<TzapSessionRecord, TzapAuthError> {
+    complete_hosted_auth_handoff_for_audience(tracker, session_store, account_key, callback, now_unix_seconds, SESSION_AUDIENCE_SIGN_TZAP)
+}
+
+pub fn complete_hosted_auth_handoff_for_audience(
+    tracker: &mut TzapOAuthStateTracker,
+    session_store: &mut impl TzapSessionStore,
+    account_key: &str,
+    callback: &TzapHostedAuthCallback,
+    now_unix_seconds: u64,
+    expected_audience: &str,
+) -> Result<TzapSessionRecord, TzapAuthError> {
+    if !matches!(expected_audience, SESSION_AUDIENCE_SIGN_TZAP | SESSION_AUDIENCE_LOGIN_TZAP) {
+        return Err(TzapAuthError::InvalidConfig { field: "expected_audience" });
+    }
     tracker.consume_handoff(callback, now_unix_seconds, AUTH_HANDOFF_LIFETIME_SECONDS)?;
     let relay = TzapAuthRelayCompletion::from_json_bytes(&callback.relay_body)?;
     let session = relay.into_session();
-    session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
+    session.require_audience(expected_audience)?;
     session_store.save_session(account_key, session.clone())?;
     Ok(session)
 }
@@ -497,8 +513,20 @@ impl TzapCurrentUser {
 }
 
 pub fn fetch_current_user(transport: &impl TzapAuthHttpTransport, sign_base_url: &str, session: &TzapSessionRecord) -> Result<TzapCurrentUser, TzapAuthError> {
-    session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
-    let response = send_json_request(transport, TzapAuthHttpMethod::Get, sign_base_url, CURRENT_USER_PATH, Some(session.access_token.clone()), None)?;
+    fetch_current_user_for_audience(transport, sign_base_url, session, SESSION_AUDIENCE_SIGN_TZAP)
+}
+
+pub fn fetch_current_user_for_audience(
+    transport: &impl TzapAuthHttpTransport,
+    account_base_url: &str,
+    session: &TzapSessionRecord,
+    expected_audience: &str,
+) -> Result<TzapCurrentUser, TzapAuthError> {
+    if !matches!(expected_audience, SESSION_AUDIENCE_SIGN_TZAP | SESSION_AUDIENCE_LOGIN_TZAP) {
+        return Err(TzapAuthError::InvalidConfig { field: "expected_audience" });
+    }
+    session.require_audience(expected_audience)?;
+    let response = send_json_request(transport, TzapAuthHttpMethod::Get, account_base_url, CURRENT_USER_PATH, Some(session.access_token.clone()), None)?;
     let response = require_success(response, |status_code, _| TzapAuthError::HttpStatus { status_code })?;
     TzapCurrentUser::from_json_bytes(&response.body)
 }
@@ -823,10 +851,11 @@ fn is_pkce_unreserved(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTH_HANDOFF_LIFETIME_SECONDS, InMemoryTzapSessionStore, LOGIN_TZAP_BASE_URL, PKCE_METHOD_S256, SESSION_AUDIENCE_SIGN_TZAP, SIGN_TZAP_BASE_URL,
-        TzapAuthCancellation, TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse, TzapAuthHttpTransport, TzapAuthRequestOptions,
-        TzapBearerToken, TzapHostedAuthCallback, TzapHostedAuthEnvironment, TzapHostedAuthLaunchConfig, TzapOAuthStateTracker, TzapPendingAuthState,
-        TzapPkcePair, TzapSessionRecord, TzapSessionStore, complete_hosted_auth_handoff, fetch_current_user, pkce_s256_challenge, validate_pkce_verifier,
+        AUTH_HANDOFF_LIFETIME_SECONDS, InMemoryTzapSessionStore, LOGIN_TZAP_BASE_URL, PKCE_METHOD_S256, SESSION_AUDIENCE_LOGIN_TZAP,
+        SESSION_AUDIENCE_SIGN_TZAP, SIGN_TZAP_BASE_URL, TzapAuthCancellation, TzapAuthError, TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpResponse,
+        TzapAuthHttpTransport, TzapAuthRequestOptions, TzapBearerToken, TzapHostedAuthCallback, TzapHostedAuthEnvironment, TzapHostedAuthLaunchConfig,
+        TzapOAuthStateTracker, TzapPendingAuthState, TzapPkcePair, TzapSessionRecord, TzapSessionStore, complete_hosted_auth_handoff,
+        complete_hosted_auth_handoff_for_audience, fetch_current_user, fetch_current_user_for_audience, pkce_s256_challenge, validate_pkce_verifier,
     };
     use crate::http_client::send_json_request_with_options;
     use crate::trust;
@@ -888,6 +917,17 @@ mod tests {
         assert!(url.contains("provider_id=github"));
         assert!(url.contains("org_id=org_123"));
         assert_eq!(config.account_url(), "https://account.tzap.org/account");
+    }
+
+    #[test]
+    fn hosted_auth_launch_url_supports_the_allow_listed_login_audience() {
+        let pending = pending_auth_state();
+        let mut config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Prod, "zmanager-desktop", pending.redirect_uri.clone());
+        config.requested_audience = SESSION_AUDIENCE_LOGIN_TZAP.to_owned();
+
+        let url = config.launch_url(&pending).unwrap();
+
+        assert!(url.contains("audience=login.tzap.org"));
     }
 
     #[test]
@@ -957,6 +997,24 @@ mod tests {
         assert_eq!(session.identity_assurance, trust::TzapIdentityAssurance::OauthVerifiedEmail);
         assert_eq!(session.selected_org_id.as_deref(), Some("org_123"));
         assert_eq!(session.login_session_id.as_deref(), Some("login_session_123"));
+        assert_eq!(store.load_session("default"), Some(session));
+    }
+
+    #[test]
+    fn hosted_auth_handoff_accepts_the_selected_login_audience() {
+        let pending = pending_auth_state();
+        let mut tracker = TzapOAuthStateTracker::new();
+        tracker.insert_pending(pending.clone()).unwrap();
+        let mut store = InMemoryTzapSessionStore::new();
+        let mut relay = relay_success_body();
+        let mut relay_json: serde_json::Value = serde_json::from_slice(&relay).unwrap();
+        relay_json["session"]["audience"] = serde_json::Value::String(SESSION_AUDIENCE_LOGIN_TZAP.to_owned());
+        relay = serde_json::to_vec(&relay_json).unwrap();
+        let callback = hosted_auth_callback(&pending, relay);
+
+        let session = complete_hosted_auth_handoff_for_audience(&mut tracker, &mut store, "default", &callback, 101, SESSION_AUDIENCE_LOGIN_TZAP).unwrap();
+
+        assert_eq!(session.audience, SESSION_AUDIENCE_LOGIN_TZAP);
         assert_eq!(store.load_session("default"), Some(session));
     }
 
@@ -1079,6 +1137,11 @@ mod tests {
         assert_eq!(current_user.display_name, "Ada Lovelace");
         assert_eq!(current_user.selected_org_id.as_deref(), Some("org_123"));
         assert_eq!(format!("{:?}", transport.last_request().bearer_token.as_ref().unwrap()), "TzapBearerToken(<redacted>)");
+
+        let mut login_session = session.clone();
+        login_session.audience = SESSION_AUDIENCE_LOGIN_TZAP.to_owned();
+        let login_user = fetch_current_user_for_audience(&transport, SIGN_TZAP_BASE_URL, &login_session, SESSION_AUDIENCE_LOGIN_TZAP).unwrap();
+        assert_eq!(login_user.selected_org_id.as_deref(), Some("org_123"));
     }
 
     fn pending_auth_state() -> TzapPendingAuthState {

@@ -68,6 +68,11 @@ pub enum TzapRetirementCompletion {
 pub struct TzapRetirementReport {
     pub completion: TzapRetirementCompletion,
     pub attempted_sign_device_ids: Vec<String>,
+    /// Devices whose server-side revocation completed during this attempt.
+    /// This is intentionally separate from `completion`: a mixed personal /
+    /// organization retirement can complete one audience while waiting for a
+    /// second audience or approval.
+    pub completed_sign_device_ids: Vec<String>,
     pub incomplete_reasons: Vec<String>,
 }
 
@@ -359,17 +364,21 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let inventory = store.load_inventory(account_key)?;
         let sign_device_ids = inventory.active_personal_sign_device_ids().into_iter().map(ToOwned::to_owned).collect::<Vec<_>>();
+        let mut completed_sign_device_ids = Vec::new();
         let mut incomplete_reasons = Vec::new();
         for sign_device_id in &sign_device_ids {
             let path = format!("{SIGN_DEVICE_REVOKE_PATH_PREFIX}{sign_device_id}/revoke");
             let response = self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
-            if !matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
+            if matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
+                completed_sign_device_ids.push(sign_device_id.clone());
+            } else {
                 incomplete_reasons.push(sign_device_id.clone());
             }
         }
         Ok(TzapRetirementReport {
             completion: if incomplete_reasons.is_empty() { TzapRetirementCompletion::Complete } else { TzapRetirementCompletion::Incomplete },
             attempted_sign_device_ids: sign_device_ids,
+            completed_sign_device_ids,
             incomplete_reasons,
         })
     }
@@ -383,6 +392,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         session.require_audience(SESSION_AUDIENCE_LOGIN_TZAP)?;
         let inventory = store.load_inventory(account_key)?;
         let routes = inventory.active_organization_device_retirements();
+        let mut completed_sign_device_ids = Vec::new();
         let mut incomplete_reasons = Vec::new();
         for route in &routes {
             let lookup = self.lookup_organization_device(session, route)?;
@@ -390,7 +400,9 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 OrganizationDeviceLookup::Found(login_device_id) => {
                     let path = format!("{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices/{login_device_id}/revoke", route.org_id);
                     let response = self.send(TzapAuthHttpMethod::Post, &self.login_base_url, &path, Some(session.access_token.clone()), None)?;
-                    if !matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
+                    if matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
+                        completed_sign_device_ids.push(route.sign_device_id.clone());
+                    } else {
                         incomplete_reasons.push(route.sign_device_id.clone());
                     }
                 }
@@ -400,6 +412,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         Ok(TzapRetirementReport {
             completion: if incomplete_reasons.is_empty() { TzapRetirementCompletion::Complete } else { TzapRetirementCompletion::Incomplete },
             attempted_sign_device_ids: routes.into_iter().map(|route| route.sign_device_id).collect(),
+            completed_sign_device_ids,
             incomplete_reasons,
         })
     }
@@ -708,9 +721,9 @@ fn parse_renewal_barriers(bytes: &[u8]) -> Result<(), TzapCertificateLifecycleEr
 fn is_reconcilable_renewal_failure(error: &TzapCertificateLifecycleError) -> bool {
     match error {
         TzapCertificateLifecycleError::Auth(TzapAuthError::Transport { .. }) => true,
-        TzapCertificateLifecycleError::Auth(TzapAuthError::HttpStatus { status_code }) => *status_code != 401,
-        TzapCertificateLifecycleError::HttpStatus { status_code } => *status_code != 401,
-        TzapCertificateLifecycleError::Enrollment(TzapEnrollmentError::HttpStatus { status_code, .. }) => *status_code != 401,
+        TzapCertificateLifecycleError::Auth(TzapAuthError::HttpStatus { status_code })
+        | TzapCertificateLifecycleError::HttpStatus { status_code }
+        | TzapCertificateLifecycleError::Enrollment(TzapEnrollmentError::HttpStatus { status_code, .. }) => *status_code != 401,
         _ => false,
     }
 }
@@ -1033,6 +1046,32 @@ mod tests {
         let device_report = client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
         assert_eq!(device_report.completion, TzapRetirementCompletion::Incomplete);
         assert_eq!(device_report.attempted_sign_device_ids, vec!["sign-device-old"]);
+        assert!(device_report.completed_sign_device_ids.is_empty());
+    }
+
+    #[test]
+    fn personal_retirement_reports_each_server_confirmed_device_for_partial_runs() {
+        let fixture = LifecycleFixture::new();
+        let transport = FakeLifecycleTransport::new(vec![
+            TzapAuthHttpResponse { status_code: 200, body: json!({"result": "already_revoked"}).to_string().into_bytes(), headers: Vec::new() },
+            TzapAuthHttpResponse { status_code: 202, body: json!({"result": "revocation_pending_sync"}).to_string().into_bytes(), headers: Vec::new() },
+        ]);
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
+        let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
+        let mut inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+        let mut second = inventory.enrolled_certificates[0].clone();
+        second.certificate_id = "cert_second".to_owned();
+        second.certificate_sha256 = trust::format_certificate_sha256(&[0x06; 32]);
+        second.sign_device_id = "sign-device-second".to_owned();
+        inventory.enrolled_certificates.push(second);
+        store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
+
+        let report = client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+
+        assert_eq!(report.completion, TzapRetirementCompletion::Incomplete);
+        assert_eq!(report.attempted_sign_device_ids, vec!["sign-device-old", "sign-device-second"]);
+        assert_eq!(report.completed_sign_device_ids, vec!["sign-device-old"]);
+        assert_eq!(report.incomplete_reasons, vec!["sign-device-second"]);
     }
 
     #[test]
@@ -1084,6 +1123,7 @@ mod tests {
 
             let report = client.retire_organization_devices(&store, &fixture.login_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
             assert_eq!(report.completion, TzapRetirementCompletion::Incomplete);
+            assert!(report.completed_sign_device_ids.is_empty());
             let urls = transport.requests().into_iter().map(|request| request.url).collect::<Vec<_>>();
             assert_eq!(urls.len(), 1);
             assert!(urls[0].starts_with("https://login.tzap.org/v1/orgs/org_123/devices?sign_device_id=sign-device-old"));

@@ -63,6 +63,7 @@ type ServiceIdentityStore = NativeTzapLocalIdentityStore;
 #[cfg(not(feature = "keyring"))]
 type ServiceIdentityStore = FileTzapLocalIdentityStore;
 
+#[allow(clippy::unnecessary_wraps)]
 fn new_identity_store(state_dir: &Path, account_key: &str) -> Result<ServiceIdentityStore, String> {
     #[cfg(feature = "keyring")]
     {
@@ -707,6 +708,10 @@ pub fn tzap_auth_login_json(request_json: &str) -> String {
         let redirect_uri = request_string(&request, "redirect_uri")?.unwrap_or_else(|| DEFAULT_TZAP_REDIRECT_URI.into());
         let provider_id = request_string(&request, "provider_id")?.unwrap_or_else(|| DEFAULT_TZAP_PROVIDER_ID.into());
         let now_unix_seconds = request_u64(&request, "now_unix_seconds")?.unwrap_or_else(current_unix_seconds);
+        let requested_audience = request_string(&request, "audience")?.unwrap_or_else(|| crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
+        if !matches!(requested_audience.as_str(), crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
+            return Err("unsupported hosted session audience".to_owned());
+        }
 
         let mut tracker = crate::auth_client::TzapOAuthStateTracker::new();
         let pending = tracker.begin(provider_id, redirect_uri.clone(), now_unix_seconds);
@@ -719,6 +724,7 @@ pub fn tzap_auth_login_json(request_json: &str) -> String {
             config.hosted_account_base_url = account_base_url;
         }
         config.selected_org_id = request_string(&request, "org_id")?;
+        config.requested_audience = requested_audience;
         // Persist the login metadata too (CR-113): the callback's
         // handoff-code exchange needs `client_id`/`auth_base_url` without
         // the caller repeating the login options.
@@ -743,40 +749,35 @@ pub fn tzap_auth_callback_json(request_json: &str) -> String {
         let pending = load_pending_auth(&context.state_dir)?;
         let state = required_request_string(&request, "state")?;
         let redirect_uri = request_string(&request, "redirect_uri")?.unwrap_or_else(|| DEFAULT_TZAP_REDIRECT_URI.into());
-        let relay_body = if let Some(relay_body) = request_string(&request, "relay_body")? {
-            relay_body.into_bytes()
-        } else {
-            #[cfg(feature = "reqwest-transport")]
-            {
-                let handoff_code = required_request_string(&request, "handoff_code")?;
-                let metadata = load_pending_auth_metadata(&context.state_dir);
-                let auth_base_url = request_string(&request, "auth_base_url")?
-                    .or(metadata.auth_base_url)
-                    .ok_or_else(|| "missing auth_base_url for handoff exchange".to_owned())?;
-                let client_id = request_string(&request, "client_id")?.or(metadata.client_id).unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
-                crate::reqwest_transport::exchange_handoff_code(&auth_base_url, &client_id, &redirect_uri, &state, &pending.pkce.verifier, &handoff_code)?
-            }
-            #[cfg(not(feature = "reqwest-transport"))]
-            {
-                return Err("handoff-code exchange is unavailable in this build".to_owned());
-            }
-        };
+        if request.get("relay_body").is_some() {
+            return Err("relay_body is not supported; use handoff_code".to_owned());
+        }
+        let session_handoff_payload = hosted_auth_session_handoff_payload(&request, &context.state_dir, &pending, &redirect_uri, &state)?;
         let callback = crate::auth_client::TzapHostedAuthCallback {
             state,
             redirect_uri,
             pkce_verifier: pending.pkce.verifier.clone(),
             callback_url: request_string(&request, "callback_url")?,
-            relay_body,
+            relay_body: session_handoff_payload,
         };
         let mut tracker = crate::auth_client::TzapOAuthStateTracker::new();
         tracker.insert_pending(pending).map_err(|error| error.to_string())?;
         let mut session_store = TzapFfiSessionStore::new(&context.state_dir);
-        let session = crate::auth_client::complete_hosted_auth_handoff(
+        #[cfg(feature = "reqwest-transport")]
+        let requested_audience =
+            load_pending_auth_metadata(&context.state_dir).requested_audience.unwrap_or_else(|| crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
+        #[cfg(not(feature = "reqwest-transport"))]
+        let requested_audience = crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned();
+        if !matches!(requested_audience.as_str(), crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
+            return Err("unsupported hosted session audience".to_owned());
+        }
+        let session = crate::auth_client::complete_hosted_auth_handoff_for_audience(
             &mut tracker,
             &mut session_store,
             &context.account_key,
             &callback,
             request_u64(&request, "now_unix_seconds")?.unwrap_or_else(current_unix_seconds),
+            &requested_audience,
         )
         .map_err(|error| error.to_string())?;
         clear_pending_auth(&context.state_dir).map_err(|error| error.to_string())?;
@@ -786,6 +787,45 @@ pub fn tzap_auth_callback_json(request_json: &str) -> String {
             "session": session_summary_json(&session),
         }))
     })
+}
+
+#[cfg(feature = "reqwest-transport")]
+fn hosted_auth_session_handoff_payload(
+    request: &Value,
+    state_dir: &Path,
+    pending: &crate::auth_client::TzapPendingAuthState,
+    redirect_uri: &str,
+    state: &str,
+) -> Result<Vec<u8>, String> {
+    let handoff_code = required_request_string(request, "handoff_code")?;
+    let metadata = load_pending_auth_metadata(state_dir);
+    let auth_base_url =
+        request_string(request, "auth_base_url")?.or(metadata.auth_base_url).ok_or_else(|| "missing auth_base_url for handoff exchange".to_owned())?;
+    let client_id = request_string(request, "client_id")?.or(metadata.client_id).unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
+    let requested_audience = metadata.requested_audience.as_deref().unwrap_or(crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP);
+    if !matches!(requested_audience, crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
+        return Err("unsupported hosted session audience".to_owned());
+    }
+    crate::reqwest_transport::exchange_handoff_code_for_audience(
+        &auth_base_url,
+        &client_id,
+        redirect_uri,
+        state,
+        &pending.pkce.verifier,
+        &handoff_code,
+        requested_audience,
+    )
+}
+
+#[cfg(not(feature = "reqwest-transport"))]
+fn hosted_auth_session_handoff_payload(
+    _request: &Value,
+    _state_dir: &Path,
+    _pending: &crate::auth_client::TzapPendingAuthState,
+    _redirect_uri: &str,
+    _state: &str,
+) -> Result<Vec<u8>, String> {
+    Err("handoff-code exchange is unavailable in this build".to_owned())
 }
 
 #[must_use]
@@ -1403,6 +1443,49 @@ mod tests {
 
         let account_url_res: Value = serde_json::from_str(&tzap_auth_account_url_json(&req.to_string())).unwrap();
         assert_eq!(account_url_res["ok"], true);
+
+        let login_request = json!({
+            "state_dir": state_dir,
+            "account_key": "test_acc_login",
+            "audience": crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP,
+        });
+        let login_response: Value = serde_json::from_str(&tzap_auth_login_json(&login_request.to_string())).unwrap();
+        assert_eq!(login_response["ok"], true);
+        assert!(login_response["launch_url"].as_str().unwrap().contains("audience=login.tzap.org"));
+
+        let invalid_audience_request = json!({
+            "state_dir": state_dir,
+            "account_key": "test_acc_invalid_audience",
+            "audience": "unexpected.example",
+        });
+        let invalid_audience_response: Value = serde_json::from_str(&tzap_auth_login_json(&invalid_audience_request.to_string())).unwrap();
+        assert_eq!(invalid_audience_response["ok"], false);
+        assert!(invalid_audience_response["message"].as_str().unwrap().contains("unsupported hosted session audience"));
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn hosted_auth_callback_rejects_legacy_relay_body_input() {
+        let temp = test_temp_dir("auth-relay-rejection");
+        let state_dir = temp.display().to_string();
+        let begin_request = json!({
+            "state_dir": state_dir,
+            "account_key": "test_acc",
+            "client_id": "test-client",
+            "redirect_uri": "tzap://auth/callback",
+        });
+        let begin_response: Value = serde_json::from_str(&tzap_auth_login_json(&begin_request.to_string())).unwrap();
+        assert_eq!(begin_response["ok"], true);
+
+        let callback_request = json!({
+            "state_dir": state_dir,
+            "account_key": "test_acc",
+            "state": begin_response["state"],
+            "relay_body": "{\"status\":\"ok\"}",
+        });
+        let callback_response: Value = serde_json::from_str(&tzap_auth_callback_json(&callback_request.to_string())).unwrap();
+        assert_eq!(callback_response["ok"], false);
+        assert!(callback_response["message"].as_str().unwrap().contains("relay_body is not supported"));
         let _ = fs::remove_dir_all(temp);
     }
 }

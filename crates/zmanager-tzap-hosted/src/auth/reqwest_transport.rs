@@ -91,9 +91,9 @@ pub fn fetch_trust_root_pem(service_base_url: &str) -> Result<String, String> {
     Ok(pem)
 }
 
-/// Exchanges the one-time callback code for the relay body consumed by the
-/// existing Rust session handoff verifier. The code and resulting session
-/// token never leave this function as a loggable return value.
+/// Exchanges the one-time callback code for a Rust-internal serialized session
+/// handoff envelope. The code and resulting session token never leave this
+/// function as a loggable return value or enter the callback URL.
 pub fn exchange_handoff_code(
     auth_base_url: &str,
     client_id: &str,
@@ -102,13 +102,39 @@ pub fn exchange_handoff_code(
     pkce_verifier: &str,
     handoff_code: &str,
 ) -> Result<Vec<u8>, String> {
+    exchange_handoff_code_for_audience(
+        auth_base_url,
+        client_id,
+        redirect_uri,
+        state,
+        pkce_verifier,
+        handoff_code,
+        crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP,
+    )
+}
+
+/// Exchanges a handoff code for a specific, server-defined session audience.
+/// The caller must use one of the audiences supported by the product flow;
+/// arbitrary audience strings must never be accepted from the callback.
+pub fn exchange_handoff_code_for_audience(
+    auth_base_url: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    pkce_verifier: &str,
+    handoff_code: &str,
+    required_audience: &str,
+) -> Result<Vec<u8>, String> {
+    if !matches!(required_audience, crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
+        return Err("unsupported hosted session audience".to_owned());
+    }
     let body = json!({
         "handoff_code": handoff_code,
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "state": state,
         "code_verifier": pkce_verifier,
-        "required_audience": crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP,
+        "required_audience": required_audience,
     });
     let response = send_json_request(&ReqwestTransport, TzapAuthHttpMethod::Post, auth_base_url, "/auth/session/exchange", None::<TzapBearerToken>, Some(body))
         .map_err(|error| error.to_string())?;

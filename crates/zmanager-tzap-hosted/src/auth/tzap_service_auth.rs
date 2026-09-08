@@ -180,6 +180,7 @@ pub fn save_pending_auth(
             "created_at_unix_seconds": pending.created_at_unix_seconds,
             "client_id": config.client_id,
             "auth_base_url": config.hosted_auth_base_url,
+            "requested_audience": config.requested_audience,
         });
         let bytes = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
         store
@@ -200,6 +201,7 @@ pub fn save_pending_auth(
                 "created_at_unix_seconds": pending.created_at_unix_seconds,
                 "client_id": config.client_id,
                 "auth_base_url": config.hosted_auth_base_url,
+                "requested_audience": config.requested_audience,
             }),
         )
     }
@@ -209,6 +211,7 @@ pub fn save_pending_auth(
 pub struct TzapPendingAuthMetadata {
     pub client_id: Option<String>,
     pub auth_base_url: Option<String>,
+    pub requested_audience: Option<String>,
 }
 
 #[must_use]
@@ -219,6 +222,7 @@ pub fn load_pending_auth_metadata(state_dir: &Path) -> TzapPendingAuthMetadata {
     TzapPendingAuthMetadata {
         client_id: request_string(&value, "client_id").ok().flatten(),
         auth_base_url: request_string(&value, "auth_base_url").ok().flatten(),
+        requested_audience: request_string(&value, "requested_audience").ok().flatten(),
     }
 }
 

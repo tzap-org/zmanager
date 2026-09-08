@@ -197,7 +197,7 @@ pub fn classify_contact_status(
     status: Option<&TzapStatusResponse>,
     verifier_time_unix_seconds: i64,
 ) -> TzapContactStatusDecision {
-    if certificate_not_after_unix_seconds.is_some_and(|not_after| not_after <= verifier_time_unix_seconds.max(0) as u64) {
+    if certificate_not_after_unix_seconds.is_some_and(|not_after| not_after <= verifier_time_unix_seconds.max(0).cast_unsigned()) {
         return TzapContactStatusDecision {
             disposition: TzapContactStatusDisposition::Blocked,
             verification_state: "status_expired",
@@ -230,7 +230,7 @@ pub fn classify_contact_status(
             verification_state: "cryptographically_intact_offline",
             missing_status_caveat: true,
         },
-        TzapCertificateStatus::Revoked => {
+        TzapCertificateStatus::Revoked | TzapCertificateStatus::IssuerRevoked => {
             TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_revoked", missing_status_caveat: false }
         }
         TzapCertificateStatus::Suspended | TzapCertificateStatus::IssuerSuspended => TzapContactStatusDecision {
@@ -240,9 +240,6 @@ pub fn classify_contact_status(
         },
         TzapCertificateStatus::Expired | TzapCertificateStatus::NotYetValid => {
             TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_expired", missing_status_caveat: false }
-        }
-        TzapCertificateStatus::IssuerRevoked => {
-            TzapContactStatusDecision { disposition: TzapContactStatusDisposition::Blocked, verification_state: "status_revoked", missing_status_caveat: false }
         }
         TzapCertificateStatus::UnknownCertificate
         | TzapCertificateStatus::UnknownIssuer
