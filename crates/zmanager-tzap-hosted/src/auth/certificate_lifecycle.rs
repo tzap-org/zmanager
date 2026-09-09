@@ -89,6 +89,7 @@ pub enum TzapCertificateLifecycleError {
     RenewalPendingApproval,
     DeviceLinkagePending,
     DeviceLinkageConflict,
+    RevocationSyncFailed,
     ActiveCertificateExists,
     HttpStatus { status_code: u16 },
     Crypto(String),
@@ -112,6 +113,7 @@ impl fmt::Display for TzapCertificateLifecycleError {
             Self::RenewalPendingApproval => write!(f, "renewal is pending device approval"),
             Self::DeviceLinkagePending => write!(f, "device linkage is pending"),
             Self::DeviceLinkageConflict => write!(f, "device linkage conflict"),
+            Self::RevocationSyncFailed => write!(f, "device revocation synchronization failed"),
             Self::ActiveCertificateExists => write!(f, "an active certificate already exists for this device"),
             Self::HttpStatus { status_code } => {
                 write!(f, "certificate lifecycle HTTP request failed with status {status_code}")
@@ -340,7 +342,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
     ) -> Result<TzapRetirementCompletion, TzapCertificateLifecycleError> {
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let path = format!("/v1/certificates/{certificate_id}{CERTIFICATE_REVOKE_PATH_SUFFIX}");
-        let response = self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
+        let response = self.send_revocation(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
         let completion = revocation_completion(&response)?;
         if matches!(completion, TzapRetirementCompletion::Complete) {
             mark_certificate_revoked(store, account_key, certificate_id)?;
@@ -368,7 +370,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         let mut incomplete_reasons = Vec::new();
         for sign_device_id in &sign_device_ids {
             let path = format!("{SIGN_DEVICE_REVOKE_PATH_PREFIX}{sign_device_id}/revoke");
-            let response = self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
+            let response = self.send_revocation(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), None)?;
             if matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
                 completed_sign_device_ids.push(sign_device_id.clone());
             } else {
@@ -399,7 +401,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             match lookup {
                 OrganizationDeviceLookup::Found(login_device_id) => {
                     let path = format!("{LOGIN_ORG_DEVICES_PATH_PREFIX}{}/devices/{login_device_id}/revoke", route.org_id);
-                    let response = self.send(TzapAuthHttpMethod::Post, &self.login_base_url, &path, Some(session.access_token.clone()), None)?;
+                    let response = self.send_revocation(TzapAuthHttpMethod::Post, &self.login_base_url, &path, Some(session.access_token.clone()), None)?;
                     if matches!(revocation_completion(&response)?, TzapRetirementCompletion::Complete) {
                         completed_sign_device_ids.push(route.sign_device_id.clone());
                     } else {
@@ -555,6 +557,29 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         require_success(response, |status_code, response| {
             if body_error_code_from_bytes(&response.body).as_deref() == Some("active_certificate_exists") {
                 TzapCertificateLifecycleError::ActiveCertificateExists
+            } else {
+                TzapCertificateLifecycleError::HttpStatus { status_code }
+            }
+        })
+    }
+
+    fn send_revocation(
+        &self,
+        method: TzapAuthHttpMethod,
+        base_url: &str,
+        path: &str,
+        bearer_token: Option<TzapBearerToken>,
+        body: Option<Value>,
+    ) -> Result<TzapAuthHttpResponse, TzapCertificateLifecycleError> {
+        let response = self.send_raw(method, base_url, path, bearer_token, body)?;
+        if response.status_code == 409 && body_error_code_from_bytes(&response.body).as_deref() == Some("device_linkage_pending") {
+            return Ok(response);
+        }
+        require_success(response, |status_code, response| {
+            if body_error_code_from_bytes(&response.body).as_deref() == Some("revocation_sync_failed")
+                || body_status_from_bytes(&response.body).as_deref() == Some("revocation_sync_failed")
+            {
+                TzapCertificateLifecycleError::RevocationSyncFailed
             } else {
                 TzapCertificateLifecycleError::HttpStatus { status_code }
             }
@@ -770,7 +795,15 @@ fn install_reconciled_replacement(
 }
 
 fn body_error_code_from_bytes(bytes: &[u8]) -> Option<String> {
-    serde_json::from_slice::<Value>(bytes).ok()?.get("error")?.as_str().map(str::to_owned)
+    body_field_from_bytes(bytes, "error")
+}
+
+fn body_status_from_bytes(bytes: &[u8]) -> Option<String> {
+    body_field_from_bytes(bytes, "status")
+}
+
+fn body_field_from_bytes(bytes: &[u8], field: &str) -> Option<String> {
+    serde_json::from_slice::<Value>(bytes).ok()?.get(field)?.as_str().map(str::to_owned)
 }
 
 fn revocation_completion(response: &TzapAuthHttpResponse) -> Result<TzapRetirementCompletion, TzapCertificateLifecycleError> {
@@ -779,13 +812,23 @@ fn revocation_completion(response: &TzapAuthHttpResponse) -> Result<TzapRetireme
     }
     let value: Value = serde_json::from_slice(&response.body)?;
     let object = json_object::<TzapCertificateLifecycleError>(&value, "$")?;
-    let Some(result) = optional_string::<TzapCertificateLifecycleError>(object, "result")? else {
+    if response.status_code == 409 && optional_string::<TzapCertificateLifecycleError>(object, "error")?.as_deref() == Some("device_linkage_pending") {
+        return Ok(TzapRetirementCompletion::Incomplete);
+    }
+    let result = optional_string::<TzapCertificateLifecycleError>(object, "result")?;
+    let status = optional_string::<TzapCertificateLifecycleError>(object, "status")?;
+    let Some(result_or_status) = result.or(status) else {
         // A 2xx without a revocation result is not evidence of completion;
         // treating it as such would mark a possibly-failed revocation as
         // done (e.g. an error JSON the server returned with 200).
-        return Err(TzapCertificateLifecycleError::InvalidField { field: "result" });
+        return Err(TzapCertificateLifecycleError::InvalidField { field: "result or status" });
     };
-    Ok(if result == "revocation_pending_sync" { TzapRetirementCompletion::Incomplete } else { TzapRetirementCompletion::Complete })
+    match result_or_status.as_str() {
+        "already_revoked" | "revoked" | "complete" => Ok(TzapRetirementCompletion::Complete),
+        "revocation_pending_sync" => Ok(TzapRetirementCompletion::Incomplete),
+        "revocation_sync_failed" => Err(TzapCertificateLifecycleError::RevocationSyncFailed),
+        _ => Err(TzapCertificateLifecycleError::InvalidField { field: "result or status" }),
+    }
 }
 
 fn mark_certificate_revoked(store: &mut impl TzapLocalIdentityStore, account_key: &str, certificate_id: &str) -> Result<(), TzapCertificateLifecycleError> {
@@ -1075,7 +1118,55 @@ mod tests {
     }
 
     #[test]
-    fn revocation_completion_requires_a_result_field() {
+    fn personal_retirement_accepts_server_status_and_keeps_linkage_pending_incomplete() {
+        let fixture = LifecycleFixture::new();
+        let transport = FakeLifecycleTransport::new(vec![
+            TzapAuthHttpResponse {
+                status_code: 200,
+                body: json!({"sign_device_id": "sign-device-old", "status": "revoked", "revoked_at": "2026-09-09T00:00:00Z" }).to_string().into_bytes(),
+                headers: Vec::new(),
+            },
+            TzapAuthHttpResponse {
+                status_code: 409,
+                body: json!({"error": "device_linkage_pending", "denial_reason": "missing_login_user_device_id", "retryable": true }).to_string().into_bytes(),
+                headers: Vec::new(),
+            },
+        ]);
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
+        let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
+        let mut inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+        let mut second = inventory.enrolled_certificates[0].clone();
+        second.certificate_id = "cert_second".to_owned();
+        second.certificate_sha256 = trust::format_certificate_sha256(&[0x06; 32]);
+        second.sign_device_id = "sign-device-second".to_owned();
+        inventory.enrolled_certificates.push(second);
+        store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
+
+        let report = client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
+
+        assert_eq!(report.completion, TzapRetirementCompletion::Incomplete);
+        assert_eq!(report.completed_sign_device_ids, vec!["sign-device-old"]);
+        assert_eq!(report.incomplete_reasons, vec!["sign-device-second"]);
+    }
+
+    #[test]
+    fn revocation_sync_failure_is_reported_as_a_typed_error() {
+        let fixture = LifecycleFixture::new();
+        let transport = FakeLifecycleTransport::new(vec![TzapAuthHttpResponse {
+            status_code: 409,
+            body: json!({"status": "revocation_sync_failed"}).to_string().into_bytes(),
+            headers: Vec::new(),
+        }]);
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
+        let store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
+
+        let error = client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap_err();
+
+        assert!(matches!(error, TzapCertificateLifecycleError::RevocationSyncFailed));
+    }
+
+    #[test]
+    fn revocation_completion_requires_a_known_result_or_status_field() {
         // A 2xx with an unrelated body (e.g. an error JSON) must not count as
         // completion.
         let error = revocation_completion(&TzapAuthHttpResponse {
@@ -1084,7 +1175,7 @@ mod tests {
             headers: Vec::new(),
         })
         .unwrap_err();
-        assert!(matches!(error, TzapCertificateLifecycleError::InvalidField { field: "result" }));
+        assert!(matches!(error, TzapCertificateLifecycleError::InvalidField { field: "result or status" }));
 
         // Non-JSON bodies are rejected too.
         assert!(revocation_completion(&TzapAuthHttpResponse { status_code: 200, body: b"not json".to_vec(), headers: Vec::new() }).is_err());
@@ -1105,6 +1196,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(complete, TzapRetirementCompletion::Complete);
+
+        let server_complete =
+            revocation_completion(&TzapAuthHttpResponse { status_code: 200, body: json!({"status": "revoked"}).to_string().into_bytes(), headers: Vec::new() })
+                .unwrap();
+        assert_eq!(server_complete, TzapRetirementCompletion::Complete);
+
+        let linkage_pending = revocation_completion(&TzapAuthHttpResponse {
+            status_code: 409,
+            body: json!({"error": "device_linkage_pending"}).to_string().into_bytes(),
+            headers: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(linkage_pending, TzapRetirementCompletion::Incomplete);
     }
 
     #[test]
