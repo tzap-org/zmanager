@@ -12,9 +12,10 @@ path = "src/lib.rs"
 
 [dependencies]
 # Fork of CrossCopy/localsend-rs (MIT) — see NOTICE / THIRD_PARTY_NOTICES.md.
-# Pin the exact fork revision so desktop and CI consume the same reviewed
-# implementation instead of whichever sibling checkout happens to be present.
-localsend-rs = { git = "https://github.com/frankmanzhu/localsend-rs.git", rev = "08e337e", default-features = false, features = [
+# Active co-development intentionally resolves the sibling checkout so desktop,
+# mobile, and CLI builds exercise the patched working tree. CI and release
+# workflows check out the exact revision recorded in localsend-rs-rev.txt.
+localsend-rs = { path = "../../../localsend-rs", default-features = false, features = [
     "https",
 ] }
 serde = { version = "1", features = ["derive"] }
