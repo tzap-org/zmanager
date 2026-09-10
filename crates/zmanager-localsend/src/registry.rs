@@ -47,6 +47,10 @@ struct RegistryState {
     /// the announcing peer. Keep that lifecycle in the shared Rust registry,
     /// not in the Android/iOS shells.
     discovery: Option<localsend_rs::MulticastDiscovery>,
+    /// Confirmed peers keyed by LocalSend fingerprint. The official client
+    /// keeps this store alive across discovery sweeps and merges confirmations
+    /// from both directions (our probes and incoming `/register` events).
+    confirmed_devices: HashMap<String, DeviceInfo>,
     pending_requests: HashMap<String, PendingRequest>,
     next_request_id: u64,
     events: VecDeque<QueuedEvent>,
@@ -320,7 +324,10 @@ impl LocalSendRegistry {
         let queued = {
             let mut state = self.state.lock().expect("registry lock poisoned");
             match event {
-                ServerEvent::PeerRegistered(device) => QueuedEvent::PeerRegistered { device: device.into() },
+                ServerEvent::PeerRegistered(device) => {
+                    state.confirmed_devices.insert(device.fingerprint.clone(), device.clone());
+                    QueuedEvent::PeerRegistered { device: device.into() }
+                }
                 ServerEvent::TransferRequest(pending) => {
                     state.next_request_id = state.next_request_id.saturating_add(1);
                     let request_id = format!("transfer-{}-{}", std::process::id(), state.next_request_id);
@@ -517,7 +524,19 @@ impl LocalSendRegistry {
             }
 
             let devices = exclude_self_devices(guard.clone(), own_fingerprint.as_deref());
-            Ok(devices.into_iter().map(DiscoveredDevice::from).collect())
+            let mut state = self.state.lock().expect("registry lock poisoned");
+            for device in devices {
+                state.confirmed_devices.insert(device.fingerprint.clone(), device);
+            }
+
+            let persisted = state
+                .confirmed_devices
+                .values()
+                .cloned()
+                .filter(|device| own_fingerprint.as_deref() != Some(device.fingerprint.as_str()))
+                .map(DiscoveredDevice::from)
+                .collect();
+            Ok(persisted)
         })
     }
 
