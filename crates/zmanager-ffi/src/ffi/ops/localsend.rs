@@ -86,7 +86,13 @@ pub fn localsendSetIdentityDir(directory: String) -> Result<(), ZmanagerGuiError
 
 #[allow(non_snake_case)]
 pub fn localsendDiscover(request: DiscoverRequest) -> Result<Vec<DeviceInfoDto>, ZmanagerGuiError> {
-    let native = zmanager_localsend::DiscoverRequest { alias: request.alias, port: request.port, https: request.https, timeout_ms: request.timeout_ms };
+    let native = zmanager_localsend::DiscoverRequest {
+        alias: request.alias,
+        port: request.port,
+        https: request.https,
+        timeout_ms: request.timeout_ms,
+        interface_ips: request.interface_ips,
+    };
     zmanager_localsend::registry().discover(native).map(|devices| devices.into_iter().map(DeviceInfoDto::from).collect()).map_err(map_localsend_error)
 }
 

@@ -12,10 +12,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use localsend_rs::DeviceInfoBuilder;
 use localsend_rs::client::client::ProgressCallback;
 use localsend_rs::protocol::{DeviceInfo, FileId, Protocol};
 use localsend_rs::server::{LocalSendServer, PendingRequest, ServerEvent};
+use localsend_rs::{DeviceInfoBuilder, Discovery};
 use serde::{Deserialize, Serialize};
 use tokio::task::AbortHandle;
 
@@ -42,6 +42,11 @@ pub struct LocalSendRegistry {
 #[derive(Default)]
 struct RegistryState {
     server: Option<LocalSendServer>,
+    /// The official LocalSend app keeps discovery alive alongside its HTTP
+    /// server so a receiver can answer announcements and register back with
+    /// the announcing peer. Keep that lifecycle in the shared Rust registry,
+    /// not in the Android/iOS shells.
+    discovery: Option<localsend_rs::MulticastDiscovery>,
     pending_requests: HashMap<String, PendingRequest>,
     next_request_id: u64,
     events: VecDeque<QueuedEvent>,
@@ -220,6 +225,27 @@ impl LocalSendRegistry {
         // would try to rebind the port it just bound.
         let (server, mut events_rx) = self.runtime.block_on(builder.build())?;
 
+        let mut discovery = localsend_rs::MulticastDiscovery::new_with_device(server.device().clone());
+        if request.https {
+            discovery.set_client_certificate(self.client_certificate()?);
+        }
+        let discovery_started = if let Err(error) = self.runtime.block_on(discovery.start()) {
+            // Official LocalSend continues with HTTP discovery when multicast
+            // cannot be bound, e.g. after an OS network-socket reclaim.
+            discovery = localsend_rs::MulticastDiscovery::new_with_device(server.device().clone());
+            let _ = error;
+            false
+        } else {
+            true
+        };
+
+        if discovery_started {
+            let discovery_for_announce = discovery.clone();
+            self.runtime.spawn(async move {
+                let _ = discovery_for_announce.announce_presence().await;
+            });
+        }
+
         let registry_for_pump = registry();
         self.runtime.spawn(async move {
             while let Some(event) = events_rx.recv().await {
@@ -229,6 +255,7 @@ impl LocalSendRegistry {
 
         let mut state = self.state.lock().expect("registry lock poisoned");
         state.server = Some(server);
+        state.discovery = Some(discovery);
         Ok(())
     }
 
@@ -243,14 +270,17 @@ impl LocalSendRegistry {
     ///
     /// Panics if the registry state mutex is poisoned.
     pub fn stop_receiver(&self) -> BridgeResult<()> {
-        let server = {
+        let (mut discovery, server) = {
             let mut state = self.state.lock().expect("registry lock poisoned");
             state.pending_requests.clear();
-            state.server.take()
+            (state.discovery.take(), state.server.take())
         };
         let Some(mut server) = server else {
             return Err(LocalSendBridgeError::NoReceiverRunning);
         };
+        if let Some(discovery) = discovery.as_mut() {
+            discovery.stop();
+        }
         self.runtime.block_on(server.stop());
         Ok(())
     }
@@ -400,6 +430,15 @@ impl LocalSendRegistry {
     pub fn discover(&self, request: DiscoverRequest) -> BridgeResult<Vec<DiscoveredDevice>> {
         let own_fingerprint = self.state.lock().expect("registry lock poisoned").server.as_ref().map(|server| server.device().fingerprint.clone());
         let client_certificate = request.https.then(|| self.client_certificate()).transpose()?;
+        let local_ips = if request.interface_ips.is_empty() {
+            localsend_rs::local_ipv4_addresses()?
+        } else {
+            request
+                .interface_ips
+                .iter()
+                .map(|ip| ip.parse().map_err(|error| LocalSendBridgeError::InvalidRequest(format!("invalid LocalSend interface IP {ip}: {error}"))))
+                .collect::<BridgeResult<Vec<std::net::Ipv4Addr>>>()?
+        };
 
         self.runtime.block_on(async move {
             use localsend_rs::{Discovery, HttpDiscovery, MulticastDiscovery};
@@ -420,22 +459,30 @@ impl LocalSendRegistry {
                 }
             });
 
-            // LocalSend's multicast announcement is the fast path, but it is
-            // routinely unavailable across VM/NAT boundaries and on networks
-            // that suppress multicast. The protocol also defines the HTTP
-            // `/info` subnet scan for exactly that case. Run both paths in the
-            // same bounded discovery request so the UI does not depend on a
-            // particular network transport.
+            // LocalSend's multicast announcement is the fast path. The
+            // official app treats multicast as optional: iOS can lose or
+            // reject a socket while HTTP discovery remains usable. Start it
+            // first, but never let a multicast bind failure suppress the
+            // register-first fallback.
+            let multicast_started = discovery.start().await.is_ok();
             let multicast = async {
-                discovery.start().await?;
-                discovery.announce_presence().await?;
-                tokio::time::sleep(std::time::Duration::from_millis(request.timeout_ms)).await;
+                if multicast_started {
+                    let _ = discovery.announce_presence().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(request.timeout_ms)).await;
+                }
                 discovery.stop();
-                Ok::<(), localsend_rs::error::LocalSendError>(())
             };
 
             let http = async {
-                let local_ips = localsend_rs::local_ipv4_addresses()?;
+                if multicast_started {
+                    // Match the official staged discovery grace period: give
+                    // multicast/known-peer confirmation a chance before
+                    // opening a full subnet sweep.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if !found.lock().expect("discovery result lock poisoned").is_empty() {
+                        return Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(Vec::new());
+                    }
+                }
                 let mut scans = Vec::with_capacity(local_ips.len());
                 for local_ip in local_ips {
                     let scanner = match client_certificate.as_ref() {
@@ -444,7 +491,7 @@ impl LocalSendRegistry {
                     };
                     let base_ip = local_ip.to_string();
                     let timeout = std::time::Duration::from_millis(request.timeout_ms);
-                    scans.push(tokio::spawn(async move { scanner.scan_subnet_within(&base_ip, timeout).await }));
+                    scans.push(tokio::spawn(async move { scanner.scan_subnet_register_within(&base_ip, timeout).await }));
                 }
 
                 let mut devices = Vec::new();
@@ -460,8 +507,7 @@ impl LocalSendRegistry {
                 Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(devices)
             };
 
-            let (multicast_result, http_result) = tokio::join!(multicast, http);
-            multicast_result?;
+            let (_, http_result) = tokio::join!(multicast, http);
 
             let mut guard = found.lock().expect("discovery result lock poisoned");
             for device in http_result? {
@@ -660,10 +706,12 @@ pub struct DiscoverRequest {
     pub https: bool,
     #[serde(default = "default_discover_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub interface_ips: Vec<String>,
 }
 
 fn default_discover_timeout_ms() -> u64 {
-    3_000
+    10_000
 }
 
 fn exclude_self_devices(devices: Vec<DeviceInfo>, own_fingerprint: Option<&str>) -> Vec<DeviceInfo> {

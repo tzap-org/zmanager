@@ -286,6 +286,7 @@ dictionary DiscoverRequest {
     u16 port;
     boolean https;
     u64 timeout_ms;
+    sequence<string> interface_ips;
 };
 
 dictionary DeviceInfoDto {

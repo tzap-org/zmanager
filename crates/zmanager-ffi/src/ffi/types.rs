@@ -257,6 +257,7 @@ pub struct DiscoverRequest {
     pub port: u16,
     pub https: bool,
     pub timeout_ms: u64,
+    pub interface_ips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
