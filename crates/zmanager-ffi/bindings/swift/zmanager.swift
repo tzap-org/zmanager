@@ -1088,14 +1088,16 @@ public struct DiscoverRequest {
     public var port: UInt16
     public var https: Bool
     public var timeoutMs: UInt64
+    public var interfaceIps: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(alias: String, port: UInt16, https: Bool, timeoutMs: UInt64) {
+    public init(alias: String, port: UInt16, https: Bool, timeoutMs: UInt64, interfaceIps: [String]) {
         self.alias = alias
         self.port = port
         self.https = https
         self.timeoutMs = timeoutMs
+        self.interfaceIps = interfaceIps
     }
 }
 
@@ -1118,6 +1120,9 @@ extension DiscoverRequest: Equatable, Hashable {
         if lhs.timeoutMs != rhs.timeoutMs {
             return false
         }
+        if lhs.interfaceIps != rhs.interfaceIps {
+            return false
+        }
         return true
     }
 
@@ -1126,6 +1131,7 @@ extension DiscoverRequest: Equatable, Hashable {
         hasher.combine(port)
         hasher.combine(https)
         hasher.combine(timeoutMs)
+        hasher.combine(interfaceIps)
     }
 }
 
@@ -1141,7 +1147,8 @@ public struct FfiConverterTypeDiscoverRequest: FfiConverterRustBuffer {
                 alias: FfiConverterString.read(from: &buf), 
                 port: FfiConverterUInt16.read(from: &buf), 
                 https: FfiConverterBool.read(from: &buf), 
-                timeoutMs: FfiConverterUInt64.read(from: &buf)
+                timeoutMs: FfiConverterUInt64.read(from: &buf), 
+                interfaceIps: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -1150,6 +1157,7 @@ public struct FfiConverterTypeDiscoverRequest: FfiConverterRustBuffer {
         FfiConverterUInt16.write(value.port, into: &buf)
         FfiConverterBool.write(value.https, into: &buf)
         FfiConverterUInt64.write(value.timeoutMs, into: &buf)
+        FfiConverterSequenceString.write(value.interfaceIps, into: &buf)
     }
 }
 

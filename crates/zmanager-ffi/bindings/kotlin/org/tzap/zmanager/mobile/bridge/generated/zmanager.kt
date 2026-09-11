@@ -1774,7 +1774,8 @@ data class DiscoverRequest (
     var `alias`: kotlin.String, 
     var `port`: kotlin.UShort, 
     var `https`: kotlin.Boolean, 
-    var `timeoutMs`: kotlin.ULong
+    var `timeoutMs`: kotlin.ULong, 
+    var `interfaceIps`: List<kotlin.String>
 ) {
     
     companion object
@@ -1790,6 +1791,7 @@ public object FfiConverterTypeDiscoverRequest: FfiConverterRustBuffer<DiscoverRe
             FfiConverterUShort.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterSequenceString.read(buf),
         )
     }
 
@@ -1797,7 +1799,8 @@ public object FfiConverterTypeDiscoverRequest: FfiConverterRustBuffer<DiscoverRe
             FfiConverterString.allocationSize(value.`alias`) +
             FfiConverterUShort.allocationSize(value.`port`) +
             FfiConverterBoolean.allocationSize(value.`https`) +
-            FfiConverterULong.allocationSize(value.`timeoutMs`)
+            FfiConverterULong.allocationSize(value.`timeoutMs`) +
+            FfiConverterSequenceString.allocationSize(value.`interfaceIps`)
     )
 
     override fun write(value: DiscoverRequest, buf: ByteBuffer) {
@@ -1805,6 +1808,7 @@ public object FfiConverterTypeDiscoverRequest: FfiConverterRustBuffer<DiscoverRe
             FfiConverterUShort.write(value.`port`, buf)
             FfiConverterBoolean.write(value.`https`, buf)
             FfiConverterULong.write(value.`timeoutMs`, buf)
+            FfiConverterSequenceString.write(value.`interfaceIps`, buf)
     }
 }
 
