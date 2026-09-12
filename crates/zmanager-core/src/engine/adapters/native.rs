@@ -2355,6 +2355,32 @@ impl NativeReadAdapter for RarListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
+    fn selected_extract_many(
+        &self,
+        archive: &NativeReadContext,
+        entry_ids: &[EntryId],
+        options: &mut SelectedExtractOptions<'_>,
+    ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
+        let path = archive.primary_path();
+        let mut retained = Vec::with_capacity(entry_ids.len());
+        for &entry_id in entry_ids {
+            retained.push(archive.retained_entry(entry_id)?);
+        }
+        let selectors =
+            retained.iter().map(|selector| rar_backend::RarEntrySelector { path: &selector.path, occurrence: selector.occurrence }).collect::<Vec<_>>();
+        let report = rar_backend::extract_rar_entries_by_path_occurrence(
+            path,
+            &options.destination,
+            options.policy.clone(),
+            archive.options().password.as_deref(),
+            &selectors,
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+        )
+        .map_err(|error| rar_error(path, &error))?;
+        Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
+    }
+
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;

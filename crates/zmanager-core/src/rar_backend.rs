@@ -3,7 +3,7 @@ use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
     normalize_archive_path, remove_destination_for_replace,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -287,6 +287,66 @@ pub(crate) fn extract_rar_entry_by_path_occurrence(
     })?;
     reject_large_dictionary(&entry)?;
     extract_rar_with_options(archive, destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context: None, entries: vec![entry] })
+}
+
+/// Selects one retained RAR entry by path and duplicate occurrence.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RarEntrySelector<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) occurrence: usize,
+}
+
+/// Extracts several retained RAR entries in a single pass.
+///
+/// RAR archives may be solid, in which case decoding one member requires
+/// decoding every member before it. Extracting a selection one entry at a time
+/// therefore repeats that work per entry; `UnRAR` can take the whole selection
+/// at once, so the archive is walked once regardless of how many entries are
+/// selected.
+///
+/// # Errors
+///
+/// Returns [`RarBackendError`] when `UnRAR` cannot read the archive, a selector
+/// names an entry the archive does not contain, an entry is unsafe, or
+/// filesystem writes fail.
+pub(crate) fn extract_rar_entries_by_path_occurrence(
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    password: Option<&str>,
+    selectors: &[RarEntrySelector<'_>],
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<RarExtractReport, RarBackendError> {
+    let archive = archive.as_ref();
+    let listing = zmanager_unrar::list_archive(archive, password)?;
+
+    // Group by path once rather than rescanning the listing per selector, so
+    // resolving a large selection stays linear in the archive size.
+    let mut by_path: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, entry) in listing.iter().enumerate() {
+        by_path.entry(entry.path.as_str()).or_default().push(index);
+    }
+
+    let mut indices = Vec::with_capacity(selectors.len());
+    for selector in selectors {
+        let index = by_path.get(selector.path).and_then(|matches| matches.get(selector.occurrence).copied()).ok_or_else(|| RarBackendError::Io {
+            path: archive.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::NotFound, "retained RAR entry is not present in this archive"),
+        })?;
+        indices.push(index);
+    }
+    // Extract in archive order so a solid stream is consumed front to back.
+    indices.sort_unstable();
+    indices.dedup();
+
+    let mut entries = Vec::with_capacity(indices.len());
+    for index in indices {
+        let entry = listing[index].clone();
+        reject_large_dictionary(&entry)?;
+        entries.push(entry);
+    }
+
+    extract_rar_with_options(archive, destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context: None, entries })
 }
 
 /// Copies exactly one regular RAR entry by its retained path and duplicate

@@ -1620,6 +1620,39 @@ fn engine_batch_selected_extract_executes_in_one_pass() {
     assert!(out_dir.join("third.txt").exists());
 }
 
+/// RAR archives may be solid, where decoding one member requires decoding
+/// every member before it. Selecting entries one at a time therefore repeats
+/// that work per entry, so the adapter must hand the whole selection to
+/// `UnRAR` in a single pass.
+#[test]
+fn engine_batch_selected_extract_covers_rar() {
+    let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.rar");
+    let temp = TestDir::new("engine-batch-selected-extract-rar");
+    let out_dir = temp.path("out");
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+
+    let readme = listing.entries.iter().find(|entry| entry.path.ends_with("README.txt")).expect("fixture has README.txt");
+    let nested = listing.entries.iter().find(|entry| entry.path.ends_with("nested/file.txt")).expect("fixture has nested/file.txt");
+    let skipped = listing
+        .entries
+        .iter()
+        .find(|entry| entry.kind == BrowserEntryKind::File && entry.id != readme.id && entry.id != nested.id)
+        .expect("fixture has a third regular file");
+    let skipped_path = skipped.path.clone();
+    let (readme_id, nested_id) = (readme.id, nested.id);
+
+    let mut selected_options = SelectedExtractOptions { destination: out_dir.clone(), ..Default::default() };
+    let report = handle.extract_selected_many(&[readme_id, nested_id], &mut selected_options).unwrap();
+
+    assert_eq!(report.written_entries, 2, "exactly the selected entries are written");
+    assert_eq!(fs::read_to_string(out_dir.join("payload/README.txt")).unwrap(), "ZManager fixture payload\n");
+    assert_eq!(fs::read_to_string(out_dir.join("payload/nested/file.txt")).unwrap(), "nested fixture file\n");
+    assert!(!out_dir.join(&skipped_path).exists(), "unselected entry {skipped_path} must not be written");
+}
+
 #[test]
 fn engine_batch_selected_extract_covers_seven_z() {
     let temp = TestDir::new("engine-batch-selected-extract-7z");
