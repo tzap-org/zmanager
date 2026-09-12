@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use zmanager_core::safety::archive_pattern_matches;
+use zmanager_core::safety::{compile_patterns, compiled_pattern_matches_any};
 pub(crate) fn append_files_from(sources: &mut Vec<PathBuf>, files_from: &[String], null_paths: bool) -> Result<(), String> {
     for list in files_from {
         if list == "-" {
@@ -75,13 +75,15 @@ pub(crate) fn apply_manifest_filters(
         exclude_patterns.extend(contents.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).map(ToOwned::to_owned));
     }
 
+    let compiled_includes = compile_patterns(includes);
+    let compiled_excludes = compile_patterns(&exclude_patterns);
     manifest.entries.retain(|entry| {
         let path = &entry.archive_path;
-        let explicitly_included = !includes.is_empty() && includes.iter().any(|pattern| archive_pattern_matches(pattern, path));
-        let matches_include = includes.is_empty() || explicitly_included;
-        let matches_exclude = exclude_patterns.iter().any(|pattern| archive_pattern_matches(pattern, path));
+        // An explicit include also overrides the hidden-file filter, so it is
+        // tracked separately from the shared include/exclude rule.
+        let explicitly_included = !compiled_includes.is_empty() && compiled_includes.iter().any(|pattern| pattern.matches(path));
         let hidden_excluded = exclude_hidden && archive_path_has_hidden_component(path) && !explicitly_included;
-        matches_include && !matches_exclude && !hidden_excluded
+        compiled_pattern_matches_any(path, &compiled_includes, &compiled_excludes) && !hidden_excluded
     });
     manifest.total_bytes =
         manifest.entries.iter().filter(|entry| entry.file_type == zmanager_core::manifest::ManifestFileType::File).map(|entry| entry.size).sum();

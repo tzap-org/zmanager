@@ -335,9 +335,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
     }
 
     fn is_path_selected(&self, path: &str) -> bool {
-        let matches_include = self.compiled_includes.is_empty() || self.compiled_includes.iter().any(|p| p.matches(path));
-        let matches_exclude = self.compiled_excludes.iter().any(|p| p.matches(path));
-        matches_include && !matches_exclude
+        compiled_pattern_matches_any(path, &self.compiled_includes, &self.compiled_excludes)
     }
 
     /// Validates one archive entry before extraction.
@@ -924,14 +922,38 @@ impl CompiledPattern {
     }
 }
 
-/// Returns whether an archive path is included and not excluded by the
-/// caller's pattern lists.
+/// Compiles a pattern list once for repeated matching.
+///
+/// Compiling allocates, so callers that test many paths against the same list
+/// should compile once and reuse the result rather than calling
+/// [`archive_pattern_matches_any`] per path.
 #[must_use]
-pub fn archive_pattern_matches_any(path: &str, includes: &[String], excludes: &[String]) -> bool {
-    let matches_include = includes.is_empty() || includes.iter().any(|pattern| archive_pattern_matches(pattern, path));
-    let matches_exclude = excludes.iter().any(|pattern| archive_pattern_matches(pattern, path));
+pub fn compile_patterns(patterns: &[String]) -> Vec<CompiledPattern> {
+    patterns.iter().map(|pattern| CompiledPattern::new(pattern)).collect()
+}
+
+/// Returns whether an archive path is included and not excluded by
+/// pre-compiled pattern lists.
+///
+/// An empty include list includes everything; any exclude match wins over an
+/// include match. This is the single definition of include/exclude selection —
+/// [`archive_pattern_matches_any`] is the one-shot form of the same rule.
+#[must_use]
+pub fn compiled_pattern_matches_any(path: &str, includes: &[CompiledPattern], excludes: &[CompiledPattern]) -> bool {
+    let matches_include = includes.is_empty() || includes.iter().any(|pattern| pattern.matches(path));
+    let matches_exclude = excludes.iter().any(|pattern| pattern.matches(path));
 
     matches_include && !matches_exclude
+}
+
+/// Returns whether an archive path is included and not excluded by the
+/// caller's pattern lists.
+///
+/// This compiles both lists on every call. Use [`compile_patterns`] with
+/// [`compiled_pattern_matches_any`] when testing more than one path.
+#[must_use]
+pub fn archive_pattern_matches_any(path: &str, includes: &[String], excludes: &[String]) -> bool {
+    compiled_pattern_matches_any(path, &compile_patterns(includes), &compile_patterns(excludes))
 }
 
 #[must_use]
@@ -1036,7 +1058,8 @@ mod tests {
     use super::{
         ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionLimits, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner,
         FIRST_RENAME_INDEX, OverwriteConflict, OverwriteDecision, OverwritePolicy, OverwriteResolver, UnsafeFilePolicy, archive_entry_matches_selected,
-        archive_pattern_matches, deferred_link_dependency_order, next_available_destination_path_from, normalize_archive_path, prepare_destination_root,
+        archive_pattern_matches, archive_pattern_matches_any, compile_patterns, compiled_pattern_matches_any, deferred_link_dependency_order,
+        next_available_destination_path_from, normalize_archive_path, prepare_destination_root,
     };
     use crate::test_support::TestDir;
     use std::fs;
@@ -1407,6 +1430,46 @@ mod tests {
         let decision = planner.validate_entry(&entry).unwrap();
 
         assert!(matches!(decision, ExtractionDecision::Skip { .. }));
+    }
+
+    /// `compiled_pattern_matches_any` is the compile-once form of
+    /// `archive_pattern_matches_any`; the two must never disagree, or callers
+    /// that compile for speed would silently select a different entry set.
+    #[test]
+    fn compiled_and_one_shot_pattern_selection_agree() {
+        let pattern_lists: &[&[&str]] =
+            &[&[], &["*.rs"], &["src/**"], &["*.rs", "docs/*.md"], &["**/node_modules/**"], &["exact/path.txt"], &["dir/"], &["a?c.bin"], &["*"]];
+        let paths = [
+            "main.rs",
+            "src/lib.rs",
+            "src/deep/nested/mod.rs",
+            "docs/guide.md",
+            "exact/path.txt",
+            "dir/inside.txt",
+            "dir",
+            "abc.bin",
+            "abcd.bin",
+            "project\\windows\\style.rs",
+            "node_modules/pkg/index.js",
+            "app/node_modules/pkg/index.js",
+            "",
+        ];
+
+        for includes in pattern_lists {
+            for excludes in pattern_lists {
+                let includes: Vec<String> = includes.iter().map(|p| (*p).to_owned()).collect();
+                let excludes: Vec<String> = excludes.iter().map(|p| (*p).to_owned()).collect();
+                let compiled_includes = compile_patterns(&includes);
+                let compiled_excludes = compile_patterns(&excludes);
+                for path in paths {
+                    assert_eq!(
+                        archive_pattern_matches_any(path, &includes, &excludes),
+                        compiled_pattern_matches_any(path, &compiled_includes, &compiled_excludes),
+                        "include={includes:?} exclude={excludes:?} path={path:?}"
+                    );
+                }
+            }
+        }
     }
 
     fn file_entry(archive_path: &str) -> ExtractionEntry {

@@ -606,12 +606,14 @@ pub fn copy_selected_entries_to_writer(
     let format = handle.detected().format;
     let listing = handle.list().map_err(|source| ArchiveBrowserError::Engine { format: Some(format), source })?;
     let mut report = SelectedCopyReport::default();
+    let compiled_includes = crate::safety::compile_patterns(include_patterns);
+    let compiled_excludes = crate::safety::compile_patterns(exclude_patterns);
     let selected_entries: Vec<_> = listing
         .entries
         .iter()
         .filter(|entry| {
             matches!(entry.kind, BrowserEntryKind::File | BrowserEntryKind::FileCopy)
-                && crate::safety::archive_pattern_matches_any(&entry.path, include_patterns, exclude_patterns)
+                && crate::safety::compiled_pattern_matches_any(&entry.path, &compiled_includes, &compiled_excludes)
         })
         .collect();
     report.skipped_entries = listing.entries.len().saturating_sub(selected_entries.len());

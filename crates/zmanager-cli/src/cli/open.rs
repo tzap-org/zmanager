@@ -11,7 +11,7 @@ use crate::cli::usage::{
 use crate::output::{self, StyleRole};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use zmanager_core::safety::archive_pattern_matches;
+use zmanager_core::safety::{compile_patterns, compiled_pattern_matches_any};
 pub(crate) fn list_command(args: &[String], global: GlobalOptions) -> ExitCode {
     if wants_help(args) {
         print_help_stdout(LIST_HELP, &global);
@@ -320,7 +320,9 @@ fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(Str
     let selected_paths = if request.include.is_empty() && request.exclude.is_empty() {
         Vec::new()
     } else {
-        handle.list()?.entries.into_iter().filter(|entry| entry_selected(&entry.path, &request.include, &request.exclude)).map(|entry| entry.path).collect()
+        let includes = compile_patterns(&request.include);
+        let excludes = compile_patterns(&request.exclude);
+        handle.list()?.entries.into_iter().filter(|entry| compiled_pattern_matches_any(&entry.path, &includes, &excludes)).map(|entry| entry.path).collect()
     };
     let report = handle.test(&zmanager_core::engine::TestOptions {
         selected_paths,
@@ -575,12 +577,7 @@ fn list_entries_with_password(archive: &str, password: Option<&str>, recipient_k
 }
 
 fn filter_entries(entries: &mut Vec<GenericEntry>, includes: &[String], excludes: &[String]) {
-    entries.retain(|entry| entry_selected(&entry.name, includes, excludes));
-}
-
-pub(crate) fn entry_selected(path: &str, includes: &[String], excludes: &[String]) -> bool {
-    let matches_include = includes.is_empty() || includes.iter().any(|pattern| archive_pattern_matches(pattern, path));
-    let matches_exclude = excludes.iter().any(|pattern| archive_pattern_matches(pattern, path));
-
-    matches_include && !matches_exclude
+    let includes = compile_patterns(includes);
+    let excludes = compile_patterns(excludes);
+    entries.retain(|entry| compiled_pattern_matches_any(&entry.name, &includes, &excludes));
 }
