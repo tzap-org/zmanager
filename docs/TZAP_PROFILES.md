@@ -72,3 +72,33 @@ hosted commands under `zm auth` (`login`, `callback`, `status`, `forget`,
 entirely. See
 [`cli-command-structure-and-profiles-plan.md`](../implementation-docs/cli-command-structure-and-profiles-plan.md)
 for the full command tree and rationale.
+
+## Revocation is disabled in the CLI (2026-09-12)
+
+`zm tzap device revoke` and `zm tzap device retire` refuse with
+`revocation requires an MFA step-up that the CLI cannot perform` unless the crate is built with
+the `hosted-revocation` feature.
+
+The sign server requires a recent admin MFA step-up for the personal revoke paths
+(`POST /v1/certificates/{id}/revoke`, `POST /v1/devices/{id}/revoke`) so that a stolen session
+alone cannot destroy a user's certificates. The satisfaction is keyed on the **calling session**
+and lasts 15 minutes, so a step-up performed anywhere else cannot satisfy a CLI session. The CLI
+has no code prompt, so the request could only return 403. Revocation lives in the hosted console
+until a step-up flow exists here.
+
+`TzapCertificateLifecycleError::AdminMfaRequired` distinguishes that recoverable case from a flat
+authorization failure, so a future step-up flow can prompt and retry rather than reporting a
+generic error.
+
+### Device identity is not reproducible across a fresh install
+
+`enroll_or_renew_device_certificate` reuses a signing key by looking up a `label` in the local
+identity catalog. On desktop the private key is held in the OS keyring, but the reference that
+locates it (`TzapSecretRef::generate()`) is 24 random bytes and is deliberately non-discoverable:
+the only record of it lives in the catalog. Lose the catalog and the lookup misses, a fresh
+keypair is generated, and — because a device's server identity is its SPKI SHA-256 fingerprint —
+the server registers a **new device** while the old one stays active forever.
+
+The server already exposes `/v1/me/key-backup/{public_device_id}` and this crate already has
+`TzapBackupClient` support for it; no client currently uses it for signing keys. Wiring key backup
+into enrollment is the recovery path that does not weaken the non-discoverable reference.

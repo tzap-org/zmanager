@@ -59,6 +59,13 @@ pub(super) const AUTH_PENDING_FILE: &str = "auth-pending.json";
 #[cfg(feature = "tzap-online")]
 pub(super) const AUTH_SESSION_EXCHANGE_PATH: &str = "/auth/session/exchange";
 pub(super) const MISSING_TZAP_SESSION: &str = "no local TZAP session";
+/// The sign server requires a recent admin MFA step-up on the *calling session* before it will
+/// revoke a personal certificate or device, so that a stolen session alone cannot destroy a
+/// user's signing identities. The CLI has no way to satisfy that: there is no TOTP prompt here,
+/// and a step-up performed elsewhere is bound to a different session. Rather than emit an opaque
+/// 403, the revoke and retire commands say where the operation now lives.
+pub(super) const REVOCATION_REQUIRES_HOSTED_CONSOLE: &str =
+    "revocation requires an MFA step-up that the CLI cannot perform; revoke this device or certificate in the hosted console at https://staging.tzap.org/app";
 pub(super) const DEFAULT_TZAP_CERT_VALIDITY_SECONDS: u64 = 90 * 24 * 60 * 60;
 pub(super) const STAGING_ENROLLMENT_KEY_LABEL: &str = "Hosted TZAP enrollment signing key";
 

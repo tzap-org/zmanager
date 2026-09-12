@@ -90,6 +90,12 @@ pub enum TzapCertificateLifecycleError {
     DeviceLinkagePending,
     DeviceLinkageConflict,
     RevocationSyncFailed,
+    /// Revoking a personal certificate or device needs a fresh MFA step-up
+    /// (403 `admin_mfa_required`). The sign server began requiring this for the personal
+    /// revoke paths so that a stolen session cookie alone cannot destroy a user's
+    /// certificates; the organization revoke path has always required it. Callers should
+    /// drive a step-up and retry rather than reporting a generic failure.
+    AdminMfaRequired,
     ActiveCertificateExists,
     HttpStatus { status_code: u16 },
     Crypto(String),
@@ -114,6 +120,7 @@ impl fmt::Display for TzapCertificateLifecycleError {
             Self::DeviceLinkagePending => write!(f, "device linkage is pending"),
             Self::DeviceLinkageConflict => write!(f, "device linkage conflict"),
             Self::RevocationSyncFailed => write!(f, "device revocation synchronization failed"),
+            Self::AdminMfaRequired => write!(f, "MFA step-up is required to revoke"),
             Self::ActiveCertificateExists => write!(f, "an active certificate already exists for this device"),
             Self::HttpStatus { status_code } => {
                 write!(f, "certificate lifecycle HTTP request failed with status {status_code}")
@@ -580,6 +587,8 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 || body_status_from_bytes(&response.body).as_deref() == Some("revocation_sync_failed")
             {
                 TzapCertificateLifecycleError::RevocationSyncFailed
+            } else if status_code == 403 && body_error_code_from_bytes(&response.body).as_deref() == Some("admin_mfa_required") {
+                TzapCertificateLifecycleError::AdminMfaRequired
             } else {
                 TzapCertificateLifecycleError::HttpStatus { status_code }
             }
@@ -1163,6 +1172,54 @@ mod tests {
         let error = client.retire_personal_devices(&store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap_err();
 
         assert!(matches!(error, TzapCertificateLifecycleError::RevocationSyncFailed));
+    }
+
+    #[test]
+    fn personal_revocation_maps_403_admin_mfa_required_distinctly_from_other_403s() {
+        // The sign server now requires a fresh MFA step-up for the personal revoke paths, the
+        // same way the organization revoke path and the key-backup read always have. A caller
+        // has to be able to tell "step up and retry" apart from a flat authorization failure,
+        // otherwise the desktop app reports an unrecoverable error for a recoverable state.
+        let fixture = LifecycleFixture::new();
+        let transport = FakeLifecycleTransport::new(vec![TzapAuthHttpResponse {
+            status_code: 403,
+            body: json!({"error": "admin_mfa_required", "message": "Verify with an admin MFA factor to continue."})
+                .to_string()
+                .into_bytes(),
+            headers: Vec::new(),
+        }]);
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
+        let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
+
+        let error = client
+            .revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old")
+            .unwrap_err();
+
+        assert!(
+            matches!(error, TzapCertificateLifecycleError::AdminMfaRequired),
+            "expected AdminMfaRequired, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn personal_revocation_keeps_a_plain_403_as_an_http_status() {
+        let fixture = LifecycleFixture::new();
+        let transport = FakeLifecycleTransport::new(vec![TzapAuthHttpResponse {
+            status_code: 403,
+            body: json!({"error": "forbidden"}).to_string().into_bytes(),
+            headers: Vec::new(),
+        }]);
+        let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
+        let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
+
+        let error = client
+            .revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old")
+            .unwrap_err();
+
+        assert!(
+            matches!(error, TzapCertificateLifecycleError::HttpStatus { status_code: 403 }),
+            "expected HttpStatus 403, got {error:?}"
+        );
     }
 
     #[test]

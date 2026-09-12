@@ -25,6 +25,12 @@ default = []
 # signing/verification/certs (offline TZAP surface) while dropping reqwest
 # and the hosted (network) commands entirely.
 tzap-online = ["dep:reqwest", "zmanager-tzap-hosted/reqwest-transport"]
+# Personal certificate/device revocation is disabled by default: the sign server requires a
+# recent admin MFA step-up on the calling session, and the CLI has no way to obtain one (no TOTP
+# prompt, and a step-up performed elsewhere belongs to a different session). Revocation lives in
+# the hosted console until a step-up flow exists here. Enable to re-expose `zm tzap device
+# revoke` and `zm tzap device retire` once that lands.
+hosted-revocation = []
 
 [dependencies]
 anstream = "1.0.0"

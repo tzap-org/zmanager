@@ -2,7 +2,7 @@ use super::support::{
     CliHttpJsonTransport, parse_tzap_context_args, parse_tzap_context_option, print_stable_tzap_error, retirement_completion_label, service_envelope,
     service_request,
 };
-use super::{MISSING_TZAP_SESSION, TzapCliContext};
+use super::{MISSING_TZAP_SESSION, REVOCATION_REQUIRES_HOSTED_CONSOLE, TzapCliContext};
 use crate::cli::options::{GlobalOptions, parse_global_option, take_value};
 use crate::cli::usage::{DEVICE_HELP, command_usage_error, print_help_stdout, print_success_line, wants_help};
 use serde_json::json;
@@ -23,6 +23,12 @@ pub(crate) fn device_command(args: &[String], global: GlobalOptions) -> ExitCode
 }
 
 pub(super) fn device_retire_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    // Retirement revokes every active personal device server-side, so it is gated by the same
+    // MFA step-up as an explicit revoke. See REVOCATION_REQUIRES_HOSTED_CONSOLE.
+    if !cfg!(feature = "hosted-revocation") {
+        print_stable_tzap_error("device_retire", REVOCATION_REQUIRES_HOSTED_CONSOLE, &global);
+        return ExitCode::FAILURE;
+    }
     let context = match parse_tzap_context_args(args, &mut global, "device") {
         Ok(context) => context,
         Err(code) => return code,
@@ -45,6 +51,10 @@ pub(super) fn device_retire_command(args: &[String], mut global: GlobalOptions) 
 }
 
 pub(super) fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
+    if !cfg!(feature = "hosted-revocation") {
+        print_stable_tzap_error("device_revoke", REVOCATION_REQUIRES_HOSTED_CONSOLE, &global);
+        return ExitCode::FAILURE;
+    }
     let mut context = TzapCliContext::default();
     let mut sign_device_id = None;
     let mut service_base_url = None;
