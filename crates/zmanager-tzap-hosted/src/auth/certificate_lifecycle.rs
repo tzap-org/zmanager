@@ -82,7 +82,9 @@ pub enum TzapCertificateLifecycleError {
     Enrollment(TzapEnrollmentError),
     Store(TzapLocalIdentityStoreError),
     InvalidJson(serde_json::Error),
-    InvalidField { field: &'static str },
+    InvalidField {
+        field: &'static str,
+    },
     CertificateNotFound,
     CertificateNotRenewable,
     RenewalTargetMismatch,
@@ -97,7 +99,9 @@ pub enum TzapCertificateLifecycleError {
     /// drive a step-up and retry rather than reporting a generic failure.
     AdminMfaRequired,
     ActiveCertificateExists,
-    HttpStatus { status_code: u16 },
+    HttpStatus {
+        status_code: u16,
+    },
     Crypto(String),
 }
 
@@ -1183,22 +1187,15 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let transport = FakeLifecycleTransport::new(vec![TzapAuthHttpResponse {
             status_code: 403,
-            body: json!({"error": "admin_mfa_required", "message": "Verify with an admin MFA factor to continue."})
-                .to_string()
-                .into_bytes(),
+            body: json!({"error": "admin_mfa_required", "message": "Verify with an admin MFA factor to continue."}).to_string().into_bytes(),
             headers: Vec::new(),
         }]);
         let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
 
-        let error = client
-            .revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old")
-            .unwrap_err();
+        let error = client.revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old").unwrap_err();
 
-        assert!(
-            matches!(error, TzapCertificateLifecycleError::AdminMfaRequired),
-            "expected AdminMfaRequired, got {error:?}"
-        );
+        assert!(matches!(error, TzapCertificateLifecycleError::AdminMfaRequired), "expected AdminMfaRequired, got {error:?}");
     }
 
     #[test]
@@ -1212,14 +1209,9 @@ mod tests {
         let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport);
         let mut store = fixture.store_with_certificate(TzapSignDeviceRouting::Personal);
 
-        let error = client
-            .revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old")
-            .unwrap_err();
+        let error = client.revoke_personal_certificate(&mut store, &fixture.sign_session, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, "cert_old").unwrap_err();
 
-        assert!(
-            matches!(error, TzapCertificateLifecycleError::HttpStatus { status_code: 403 }),
-            "expected HttpStatus 403, got {error:?}"
-        );
+        assert!(matches!(error, TzapCertificateLifecycleError::HttpStatus { status_code: 403 }), "expected HttpStatus 403, got {error:?}");
     }
 
     #[test]
