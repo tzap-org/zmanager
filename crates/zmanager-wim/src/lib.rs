@@ -144,6 +144,16 @@ const MAX_CHUNK_SIZE: u32 = 1 << 30;
 /// allocation.
 const MAX_RESOURCE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Memory budget for retained decompressed resources.
+///
+/// WIM is single-instance storage: identical files share one SHA-1-keyed
+/// resource, so a stream referenced by many entries would otherwise be decoded
+/// once per entry, and decoding costs the whole resource. Retaining decoded
+/// resources makes that cost proportional to distinct streams instead of to
+/// entries. The budget bounds the retention; a resource larger than the whole
+/// budget is simply never retained.
+const RESOURCE_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 /// Compression algorithm declared by a WIM header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WimCompression {
@@ -295,6 +305,11 @@ pub struct WimArchive {
     pub lut: HashMap<[u8; 20], WimLookupEntry>,
     /// Metadata resources in lookup-table order, one per image.
     pub metadata_resources: Vec<WimLookupEntry>,
+    /// Decompressed streams retained by SHA-1, bounded by
+    /// [`RESOURCE_CACHE_BUDGET_BYTES`].
+    resource_cache: HashMap<[u8; 20], Vec<u8>>,
+    /// Bytes currently retained in `resource_cache`.
+    resource_cache_bytes: usize,
 }
 
 impl WimArchive {
@@ -345,7 +360,7 @@ impl WimArchive {
             return Err(invalid(path, format!("split WIM set is incomplete: part(s) {names} of {total_parts} are missing next to the first part")));
         }
 
-        Ok(Self { parts, lut, metadata_resources })
+        Ok(Self { parts, lut, metadata_resources, resource_cache: HashMap::new(), resource_cache_bytes: 0 })
     }
 
     /// Reads the whole resource described by `entry` from its owning part.
@@ -884,10 +899,35 @@ impl WimArchive {
         if entry.sha1 == [0_u8; 20] {
             return Ok(None);
         }
+        if let Some(retained) = self.resource_cache.get(&entry.sha1) {
+            return Ok(Some(retained.clone()));
+        }
         let Some(lookup) = self.lut.get(&entry.sha1).cloned() else {
             return Err(invalid(self.path(), format!("entry {} references stream {} which is not in the lookup table", entry.path, hex_sha1(entry.sha1))));
         };
-        self.read_stream(&lookup).map(Some)
+        let data = self.read_stream(&lookup)?;
+        self.retain_resource(entry.sha1, &data);
+        Ok(Some(data))
+    }
+
+    /// Retains a decoded stream for reuse by other entries sharing its SHA-1.
+    ///
+    /// Streams too large to ever fit the budget are skipped rather than
+    /// evicting everything for a single entry. When the budget would be
+    /// exceeded the retained set is cleared outright: WIM entries are visited
+    /// in lookup-table order, so the streams still to be shared are the recent
+    /// ones, and a clear keeps the policy allocation-free.
+    fn retain_resource(&mut self, sha1: [u8; 20], data: &[u8]) {
+        if data.is_empty() || data.len() > RESOURCE_CACHE_BUDGET_BYTES {
+            return;
+        }
+        if self.resource_cache_bytes + data.len() > RESOURCE_CACHE_BUDGET_BYTES {
+            self.resource_cache.clear();
+            self.resource_cache_bytes = 0;
+        }
+        if self.resource_cache.insert(sha1, data.to_vec()).is_none() {
+            self.resource_cache_bytes += data.len();
+        }
     }
 
     /// Verifies every regular-file stream against its recorded size and
@@ -922,4 +962,69 @@ impl WimArchive {
 
 fn hex_sha1(value: [u8; 20]) -> String {
     hex::encode(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(name)
+    }
+
+    fn first_file_entry(archive: &mut WimArchive) -> WimEntry {
+        archive
+            .entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == WimEntryKind::File && entry.sha1 != [0_u8; 20])
+            .expect("fixture should contain a regular file")
+    }
+
+    /// WIM is single-instance storage: one SHA-1-keyed stream backs every
+    /// entry with the same content. Decoding costs the whole stream, so it
+    /// must be decoded once and retained, not re-decoded per referencing
+    /// entry.
+    #[test]
+    fn decoded_stream_is_retained_for_entries_sharing_a_sha1() {
+        let mut archive = WimArchive::open(fixture("basic-LZX.wim")).unwrap();
+        let entry = first_file_entry(&mut archive);
+
+        assert!(archive.resource_cache.is_empty(), "nothing is retained before the first read");
+        let first = archive.read_entry_data(&entry).unwrap().expect("entry has data");
+        assert!(archive.resource_cache.contains_key(&entry.sha1), "the decoded stream must be retained under its SHA-1");
+
+        let second = archive.read_entry_data(&entry).unwrap().expect("entry has data");
+        assert_eq!(first, second, "a retained stream must return the same bytes as the decode that produced it");
+    }
+
+    /// The retention budget must bound memory: a stream too large to ever fit
+    /// is skipped rather than clearing the retained set for no benefit.
+    #[test]
+    fn oversized_streams_are_not_retained() {
+        let mut archive = WimArchive::open(fixture("basic-LZX.wim")).unwrap();
+
+        archive.retain_resource([1_u8; 20], &[0_u8; 64]);
+        assert_eq!(archive.resource_cache.len(), 1);
+        assert_eq!(archive.resource_cache_bytes, 64);
+
+        archive.retain_resource([2_u8; 20], &vec![0_u8; RESOURCE_CACHE_BUDGET_BYTES + 1]);
+        assert_eq!(archive.resource_cache.len(), 1, "an unretainable stream must not disturb what is already retained");
+
+        archive.retain_resource([3_u8; 20], &[]);
+        assert_eq!(archive.resource_cache.len(), 1, "empty streams are not worth retaining");
+    }
+
+    /// Exceeding the budget must reset retention rather than grow unbounded.
+    #[test]
+    fn retention_stays_within_its_budget() {
+        let mut archive = WimArchive::open(fixture("basic-LZX.wim")).unwrap();
+        let half = RESOURCE_CACHE_BUDGET_BYTES / 2 + 1;
+
+        archive.retain_resource([1_u8; 20], &vec![0_u8; half]);
+        archive.retain_resource([2_u8; 20], &vec![0_u8; half]);
+
+        assert!(archive.resource_cache_bytes <= RESOURCE_CACHE_BUDGET_BYTES, "retained bytes must never exceed the budget");
+        assert_eq!(archive.resource_cache.len(), 1, "the second stream clears the first rather than exceeding the budget");
+    }
 }

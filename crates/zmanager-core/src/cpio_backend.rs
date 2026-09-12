@@ -151,6 +151,17 @@ pub fn extract(
             uncompressed_size: Some(entry.public.size),
             compressed_size: Some(entry.public.size),
         };
+        // `find . | cpio -o` - the canonical way to build a cpio archive -
+        // records the root as a `.` entry. Its path normalizes to empty, which
+        // safety planning rejects, so it has to be skipped before validation
+        // exactly as the shared extraction loop does for the other formats.
+        // The check requires a directory kind, so an empty-pathed file entry
+        // is still rejected.
+        if crate::extract_materialize::is_archive_root_directory(&safety_entry.archive_path, &safety_entry.kind) {
+            report.skipped_entries = report.skipped_entries.saturating_add(1);
+            report.warnings.push("skipped archive root directory entry".to_owned());
+            continue;
+        }
         let decision = planner.validate_entry(&safety_entry)?;
         let crate::safety::ExtractionDecision::Write { destination_path, link_target_path, replace_existing, .. } = decision else {
             report.skipped_entries = report.skipped_entries.saturating_add(1);
@@ -616,8 +627,9 @@ fn io_error(path: &Path, source: io::Error) -> CpioError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserEntryKind, NEWC_MAGIC, list, test};
+    use super::{BrowserEntryKind, CpioError, NEWC_MAGIC, extract, list, test};
     use crate::engine::types::TestOptions;
+    use crate::safety::ExtractionPolicy;
     use crate::test_support::TestDir;
     use std::fs;
 
@@ -635,6 +647,42 @@ mod tests {
         let report = test(&archive, &TestOptions::default()).unwrap();
         assert_eq!(report.entries, 1);
         assert_eq!(report.bytes, 5);
+    }
+
+    /// `find . | cpio -o` - the documented way to build a cpio archive - records
+    /// the archive root as a `.` entry, whose path normalizes to empty. Failing
+    /// the whole extraction over it made standard archives unextractable while
+    /// both bsdtar and cpio skip it.
+    #[test]
+    fn archive_root_dot_entry_is_skipped_instead_of_failing_extraction() {
+        let dir = TestDir::new("cpio-root-dot");
+        let archive = dir.path("root.cpio");
+        let bytes = newc_record(".", 0o040_755, 1, &[])
+            .into_iter()
+            .chain(newc_record("a.txt", 0o100_644, 2, b"hello"))
+            .chain(newc_record("TRAILER!!!", 0, 0, &[]))
+            .collect::<Vec<_>>();
+        fs::write(&archive, bytes).unwrap();
+
+        let destination = dir.path("out");
+        let report = extract(&archive, &destination, ExtractionPolicy::default(), None, None, None).unwrap();
+
+        assert_eq!(fs::read_to_string(destination.join("a.txt")).unwrap(), "hello", "the real entries must still extract");
+        assert_eq!(report.skipped_entries, 1, "the root entry is skipped, not written");
+        assert!(report.warnings.iter().any(|warning| warning == "skipped archive root directory entry"), "{:?}", report.warnings);
+    }
+
+    /// The root skip is gated on the directory kind: a *file* whose path
+    /// normalizes to empty has no safe destination and must still be rejected.
+    #[test]
+    fn empty_pathed_file_entry_is_still_rejected() {
+        let dir = TestDir::new("cpio-root-dot-file");
+        let archive = dir.path("root-file.cpio");
+        let bytes = newc_record(".", 0o100_644, 1, b"hello").into_iter().chain(newc_record("TRAILER!!!", 0, 0, &[])).collect::<Vec<_>>();
+        fs::write(&archive, bytes).unwrap();
+
+        let error = extract(&archive, dir.path("out"), ExtractionPolicy::default(), None, None, None).unwrap_err();
+        assert!(matches!(error, CpioError::Safety(_)), "expected a safety rejection, got {error:?}");
     }
 
     #[test]
