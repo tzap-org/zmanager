@@ -20,7 +20,6 @@ pub mod lha_backend;
 pub mod lzop_decoder;
 #[path = "msi_backend.rs"]
 pub mod msi_backend;
-#[cfg(unix)]
 #[path = "mtree_backend.rs"]
 pub mod mtree_backend;
 #[path = "rar_backend.rs"]

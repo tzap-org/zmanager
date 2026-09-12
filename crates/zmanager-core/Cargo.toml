@@ -85,7 +85,6 @@ zmanager-apple-archive = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-mtree = "0.5.0"
 
 [target.'cfg(unix)'.dev-dependencies]
 xattr = "1.6.1"

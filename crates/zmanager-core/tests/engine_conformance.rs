@@ -650,6 +650,10 @@ fn native_warc_adapter_materializes_record_bodies_when_bsdtar_available() {
     handle.close().unwrap();
 }
 
+/// Unix-only because the fixture manifest declares a `type=link` record and
+/// extraction materializes it; `extract_materialize::write_symlink` reports
+/// symlinks as unsupported off Unix. Listing and validation are portable and
+/// covered by the reader's own corpus in `mtree_backend`.
 #[test]
 #[cfg(unix)]
 fn native_mtree_adapter_lists_verifies_and_extracts_manifest_shape() {
@@ -673,17 +677,26 @@ fn native_mtree_adapter_lists_verifies_and_extracts_manifest_shape() {
     handle.close().unwrap();
 }
 
+/// `/unset` used to be rejected up front because the previous `mtree` crate
+/// reached `unimplemented!()` on it — the manifest was refused so the panic
+/// could not be triggered. The in-tree reader implements the directive, so the
+/// same manifest now lists cleanly; the "does not panic" half of the original
+/// contract is still what this test guards.
 #[test]
-#[cfg(unix)]
-fn native_mtree_adapter_rejects_unsupported_unset_directives_without_panicking() {
+fn native_mtree_adapter_applies_unset_directives_without_panicking() {
     let temp = TestDir::new("engine-conformance-mtree-unset");
-    let archive = temp.path("unsupported.mtree");
+    let archive = temp.path("unset.mtree");
     fs::write(&archive, b"/set type=file\n/unset type\n./file.txt size=1\n").unwrap();
     let engine = create_default_engine().unwrap();
     let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
-    let error = handle.list().unwrap_err();
-    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::CorruptData);
-    assert_eq!(error.disposition, zmanager_core::engine::SessionDisposition::Unusable);
+    let listing = handle.list().unwrap();
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].path, "file.txt");
+    // `/unset type` cleared the `/set` default, so the record carries no type
+    // of its own and falls back to the reader's regular-file default.
+    assert_eq!(listing.entries[0].kind, BrowserEntryKind::File);
+    assert_eq!(listing.entries[0].size, Some(1));
+    handle.close().unwrap();
 }
 
 #[test]

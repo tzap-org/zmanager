@@ -40,7 +40,6 @@ mod gitignore;
 mod segmented_reader;
 mod sevenz_volume;
 mod strings;
-#[cfg(unix)]
 pub(crate) use backend_impl::mtree_backend;
 pub(crate) use backend_impl::{
     apple_archive_backend, apple_dmg_backend, apple_pkg_backend, ar_backend, cab_backend, cpio_backend, deb_backend, lha_backend, lzop_decoder, msi_backend,
@@ -106,7 +105,6 @@ pub mod x509_format;
 /// generated API documentation and is not a supported product contract.
 #[doc(hidden)]
 pub mod backend_test_support {
-    #[cfg(unix)]
     pub use super::backend_impl::mtree_backend;
     pub use super::backend_impl::{
         apple_archive_backend, apple_dmg_backend, apple_pkg_backend, ar_backend, cab_backend, cpio_backend, deb_backend, lha_backend, msi_backend, rar_backend,

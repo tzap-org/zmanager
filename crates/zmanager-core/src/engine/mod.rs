@@ -154,7 +154,6 @@ impl ArchivePlugin for DefaultArchivePlugin {
         builder.register_read_adapter(Arc::new(adapters::native::XarListAdapter))?;
         builder.register_read_adapter(Arc::new(adapters::native::LhaListAdapter))?;
         builder.register_read_adapter(Arc::new(adapters::native::WarcListAdapter))?;
-        #[cfg(unix)]
         builder.register_read_adapter(Arc::new(adapters::native::MtreeListAdapter))?;
         builder.register_read_adapter(Arc::new(adapters::native::TzapListAdapter))?;
         builder.register_read_adapter(Arc::new(adapters::native::RarListAdapter))?;

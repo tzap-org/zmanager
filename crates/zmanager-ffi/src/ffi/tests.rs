@@ -157,11 +157,11 @@ fn every_registered_core_format_has_a_dedicated_mobile_classification() {
     for (extension, expected) in cases {
         let detected = classify_archive_path(Path::new(&format!("fixture.{extension}"))).0;
         assert_eq!(detected, expected, "fixture.{extension}");
-        let list_support_expected = !matches!(expected, ArchiveFormat::Mtree) || cfg!(unix);
-        assert_eq!(format_capabilities(expected).0, list_support_expected, "{extension} list support");
-        if !matches!(expected, ArchiveFormat::Mtree) {
-            assert!(format_capabilities(expected).1, "{extension} must expose extract support");
-        }
+        // MTREE used to be special-cased here on both counts: its backend was
+        // `cfg(unix)`-gated, so off Unix it advertised neither capability. The
+        // reader is portable now, so it is asserted like every other format.
+        assert!(format_capabilities(expected).0, "{extension} must expose list support");
+        assert!(format_capabilities(expected).1, "{extension} must expose extract support");
     }
 }
 

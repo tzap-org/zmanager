@@ -283,8 +283,13 @@ const fn apple_archive_status() -> BackendStatus {
 }
 
 /// Availability of the native MTREE backend on this target.
+///
+/// The reader is pure Rust and platform-independent: MTREE is a text manifest,
+/// and nothing in the parser needs a Unix-only API. Extraction of a `type=link`
+/// record still fails on platforms without symlink support, which the shared
+/// `extract_materialize::write_symlink` stub reports.
 const fn mtree_status() -> BackendStatus {
-    if cfg!(unix) { BackendStatus::Available } else { BackendStatus::UnsupportedPlatform }
+    BackendStatus::Available
 }
 
 /// Returns whether the backend for `kind` is available on this platform.
@@ -481,9 +486,8 @@ mod tests {
     }
 
     #[test]
-    fn mtree_status_matches_platform() {
-        let expected = if cfg!(unix) { BackendStatus::Available } else { BackendStatus::UnsupportedPlatform };
-        assert_eq!(format_status(ArchiveFormatKind::Mtree), expected);
+    fn mtree_status_is_available_on_every_target() {
+        assert_eq!(format_status(ArchiveFormatKind::Mtree), BackendStatus::Available);
     }
 
     #[test]
