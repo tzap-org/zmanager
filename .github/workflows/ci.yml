@@ -241,6 +241,27 @@ jobs:
             exit 1
           fi
 
+  archive-architecture:
+    name: Archive architecture guard
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      # The guard checks that products consume archives through the engine
+      # seam rather than reaching into backend implementations. zmanager-desktop
+      # is one of those products, so it has to be present or those checks scan
+      # nothing; the script reports any root it could not scan.
+      - name: Clone zmanager-desktop
+        run: git clone --depth 1 https://github.com/tzap-org/zmanager-desktop.git ../zmanager-desktop
+
+      - name: Check archive architecture
+        run: bash scripts/check-archive-architecture.sh
+
   windows-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}

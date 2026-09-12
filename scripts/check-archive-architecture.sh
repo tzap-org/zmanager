@@ -9,6 +9,7 @@ desktop_root="${repo_root}/../zmanager-desktop/src-tauri/src"
 mobile_root="${repo_root}/../zmanager-mobile"
 gui_root="${repo_root}/../zmanager-gui"
 failed=0
+skipped=0
 
 # Prints "start end" line ranges for every inline `#[cfg(test)]` item in a file.
 # The glob filters below drop whole test files, but production modules carry
@@ -67,8 +68,42 @@ check_absent() {
     local label="$1"
     local pattern="$2"
     shift 2
+
+    # Sibling product repositories are not always checked out next to this one
+    # (CI clones only some of them). Scanning a path that does not exist makes
+    # rg fail, and a check that scanned nothing must never be reported as a
+    # check that passed - so absent roots are filtered out and named.
+    local args=() missing=() scanned=0 take_value=0 arg
+    for arg in "$@"; do
+        if (( take_value )); then
+            args+=("${arg}")
+            take_value=0
+            continue
+        fi
+        if [[ "${arg}" == --* ]]; then
+            args+=("${arg}")
+            take_value=1
+            continue
+        fi
+        if [[ -e "${arg}" ]]; then
+            args+=("${arg}")
+            scanned=$((scanned + 1))
+        else
+            missing+=("${arg}")
+        fi
+    done
+
+    if (( ${#missing[@]} > 0 )); then
+        printf 'note: %s - not scanned: %s\n' "$label" "${missing[*]}" >&2
+    fi
+    if (( scanned == 0 )); then
+        printf 'SKIP: %s (no scan roots present)\n' "$label" >&2
+        skipped=$((skipped + 1))
+        return
+    fi
+
     local hits
-    hits="$(rg -n --no-heading --with-filename --glob '*.rs' --glob '!**/tests/**' --glob '!**/*tests.rs' --glob '!**/tests.rs' "$pattern" "$@" 2>/dev/null | drop_inline_test_matches || true)"
+    hits="$(rg -n --no-heading --with-filename --glob '*.rs' --glob '!**/tests/**' --glob '!**/*tests.rs' --glob '!**/tests.rs' "$pattern" "${args[@]}" 2>/dev/null | drop_inline_test_matches || true)"
     if [[ -n "${hits}" ]]; then
         printf '%s\n' "${hits}"
         printf 'FAIL: %s\n' "$label" >&2
@@ -154,4 +189,8 @@ done
 if [[ "$failed" -ne 0 ]]; then
     exit 1
 fi
-printf 'archive architecture deletion audit passed\n'
+if (( skipped > 0 )); then
+    printf 'archive architecture deletion audit passed (%d check(s) skipped: scan roots absent)\n' "$skipped"
+else
+    printf 'archive architecture deletion audit passed\n'
+fi
