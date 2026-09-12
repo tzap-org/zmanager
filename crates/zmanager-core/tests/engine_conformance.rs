@@ -1366,10 +1366,10 @@ fn engine_opens_one_read_session_and_reuses_the_listing_snapshot() {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
 
-        fn selected_extract<'a>(
+        fn selected_extract(
             &mut self,
             _entry_id: zmanager_core::engine::EntryId,
-            _options: &'a mut zmanager_core::engine::SelectedExtractOptions<'a>,
+            _options: &mut zmanager_core::engine::SelectedExtractOptions<'_>,
         ) -> Result<zmanager_core::engine::ExtractReport, ArchiveError> {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
@@ -1426,10 +1426,10 @@ fn engine_rejects_source_mutation_detected_after_an_operation() {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
 
-        fn selected_extract<'a>(
+        fn selected_extract(
             &mut self,
             _entry_id: zmanager_core::engine::EntryId,
-            _options: &'a mut zmanager_core::engine::SelectedExtractOptions<'a>,
+            _options: &mut zmanager_core::engine::SelectedExtractOptions<'_>,
         ) -> Result<zmanager_core::engine::ExtractReport, ArchiveError> {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
@@ -1492,10 +1492,10 @@ fn engine_rejects_unclaimed_operations_at_the_registry_seam_after_open() {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
 
-        fn selected_extract<'a>(
+        fn selected_extract(
             &mut self,
             _entry_id: zmanager_core::engine::EntryId,
-            _options: &'a mut zmanager_core::engine::SelectedExtractOptions<'a>,
+            _options: &mut zmanager_core::engine::SelectedExtractOptions<'_>,
         ) -> Result<zmanager_core::engine::ExtractReport, ArchiveError> {
             Err(ArchiveError::usable(zmanager_core::engine::ErrorKind::UnsupportedOperation, "not claimed"))
         }
@@ -1809,4 +1809,93 @@ fn walk_files(root: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// A compressed cpio container has no seekable member index, so the adapter
+/// decodes it to a temporary file. That decode costs the whole archive, so it
+/// must happen once per session and be reused, not repeated per operation.
+#[test]
+fn compressed_cpio_session_decodes_its_payload_once() {
+    let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.cpio.gz");
+    let scratch = TestDir::new("engine-conformance-cpio-gz-decode");
+    let temp_root = scratch.path("temp-root");
+    fs::create_dir_all(&temp_root).unwrap();
+
+    let decode_dirs =
+        || fs::read_dir(&temp_root).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().contains("cpio-decode")).count();
+
+    let engine = create_default_engine().unwrap();
+    let mut handle =
+        engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions { temp_root: Some(temp_root.clone()), ..Default::default() }).unwrap();
+
+    let listing = handle.list().unwrap();
+    assert!(listing.entries.iter().any(|entry| entry.path.ends_with("README.txt")));
+    // The decode is retained on the session: it survives the operation that
+    // produced it, so later operations reuse it instead of decoding again.
+    assert_eq!(decode_dirs(), 1, "listing should leave exactly one retained decode");
+
+    let mut options = ExtractOptions { destination: scratch.path("out"), ..ExtractOptions::default() };
+    assert!(handle.extract(&mut options).unwrap().written_entries > 0);
+    assert_eq!(decode_dirs(), 1, "extraction should reuse the retained decode rather than add another");
+
+    let file_entry = listing.entries.iter().find(|entry| entry.kind == BrowserEntryKind::File).expect("fixture should contain a regular file");
+    let mut copied = Vec::new();
+    handle.copy_entry(file_entry.id, &mut copied).unwrap();
+    assert_eq!(decode_dirs(), 1, "copy should reuse the retained decode rather than add another");
+
+    handle.close().unwrap();
+    assert_eq!(decode_dirs(), 0, "closing the session must remove the decoded payload");
+}
+
+/// Formats without a batched selected-extract fall back to extracting each
+/// entry in turn. That fallback must still route the caller's overwrite
+/// resolver through, or every `Ask` conflict in a batch fails closed with
+/// `OverwritePromptUnavailable` instead of reaching the prompt.
+#[test]
+fn batched_selected_extract_consults_the_caller_overwrite_resolver() {
+    #[derive(Default)]
+    struct CountingResolver {
+        calls: usize,
+    }
+
+    impl zmanager_core::safety::OverwriteResolver for CountingResolver {
+        fn decide(&mut self, _conflict: &zmanager_core::safety::OverwriteConflict) -> zmanager_core::safety::OverwriteDecision {
+            self.calls += 1;
+            zmanager_core::safety::OverwriteDecision::Skip
+        }
+    }
+
+    // `basic.cpio` has no batched selected-extract override, so it exercises
+    // the per-entry fallback in `selected_extract_many`.
+    let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.cpio");
+    let scratch = TestDir::new("engine-conformance-cpio-batch-resolver");
+    let destination = scratch.path("out");
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let file_ids: Vec<_> = listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert!(file_ids.len() >= 2, "fixture should contain at least two regular files");
+
+    // Populate the destination so every selected entry conflicts.
+    let mut seed = ExtractOptions { destination: destination.clone(), ..ExtractOptions::default() };
+    assert!(handle.extract(&mut seed).unwrap().written_entries > 0);
+
+    let mut resolver = CountingResolver::default();
+    let report = {
+        let mut options = SelectedExtractOptions {
+            destination: destination.clone(),
+            policy: zmanager_core::safety::ExtractionPolicy {
+                overwrite: zmanager_core::safety::OverwritePolicy::Ask,
+                ..zmanager_core::safety::ExtractionPolicy::default()
+            },
+            overwrite_resolver: Some(&mut resolver),
+            ..Default::default()
+        };
+        handle.extract_selected_many(&file_ids, &mut options).expect("the batch must reach the resolver, not fail closed")
+    };
+
+    assert_eq!(resolver.calls, file_ids.len(), "every conflicting entry in the batch should reach the resolver");
+    assert_eq!(report.written_entries, 0, "the resolver skipped every entry");
+    handle.close().unwrap();
 }

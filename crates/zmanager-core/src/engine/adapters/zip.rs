@@ -145,7 +145,7 @@ impl ReadAdapterSession for ZipReadSession {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(&mut self, entry_id: EntryId, options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    fn selected_extract(&mut self, entry_id: EntryId, options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         let entry_index = self
             .retained_entries
             .iter()
@@ -159,6 +159,7 @@ impl ReadAdapterSession for ZipReadSession {
             None => &mut noop_sink,
         };
         let mut context = crate::jobs::JobContext::new(token, sink);
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let report = crate::zip_backend::extract_zip_archive(
             &mut self.archive,
             &self.path,
@@ -167,14 +168,14 @@ impl ReadAdapterSession for ZipReadSession {
             self.password.as_deref(),
             options.cancellation.as_ref(),
             Some(&mut context),
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
             Some(&[entry_index]),
         )
         .map_err(|error| zip_archive_error(&self.path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(&mut self, entry_ids: &[EntryId], options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    fn selected_extract_many(&mut self, entry_ids: &[EntryId], options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         let mut indices = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
             let entry_index = self
@@ -192,6 +193,7 @@ impl ReadAdapterSession for ZipReadSession {
             None => &mut noop_sink,
         };
         let mut context = crate::jobs::JobContext::new(token, sink);
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let report = crate::zip_backend::extract_zip_archive(
             &mut self.archive,
             &self.path,
@@ -200,7 +202,7 @@ impl ReadAdapterSession for ZipReadSession {
             self.password.as_deref(),
             options.cancellation.as_ref(),
             Some(&mut context),
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
             Some(&indices),
         )
         .map_err(|error| zip_archive_error(&self.path, &error))?;

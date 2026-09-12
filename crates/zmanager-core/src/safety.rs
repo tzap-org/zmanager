@@ -103,6 +103,29 @@ pub trait OverwriteResolver {
     fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision;
 }
 
+/// A reborrow of an overwrite resolver whose trait-object lifetime is chosen
+/// fresh at the point of use.
+///
+/// `Option<&'long mut dyn OverwriteResolver>` cannot be narrowed to
+/// `Option<&'short mut dyn OverwriteResolver>`: the pointee of a `&mut` is
+/// invariant, so the `dyn ... + 'long` bound is stuck. Routing the reborrow
+/// through a concrete type re-runs the unsizing coercion, letting each caller
+/// pick a bound that fits its own borrow. This is what lets one caller-owned
+/// resolver be handed to a sequence of per-entry operations.
+pub(crate) struct ReborrowedResolver<'r, 'resolver: 'r>(&'r mut (dyn OverwriteResolver + 'resolver));
+
+impl<'r, 'resolver: 'r> ReborrowedResolver<'r, 'resolver> {
+    pub(crate) fn new(resolver: &'r mut (dyn OverwriteResolver + 'resolver)) -> Self {
+        Self(resolver)
+    }
+}
+
+impl OverwriteResolver for ReborrowedResolver<'_, '_> {
+    fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
+        self.0.decide(conflict)
+    }
+}
+
 /// Unsafe archive entry handling.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UnsafeFilePolicy {

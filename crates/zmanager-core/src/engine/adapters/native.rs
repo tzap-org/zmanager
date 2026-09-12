@@ -27,7 +27,11 @@ use crate::sevenz_backend;
 use crate::tzap;
 use crate::virtual_disk_backend;
 
-fn with_job_context<R>(cancellation: Option<&CancellationToken>, event_sink: Option<&mut dyn JobEventSink>, f: impl FnOnce(&mut JobContext<'_>) -> R) -> R {
+fn with_job_context<R>(
+    cancellation: Option<&CancellationToken>,
+    event_sink: Option<&mut (dyn JobEventSink + '_)>,
+    f: impl FnOnce(&mut JobContext<'_>) -> R,
+) -> R {
     let dummy_token = CancellationToken::new();
     let token = cancellation.unwrap_or(&dummy_token);
     let mut noop_sink = |_| {};
@@ -153,33 +157,33 @@ trait NativeReadAdapter: Send + Sync + 'static {
         Err(ArchiveError::usable(ErrorKind::UnsupportedOperation, "full extraction is not supported for this archive format"))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let _ = (archive, entry_id, options);
         Err(ArchiveError::usable(ErrorKind::UnsupportedOperation, "selected extraction is not supported for this archive format"))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let mut report = ExtractReport::default();
         for &entry_id in entry_ids {
-            let mut sub_options = SelectedExtractOptions {
-                destination: options.destination.clone(),
-                policy: options.policy.clone(),
-                tzap_restore_options: options.tzap_restore_options,
-                cancellation: options.cancellation.clone(),
-                event_sink: None,
-                overwrite_resolver: None,
-            };
-            let item_report = self.selected_extract(archive, entry_id, &mut sub_options)?;
+            // This calls the adapter method directly, bypassing the session
+            // wrapper that normally records the selection, so the per-entry
+            // invariant `selected_entry_selector` asserts has to be maintained
+            // here.
+            archive.set_selected_entry(entry_id);
+            // See `ReadAdapterSession::selected_extract_many`: reborrowing the
+            // caller's options keeps the event sink and overwrite resolver live
+            // for every entry in the batch.
+            let item_report = self.selected_extract(archive, entry_id, options)?;
             report.written_entries = report.written_entries.saturating_add(item_report.written_entries);
             report.skipped_entries = report.skipped_entries.saturating_add(item_report.skipped_entries);
             report.written_bytes = report.written_bytes.saturating_add(item_report.written_bytes);
@@ -228,13 +232,13 @@ impl<T: NativeReadAdapter> ReadAdapterSession for NativeReadSession<T> {
         self.adapter.extract(&self.context, options)
     }
 
-    fn selected_extract<'a>(&mut self, entry_id: EntryId, options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    fn selected_extract(&mut self, entry_id: EntryId, options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         self.ensure_open()?;
         self.context.set_selected_entry(entry_id);
         self.adapter.selected_extract(&self.context, entry_id, options)
     }
 
-    fn selected_extract_many<'a>(&mut self, entry_ids: &[EntryId], options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    fn selected_extract_many(&mut self, entry_ids: &[EntryId], options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         self.ensure_open()?;
         self.adapter.selected_extract_many(&self.context, entry_ids, options)
     }
@@ -338,23 +342,24 @@ impl NativeReadAdapter for TarGzListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let file = archive.open_primary_file()?;
         let decoder = GzDecoder::new(file);
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_path_occurrence_with_temp_root(
                 decoder,
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
                 options.cancellation.as_ref(),
                 Some(context),
@@ -365,12 +370,13 @@ impl NativeReadAdapter for TarGzListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let mut selectors = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
@@ -385,7 +391,7 @@ impl NativeReadAdapter for TarGzListAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 &selectors,
                 options.cancellation.as_ref(),
                 Some(context),
@@ -468,12 +474,13 @@ impl NativeReadAdapter for TarListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let file = archive.open_primary_file()?;
@@ -483,7 +490,7 @@ impl NativeReadAdapter for TarListAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
                 options.cancellation.as_ref(),
                 Some(context),
@@ -494,12 +501,13 @@ impl NativeReadAdapter for TarListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let mut selectors = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
@@ -513,7 +521,7 @@ impl NativeReadAdapter for TarListAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 &selectors,
                 options.cancellation.as_ref(),
                 Some(context),
@@ -1194,12 +1202,13 @@ impl NativeReadAdapter for CpioListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let source = cpio_source(archive)?;
@@ -1207,7 +1216,7 @@ impl NativeReadAdapter for CpioListAdapter {
             &source,
             &options.destination,
             options.policy.clone(),
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
             &selector.path,
             selector.occurrence,
             options.cancellation.as_ref(),
@@ -1241,8 +1250,9 @@ fn cpio_source(archive: &NativeReadContext) -> Result<std::path::PathBuf, Archiv
 
     let decoded = decode_cpio_payload(archive)?;
     let path = decoded.path.clone();
-    // The session is not shared across threads, so this only races with itself;
-    // a lost set would merely discard an equivalent decode.
+    // `get` above returned `None` and decoding cannot re-enter this function,
+    // so the cell is still empty; ignoring the result keeps the success path
+    // free of an unreachable panic.
     let _ = archive.decoded_payload.set(decoded);
     Ok(path)
 }
@@ -1354,19 +1364,20 @@ impl NativeReadAdapter for ArListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let report = crate::ar_backend::extract_by_path_occurrence(
             path,
             &options.destination,
             options.policy.clone(),
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
             &selector.path,
             selector.occurrence,
             options.cancellation.as_ref(),
@@ -1556,12 +1567,13 @@ impl NativeReadAdapter for FilteredTarAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let reader = self.open_reader(archive)?;
@@ -1571,7 +1583,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
                 options.cancellation.as_ref(),
                 Some(context),
@@ -1582,12 +1594,13 @@ impl NativeReadAdapter for FilteredTarAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let mut selectors = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
@@ -1601,7 +1614,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 &selectors,
                 options.cancellation.as_ref(),
                 Some(context),
@@ -1832,12 +1845,13 @@ impl NativeReadAdapter for SevenZListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let report = sevenz_backend::extract_7z_entry_by_name_occurrence(
@@ -1847,18 +1861,19 @@ impl NativeReadAdapter for SevenZListAdapter {
             options.policy.clone(),
             &selector.path,
             selector.occurrence,
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
         )
         .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let mut selectors = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
@@ -1871,7 +1886,7 @@ impl NativeReadAdapter for SevenZListAdapter {
             archive.options().password.as_deref(),
             options.policy.clone(),
             &selectors,
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
         )
         .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
@@ -1958,12 +1973,13 @@ impl NativeReadAdapter for TarZstListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let file = archive.open_primary_file()?;
@@ -1975,7 +1991,7 @@ impl NativeReadAdapter for TarZstListAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
                 options.cancellation.as_ref(),
                 Some(context),
@@ -1986,12 +2002,13 @@ impl NativeReadAdapter for TarZstListAdapter {
         Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
     }
 
-    fn selected_extract_many<'a>(
+    fn selected_extract_many(
         &self,
         archive: &NativeReadContext,
         entry_ids: &[EntryId],
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let mut selectors = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
@@ -2007,7 +2024,7 @@ impl NativeReadAdapter for TarZstListAdapter {
                 path,
                 &options.destination,
                 options.policy.clone(),
-                options.overwrite_resolver.as_deref_mut(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 &selectors,
                 options.cancellation.as_ref(),
                 Some(context),
@@ -2173,11 +2190,11 @@ impl NativeReadAdapter for TzapListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
@@ -2316,12 +2333,13 @@ impl NativeReadAdapter for RarListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let report = rar_backend::extract_rar_entry_by_path_occurrence(
@@ -2331,7 +2349,7 @@ impl NativeReadAdapter for RarListAdapter {
             archive.options().password.as_deref(),
             &selector.path,
             selector.occurrence,
-            options.overwrite_resolver.as_deref_mut(),
+            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
         )
         .map_err(|error| rar_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
@@ -2420,11 +2438,11 @@ impl NativeReadAdapter for RawStreamListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let selector = archive.selected_entry_selector(entry_id)?;
         if selector.kind != BrowserEntryKind::File {
@@ -2537,11 +2555,11 @@ impl NativeReadAdapter for AppleArchiveListAdapter {
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
 
-    fn selected_extract<'a>(
+    fn selected_extract(
         &self,
         archive: &NativeReadContext,
         entry_id: EntryId,
-        options: &'a mut SelectedExtractOptions<'a>,
+        options: &mut SelectedExtractOptions<'_>,
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;

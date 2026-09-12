@@ -373,7 +373,7 @@ impl ArchiveHandle {
     }
 
     /// Extracts one retained entry by its session-scoped ID.
-    pub fn extract_selected<'a>(&mut self, entry_id: EntryId, options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    pub fn extract_selected(&mut self, entry_id: EntryId, options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         let adapter_entry_id = self.require_listed_entry(entry_id)?;
         if options.destination.as_os_str().is_empty() {
             return Err(ArchiveError::usable(ErrorKind::Io, "Extraction destination must not be empty"));
@@ -388,8 +388,13 @@ impl ArchiveHandle {
         self.finish_operation(result)
     }
 
-    /// Extracts a batch of retained entries by their session-scoped IDs in one pass.
-    pub fn extract_selected_many<'a>(&mut self, entry_ids: &[EntryId], options: &'a mut SelectedExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
+    /// Extracts a batch of retained entries by their session-scoped IDs.
+    ///
+    /// Formats whose reader can select many members from one traversal do
+    /// this in a single pass; the rest fall back to extracting each entry in
+    /// turn. Either way the caller's event sink and overwrite resolver stay
+    /// live for the whole batch.
+    pub fn extract_selected_many(&mut self, entry_ids: &[EntryId], options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         let mut adapter_entry_ids = Vec::with_capacity(entry_ids.len());
         for &entry_id in entry_ids {
             adapter_entry_ids.push(self.require_listed_entry(entry_id)?);
