@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   licenses:
-    name: cargo-deny licenses
+    name: cargo-deny licenses + bans
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -57,5 +57,12 @@ jobs:
             --output - | tar -xz -C /tmp --strip-components=1
           install -m 0755 /tmp/cargo-deny /usr/local/bin/cargo-deny
 
-      - name: Run cargo-deny
+      - name: Run cargo-deny (licenses)
         run: cargo deny check licenses
+
+      # Freezes the duplicate-version set recorded in deny.toml's [bans] skip
+      # list. A bump that introduces a NEW duplicate fails here; the existing
+      # ones are listed with the reason each cannot be collapsed today. Kept as
+      # its own step so a graph regression is not mistaken for a license one.
+      - name: Run cargo-deny (bans)
+        run: cargo deny check bans
