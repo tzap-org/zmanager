@@ -44,9 +44,9 @@ time = { version = "0.3.47", features = ["parsing"] }
 x509-parser = "0.18.1"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = "0.2.3"
-tzap-plugin-keywrap = "0.2.3"
-tzap-plugin-signing = "0.2.3"
+tzap-core = "0.2.4"
+tzap-plugin-keywrap = "0.2.4"
+tzap-plugin-signing = "0.2.4"
 zip = "8.6.0"
 zeroize = "1.8.2"
 rayon = "1.10"

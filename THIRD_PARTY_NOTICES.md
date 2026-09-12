@@ -429,9 +429,9 @@ release reviewers can inspect the complete Cargo dependency closure.
 | twox-hash | 2.1.3 | MIT | third-party-licenses/rust/twox-hash-2.1.3/LICENSE.txt |
 | typed-path | 0.12.3 | MIT OR Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | third-party-licenses/rust/typenum-1.20.1/LICENSE |
-| tzap-core | 0.2.3 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
-| tzap-plugin-keywrap | 0.2.3 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
-| tzap-plugin-signing | 0.2.3 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-core | 0.2.4 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-plugin-keywrap | 0.2.4 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-plugin-signing | 0.2.4 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
 | ufs-core | 0.1.5 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | Metadata only; no license file found in the local Cargo cache |
 | unicode-normalization | 0.1.25 | MIT OR Apache-2.0 | Metadata only; no license file found in the local Cargo cache |

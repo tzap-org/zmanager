@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-tzap-core = "0.2.3"
+tzap-core = "0.2.4"
 zip = "8.6.0"
 zmanager-core = { path = "../crates/zmanager-core" }
 
@@ -42,4 +42,3 @@ path = "fuzz_targets/pattern_matching.rs"
 test = false
 doc = false
 bench = false
-

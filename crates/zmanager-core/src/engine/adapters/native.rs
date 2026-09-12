@@ -1,7 +1,7 @@
 //! Native listing adapters for 7z, TAR.ZST, TZAP, RAR, `RawStreams`, Apple Archive, DMG, PKG, MSI, `VirtualDisks` (ARC-200).
 
 use flate2::read::GzDecoder;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write as _};
@@ -49,6 +49,20 @@ struct NativeReadContext {
     cursor_factory: SourceCursorFactory,
     retained_entries: Vec<NativeEntrySelector>,
     selected_entry: Cell<Option<EntryId>>,
+    /// Payload decoded once per session for formats whose container is a
+    /// non-seekable compressed stream. Decoding is proportional to the whole
+    /// archive, so re-running it per operation (or, worse, per selected entry)
+    /// turns a batch into repeated full-archive decompressions. The decoded
+    /// directory is retained for the session lifetime so every later operation
+    /// reuses it.
+    decoded_payload: OnceCell<DecodedPayload>,
+}
+
+/// A session-scoped decoded payload plus the temporary directory that owns it.
+/// Dropping the session drops `_temporary`, which removes the decoded bytes.
+struct DecodedPayload {
+    _temporary: Option<crate::temp_names::TemporaryDirectory>,
+    path: std::path::PathBuf,
 }
 
 /// Physical identity retained from the adapter's listing for one engine
@@ -65,7 +79,7 @@ struct NativeEntrySelector {
 
 impl NativeReadContext {
     fn new(cursor_factory: SourceCursorFactory, options: OpenOptions) -> Self {
-        Self { options, cursor_factory, retained_entries: Vec::new(), selected_entry: Cell::new(None) }
+        Self { options, cursor_factory, retained_entries: Vec::new(), selected_entry: Cell::new(None), decoded_payload: OnceCell::new() }
     }
 
     fn from_factory(cursor_factory: SourceCursorFactory, options: OpenOptions) -> Self {
@@ -1148,14 +1162,14 @@ impl NativeReadAdapter for CpioListAdapter {
 
     fn list(&self, archive: &NativeReadContext) -> Result<ArchiveListing, ArchiveError> {
         let path = archive.primary_path();
-        let (_temporary, source) = cpio_source(archive)?;
+        let source = cpio_source(archive)?;
         let entries = crate::cpio_backend::list(&source).map_err(|error| cpio_error(path, &error))?;
         Ok(ArchiveListing { entries: map_cpio_entries(entries) })
     }
 
     fn test(&self, archive: &NativeReadContext, test_options: &TestOptions) -> Result<TestReport, ArchiveError> {
         let path = archive.primary_path();
-        let (_temporary, source) = cpio_source(archive)?;
+        let source = cpio_source(archive)?;
         let report = crate::cpio_backend::test(&source, test_options).map_err(|error| cpio_error(path, &error))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.entries).unwrap_or(u64::MAX),
@@ -1167,7 +1181,7 @@ impl NativeReadAdapter for CpioListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let (_temporary, source) = cpio_source(archive)?;
+        let source = cpio_source(archive)?;
         let report = crate::cpio_backend::extract(
             &source,
             &options.destination,
@@ -1188,7 +1202,7 @@ impl NativeReadAdapter for CpioListAdapter {
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let (_temporary, source) = cpio_source(archive)?;
+        let source = cpio_source(archive)?;
         let report = crate::cpio_backend::extract_by_path_occurrence(
             &source,
             &options.destination,
@@ -1205,30 +1219,55 @@ impl NativeReadAdapter for CpioListAdapter {
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let (_temporary, source) = cpio_source(archive)?;
+        let source = cpio_source(archive)?;
         let written_bytes =
             crate::cpio_backend::copy_by_path_occurrence(&source, &selector.path, selector.occurrence, writer).map_err(|error| cpio_error(path, &error))?;
         Ok(CopyReport { written_bytes })
     }
 }
 
-fn cpio_source(archive: &NativeReadContext) -> Result<(Option<crate::temp_names::TemporaryDirectory>, std::path::PathBuf), ArchiveError> {
+/// Returns the readable cpio payload for this session, decoding a compressed
+/// container at most once.
+///
+/// An uncompressed `.cpio` is read in place. A compressed container has no
+/// seekable member index, so it is decoded to a temporary file; that decode
+/// costs the whole archive, and every cpio operation needs it. Caching it on
+/// the session keeps `list` + `extract`, and above all a selected-entry batch,
+/// at one decode instead of one per call.
+fn cpio_source(archive: &NativeReadContext) -> Result<std::path::PathBuf, ArchiveError> {
+    if let Some(decoded) = archive.decoded_payload.get() {
+        return Ok(decoded.path.clone());
+    }
+
+    let decoded = decode_cpio_payload(archive)?;
+    let path = decoded.path.clone();
+    // The session is not shared across threads, so this only races with itself;
+    // a lost set would merely discard an equivalent decode.
+    let _ = archive.decoded_payload.set(decoded);
+    Ok(path)
+}
+
+fn decode_cpio_payload(archive: &NativeReadContext) -> Result<DecodedPayload, ArchiveError> {
     let path = archive.primary_path();
     let Some(format) = cpio_compression(path) else {
-        return Ok((None, path.to_path_buf()));
+        return Ok(DecodedPayload { _temporary: None, path: path.to_path_buf() });
     };
-    let temporary =
-        crate::temp_names::TemporaryDirectory::new("cpio-decode").map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
+    let io_error = |error: std::io::Error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path);
+    let temporary = match archive.options().temp_root.as_deref() {
+        Some(temp_root) => crate::temp_names::TemporaryDirectory::new_in(temp_root, "cpio-decode"),
+        None => crate::temp_names::TemporaryDirectory::new("cpio-decode"),
+    }
+    .map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
     let decoded_path = temporary.path().join("payload.cpio");
     let mut decoder = {
         let file = archive.open_primary_file()?;
         raw_stream_backend::open_decoder_from_reader(file, format, path)
             .map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?
     };
-    let mut output = File::create(&decoded_path).map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
-    std::io::copy(&mut decoder, &mut output).map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
-    output.flush().map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
-    Ok((Some(temporary), decoded_path))
+    let mut output = File::create(&decoded_path).map_err(io_error)?;
+    std::io::copy(&mut decoder, &mut output).map_err(io_error)?;
+    output.flush().map_err(io_error)?;
+    Ok(DecodedPayload { _temporary: Some(temporary), path: decoded_path })
 }
 
 fn cpio_compression(path: &std::path::Path) -> Option<raw_stream_backend::RawStreamFormat> {

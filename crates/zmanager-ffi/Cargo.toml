@@ -43,5 +43,5 @@ all = "warn"
 uniffi = { version = "0.29", features = ["build"] }
 
 [dev-dependencies]
-tzap-core = "0.2.3"
-tzap-plugin-signing = "0.2.3"
+tzap-core = "0.2.4"
+tzap-plugin-signing = "0.2.4"

@@ -32,12 +32,6 @@ fi
 cd "$ROOT"
 mkdir -p "$OUT_DIR"
 
-TZAP_DIR="$ROOT/../tzap"
-if [ ! -d "$TZAP_DIR" ]; then
-  echo "tzap directory not found at $TZAP_DIR — clone it first" >&2
-  exit 1
-fi
-
 # zmanager-core path-depends on the forensic-vfs-engine sibling, which in turn
 # path-depends on the udf-forensic and ntfs-forensic siblings. zmanager-ffi also
 # path-depends on the localsend-rs sibling. From the container's /workspace
@@ -56,7 +50,6 @@ done
 docker run --rm \
   --platform "$PLATFORM" \
   -v "$ROOT:/workspace" \
-  -v "$(cd "$TZAP_DIR" && pwd):/tzap" \
   -v "$(cd "$LOCALSEND_DIR" && pwd):/localsend-rs" \
   -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine" \
   -v "$(cd "$UDF_DIR" && pwd):/udf-forensic" \
@@ -74,7 +67,7 @@ docker run --rm \
     set -eu
     # git is required: the workspace .cargo/config.toml sets
     # net.git-fetch-with-cli, so cargo shells out to the git CLI for the
-    # dpp/tzap/forensic-vfs-engine git dependencies.
+    # dpp/forensic-vfs-engine git dependencies.
     #
     # xz-dev/xz-static provide the system liblzma used by the native LZMA
     # decoder in the static link.
