@@ -56,7 +56,11 @@ impl TemporaryDirectory {
     /// with `AlreadyExists` and the retry loop advances; two concurrent
     /// allocations can never share one directory.
     pub(crate) fn new(label: &str) -> Result<Self, TempDirAllocError> {
-        let parent = std::env::temp_dir();
+        Self::new_in(&std::env::temp_dir(), label)
+    }
+
+    /// Creates a uniquely named temporary directory below `parent`.
+    pub(crate) fn new_in(parent: &Path, label: &str) -> Result<Self, TempDirAllocError> {
         let unique = unique_temp_name(label);
 
         for attempt in 0..100 {
@@ -69,7 +73,7 @@ impl TemporaryDirectory {
         }
 
         Err(TempDirAllocError {
-            path: parent,
+            path: parent.to_path_buf(),
             source: io::Error::new(io::ErrorKind::AlreadyExists, format!("could not allocate temporary directory for {label}")),
         })
     }

@@ -352,6 +352,29 @@ fn native_tar_family_uses_shared_reader_for_all_read_operations() {
 }
 
 #[test]
+fn native_tar_read_operations_honor_open_options_temp_root() {
+    let temp = TestDir::new("engine-conformance-tar-temp-root");
+    let source = temp.path("payload.txt");
+    fs::write(&source, b"shared tar payload").unwrap();
+    let archive = temp.path("payload.tar.gz");
+    zmanager_core::backend_test_support::tar_gz_backend::create_tar_gz_from_path(
+        &source,
+        &archive,
+        &zmanager_core::backend_test_support::tar_gz_backend::TarGzCreateOptions::default(),
+    )
+    .unwrap();
+
+    let temp_root_file = temp.path("app-cache");
+    fs::write(&temp_root_file, b"not a directory").unwrap();
+    let engine = create_default_engine().unwrap();
+    let mut handle =
+        engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions { temp_root: Some(temp_root_file.clone()), ..Default::default() }).unwrap();
+
+    let error = handle.list().expect_err("a file cannot be used as the archive temp root");
+    assert!(error.to_string().contains(temp_root_file.to_string_lossy().as_ref()));
+}
+
+#[test]
 fn native_cpio_adapter_uses_bounded_operations_for_fixture() {
     let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.cpio");
     let engine = create_default_engine().unwrap();

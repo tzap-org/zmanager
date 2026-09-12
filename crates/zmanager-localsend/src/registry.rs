@@ -42,12 +42,12 @@ pub struct LocalSendRegistry {
 #[derive(Default)]
 struct RegistryState {
     server: Option<LocalSendServer>,
-    /// The official LocalSend app keeps discovery alive alongside its HTTP
+    /// The official `LocalSend` app keeps discovery alive alongside its HTTP
     /// server so a receiver can answer announcements and register back with
     /// the announcing peer. Keep that lifecycle in the shared Rust registry,
     /// not in the Android/iOS shells.
     discovery: Option<localsend_rs::MulticastDiscovery>,
-    /// Confirmed peers keyed by LocalSend fingerprint. The official client
+    /// Confirmed peers keyed by `LocalSend` fingerprint. The official client
     /// keeps this store alive across discovery sweeps and merges confirmations
     /// from both directions (our probes and incoming `/register` events).
     confirmed_devices: HashMap<String, DeviceInfo>,
@@ -514,7 +514,7 @@ impl LocalSendRegistry {
                 Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(devices)
             };
 
-            let (_, http_result) = tokio::join!(multicast, http);
+            let ((), http_result) = tokio::join!(multicast, http);
 
             let mut guard = found.lock().expect("discovery result lock poisoned");
             for device in http_result? {
@@ -532,8 +532,8 @@ impl LocalSendRegistry {
             let persisted = state
                 .confirmed_devices
                 .values()
+                .filter(|&device| own_fingerprint.as_deref() != Some(device.fingerprint.as_str()))
                 .cloned()
-                .filter(|device| own_fingerprint.as_deref() != Some(device.fingerprint.as_str()))
                 .map(DiscoveredDevice::from)
                 .collect();
             Ok(persisted)

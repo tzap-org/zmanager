@@ -535,7 +535,7 @@ fn run_plan_request(request: &PlanRequest, global: &GlobalOptions) -> ExitCode {
     }
 }
 fn list_entries_with_password(archive: &str, password: Option<&str>, recipient_key: Option<&Path>) -> Result<Vec<GenericEntry>, String> {
-    let options = zmanager_core::archive_browser::BrowserListOptions { password, recipient_key, recipient_key_bytes: None };
+    let options = zmanager_core::archive_browser::BrowserListOptions { password, recipient_key, recipient_key_bytes: None, temp_root: None };
     let listing = zmanager_core::archive_browser::list_entries_with_options(archive, options).map_err(|error| error.to_string())?;
 
     let generic_entries = listing

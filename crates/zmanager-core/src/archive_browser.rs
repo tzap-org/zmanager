@@ -88,6 +88,8 @@ pub struct BrowserListOptions<'a> {
     /// Optional in-memory private key candidates for recipient-encrypted TZAP
     /// metadata (see [`crate::engine::OpenOptions::recipient_key_bytes`]).
     pub recipient_key_bytes: Option<&'a [Vec<u8>]>,
+    /// Optional app-controlled root for decoder intermediates.
+    pub temp_root: Option<&'a Path>,
 }
 
 /// Report for selected-entry extraction.
@@ -265,6 +267,7 @@ pub fn list_directory_with_options(path: impl AsRef<Path>, dir_path: &str, optio
         password: options.password.map(ToOwned::to_owned),
         recipient_key: options.recipient_key.map(Path::to_path_buf),
         recipient_key_bytes: options.recipient_key_bytes.map(ToOwned::to_owned),
+        temp_root: options.temp_root.map(Path::to_path_buf),
         ..Default::default()
     };
     let mut handle = engine.open(source, open_options).map_err(|source| ArchiveBrowserError::Engine { format: None, source })?;
@@ -524,6 +527,7 @@ fn list_entries_via_engine(path: &Path, options: BrowserListOptions<'_>) -> Resu
         password: options.password.map(ToOwned::to_owned),
         recipient_key: options.recipient_key.map(Path::to_path_buf),
         recipient_key_bytes: options.recipient_key_bytes.map(ToOwned::to_owned),
+        temp_root: options.temp_root.map(Path::to_path_buf),
         ..Default::default()
     };
     let mut handle = engine.open(source, open_options).map_err(|source| ArchiveBrowserError::Engine { format: None, source })?;
@@ -843,9 +847,11 @@ mod tests {
         let error = list_entries(&archive).unwrap_err();
         assert!(error.to_string().contains("password required"));
 
-        let listing =
-            list_entries_with_options(&archive, BrowserListOptions { password: Some("correct horse"), recipient_key: None, recipient_key_bytes: None })
-                .unwrap();
+        let listing = list_entries_with_options(
+            &archive,
+            BrowserListOptions { password: Some("correct horse"), recipient_key: None, recipient_key_bytes: None, temp_root: None },
+        )
+        .unwrap();
         assert!(listing.entries.iter().any(|entry| entry.path == "project/a.txt"));
     }
 
@@ -858,7 +864,7 @@ mod tests {
 
         let listing = list_entries_with_options(
             &archive,
-            BrowserListOptions { password: Some("zmanager-rar-fixture-password"), recipient_key: None, recipient_key_bytes: None },
+            BrowserListOptions { password: Some("zmanager-rar-fixture-password"), recipient_key: None, recipient_key_bytes: None, temp_root: None },
         )
         .unwrap();
         assert_eq!(listing.entries.iter().filter(|entry| entry.path.replace('\\', "/") == "rar-fixture/data/stream.bin").count(), 1);

@@ -31,6 +31,7 @@ pub struct CertificateFixture {
     pub root_der: Vec<u8>,
 }
 
+#[must_use]
 pub fn certificate_fixture(config: ChainConfig) -> CertificateFixture {
     let root_key = p256_private_key();
     let platform_key = p256_private_key();
@@ -102,11 +103,13 @@ pub fn base_certificate_builder(common_name: &str, key: &PKeyRef<Private>, issue
     builder
 }
 
+#[must_use]
 pub fn p256_private_key() -> PKey<Private> {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
     PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap()
 }
 
+#[must_use]
 pub fn serial_number() -> openssl::asn1::Asn1Integer {
     BigNum::from_u32(42).unwrap().to_asn1_integer().unwrap()
 }
@@ -127,6 +130,7 @@ pub fn append_authority_key_identifier(builder: &mut openssl::x509::X509Builder,
     builder.append_extension(extension).unwrap();
 }
 
+#[must_use]
 pub fn leaf_eku() -> X509Extension {
     let mut eku = ExtendedKeyUsage::new();
     eku.other(crate::trust::TZAP_OID_DOCUMENT_SIGNING_EKU);
@@ -139,19 +143,23 @@ pub fn append_der_extension(builder: &mut openssl::x509::X509Builder, oid: &str,
     builder.append_extension(X509Extension::new_from_der(&oid, critical, &contents).unwrap()).unwrap();
 }
 
+#[must_use]
 pub fn certificate_policies_der(policies: &[&str]) -> Vec<u8> {
     let policy_infos = policies.iter().flat_map(|policy| der_sequence(&der_oid(policy))).collect::<Vec<_>>();
     der_sequence(&policy_infos)
 }
 
+#[must_use]
 pub fn der_oid(oid: &str) -> Vec<u8> {
     der_wrap(0x06, Asn1Object::from_str(oid).unwrap().as_slice())
 }
 
+#[must_use]
 pub fn der_sequence(contents: &[u8]) -> Vec<u8> {
     der_wrap(0x30, contents)
 }
 
+#[must_use]
 pub fn der_wrap(tag: u8, contents: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
     out.extend(der_len(contents.len()));
@@ -160,6 +168,7 @@ pub fn der_wrap(tag: u8, contents: &[u8]) -> Vec<u8> {
 }
 
 #[allow(clippy::cast_possible_truncation)]
+#[must_use]
 pub fn der_len(len: usize) -> Vec<u8> {
     if len < 128 {
         vec![len as u8]
@@ -170,6 +179,7 @@ pub fn der_len(len: usize) -> Vec<u8> {
     }
 }
 
+#[must_use]
 pub fn metadata_extension_bytes() -> Vec<u8> {
     serde_json_canonicalizer::to_vec(&json!({
         "version": 1,

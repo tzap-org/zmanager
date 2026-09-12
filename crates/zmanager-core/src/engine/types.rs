@@ -55,6 +55,9 @@ pub struct OpenOptions {
     /// ones -- and the first whose SPKI matches the archive's keywrap record
     /// wins.
     pub recipient_key_bytes: Option<Vec<Vec<u8>>>,
+    /// Optional app-controlled root for decoder intermediates. When absent,
+    /// native adapters use the platform temporary directory.
+    pub temp_root: Option<PathBuf>,
     /// Bounds applied to the owned source before adapter dispatch.
     pub limits: OpenLimits,
 }
@@ -80,6 +83,7 @@ impl fmt::Debug for OpenOptions {
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("recipient_key", &self.recipient_key)
             .field("recipient_key_bytes", &self.recipient_key_bytes.as_ref().map(Vec::len))
+            .field("temp_root", &self.temp_root)
             .field("limits", &self.limits)
             .finish()
     }

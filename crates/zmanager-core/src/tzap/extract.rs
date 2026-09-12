@@ -230,10 +230,14 @@ fn extract_tzap_fast_inner(
     state.finish()
 }
 
+/// Archive-opening primitives resolved from a [`TzapExtractKeySource`]:
+/// passphrase, recipient private-key path, and recipient key candidates.
+type KeyComponents<'a> = (Option<&'a str>, Option<&'a Path>, Option<Vec<Vec<u8>>>);
+
 /// Resolves a key source into the archive-opening primitives. Recipient key
 /// bytes are normalized to a candidate list either way, so every downstream
 /// caller goes through the same multi-key open path (design §9.4).
-fn key_components(key: TzapExtractKeySource<'_>) -> (Option<&str>, Option<&Path>, Option<Vec<Vec<u8>>>) {
+fn key_components(key: TzapExtractKeySource<'_>) -> KeyComponents<'_> {
     match key {
         TzapExtractKeySource::None => (None, None, None),
         TzapExtractKeySource::Password(password) => (Some(password), None, None),

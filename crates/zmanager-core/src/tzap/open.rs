@@ -502,6 +502,18 @@ mod tests {
     use super::{archive_directory, is_tzap_archive_path};
     use std::path::Path;
 
+    /// Removes the bare relative fixture files the test creates in the process
+    /// working directory, even if an assertion unwinds first.
+    struct Cleanup(Vec<std::path::PathBuf>);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
     #[test]
     fn recognizes_tzap_base_and_numbered_volumes() {
         assert!(is_tzap_archive_path(Path::new("project.tzap")));
@@ -547,14 +559,6 @@ mod tests {
         std::fs::write(&vol0, b"vol0").unwrap();
         std::fs::write(&vol1, b"vol1").unwrap();
 
-        struct Cleanup(Vec<std::path::PathBuf>);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                for p in &self.0 {
-                    let _ = std::fs::remove_file(p);
-                }
-            }
-        }
         let _guard = Cleanup(vec![vol0.clone(), vol1.clone()]);
 
         let discovered = super::discover_tzap_sibling_volume_paths(Path::new(&vol0_name));

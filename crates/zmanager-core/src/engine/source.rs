@@ -335,6 +335,18 @@ mod tests {
     use super::ArchiveSource;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Removes the bare relative fixture files the test creates in the process
+    /// working directory, even if an assertion unwinds first.
+    struct Cleanup(Vec<std::path::PathBuf>);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
     #[test]
     fn source_fingerprint_records_filesystem_identity() {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -402,14 +414,6 @@ mod tests {
         std::fs::write(&z01, b"part1").unwrap();
         std::fs::write(&zip, b"part2").unwrap();
 
-        struct Cleanup(Vec<std::path::PathBuf>);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                for p in &self.0 {
-                    let _ = std::fs::remove_file(p);
-                }
-            }
-        }
         let _guard = Cleanup(vec![z01.clone(), zip.clone()]);
 
         let discovered = super::discover_split_zip_volumes(std::path::Path::new(&z01_name));
