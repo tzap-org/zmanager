@@ -31,18 +31,8 @@ pub struct WarcEntry {
     pub record_type: String,
 }
 
-/// Native WARC operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct WarcReport {
-    /// Records written or verified.
-    pub entries: usize,
-    /// Records skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Record-body bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+/// Normalized WARC operation report.
+pub type WarcReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Native WARC operation error.
 #[derive(Debug)]

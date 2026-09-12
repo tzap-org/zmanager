@@ -85,18 +85,8 @@ pub struct TarEntry {
     pub link_target: Option<String>,
 }
 
-/// Normalized TAR extraction/test report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct TarReport {
-    /// Entries written or verified.
-    pub entries: usize,
-    /// Entries skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Regular-file bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+/// Normalized TAR operation report.
+pub type TarReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Error returned by shared TAR read operations.
 #[derive(Debug)]
@@ -141,16 +131,6 @@ impl From<ExtractionSafetyError> for TarError {
 impl From<JobCancelled> for TarError {
     fn from(_source: JobCancelled) -> Self {
         Self::Cancelled
-    }
-}
-
-impl crate::extract_loop::ExtractReport for TarReport {
-    fn skipped_entries_mut(&mut self) -> &mut usize {
-        &mut self.skipped_entries
-    }
-
-    fn warnings_mut(&mut self) -> &mut Vec<String> {
-        &mut self.warnings
     }
 }
 
@@ -290,21 +270,6 @@ pub fn extract_by_path_occurrence_with_temp_root<R: Read>(
         context,
         temp_root,
     )
-}
-
-/// Extracts retained TAR entries matching any of the given selectors in one pass.
-#[allow(clippy::too_many_arguments)]
-pub fn extract_by_selectors<R: Read>(
-    reader: R,
-    archive_path: &Path,
-    destination: &Path,
-    policy: ExtractionPolicy,
-    resolver: Option<&mut dyn OverwriteResolver>,
-    selectors: &[TarEntrySelector<'_>],
-    cancellation: Option<&CancellationToken>,
-    context: Option<&mut JobContext<'_>>,
-) -> Result<TarReport, TarError> {
-    extract_by_selectors_with_temp_root(reader, archive_path, destination, policy, resolver, selectors, cancellation, context, None)
 }
 
 /// Extracts retained TAR entries using an optional caller-owned temporary root.

@@ -50,17 +50,7 @@ pub struct CpioEntry {
 }
 
 /// Normalized CPIO operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct CpioReport {
-    /// Entries written or verified.
-    pub entries: usize,
-    /// Entries skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Regular-file bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+pub type CpioReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Error returned by native CPIO operations.
 #[derive(Debug)]

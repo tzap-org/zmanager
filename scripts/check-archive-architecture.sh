@@ -10,11 +10,67 @@ mobile_root="${repo_root}/../zmanager-mobile"
 gui_root="${repo_root}/../zmanager-gui"
 failed=0
 
+# Prints "start end" line ranges for every inline `#[cfg(test)]` item in a file.
+# The glob filters below drop whole test files, but production modules carry
+# their unit tests inline; those are tests too and must not trip these guards.
+#
+# Brace counting is deliberately avoided: braces inside string literals (any
+# `format!("{}")`) desynchronise a naive depth counter. rustfmt puts the closing
+# brace of a top-level item in column 0, so the region runs from the attribute
+# to the next line that is exactly `}`.
+cfg_test_ranges() {
+    awk '
+    /^#\[cfg\(test\)\]/ && !inblock {
+        pending = 1
+        start = NR
+        next
+    }
+    pending && /^[[:space:]]*#\[/ { next }          # further attributes on the same item
+    pending {
+        pending = 0
+        if (index($0, "{") > 0) { inblock = 1; next }
+        print start, NR                             # single-line item, e.g. `use ...;`
+        next
+    }
+    inblock && /^\}/ {
+        print start, NR
+        inblock = 0
+    }
+    END { if (inblock) print start, NR }            # test module runs to EOF
+    ' "$1"
+}
+
+# Reads `file:line:text` matches and drops the ones inside inline test code.
+drop_inline_test_matches() {
+    local match file lineno start end suppressed
+    while IFS= read -r match; do
+        [[ -z "${match}" ]] && continue
+        file="${match%%:*}"
+        lineno="${match#*:}"
+        lineno="${lineno%%:*}"
+        if [[ ! -f "${file}" || ! "${lineno}" =~ ^[0-9]+$ ]]; then
+            printf '%s\n' "${match}"
+            continue
+        fi
+        suppressed=0
+        while read -r start end; do
+            if (( lineno >= start && lineno <= end )); then
+                suppressed=1
+                break
+            fi
+        done < <(cfg_test_ranges "${file}")
+        (( suppressed )) || printf '%s\n' "${match}"
+    done
+}
+
 check_absent() {
     local label="$1"
     local pattern="$2"
     shift 2
-    if rg -n --glob '*.rs' --glob '!**/tests/**' --glob '!**/*tests.rs' --glob '!**/tests.rs' "$pattern" "$@"; then
+    local hits
+    hits="$(rg -n --no-heading --with-filename --glob '*.rs' --glob '!**/tests/**' --glob '!**/*tests.rs' --glob '!**/tests.rs' "$pattern" "$@" 2>/dev/null | drop_inline_test_matches || true)"
+    if [[ -n "${hits}" ]]; then
+        printf '%s\n' "${hits}"
         printf 'FAIL: %s\n' "$label" >&2
         failed=1
     fi

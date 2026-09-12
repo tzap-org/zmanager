@@ -16,6 +16,12 @@ pub(crate) const fn listing_entry_id(index: usize) -> EntryId {
     EntryId(index as u64)
 }
 
+impl From<crate::backend_impl::backend_report::BackendReport> for ExtractReport {
+    fn from(report: crate::backend_impl::backend_report::BackendReport) -> Self {
+        extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings)
+    }
+}
+
 pub(crate) fn extract_report(written_entries: usize, skipped_entries: usize, written_bytes: u64, warnings: Vec<String>) -> ExtractReport {
     ExtractReport {
         written_entries: u64::try_from(written_entries).unwrap_or(u64::MAX),

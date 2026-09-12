@@ -8,6 +8,8 @@ pub mod apple_dmg_backend;
 pub mod apple_pkg_backend;
 #[path = "ar_backend.rs"]
 pub mod ar_backend;
+#[path = "backend_report.rs"]
+pub mod backend_report;
 #[path = "cab_backend.rs"]
 pub mod cab_backend;
 #[path = "cpio_backend.rs"]

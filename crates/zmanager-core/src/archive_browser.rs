@@ -565,19 +565,22 @@ fn extract_entry_via_engine(
     // directory extracts its retained directory entry and every retained
     // descendant. Each operation still uses the session-scoped ID, so duplicate
     // names and central-directory order remain unambiguous to the engine.
-    let mut written_bytes = 0_u64;
-    let mut metadata_diagnostics = Vec::new();
-    for entry in matching_entries {
-        let mut selected_options = crate::engine::SelectedExtractOptions {
-            destination: destination.to_path_buf(),
-            policy: policy.clone(),
-            tzap_restore_options: Some(tzap_restore_options),
-            ..Default::default()
-        };
-        let report = handle.extract_selected(entry.id, &mut selected_options).map_err(|source| ArchiveBrowserError::Engine { format: Some(format), source })?;
-        written_bytes = written_bytes.saturating_add(report.written_bytes);
-        metadata_diagnostics.extend(report.warnings);
-    }
+    // One batched call, not one call per descendant: formats whose reader can
+    // select many members from a single traversal (tar, tar.gz, tar.zst, 7z,
+    // zip) implement that in `selected_extract_many`. Extracting a folder entry
+    // by entry re-walks - and for a compressed stream re-decompresses - the
+    // whole archive once per file, which is quadratic in the folder size.
+    let entry_ids: Vec<_> = matching_entries.iter().map(|entry| entry.id).collect();
+    let mut selected_options = crate::engine::SelectedExtractOptions {
+        destination: destination.to_path_buf(),
+        policy: policy.clone(),
+        tzap_restore_options: Some(tzap_restore_options),
+        ..Default::default()
+    };
+    let report =
+        handle.extract_selected_many(&entry_ids, &mut selected_options).map_err(|source| ArchiveBrowserError::Engine { format: Some(format), source })?;
+    let written_bytes = report.written_bytes;
+    let metadata_diagnostics = report.warnings;
 
     let destination_path = destination.join(entry_path.replace('\\', "/").trim_matches('/'));
     Ok(EntryExtractReport { destination_path, written_bytes, metadata_diagnostics })

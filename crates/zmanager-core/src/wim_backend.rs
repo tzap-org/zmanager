@@ -20,17 +20,7 @@ pub use zmanager_wim::{WimArchive, WimCompression, WimEntry, WimEntryKind};
 crate::backend_error_from_impls!(WimBackendError);
 
 /// Normalized WIM operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct WimReport {
-    /// Entries written or verified.
-    pub entries: usize,
-    /// Entries skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Regular-file bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+pub type WimReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Error returned by native WIM operations.
 #[derive(Debug)]

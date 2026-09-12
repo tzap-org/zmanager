@@ -28,17 +28,7 @@ pub struct ArEntry {
 }
 
 /// Normalized AR operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct ArReport {
-    /// Members written or verified.
-    pub entries: usize,
-    /// Members skipped by selection.
-    pub skipped_entries: usize,
-    /// Payload bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+pub type ArReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Error returned by native AR operations.
 #[derive(Debug)]

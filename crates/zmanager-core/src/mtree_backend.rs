@@ -260,7 +260,7 @@ mod manifest {
 
 use crate::archive_browser::BrowserEntryKind;
 use crate::engine::types::TestOptions;
-use crate::extract_loop::{EntryAction, ExtractReport as ExtractReportTrait, process_extraction_entry};
+use crate::extract_loop::{EntryAction, process_extraction_entry};
 use crate::jobs::{CancellationToken, JobCancelled};
 use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner};
 use std::fmt;
@@ -287,18 +287,8 @@ pub struct MtreeEntry {
     pub link_target: Option<PathBuf>,
 }
 
-/// Native MTREE operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct MtreeReport {
-    /// Manifest entries parsed or verified.
-    pub entries: usize,
-    /// Entries skipped by selection.
-    pub skipped_entries: usize,
-    /// Declared regular-file bytes covered by the operation.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+/// Normalized MTREE operation report.
+pub type MtreeReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Native MTREE operation error.
 #[derive(Debug)]
@@ -322,16 +312,6 @@ impl From<ExtractionSafetyError> for MtreeError {
 impl From<JobCancelled> for MtreeError {
     fn from(_: JobCancelled) -> Self {
         Self::Cancelled
-    }
-}
-
-impl ExtractReportTrait for MtreeReport {
-    fn skipped_entries_mut(&mut self) -> &mut usize {
-        &mut self.skipped_entries
-    }
-
-    fn warnings_mut(&mut self) -> &mut Vec<String> {
-        &mut self.warnings
     }
 }
 

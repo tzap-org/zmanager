@@ -167,28 +167,6 @@ impl TzapIntermediateCache {
         }
         Ok(None)
     }
-
-    /// Lists all cached intermediate certificate DERs.
-    pub fn list_intermediates(&self) -> Result<Vec<Vec<u8>>, TzapIntermediateCacheError> {
-        if !self.cache_dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let mut results = Vec::new();
-        let entries = match fs::read_dir(&self.cache_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(TzapIntermediateCacheError::Io(error)),
-        };
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("der") {
-                let bytes = fs::read(&path)?;
-                results.push(bytes);
-            }
-        }
-        Ok(results)
-    }
 }
 
 impl TzapIntermediateResolver for TzapIntermediateCache {

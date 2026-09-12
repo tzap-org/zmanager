@@ -81,15 +81,16 @@ impl Default for TzapCliContext {
     }
 }
 
+/// Resolves the TZAP state directory for offline CLI commands.
+///
+/// This must agree with the FFI and hosted layers exactly: they read the same
+/// keys and certificates out of it, so a second copy of the resolution order
+/// would silently split CLI state from hosted state the moment either changed.
+/// `zmanager-tzap-hosted` is a non-optional dependency and
+/// `tzap_service_auth` carries no feature gate, so the shared definition is
+/// available to the offline build as well.
 pub(crate) fn default_offline_tzap_state_dir() -> PathBuf {
-    for variable in ["ZM_TZAP_STATE_DIR", "ZMANAGER_TZAP_STATE_DIR"] {
-        if let Some(path) = std::env::var_os(variable)
-            && !path.is_empty()
-        {
-            return PathBuf::from(path);
-        }
-    }
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from(".").join(".zmanager").join("tzap"), |home| PathBuf::from(home).join(".zmanager").join("tzap"))
+    zmanager_tzap_hosted::tzap_service_auth::default_tzap_state_dir()
 }
 
 #[cfg(feature = "tzap-online")]

@@ -25,18 +25,8 @@ pub struct LhaEntry {
     pub supported: bool,
 }
 
-/// Native LHA operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct LhaReport {
-    /// Entries written or verified.
-    pub entries: usize,
-    /// Entries skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Regular-file bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+/// Normalized LHA operation report.
+pub type LhaReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Native LHA operation error.
 #[derive(Debug)]

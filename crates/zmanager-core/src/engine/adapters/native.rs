@@ -339,7 +339,7 @@ impl NativeReadAdapter for TarGzListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -367,7 +367,7 @@ impl NativeReadAdapter for TarGzListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract_many(
@@ -399,7 +399,7 @@ impl NativeReadAdapter for TarGzListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -471,7 +471,7 @@ impl NativeReadAdapter for TarListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -498,7 +498,7 @@ impl NativeReadAdapter for TarListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract_many(
@@ -529,7 +529,7 @@ impl NativeReadAdapter for TarListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -762,7 +762,7 @@ impl NativeReadAdapter for RpmListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| rpm_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -829,7 +829,7 @@ impl NativeReadAdapter for CabListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| cab_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -905,7 +905,7 @@ impl NativeReadAdapter for XarListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| xar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -980,7 +980,7 @@ impl NativeReadAdapter for LhaListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| lha_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -1054,7 +1054,7 @@ impl NativeReadAdapter for WarcListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| warc_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -1128,7 +1128,7 @@ impl NativeReadAdapter for MtreeListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| mtree_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 }
 
@@ -1199,7 +1199,7 @@ impl NativeReadAdapter for CpioListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| cpio_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -1222,7 +1222,7 @@ impl NativeReadAdapter for CpioListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| cpio_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -1361,7 +1361,7 @@ impl NativeReadAdapter for ArListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| ar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -1383,7 +1383,7 @@ impl NativeReadAdapter for ArListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| ar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -1564,7 +1564,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -1591,7 +1591,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract_many(
@@ -1622,7 +1622,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -1970,7 +1970,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract(
@@ -1999,7 +1999,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn selected_extract_many(
@@ -2032,7 +2032,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             )
         })
         .map_err(|error| tar_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -2982,7 +2982,7 @@ impl NativeReadAdapter for SquashfsListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| squashfs_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -3058,7 +3058,7 @@ impl NativeReadAdapter for AppImageListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| squashfs_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
@@ -3105,7 +3105,7 @@ impl NativeReadAdapter for WimListAdapter {
             options.cancellation.as_ref(),
         )
         .map_err(|error| wim_error(path, &error))?;
-        Ok(crate::engine::adapters::extract_report(report.entries, report.skipped_entries, report.bytes, report.warnings))
+        Ok(report.into())
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {

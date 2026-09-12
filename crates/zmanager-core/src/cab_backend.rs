@@ -26,18 +26,8 @@ pub struct CabEntry {
     pub modified: Option<String>,
 }
 
-/// Normalized cabinet operation report.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct CabReport {
-    /// Entries written or verified.
-    pub entries: usize,
-    /// Entries skipped by selection or policy.
-    pub skipped_entries: usize,
-    /// Regular-file bytes written or verified.
-    pub bytes: u64,
-    /// Non-fatal diagnostics.
-    pub warnings: Vec<String>,
-}
+/// Normalized CAB operation report.
+pub type CabReport = crate::backend_impl::backend_report::BackendReport;
 
 /// Error returned by native cabinet operations.
 #[derive(Debug)]
