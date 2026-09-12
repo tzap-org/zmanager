@@ -745,13 +745,16 @@ pub fn tzap_auth_login_json(request_json: &str) -> String {
 #[must_use]
 pub fn tzap_auth_callback_json(request_json: &str) -> String {
     with_json_request(request_json, |request| {
+        // Reject the unsupported input shape before touching the secret
+        // store, so the refusal does not depend on a pending handoff being
+        // readable.
+        if request.get("relay_body").is_some() {
+            return Err("relay_body is not supported; use handoff_code".to_owned());
+        }
         let context = TzapFfiContext::from_request(&request)?;
         let pending = load_pending_auth(&context.state_dir)?;
         let state = required_request_string(&request, "state")?;
         let redirect_uri = request_string(&request, "redirect_uri")?.unwrap_or_else(|| DEFAULT_TZAP_REDIRECT_URI.into());
-        if request.get("relay_body").is_some() {
-            return Err("relay_body is not supported; use handoff_code".to_owned());
-        }
         let session_handoff_payload = hosted_auth_session_handoff_payload(&request, &context.state_dir, &pending, &redirect_uri, &state)?;
         let callback = crate::auth_client::TzapHostedAuthCallback {
             state,
@@ -1341,6 +1344,16 @@ mod tests {
         path
     }
 
+    /// With the `keyring` feature on, the pending hosted-auth handoff and the
+    /// session records live in process-wide keyring entries rather than under
+    /// `state_dir`, so a per-test directory does not isolate them. Tests that
+    /// touch that state take this lock instead of racing each other.
+    static HOSTED_AUTH_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_hosted_auth_state() -> std::sync::MutexGuard<'static, ()> {
+        HOSTED_AUTH_STATE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn test_self_signed_identity_creation() {
         let temp = test_temp_dir("id");
@@ -1428,6 +1441,7 @@ mod tests {
 
     #[test]
     fn test_tzap_auth_endpoints() {
+        let _hosted_auth_state = lock_hosted_auth_state();
         let temp = test_temp_dir("auth");
         let state_dir = temp.display().to_string();
 
@@ -1466,6 +1480,7 @@ mod tests {
 
     #[test]
     fn hosted_auth_callback_rejects_legacy_relay_body_input() {
+        let _hosted_auth_state = lock_hosted_auth_state();
         let temp = test_temp_dir("auth-relay-rejection");
         let state_dir = temp.display().to_string();
         let begin_request = json!({
@@ -1486,6 +1501,15 @@ mod tests {
         let callback_response: Value = serde_json::from_str(&tzap_auth_callback_json(&callback_request.to_string())).unwrap();
         assert_eq!(callback_response["ok"], false);
         assert!(callback_response["message"].as_str().unwrap().contains("relay_body is not supported"));
+
+        // The refusal leaves the pending handoff in place; clear the shared
+        // entry so it cannot leak into a later test or run.
+        let forget_request = json!({
+            "state_dir": state_dir,
+            "account_key": "test_acc",
+        });
+        let forget_response: Value = serde_json::from_str(&tzap_auth_forget_json(&forget_request.to_string())).unwrap();
+        assert_eq!(forget_response["ok"], true);
         let _ = fs::remove_dir_all(temp);
     }
 }
