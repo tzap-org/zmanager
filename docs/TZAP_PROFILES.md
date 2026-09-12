@@ -90,15 +90,19 @@ until a step-up flow exists here.
 authorization failure, so a future step-up flow can prompt and retry rather than reporting a
 generic error.
 
-### Device identity is not reproducible across a fresh install
+### Device identity is per-install by design
 
 `enroll_or_renew_device_certificate` reuses a signing key by looking up a `label` in the local
 identity catalog. On desktop the private key is held in the OS keyring, but the reference that
-locates it (`TzapSecretRef::generate()`) is 24 random bytes and is deliberately non-discoverable:
-the only record of it lives in the catalog. Lose the catalog and the lookup misses, a fresh
-keypair is generated, and — because a device's server identity is its SPKI SHA-256 fingerprint —
-the server registers a **new device** while the old one stays active forever.
+locates it (`TzapSecretRef::generate()`) is deliberately non-discoverable random bytes recorded
+only in that catalog, so losing the catalog means a new keypair and — because a device's server
+identity is its SPKI SHA-256 fingerprint — a new device.
 
-The server already exposes `/v1/me/key-backup/{public_device_id}` and this crate already has
-`TzapBackupClient` support for it; no client currently uses it for signing keys. Wiring key backup
-into enrollment is the recovery path that does not weaken the non-discoverable reference.
+**That is intended.** `zmanager-mobile/docs/mobile-contact-book-design.md` §9.3 excludes the
+device signing key and its certificate from backup: a new install enrolls its own certificate,
+and a signing key restorable onto another device would weaken what a signature means. §8.4 makes
+the CLI explicitly **not** a consumer of account backups. Do not add key backup or restore for
+signing keys here; `/v1/me/key-backup` holds password-sealed *recipient* keys, the opposite case.
+
+The open problem is that superseded devices accumulate on the server with nothing expiring them,
+which is a server-side lifecycle question rather than a reason to make signing keys portable.
