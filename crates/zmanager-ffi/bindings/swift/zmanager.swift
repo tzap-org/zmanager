@@ -988,16 +988,18 @@ public struct DeviceInfoDto {
     public var `protocol`: String
     public var ip: String?
     public var deviceModel: String?
+    public var lastSeenUnixSeconds: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(alias: String, fingerprint: String, port: UInt16, `protocol`: String, ip: String?, deviceModel: String?) {
+    public init(alias: String, fingerprint: String, port: UInt16, `protocol`: String, ip: String?, deviceModel: String?, lastSeenUnixSeconds: UInt64?) {
         self.alias = alias
         self.fingerprint = fingerprint
         self.port = port
         self.`protocol` = `protocol`
         self.ip = ip
         self.deviceModel = deviceModel
+        self.lastSeenUnixSeconds = lastSeenUnixSeconds
     }
 }
 
@@ -1026,6 +1028,9 @@ extension DeviceInfoDto: Equatable, Hashable {
         if lhs.deviceModel != rhs.deviceModel {
             return false
         }
+        if lhs.lastSeenUnixSeconds != rhs.lastSeenUnixSeconds {
+            return false
+        }
         return true
     }
 
@@ -1036,6 +1041,7 @@ extension DeviceInfoDto: Equatable, Hashable {
         hasher.combine(`protocol`)
         hasher.combine(ip)
         hasher.combine(deviceModel)
+        hasher.combine(lastSeenUnixSeconds)
     }
 }
 
@@ -1053,7 +1059,8 @@ public struct FfiConverterTypeDeviceInfoDto: FfiConverterRustBuffer {
                 port: FfiConverterUInt16.read(from: &buf), 
                 protocol: FfiConverterString.read(from: &buf), 
                 ip: FfiConverterOptionString.read(from: &buf), 
-                deviceModel: FfiConverterOptionString.read(from: &buf)
+                deviceModel: FfiConverterOptionString.read(from: &buf), 
+                lastSeenUnixSeconds: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
 
@@ -1064,6 +1071,7 @@ public struct FfiConverterTypeDeviceInfoDto: FfiConverterRustBuffer {
         FfiConverterString.write(value.`protocol`, into: &buf)
         FfiConverterOptionString.write(value.ip, into: &buf)
         FfiConverterOptionString.write(value.deviceModel, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastSeenUnixSeconds, into: &buf)
     }
 }
 

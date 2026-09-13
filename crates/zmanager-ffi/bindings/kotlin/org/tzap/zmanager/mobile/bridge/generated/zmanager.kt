@@ -1728,7 +1728,8 @@ data class DeviceInfoDto (
     var `port`: kotlin.UShort, 
     var `protocol`: kotlin.String, 
     var `ip`: kotlin.String?, 
-    var `deviceModel`: kotlin.String?
+    var `deviceModel`: kotlin.String?, 
+    var `lastSeenUnixSeconds`: kotlin.ULong?
 ) {
     
     companion object
@@ -1746,6 +1747,7 @@ public object FfiConverterTypeDeviceInfoDto: FfiConverterRustBuffer<DeviceInfoDt
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalULong.read(buf),
         )
     }
 
@@ -1755,7 +1757,8 @@ public object FfiConverterTypeDeviceInfoDto: FfiConverterRustBuffer<DeviceInfoDt
             FfiConverterUShort.allocationSize(value.`port`) +
             FfiConverterString.allocationSize(value.`protocol`) +
             FfiConverterOptionalString.allocationSize(value.`ip`) +
-            FfiConverterOptionalString.allocationSize(value.`deviceModel`)
+            FfiConverterOptionalString.allocationSize(value.`deviceModel`) +
+            FfiConverterOptionalULong.allocationSize(value.`lastSeenUnixSeconds`)
     )
 
     override fun write(value: DeviceInfoDto, buf: ByteBuffer) {
@@ -1765,6 +1768,7 @@ public object FfiConverterTypeDeviceInfoDto: FfiConverterRustBuffer<DeviceInfoDt
             FfiConverterString.write(value.`protocol`, buf)
             FfiConverterOptionalString.write(value.`ip`, buf)
             FfiConverterOptionalString.write(value.`deviceModel`, buf)
+            FfiConverterOptionalULong.write(value.`lastSeenUnixSeconds`, buf)
     }
 }
 

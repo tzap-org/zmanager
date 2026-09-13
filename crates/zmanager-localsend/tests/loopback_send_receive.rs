@@ -60,6 +60,7 @@ fn a_pushed_file_arrives_intact_on_the_receiver_this_crate_started() {
         protocol: "http".to_owned(),
         ip: Some("127.0.0.1".to_owned()),
         device_model: None,
+        last_seen_unix_seconds: None,
     };
 
     let result = registry.send_file(SendFileRequest {
@@ -131,6 +132,7 @@ fn cancel_send_aborts_an_in_flight_upload_before_it_reaches_the_receiver() {
         protocol: "http".to_owned(),
         ip: Some("127.0.0.1".to_owned()),
         device_model: None,
+        last_seen_unix_seconds: None,
     };
 
     let send_id = "loopback-cancel-me".to_owned();
@@ -233,6 +235,7 @@ fn an_https_receiver_starts_and_accepts_a_pushed_file() {
         protocol: "https".to_owned(),
         ip: Some("127.0.0.1".to_owned()),
         device_model: None,
+        last_seen_unix_seconds: None,
     };
 
     let result = registry.send_file(SendFileRequest {

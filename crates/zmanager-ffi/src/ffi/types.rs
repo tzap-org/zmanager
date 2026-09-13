@@ -268,6 +268,14 @@ pub struct DeviceInfoDto {
     pub protocol: String,
     pub ip: Option<String>,
     pub device_model: Option<String>,
+    /// When this peer last confirmed itself, for discovery results.
+    ///
+    /// `LocalSend` has no goodbye: a peer that left simply stops confirming.
+    /// Discovery drops peers that go quiet, but inside that window a shell
+    /// still needs to tell a device seen moments ago from one about to be
+    /// dropped. `None` where the device is not a discovery result - an
+    /// event's sender, or a send target.
+    pub last_seen_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

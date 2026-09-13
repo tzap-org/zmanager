@@ -352,9 +352,10 @@ impl LocalSendRegistry {
             let mut state = self.state.lock().expect("registry lock poisoned");
             match event {
                 ServerEvent::PeerRegistered(device) => {
-                    state
-                        .confirmed_devices
-                        .insert(device.fingerprint.clone(), ConfirmedDevice { device: device.clone(), last_seen: std::time::Instant::now() });
+                    state.confirmed_devices.insert(
+                        device.fingerprint.clone(),
+                        ConfirmedDevice { device: device.clone(), last_seen: std::time::Instant::now(), last_seen_unix_seconds: unix_now_seconds() },
+                    );
                     if let Some(discovery) = state.active_discovery.as_ref() {
                         discovery.add_device(device.clone());
                     }
@@ -625,7 +626,10 @@ impl LocalSendRegistry {
             let devices = exclude_self_devices(guard.values().cloned().collect(), own_fingerprint.as_deref());
             let mut state = self.state.lock().expect("registry lock poisoned");
             for device in devices {
-                state.confirmed_devices.insert(device.fingerprint.clone(), ConfirmedDevice { device, last_seen: std::time::Instant::now() });
+                state.confirmed_devices.insert(
+                    device.fingerprint.clone(),
+                    ConfirmedDevice { device, last_seen: std::time::Instant::now(), last_seen_unix_seconds: unix_now_seconds() },
+                );
             }
 
             // Drop peers that have stopped confirming before reporting: the
@@ -639,7 +643,10 @@ impl LocalSendRegistry {
                 .confirmed_devices
                 .values()
                 .filter(|confirmed| !is_own_identity(&confirmed.device.fingerprint, own_fingerprint.as_deref(), &state_announced))
-                .map(|confirmed| DiscoveredDevice::from(confirmed.device.clone()))
+                .map(|confirmed| DiscoveredDevice {
+                    last_seen_unix_seconds: Some(confirmed.last_seen_unix_seconds),
+                    ..DiscoveredDevice::from(confirmed.device.clone())
+                })
                 .collect();
             Ok(persisted)
         })
@@ -810,6 +817,15 @@ pub struct DeviceInfoDto {
     pub protocol: String,
     pub ip: Option<String>,
     pub device_model: Option<String>,
+    /// When this peer last confirmed itself, for discovery results.
+    ///
+    /// `LocalSend` has no goodbye, so a peer that left simply stops
+    /// confirming and is otherwise indistinguishable from one still there.
+    /// Discovery drops peers past [`CONFIRMED_DEVICE_TTL`], but inside that
+    /// window a caller still needs to tell a device seen moments ago from one
+    /// last seen nearly two minutes back. `None` where the device is not a
+    /// discovery result - an event's sender, or a send target.
+    pub last_seen_unix_seconds: Option<u64>,
 }
 
 impl From<DeviceInfo> for DeviceInfoDto {
@@ -821,6 +837,9 @@ impl From<DeviceInfo> for DeviceInfoDto {
             protocol: device.protocol.as_str().to_owned(),
             ip: device.ip,
             device_model: device.device_model,
+            // Only a discovery result carries a confirmation time; an event's
+            // sender or a send target does not.
+            last_seen_unix_seconds: None,
         }
     }
 }
@@ -859,7 +878,10 @@ pub struct DiscoverRequest {
 #[derive(Debug, Clone)]
 struct ConfirmedDevice {
     device: DeviceInfo,
+    /// Monotonic, for the TTL: a wall-clock jump must not expire peers.
     last_seen: std::time::Instant,
+    /// Wall clock, for reporting to callers that render "last seen".
+    last_seen_unix_seconds: u64,
 }
 
 /// How long a peer stays in the store after its last confirmation.
@@ -885,6 +907,11 @@ fn default_discover_timeout_ms() -> u64 {
 
 fn exclude_self_devices(devices: Vec<DeviceInfo>, own_fingerprint: Option<&str>) -> Vec<DeviceInfo> {
     devices.into_iter().filter(|device| own_fingerprint != Some(device.fingerprint.as_str())).collect()
+}
+
+/// Seconds since the Unix epoch, saturating to 0 before it.
+fn unix_now_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Whether a confirmed fingerprint is really this device rather than a peer.
@@ -1022,6 +1049,7 @@ mod tests {
                 ip: Some("192.168.0.2".to_owned()),
             },
             last_seen: std::time::Instant::now().checked_sub(age).expect("test ages are small"),
+            last_seen_unix_seconds: unix_now_seconds().saturating_sub(age.as_secs()),
         }
     }
 

@@ -15,13 +15,29 @@ use crate::ffi::types::{
 
 impl From<zmanager_localsend::DeviceInfoDto> for DeviceInfoDto {
     fn from(value: zmanager_localsend::DeviceInfoDto) -> Self {
-        Self { alias: value.alias, fingerprint: value.fingerprint, port: value.port, protocol: value.protocol, ip: value.ip, device_model: value.device_model }
+        Self {
+            alias: value.alias,
+            fingerprint: value.fingerprint,
+            port: value.port,
+            protocol: value.protocol,
+            ip: value.ip,
+            device_model: value.device_model,
+            last_seen_unix_seconds: value.last_seen_unix_seconds,
+        }
     }
 }
 
 impl From<DeviceInfoDto> for zmanager_localsend::DeviceInfoDto {
     fn from(value: DeviceInfoDto) -> Self {
-        Self { alias: value.alias, fingerprint: value.fingerprint, port: value.port, protocol: value.protocol, ip: value.ip, device_model: value.device_model }
+        Self {
+            alias: value.alias,
+            fingerprint: value.fingerprint,
+            port: value.port,
+            protocol: value.protocol,
+            ip: value.ip,
+            device_model: value.device_model,
+            last_seen_unix_seconds: value.last_seen_unix_seconds,
+        }
     }
 }
 

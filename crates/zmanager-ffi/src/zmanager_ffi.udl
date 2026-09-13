@@ -296,6 +296,7 @@ dictionary DeviceInfoDto {
     string protocol;
     string? ip;
     string? device_model;
+    u64? last_seen_unix_seconds;
 };
 
 dictionary TransferFile {
