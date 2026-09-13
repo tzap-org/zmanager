@@ -1,13 +1,16 @@
 use std::io;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+
+use tzap_core::ArchiveTimestamp;
 
 const NANOSECONDS_PER_SECOND: u32 = 1_000_000_000;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct TarTimestamp {
-    pub(crate) seconds: i64,
-    pub(crate) nanoseconds: u32,
-}
+/// The tar backends use the same timespec `tzap-core` defines, so the host-time
+/// conversion has one owner across both projects.
+///
+/// What stays here is only what tar genuinely does differently from TZAP: see
+/// [`timestamp_to_pax_value`] and [`parse_pax_mtime`].
+pub(crate) type TarTimestamp = ArchiveTimestamp;
 
 /// Converts a modification time to Unix seconds, when it is at or after the
 /// epoch. Shared by the tar-family backends.
@@ -41,6 +44,11 @@ pub(crate) fn append_pax_mtime<W: io::Write>(builder: &mut tar::Builder<W>, modi
     builder.append_pax_extensions([("mtime", encoded.as_bytes())])
 }
 
+/// Parse a **tar** PAX `mtime`, which is laxer than `entry_metadata::parse_timestamp`.
+///
+/// Tar in the wild carries a leading `+`, trailing zeros in the fraction, and
+/// more than nine fractional digits; the TZAP parser rejects all three as
+/// non-canonical. The timespec the two produce is the same.
 pub(crate) fn parse_pax_mtime(value: &[u8]) -> Option<TarTimestamp> {
     let value = std::str::from_utf8(value).ok()?;
     let (negative, unsigned) = value.strip_prefix('-').map_or((false, value), |value| (true, value));
@@ -59,29 +67,25 @@ pub(crate) fn parse_pax_mtime(value: &[u8]) -> Option<TarTimestamp> {
     nanoseconds = nanoseconds.checked_mul(10_u32.pow(9 - digits))?;
 
     if !negative {
-        return Some(TarTimestamp { seconds: whole, nanoseconds });
+        return Some(TarTimestamp::new(whole, nanoseconds));
     }
     if nanoseconds == 0 {
-        return Some(TarTimestamp { seconds: whole.checked_neg()?, nanoseconds: 0 });
+        return Some(TarTimestamp::new(whole.checked_neg()?, 0));
     }
-    Some(TarTimestamp { seconds: whole.checked_neg()?.checked_sub(1)?, nanoseconds: NANOSECONDS_PER_SECOND - nanoseconds })
+    Some(TarTimestamp::new(whole.checked_neg()?.checked_sub(1)?, NANOSECONDS_PER_SECOND - nanoseconds))
 }
 
 fn system_time_to_timestamp(time: SystemTime) -> Option<TarTimestamp> {
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => Some(TarTimestamp { seconds: i64::try_from(duration.as_secs()).ok()?, nanoseconds: duration.subsec_nanos() }),
-        Err(error) => {
-            let duration = error.duration();
-            let seconds = i64::try_from(duration.as_secs()).ok()?;
-            if duration.subsec_nanos() == 0 {
-                Some(TarTimestamp { seconds: seconds.checked_neg()?, nanoseconds: 0 })
-            } else {
-                Some(TarTimestamp { seconds: seconds.checked_neg()?.checked_sub(1)?, nanoseconds: NANOSECONDS_PER_SECOND - duration.subsec_nanos() })
-            }
-        }
-    }
+    tzap_core::entry_metadata::archive_timestamp_from_system_time(time)
 }
 
+/// Encode for a **tar** PAX header, which is not the TZAP encoding.
+///
+/// `ArchiveTimestamp::canonical_pax_value` is deliberately not used here.
+/// §16.7.2 trims trailing zeros and forbids an integer part of `-0`, so it
+/// refuses the last second before the epoch outright; tar has no such rule, and
+/// GNU tar and libarchive both read `-0.5`. Refusing it would lose a time that
+/// a tar archive can legitimately carry.
 fn timestamp_to_pax_value(timestamp: TarTimestamp) -> String {
     if timestamp.seconds >= 0 {
         return format!("{}.{:09}", timestamp.seconds, timestamp.nanoseconds);
@@ -101,11 +105,7 @@ mod tests {
 
     #[test]
     fn pax_timestamp_parser_handles_positive_and_negative_fractions() {
-        for timestamp in [
-            TarTimestamp { seconds: 1, nanoseconds: 250_000_000 },
-            TarTimestamp { seconds: -2, nanoseconds: 750_000_000 },
-            TarTimestamp { seconds: -1, nanoseconds: 500_000_000 },
-        ] {
+        for timestamp in [TarTimestamp::new(1, 250_000_000), TarTimestamp::new(-2, 750_000_000), TarTimestamp::new(-1, 500_000_000)] {
             let encoded = timestamp_to_pax_value(timestamp);
             assert_eq!(parse_pax_mtime(encoded.as_bytes()), Some(timestamp));
         }
@@ -117,12 +117,12 @@ mod tests {
         use std::time::{Duration, UNIX_EPOCH};
 
         // Post-epoch
-        assert_eq!(system_time_to_timestamp(UNIX_EPOCH + Duration::new(1, 250_000_000)), Some(TarTimestamp { seconds: 1, nanoseconds: 250_000_000 }));
+        assert_eq!(system_time_to_timestamp(UNIX_EPOCH + Duration::new(1, 250_000_000)), Some(TarTimestamp::new(1, 250_000_000)));
 
         // Pre-epoch
-        assert_eq!(system_time_to_timestamp(UNIX_EPOCH - Duration::new(1, 250_000_000)), Some(TarTimestamp { seconds: -2, nanoseconds: 750_000_000 }));
+        assert_eq!(system_time_to_timestamp(UNIX_EPOCH - Duration::new(1, 250_000_000)), Some(TarTimestamp::new(-2, 750_000_000)));
 
         // Exactly epoch
-        assert_eq!(system_time_to_timestamp(UNIX_EPOCH), Some(TarTimestamp { seconds: 0, nanoseconds: 0 }));
+        assert_eq!(system_time_to_timestamp(UNIX_EPOCH), Some(TarTimestamp::new(0, 0)));
     }
 }

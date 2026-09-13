@@ -583,12 +583,7 @@ fn browser_kind(kind: &ExtractionEntryKind) -> BrowserEntryKind {
 fn entry_metadata<R: Read>(entry: &mut tar::Entry<'_, R>, archive_path: &Path) -> Result<TarMetadata, TarError> {
     let mut metadata = TarMetadata {
         mode: entry.header().mode().ok(),
-        mtime: entry
-            .header()
-            .mtime()
-            .ok()
-            .and_then(|seconds| i64::try_from(seconds).ok())
-            .map(|seconds| crate::tar_metadata::TarTimestamp { seconds, nanoseconds: 0 }),
+        mtime: entry.header().mtime().ok().and_then(|seconds| i64::try_from(seconds).ok()).map(crate::tar_metadata::TarTimestamp::from_seconds),
     };
     if let Some(extensions) = entry.pax_extensions().map_err(|source| io_error(archive_path, source))? {
         for extension in extensions {
