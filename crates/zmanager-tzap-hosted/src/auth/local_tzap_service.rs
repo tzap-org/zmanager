@@ -465,3 +465,74 @@ fn local_sign_device_id(public_key_fingerprint: &str) -> String {
     let suffix = public_key_fingerprint.strip_prefix("sha256:").unwrap_or(public_key_fingerprint).chars().take(16).collect::<String>();
     format!("{LOCAL_SIGN_DEVICE_ID_PREFIX}{suffix}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_client::{SESSION_AUDIENCE_LOGIN_TZAP, TzapBearerToken};
+    use crate::local_identity_store::{DEFAULT_IDENTITY_INVENTORY_ACCOUNT, InMemoryTzapLocalIdentityStore, TzapLocalIdentityStore};
+    use crate::trust::TzapIdentityAssurance;
+
+    const NOW: u64 = 1_700_000_000;
+
+    fn session(audience: &str, expires_at_unix_seconds: u64) -> TzapSessionRecord {
+        TzapSessionRecord {
+            audience: audience.to_owned(),
+            access_token: TzapBearerToken::new("local-test-token").expect("test token should be valid"),
+            expires_at_unix_seconds,
+            identity_assurance: TzapIdentityAssurance::OauthVerifiedEmail,
+            selected_org_id: None,
+            login_session_id: Some("local-test-login".to_owned()),
+        }
+    }
+
+    fn options() -> TzapLocalServiceOptions {
+        TzapLocalServiceOptions { account_key: DEFAULT_IDENTITY_INVENTORY_ACCOUNT.to_owned(), now_unix_seconds: NOW }
+    }
+
+    #[test]
+    fn local_certificate_lifecycle_enrolls_renews_revokes_and_retires() {
+        let session = session(SESSION_AUDIENCE_SIGN_TZAP, NOW + 3_600);
+        let mut store = InMemoryTzapLocalIdentityStore::new();
+
+        let enrolled = enroll_local_certificate(&mut store, &session, &options()).expect("enrollment should succeed");
+        assert_eq!(enrolled.certificate_id, "local-cert-1");
+        assert_eq!(enrolled.state, TzapLocalCertificateState::Active);
+
+        let renewed = renew_local_certificate(&mut store, &session, &options(), &enrolled.certificate_id).expect("renewal should succeed");
+        assert_eq!(renewed.certificate_id, "local-renewed-cert-2");
+        assert_ne!(renewed.certificate_sha256, enrolled.certificate_sha256);
+
+        revoke_local_certificate(&mut store, &session, &options(), &enrolled.certificate_id).expect("revocation should succeed");
+        let retirement = retire_local_device(&mut store, &session, &options()).expect("retirement should succeed");
+        assert_eq!(retirement.completion, TzapRetirementCompletion::Complete);
+        assert_eq!(retirement.attempted_sign_device_ids.len(), 1);
+
+        let inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).expect("inventory should load");
+        assert!(inventory.enrolled_certificates.iter().all(|certificate| certificate.state == TzapLocalCertificateState::Revoked));
+    }
+
+    #[test]
+    fn local_certificate_service_rejects_wrong_and_expired_sessions() {
+        let mut store = InMemoryTzapLocalIdentityStore::new();
+        let wrong_audience = session(SESSION_AUDIENCE_LOGIN_TZAP, NOW + 3_600);
+        let error = enroll_local_certificate(&mut store, &wrong_audience, &options()).expect_err("login session must not enroll certificates");
+        assert!(matches!(error, TzapLocalServiceError::Auth(TzapAuthError::AudienceMismatch { .. })));
+
+        let expired = session(SESSION_AUDIENCE_SIGN_TZAP, NOW);
+        let error = enroll_local_certificate(&mut store, &expired, &options()).expect_err("expired session must not enroll certificates");
+        assert!(matches!(error, TzapLocalServiceError::SessionExpired));
+    }
+
+    #[test]
+    fn local_certificate_service_reports_missing_certificates() {
+        let session = session(SESSION_AUDIENCE_SIGN_TZAP, NOW + 3_600);
+        let mut store = InMemoryTzapLocalIdentityStore::new();
+        let options = options();
+
+        assert!(matches!(renew_local_certificate(&mut store, &session, &options, "missing"), Err(TzapLocalServiceError::CertificateNotFound)));
+        assert!(matches!(revoke_local_certificate(&mut store, &session, &options, "missing"), Err(TzapLocalServiceError::CertificateNotFound)));
+        let retirement = retire_local_device(&mut store, &session, &options).expect("empty retirement should succeed");
+        assert!(retirement.attempted_sign_device_ids.is_empty());
+    }
+}

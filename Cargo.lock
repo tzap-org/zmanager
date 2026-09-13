@@ -6361,7 +6361,6 @@ version = "2.1.2"
 dependencies = [
  "localsend-rs",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

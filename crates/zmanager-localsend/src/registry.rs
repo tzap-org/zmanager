@@ -469,7 +469,7 @@ impl LocalSendRegistry {
     /// cannot synchronously drive the discovery task.
     #[allow(clippy::too_many_lines)]
     pub fn discover(&self, request: DiscoverRequest) -> BridgeResult<Vec<DiscoveredDevice>> {
-        let own_fingerprint = self.state.lock().expect("registry lock poisoned").server.as_ref().map(|server| server.device().fingerprint.clone());
+        let running_server = self.state.lock().expect("registry lock poisoned").server.as_ref().map(|server| server.device().clone());
         let client_certificate = request.https.then(|| self.client_certificate()).transpose()?;
         let local_ips = if request.interface_ips.is_empty() {
             localsend_rs::local_ipv4_addresses()?
@@ -481,7 +481,44 @@ impl LocalSendRegistry {
                 .collect::<BridgeResult<Vec<std::net::Ipv4Addr>>>()?
         };
 
-        self.runtime.block_on(async move {
+        // A peer confirms a multicast announcement by POSTing `/register` to
+        // the announcing device. Mobile callers commonly discover before
+        // starting their transfer receiver, so without this short-lived
+        // listener those fast confirmations are discarded and discovery falls
+        // back to the multi-second subnet scan. Reuse an existing receiver;
+        // otherwise bind a temporary, non-auto-accepting listener for this
+        // sweep and tear it down immediately afterward.
+        let protocol = if request.https { Protocol::Https } else { Protocol::Http };
+        let (mut temporary_server, announcement_device) = if let Some(device) = running_server {
+            (None, device)
+        } else {
+            let mut builder = LocalSendServer::builder()
+                .alias(request.alias.clone())
+                .port(request.port)
+                .save_dir(std::env::temp_dir().join("zmanager-localsend-discovery"))
+                .protocol(protocol)
+                .auto_accept(false);
+            if let Some(certificate) = client_certificate.clone() {
+                builder = builder.tls_certificate(certificate);
+            }
+            match self.runtime.block_on(builder.build()) {
+                Ok((server, mut events_rx)) => {
+                    let registry_for_pump = registry();
+                    self.runtime.spawn(async move {
+                        while let Some(event) = events_rx.recv().await {
+                            registry_for_pump.absorb_event(event);
+                        }
+                    });
+                    let device = server.device().clone();
+                    (Some(server), device)
+                }
+                Err(_error) => (None, DeviceInfoBuilder::new(request.alias.clone(), request.port).protocol(protocol).build()),
+            }
+        };
+        let own_fingerprint = Some(announcement_device.fingerprint.clone());
+        let announcement_port = announcement_device.port;
+
+        let result = self.runtime.block_on(async move {
             use localsend_rs::{Discovery, HttpDiscovery, MulticastDiscovery};
 
             // Keyed by fingerprint rather than a Vec scanned linearly: every
@@ -499,16 +536,14 @@ impl LocalSendRegistry {
             // announcement provokes rather than only overheard announcements.
             let peers_found = || !found.lock().expect("discovery result lock poisoned").is_empty();
 
-            let protocol = if request.https { Protocol::Https } else { Protocol::Http };
-            let device = DeviceInfoBuilder::new(request.alias.clone(), request.port).protocol(protocol).build();
             // A peer answers an announcement it has not seen before, so each
             // sweep announces a fresh identity to be sure of an answer. The
             // cost is that the identity comes straight back as a registration:
             // without discarding it, every sweep reports this device to itself
             // as a newly found peer.
-            let announced_fingerprint = device.fingerprint.clone();
+            let announced_fingerprint = announcement_device.fingerprint.clone();
             self.state.lock().expect("registry lock poisoned").announced_fingerprints.insert(announced_fingerprint.clone());
-            let mut discovery = MulticastDiscovery::new_with_device(device);
+            let mut discovery = MulticastDiscovery::new_with_device(announcement_device);
             if let Some(certificate) = client_certificate.clone() {
                 discovery.set_client_certificate(certificate);
             }
@@ -596,8 +631,8 @@ impl LocalSendRegistry {
                 let mut scans = Vec::with_capacity(local_ips.len());
                 for local_ip in local_ips {
                     let scanner = match client_certificate.as_ref() {
-                        Some(certificate) => HttpDiscovery::new_with_client_certificate(request.alias.clone(), request.port, protocol, certificate)?,
-                        None => HttpDiscovery::new(request.alias.clone(), request.port, protocol)?,
+                        Some(certificate) => HttpDiscovery::new_with_client_certificate(request.alias.clone(), announcement_port, protocol, certificate)?,
+                        None => HttpDiscovery::new(request.alias.clone(), announcement_port, protocol)?,
                     };
                     let base_ip = local_ip.to_string();
                     let timeout = std::time::Duration::from_millis(request.timeout_ms);
@@ -649,7 +684,12 @@ impl LocalSendRegistry {
                 })
                 .collect();
             Ok(persisted)
-        })
+        });
+        if let Some(mut server) = temporary_server.take() {
+            self.runtime.block_on(server.stop());
+            self.state.lock().expect("registry lock poisoned").pending_requests.clear();
+        }
+        result
     }
 
     // ---------------------------------------------------------------------

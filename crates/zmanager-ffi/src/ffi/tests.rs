@@ -3,9 +3,113 @@ use super::util::{classify_archive_path, format_capabilities, password_ref};
 use super::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_core::backend_test_support::zip_backend::{ZipCreateOptions, create_zip_from_manifest};
 use zmanager_core::manifest::{PlanOptions, plan_archive};
+
+static LOCALSEND_FFI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn localsend_ffi_conversions_preserve_device_events_and_decisions() {
+    let ffi_device = DeviceInfoDto {
+        alias: "peer".to_owned(),
+        fingerprint: "sha256:peer".to_owned(),
+        port: 53317,
+        protocol: "http".to_owned(),
+        ip: Some("192.0.2.10".to_owned()),
+        device_model: Some("test".to_owned()),
+        last_seen_unix_seconds: Some(42),
+    };
+    let native_device: zmanager_localsend::DeviceInfoDto = ffi_device.clone().into();
+    let round_trip = DeviceInfoDto::from(native_device.clone());
+    assert_eq!(round_trip.alias, ffi_device.alias);
+    assert_eq!(round_trip.fingerprint, ffi_device.fingerprint);
+    assert_eq!(round_trip.port, ffi_device.port);
+    assert_eq!(round_trip.protocol, ffi_device.protocol);
+    assert_eq!(round_trip.ip, ffi_device.ip);
+    assert_eq!(round_trip.device_model, ffi_device.device_model);
+    assert_eq!(round_trip.last_seen_unix_seconds, ffi_device.last_seen_unix_seconds);
+
+    let event = zmanager_localsend::QueuedEvent::PeerRegistered { device: native_device };
+    assert!(matches!(QueuedEvent::from(event), QueuedEvent::PeerRegistered { device } if device.alias == "peer"));
+
+    for decision in [TransferDecisionKind::Accept, TransferDecisionKind::AcceptFiles, TransferDecisionKind::Decline, TransferDecisionKind::Refuse] {
+        let native: zmanager_localsend::TransferDecisionKind = decision.into();
+        assert!(matches!(
+            native,
+            zmanager_localsend::TransferDecisionKind::Accept
+                | zmanager_localsend::TransferDecisionKind::AcceptFiles
+                | zmanager_localsend::TransferDecisionKind::Decline
+                | zmanager_localsend::TransferDecisionKind::Refuse
+        ));
+    }
+}
+
+#[test]
+fn localsend_ffi_receiver_lifecycle_is_wired_to_the_shared_registry() {
+    let _guard = LOCALSEND_FFI_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fixture = TestDir::new("ffi-localsend");
+    localsendStartReceiver(StartReceiverRequest {
+        alias: "ffi-test-receiver".to_owned(),
+        port: 0,
+        https: false,
+        save_dir: fixture.root.to_string_lossy().into_owned(),
+        auto_accept: false,
+        pin: None,
+    })
+    .expect("FFI receiver start should reach the shared registry");
+
+    let events = localsendPollEvents();
+    assert!(events.events.is_empty(), "starting a receiver should not manufacture transfer events");
+    localsendStopReceiver().expect("FFI receiver stop should reach the shared registry");
+}
+
+#[test]
+fn localsend_ffi_error_paths_return_typed_bridge_errors() {
+    let _guard = LOCALSEND_FFI_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let devices = localsendDiscover(DiscoverRequest {
+        alias: "ffi-discovery".to_owned(),
+        port: 0,
+        https: false,
+        timeout_ms: 25,
+        interface_ips: vec!["127.0.0.1".to_owned()],
+    })
+    .expect("FFI discovery should use the bounded no-peer path");
+    assert!(devices.is_empty());
+
+    let error = localsendRespondToTransfer(RespondToTransferRequest {
+        request_id: "missing-request".to_owned(),
+        decision: TransferDecisionKind::Decline,
+        file_ids: Vec::new(),
+        reason: None,
+    })
+    .expect_err("an unknown transfer request must be rejected");
+    assert!(matches!(error, ZmanagerGuiError::Bridge { code, .. } if code == "localsend_unknown_request"));
+
+    let error = localsendSendFile(SendFileRequest {
+        send_id: "missing-file".to_owned(),
+        alias: "ffi-sender".to_owned(),
+        self_port: 0,
+        https: false,
+        target: DeviceInfoDto {
+            alias: "peer".to_owned(),
+            fingerprint: String::new(),
+            port: 53317,
+            protocol: "http".to_owned(),
+            ip: Some("127.0.0.1".to_owned()),
+            device_model: None,
+            last_seen_unix_seconds: None,
+        },
+        file_path: "/definitely/missing/localsend-file".to_owned(),
+        pin: None,
+    })
+    .expect_err("a missing file must be rejected before spawning a send");
+    assert!(matches!(error, ZmanagerGuiError::Bridge { code, .. } if code == "invalid_request"));
+
+    let error = localsendCancelSend(CancelSendRequest { send_id: "missing-send".to_owned() }).expect_err("an unknown send must be rejected");
+    assert!(matches!(error, ZmanagerGuiError::Bridge { code, .. } if code == "localsend_unknown_send"));
+}
 
 #[cfg(feature = "tzap-online")]
 use tzap_core::format::FormatError;

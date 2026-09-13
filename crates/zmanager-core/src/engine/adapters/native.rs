@@ -52,6 +52,7 @@ struct NativeReadContext {
     options: OpenOptions,
     cursor_factory: SourceCursorFactory,
     retained_entries: Vec<NativeEntrySelector>,
+    retained_entry_indexes: HashMap<EntryId, usize>,
     selected_entry: Cell<Option<EntryId>>,
     /// Payload decoded once per session for formats whose container is a
     /// non-seekable compressed stream. Decoding is proportional to the whole
@@ -83,7 +84,14 @@ struct NativeEntrySelector {
 
 impl NativeReadContext {
     fn new(cursor_factory: SourceCursorFactory, options: OpenOptions) -> Self {
-        Self { options, cursor_factory, retained_entries: Vec::new(), selected_entry: Cell::new(None), decoded_payload: OnceCell::new() }
+        Self {
+            options,
+            cursor_factory,
+            retained_entries: Vec::new(),
+            retained_entry_indexes: HashMap::new(),
+            selected_entry: Cell::new(None),
+            decoded_payload: OnceCell::new(),
+        }
     }
 
     fn from_factory(cursor_factory: SourceCursorFactory, options: OpenOptions) -> Self {
@@ -102,6 +110,7 @@ impl NativeReadContext {
                 selector
             })
             .collect();
+        self.retained_entry_indexes = self.retained_entries.iter().enumerate().map(|(index, entry)| (entry.id, index)).collect();
     }
 
     fn set_selected_entry(&self, entry_id: EntryId) {
@@ -109,9 +118,9 @@ impl NativeReadContext {
     }
 
     fn retained_entry(&self, entry_id: EntryId) -> Result<&NativeEntrySelector, ArchiveError> {
-        self.retained_entries
-            .iter()
-            .find(|entry| entry.id == entry_id)
+        self.retained_entry_indexes
+            .get(&entry_id)
+            .and_then(|index| self.retained_entries.get(*index))
             .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, format!("Entry ID {entry_id} is not present in the native session listing")))
     }
 

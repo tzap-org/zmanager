@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use zmanager_localsend::{CancelSendRequest, DeviceInfoDto, LocalSendBridgeError, QueuedEvent, SendFileRequest, StartReceiverRequest};
+use zmanager_localsend::{CancelSendRequest, DeviceInfoDto, DiscoverRequest, LocalSendBridgeError, QueuedEvent, SendFileRequest, StartReceiverRequest};
 
 /// [`zmanager_localsend::registry`] is a single process-wide singleton (one
 /// `server` slot, one `active_sends` map) — every test in this binary shares
@@ -20,6 +20,26 @@ use zmanager_localsend::{CancelSendRequest, DeviceInfoDto, LocalSendBridgeError,
 /// this lock is cheaper than teaching the registry to support multiple
 /// independent instances just for tests.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn discovery_without_a_receiver_uses_and_releases_a_temporary_listener() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let registry = zmanager_localsend::registry();
+    assert!(registry.receiver_port().is_none());
+
+    let devices = registry
+        .discover(DiscoverRequest {
+            alias: "loopback-discovery".to_owned(),
+            port: 0,
+            https: false,
+            timeout_ms: 100,
+            interface_ips: vec!["127.0.0.1".to_owned()],
+        })
+        .expect("discovery should fall back cleanly when no peer answers");
+
+    assert!(devices.is_empty(), "the temporary listener must not report itself or invent peers: {devices:?}");
+    assert!(registry.receiver_port().is_none(), "discovery must not leave a receiver running");
+}
 
 #[test]
 fn a_pushed_file_arrives_intact_on_the_receiver_this_crate_started() {
