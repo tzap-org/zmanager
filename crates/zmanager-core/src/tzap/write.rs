@@ -493,7 +493,28 @@ impl RegularFileSource for TzapRegularFileSource {
             tzap_core::macos_metadata::open_macos_resource_fork(&self.source_path, self.kind == SourceEntryKind::Symlink, identity, record.logical_size)
                 .map_err(ArchiveWriteError::Io)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            // tzap-core owns the raw-EFS and alternate-data readers. Without
+            // this, every encrypted or ADS-bearing file failed the archive:
+            // core emits those records as streamed, and this host had no way to
+            // serve them. The path identity check is this host's own.
+            let expected_len = self.size;
+            tzap_core::windows_metadata::open_windows_streamed_auxiliary(
+                &self.source_path,
+                record,
+                Box::new(move |path: &Path| {
+                    let actual = std::fs::symlink_metadata(path)?;
+                    if actual.is_file() && actual.len() != expected_len {
+                        return Err(io::Error::other("Windows input changed before streamed auxiliary read"));
+                    }
+                    Ok(())
+                }),
+            )
+            .map(|reader| reader as Box<dyn io::Read + '_>)
+            .map_err(ArchiveWriteError::Io)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         Err(FormatError::WriterUnsupported("streamed auxiliary source is unsupported on this platform").into())
     }
 }
