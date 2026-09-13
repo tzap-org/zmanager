@@ -4,16 +4,7 @@
 use super::TzapError;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
-use tzap_core::{ArchiveTimestamp, MetadataDiagnostic, MetadataDiagnosticStatus, MetadataOperation, PortableFileMetadata};
-
-pub(crate) fn system_time_to_archive_timestamp(time: SystemTime) -> Option<ArchiveTimestamp> {
-    // tzap-core now owns the §16.7.2 sign-magnitude conversion this host already
-    // had right, so `tzap-cli` -- which used a timespec-style borrow and wrote
-    // times a second early -- shares it. `None` still means "no encodable
-    // timestamp"; the typed reason is available from the core call directly.
-    tzap_core::entry_metadata::archive_timestamp_from_system_time(time)
-}
+use tzap_core::{MetadataDiagnostic, MetadataDiagnosticStatus, MetadataOperation, PortableFileMetadata};
 
 #[derive(Default)]
 pub(crate) struct CapturedPortableFileMetadata {

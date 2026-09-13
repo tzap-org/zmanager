@@ -726,13 +726,16 @@ fn should_restore_tzap_metadata(restore_options: TzapRestoreOptions) -> bool {
     restore_options.policy != TzapRestorePolicy::Content
 }
 
+/// `ArchiveTimestamp` and `FileTime::from_unix_time` are both timespecs, so the
+/// fields transfer directly.
+///
+/// This used to borrow a second for negative fractional times, back when
+/// tzap-core handed out the §16.7.2 sign-and-magnitude form. Core now does that
+/// borrow itself in `parse_timestamp`, so repeating it here converted twice and
+/// restored pre-epoch mtimes up to two seconds early.
 fn archive_timestamp_file_time(timestamp: ArchiveTimestamp) -> Result<filetime::FileTime, &'static str> {
     if timestamp.nanoseconds >= 1_000_000_000 {
         return Err("timestamp nanoseconds must be less than one billion");
-    }
-    if timestamp.seconds < 0 && timestamp.nanoseconds != 0 {
-        let seconds = timestamp.seconds.checked_sub(1).ok_or("timestamp is outside the filesystem time range")?;
-        return Ok(filetime::FileTime::from_unix_time(seconds, 1_000_000_000 - timestamp.nanoseconds));
     }
     Ok(filetime::FileTime::from_unix_time(timestamp.seconds, timestamp.nanoseconds))
 }
@@ -898,10 +901,19 @@ mod tests {
         assert_eq!(options.system_authorized, process_is_elevated());
     }
 
+    /// Pinned against the encoding, not against the struct: the struct fields
+    /// alone are exactly what made the old double conversion look right.
     #[test]
     fn converts_negative_archive_timestamp_to_filesystem_time() {
-        let time = archive_timestamp_file_time(ArchiveTimestamp::new(-1, 500_000_000)).unwrap();
+        // `-1.25` on the wire is 1.25s before the epoch, which tzap-core parses
+        // to the timespec `(-2, 750_000_000)`. It must reach the filesystem as
+        // that same instant, not as `(-3, 250_000_000)`.
+        let parsed = tzap_core::entry_metadata::archive_timestamp_from_system_time(std::time::UNIX_EPOCH - std::time::Duration::new(1, 250_000_000)).unwrap();
+        assert_eq!(parsed.canonical_pax_value().unwrap(), b"-1.25", "fixture must match the archive encoding");
+        assert_eq!(archive_timestamp_file_time(parsed).unwrap(), filetime::FileTime::from_unix_time(-2, 750_000_000));
 
-        assert_eq!(time, filetime::FileTime::from_unix_time(-2, 500_000_000));
+        // Whole seconds and positive times pass through untouched.
+        assert_eq!(archive_timestamp_file_time(ArchiveTimestamp::new(-5, 0)).unwrap(), filetime::FileTime::from_unix_time(-5, 0));
+        assert_eq!(archive_timestamp_file_time(ArchiveTimestamp::new(7, 25)).unwrap(), filetime::FileTime::from_unix_time(7, 25));
     }
 }

@@ -7,7 +7,7 @@ use crate::atomic_file::AtomicOutputFile;
 use crate::jobs::{CancellationToken, JobCancelled, JobContext, JobPhase, ProgressBatch, ProgressCoalescer};
 use crate::manifest::{ArchiveManifest, ManifestFileType};
 use crate::secrets::SecretString;
-use crate::tzap::metadata::{CapturedPortableFileMetadata, portable_file_metadata, system_time_to_archive_timestamp};
+use crate::tzap::metadata::{CapturedPortableFileMetadata, portable_file_metadata};
 use crate::tzap::x509::{
     TzapX509SigningOptions, build_recipient_wrap_record_from_certificate_der, build_recipient_wrap_record_from_certificate_path,
     load_single_x509_certificate_file, load_x509_signer, recipient_wrap_archive_identity_for_writer, synthetic_recipient_certificate_der,
@@ -368,7 +368,7 @@ fn collect_archive_sources(
                         tzap_core::entry_metadata::projected_posix_mode(entry.file_type == ManifestFileType::Directory, false)
                     },
                     mtime: if options.preserve_metadata {
-                        entry.modified.and_then(system_time_to_archive_timestamp).unwrap_or(ArchiveTimestamp::UNIX_EPOCH)
+                        entry.modified.and_then(tzap_core::entry_metadata::archive_timestamp_from_system_time).unwrap_or(ArchiveTimestamp::UNIX_EPOCH)
                     } else {
                         ArchiveTimestamp::UNIX_EPOCH
                     },
