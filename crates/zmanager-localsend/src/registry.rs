@@ -47,6 +47,23 @@ struct RegistryState {
     /// the announcing peer. Keep that lifecycle in the shared Rust registry,
     /// not in the Android/iOS shells.
     discovery: Option<localsend_rs::MulticastDiscovery>,
+    /// Every identity this process has announced with.
+    ///
+    /// Each sweep announces a fresh identity so peers that already know us
+    /// still answer, and that identity is registered straight back to us. One
+    /// sweep's identity therefore lingers in the store and would be reported
+    /// as a peer by the next sweep, so all of them are remembered and
+    /// discarded from results.
+    announced_fingerprints: std::collections::HashSet<String>,
+    /// Why multicast is unavailable, when it is.
+    ///
+    /// Multicast is the fast path: a peer that hears an announcement answers
+    /// in about a tenth of a second, where the subnet fallback costs seconds.
+    /// Losing it silently makes discovery merely slow rather than broken, so
+    /// nothing surfaces and nobody looks - which is exactly how it went
+    /// unnoticed here. Official `LocalSend` keeps the reason retrievable
+    /// (`RsDiscovery::multicast_error`); so does this.
+    multicast_error: Option<String>,
     /// The discovery currently collecting results, while a sweep runs.
     ///
     /// A peer answers an announcement by `POST`ing `/register` to our HTTP
@@ -246,9 +263,10 @@ impl LocalSendRegistry {
             // Official LocalSend continues with HTTP discovery when multicast
             // cannot be bound, e.g. after an OS network-socket reclaim.
             discovery = localsend_rs::MulticastDiscovery::new_with_device(server.device().clone());
-            let _ = error;
+            self.state.lock().expect("registry lock poisoned").multicast_error = Some(error.to_string());
             false
         } else {
+            self.state.lock().expect("registry lock poisoned").multicast_error = None;
             true
         };
 
@@ -482,6 +500,13 @@ impl LocalSendRegistry {
 
             let protocol = if request.https { Protocol::Https } else { Protocol::Http };
             let device = DeviceInfoBuilder::new(request.alias.clone(), request.port).protocol(protocol).build();
+            // A peer answers an announcement it has not seen before, so each
+            // sweep announces a fresh identity to be sure of an answer. The
+            // cost is that the identity comes straight back as a registration:
+            // without discarding it, every sweep reports this device to itself
+            // as a newly found peer.
+            let announced_fingerprint = device.fingerprint.clone();
+            self.state.lock().expect("registry lock poisoned").announced_fingerprints.insert(announced_fingerprint.clone());
             let mut discovery = MulticastDiscovery::new_with_device(device);
             if let Some(certificate) = client_certificate.clone() {
                 discovery.set_client_certificate(certificate);
@@ -496,7 +521,13 @@ impl LocalSendRegistry {
             // reject a socket while HTTP discovery remains usable. Start it
             // first, but never let a multicast bind failure suppress the
             // register-first fallback.
-            let multicast_started = discovery.start().await.is_ok();
+            let multicast_started = match discovery.start().await {
+                Ok(()) => true,
+                Err(error) => {
+                    self.state.lock().expect("registry lock poisoned").multicast_error = Some(error.to_string());
+                    false
+                }
+            };
             // Publish this sweep's discovery so `/register` replies reach it.
             self.state.lock().expect("registry lock poisoned").active_discovery = Some(discovery.clone());
             let multicast = async {
@@ -602,11 +633,12 @@ impl LocalSendRegistry {
             // left the network must not keep appearing as a live one.
             let now = std::time::Instant::now();
             state.confirmed_devices.retain(|_, confirmed| now.duration_since(confirmed.last_seen) < CONFIRMED_DEVICE_TTL);
+            let state_announced = state.announced_fingerprints.clone();
 
             let persisted = state
                 .confirmed_devices
                 .values()
-                .filter(|confirmed| own_fingerprint.as_deref() != Some(confirmed.device.fingerprint.as_str()))
+                .filter(|confirmed| !is_own_identity(&confirmed.device.fingerprint, own_fingerprint.as_deref(), &state_announced))
                 .map(|confirmed| DiscoveredDevice::from(confirmed.device.clone()))
                 .collect();
             Ok(persisted)
@@ -727,6 +759,22 @@ impl LocalSendRegistry {
         }
     }
 
+    /// Why multicast discovery is unavailable, when it is.
+    ///
+    /// `None` while multicast is working. A value here means discovery still
+    /// functions but only through the subnet fallback, which is seconds slower
+    /// per sweep - worth surfacing rather than leaving users to wonder why
+    /// finding a device is slow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry lock was poisoned by a panic in another thread,
+    /// matching every other accessor on this type.
+    #[must_use]
+    pub fn multicast_error(&self) -> Option<String> {
+        self.state.lock().expect("registry lock poisoned").multicast_error.clone()
+    }
+
     /// Aborts the in-flight `send_file` task identified by `request.send_id`,
     /// unblocking its `block_on` on this or another thread with
     /// [`LocalSendBridgeError::SendCancelled`]. This is a hard abort (the
@@ -837,6 +885,17 @@ fn default_discover_timeout_ms() -> u64 {
 
 fn exclude_self_devices(devices: Vec<DeviceInfo>, own_fingerprint: Option<&str>) -> Vec<DeviceInfo> {
     devices.into_iter().filter(|device| own_fingerprint != Some(device.fingerprint.as_str())).collect()
+}
+
+/// Whether a confirmed fingerprint is really this device rather than a peer.
+///
+/// Two ways it can be: the running receiver's own identity, or an identity a
+/// sweep announced. A sweep announces a fresh identity so peers that already
+/// know us still answer, and that identity is registered straight back - so
+/// without this every sweep would report this device to itself, once per
+/// sweep, accumulating as it goes.
+fn is_own_identity(fingerprint: &str, own_fingerprint: Option<&str>, announced: &std::collections::HashSet<String>) -> bool {
+    own_fingerprint == Some(fingerprint) || announced.contains(fingerprint)
 }
 
 #[derive(Debug, Serialize)]
@@ -964,6 +1023,33 @@ mod tests {
             },
             last_seen: std::time::Instant::now().checked_sub(age).expect("test ages are small"),
         }
+    }
+
+    /// A sweep announces a fresh identity so peers that already know us still
+    /// answer; that identity is registered straight back, so without
+    /// discarding it every sweep reports this device to itself and the list
+    /// grows by one each time.
+    #[test]
+    fn a_sweeps_own_announced_identity_is_not_reported_as_a_peer() {
+        let mut announced = std::collections::HashSet::new();
+        announced.insert("sweep-1-identity".to_owned());
+        announced.insert("sweep-2-identity".to_owned());
+
+        assert!(is_own_identity("receiver-identity", Some("receiver-identity"), &announced), "the running receiver is not a peer");
+        assert!(is_own_identity("sweep-1-identity", Some("receiver-identity"), &announced), "an earlier sweep's identity is not a peer");
+        assert!(is_own_identity("sweep-2-identity", Some("receiver-identity"), &announced), "this sweep's identity is not a peer");
+        assert!(!is_own_identity("a-real-phone", Some("receiver-identity"), &announced), "an actual peer must survive");
+    }
+
+    /// With no receiver running there is no own fingerprint, but the sweep
+    /// identities still must not come back as peers.
+    #[test]
+    fn announced_identities_are_excluded_without_a_running_receiver() {
+        let mut announced = std::collections::HashSet::new();
+        announced.insert("sweep-identity".to_owned());
+
+        assert!(is_own_identity("sweep-identity", None, &announced));
+        assert!(!is_own_identity("a-real-phone", None, &announced));
     }
 
     /// `LocalSend` has no goodbye, so a departed device just stops confirming.
