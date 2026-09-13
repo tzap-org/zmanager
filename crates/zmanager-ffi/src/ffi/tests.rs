@@ -3,13 +3,16 @@ use super::util::{classify_archive_path, format_capabilities, password_ref};
 use super::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "localsend")]
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmanager_core::backend_test_support::zip_backend::{ZipCreateOptions, create_zip_from_manifest};
 use zmanager_core::manifest::{PlanOptions, plan_archive};
 
+#[cfg(feature = "localsend")]
 static LOCALSEND_FFI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(feature = "localsend")]
 #[test]
 fn localsend_ffi_conversions_preserve_device_events_and_decisions() {
     let ffi_device = DeviceInfoDto {
@@ -46,6 +49,7 @@ fn localsend_ffi_conversions_preserve_device_events_and_decisions() {
     }
 }
 
+#[cfg(feature = "localsend")]
 #[test]
 fn localsend_ffi_receiver_lifecycle_is_wired_to_the_shared_registry() {
     let _guard = LOCALSEND_FFI_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -65,6 +69,7 @@ fn localsend_ffi_receiver_lifecycle_is_wired_to_the_shared_registry() {
     localsendStopReceiver().expect("FFI receiver stop should reach the shared registry");
 }
 
+#[cfg(feature = "localsend")]
 #[test]
 fn localsend_ffi_error_paths_return_typed_bridge_errors() {
     let _guard = LOCALSEND_FFI_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
