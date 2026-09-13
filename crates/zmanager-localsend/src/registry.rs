@@ -47,10 +47,19 @@ struct RegistryState {
     /// the announcing peer. Keep that lifecycle in the shared Rust registry,
     /// not in the Android/iOS shells.
     discovery: Option<localsend_rs::MulticastDiscovery>,
+    /// The discovery currently collecting results, while a sweep runs.
+    ///
+    /// A peer answers an announcement by `POST`ing `/register` to our HTTP
+    /// server, so that reply surfaces as [`ServerEvent::PeerRegistered`] and
+    /// never reaches the multicast listener. Official `LocalSend` feeds such
+    /// confirmations into the same store its listener writes to; this slot is
+    /// how that happens here, so an in-flight sweep sees the replies its own
+    /// announcement provoked instead of waiting out its timeout.
+    active_discovery: Option<localsend_rs::MulticastDiscovery>,
     /// Confirmed peers keyed by `LocalSend` fingerprint. The official client
     /// keeps this store alive across discovery sweeps and merges confirmations
     /// from both directions (our probes and incoming `/register` events).
-    confirmed_devices: HashMap<String, DeviceInfo>,
+    confirmed_devices: HashMap<String, ConfirmedDevice>,
     pending_requests: HashMap<String, PendingRequest>,
     next_request_id: u64,
     events: VecDeque<QueuedEvent>,
@@ -325,7 +334,12 @@ impl LocalSendRegistry {
             let mut state = self.state.lock().expect("registry lock poisoned");
             match event {
                 ServerEvent::PeerRegistered(device) => {
-                    state.confirmed_devices.insert(device.fingerprint.clone(), device.clone());
+                    state
+                        .confirmed_devices
+                        .insert(device.fingerprint.clone(), ConfirmedDevice { device: device.clone(), last_seen: std::time::Instant::now() });
+                    if let Some(discovery) = state.active_discovery.as_ref() {
+                        discovery.add_device(device.clone());
+                    }
                     QueuedEvent::PeerRegistered { device: device.into() }
                 }
                 ServerEvent::TransferRequest(pending) => {
@@ -434,6 +448,7 @@ impl LocalSendRegistry {
     ///
     /// Panics if the discovery result mutex is poisoned or the Tokio runtime
     /// cannot synchronously drive the discovery task.
+    #[allow(clippy::too_many_lines)]
     pub fn discover(&self, request: DiscoverRequest) -> BridgeResult<Vec<DiscoveredDevice>> {
         let own_fingerprint = self.state.lock().expect("registry lock poisoned").server.as_ref().map(|server| server.device().fingerprint.clone());
         let client_certificate = request.https.then(|| self.client_certificate()).transpose()?;
@@ -450,8 +465,20 @@ impl LocalSendRegistry {
         self.runtime.block_on(async move {
             use localsend_rs::{Discovery, HttpDiscovery, MulticastDiscovery};
 
-            let found: Arc<Mutex<Vec<DeviceInfo>>> = Arc::new(Mutex::new(Vec::new()));
+            // Keyed by fingerprint rather than a Vec scanned linearly: every
+            // announcement and every subnet-scan hit is deduplicated against
+            // everything already seen, so a list is quadratic in peer count.
+            let found: Arc<Mutex<HashMap<String, DeviceInfo>>> = Arc::new(Mutex::new(HashMap::new()));
             let sink = found.clone();
+
+            // A peer answers an announcement by POSTing `/register` back to us,
+            // so that reply lands on the HTTP server and never reaches the
+            // multicast listener. Official LocalSend feeds such confirmations
+            // into the same store its listener writes to
+            // (`RsDiscovery::add_device`); `active_discovery` below is how the
+            // server reaches this sweep, so `found` sees the replies this
+            // announcement provokes rather than only overheard announcements.
+            let peers_found = || !found.lock().expect("discovery result lock poisoned").is_empty();
 
             let protocol = if request.https { Protocol::Https } else { Protocol::Http };
             let device = DeviceInfoBuilder::new(request.alias.clone(), request.port).protocol(protocol).build();
@@ -461,9 +488,7 @@ impl LocalSendRegistry {
             }
             discovery.on_discovered(move |found_device| {
                 let mut guard = sink.lock().expect("discovery result lock poisoned");
-                if !guard.iter().any(|existing| existing.fingerprint == found_device.fingerprint) {
-                    guard.push(found_device);
-                }
+                guard.entry(found_device.fingerprint.clone()).or_insert(found_device);
             });
 
             // LocalSend's multicast announcement is the fast path. The
@@ -472,10 +497,47 @@ impl LocalSendRegistry {
             // first, but never let a multicast bind failure suppress the
             // register-first fallback.
             let multicast_started = discovery.start().await.is_ok();
+            // Publish this sweep's discovery so `/register` replies reach it.
+            self.state.lock().expect("registry lock poisoned").active_discovery = Some(discovery.clone());
             let multicast = async {
                 if multicast_started {
-                    let _ = discovery.announce_presence().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(request.timeout_ms)).await;
+                    // The announcement burst deliberately repeats over a few
+                    // seconds so a peer that missed the first packet still
+                    // hears one, but a peer that did hear it registers back
+                    // within ~100ms. Awaiting the whole burst made every sweep
+                    // cost its full length; official `LocalSend` lets the burst
+                    // run while devices surface as they confirm, so it is sent
+                    // in the background and the wait below settles as soon as
+                    // anyone answers.
+                    let announcer = discovery.clone();
+                    tokio::spawn(async move {
+                        let _ = announcer.announce_presence().await;
+                    });
+
+                    // `timeout_ms` is the budget for hearing nothing, not a
+                    // fixed cost to pay on every sweep. Sleeping it out
+                    // unconditionally made discovery take the whole timeout
+                    // (3s from the desktop shell, 10s from this crate's
+                    // default) even when a peer answered in milliseconds.
+                    // Peers that are going to answer answer fast, so once the
+                    // first one does, wait only a short settle window for
+                    // stragglers before stopping.
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
+                    let mut settle_deadline = None;
+                    loop {
+                        let now = tokio::time::Instant::now();
+                        if now >= deadline {
+                            break;
+                        }
+                        match settle_deadline {
+                            Some(settle) if now >= settle => break,
+                            None if peers_found() => {
+                                settle_deadline = Some(now + DISCOVERY_SETTLE);
+                            }
+                            _ => {}
+                        }
+                        tokio::time::sleep(DISCOVERY_POLL.min(deadline - now)).await;
+                    }
                 }
                 discovery.stop();
             };
@@ -485,8 +547,17 @@ impl LocalSendRegistry {
                     // Match the official staged discovery grace period: give
                     // multicast/known-peer confirmation a chance before
                     // opening a full subnet sweep.
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    if !found.lock().expect("discovery result lock poisoned").is_empty() {
+                    // Poll rather than sleeping the grace period out: a peer
+                    // that is going to answer answers in milliseconds, and the
+                    // subnet sweep below is the expensive fallback.
+                    let grace_deadline = tokio::time::Instant::now() + DISCOVERY_HTTP_GRACE;
+                    while tokio::time::Instant::now() < grace_deadline {
+                        if peers_found() {
+                            return Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(Vec::new());
+                        }
+                        tokio::time::sleep(DISCOVERY_POLL).await;
+                    }
+                    if peers_found() {
                         return Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(Vec::new());
                     }
                 }
@@ -501,40 +572,42 @@ impl LocalSendRegistry {
                     scans.push(tokio::spawn(async move { scanner.scan_subnet_register_within(&base_ip, timeout).await }));
                 }
 
-                let mut devices = Vec::new();
+                let mut devices: HashMap<String, DeviceInfo> = HashMap::new();
                 for scan in scans {
                     if let Ok(Ok(outcome)) = scan.await {
                         for device in outcome.devices {
-                            if !devices.iter().any(|existing: &DeviceInfo| existing.fingerprint == device.fingerprint) {
-                                devices.push(device);
-                            }
+                            devices.entry(device.fingerprint.clone()).or_insert(device);
                         }
                     }
                 }
-                Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(devices)
+                Ok::<Vec<DeviceInfo>, localsend_rs::error::LocalSendError>(devices.into_values().collect())
             };
 
             let ((), http_result) = tokio::join!(multicast, http);
+            self.state.lock().expect("registry lock poisoned").active_discovery = None;
 
             let mut guard = found.lock().expect("discovery result lock poisoned");
             for device in http_result? {
-                if !guard.iter().any(|existing| existing.fingerprint == device.fingerprint) {
-                    guard.push(device);
-                }
+                guard.entry(device.fingerprint.clone()).or_insert(device);
             }
 
-            let devices = exclude_self_devices(guard.clone(), own_fingerprint.as_deref());
+            let devices = exclude_self_devices(guard.values().cloned().collect(), own_fingerprint.as_deref());
             let mut state = self.state.lock().expect("registry lock poisoned");
             for device in devices {
-                state.confirmed_devices.insert(device.fingerprint.clone(), device);
+                state.confirmed_devices.insert(device.fingerprint.clone(), ConfirmedDevice { device, last_seen: std::time::Instant::now() });
             }
+
+            // Drop peers that have stopped confirming before reporting: the
+            // store is what the UI offers as send targets, and a device that
+            // left the network must not keep appearing as a live one.
+            let now = std::time::Instant::now();
+            state.confirmed_devices.retain(|_, confirmed| now.duration_since(confirmed.last_seen) < CONFIRMED_DEVICE_TTL);
 
             let persisted = state
                 .confirmed_devices
                 .values()
-                .filter(|&device| own_fingerprint.as_deref() != Some(device.fingerprint.as_str()))
-                .cloned()
-                .map(DiscoveredDevice::from)
+                .filter(|confirmed| own_fingerprint.as_deref() != Some(confirmed.device.fingerprint.as_str()))
+                .map(|confirmed| DiscoveredDevice::from(confirmed.device.clone()))
                 .collect();
             Ok(persisted)
         })
@@ -729,6 +802,35 @@ pub struct DiscoverRequest {
     pub interface_ips: Vec<String>,
 }
 
+/// A peer confirmation plus when it was last seen.
+///
+/// `LocalSend` has no goodbye: a device that leaves the network simply stops
+/// answering. Without a last-seen stamp the store only ever grows, and a
+/// device that left hours ago is returned to the UI as though it were still
+/// there, indistinguishable from a live one.
+#[derive(Debug, Clone)]
+struct ConfirmedDevice {
+    device: DeviceInfo,
+    last_seen: std::time::Instant,
+}
+
+/// How long a peer stays in the store after its last confirmation.
+///
+/// Long enough to survive a sweep the device happened to miss, short enough
+/// that a device which has actually left stops being offered as a target.
+const CONFIRMED_DEVICE_TTL: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// How long to wait for `/register` replies before falling back to the
+/// subnet sweep. Replies observed on a healthy LAN arrive in ~100ms.
+const DISCOVERY_HTTP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How often the multicast wait checks whether any peer has answered.
+const DISCOVERY_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long the multicast wait keeps listening after the first peer answers,
+/// so a slightly slower device on the same sweep is still collected.
+const DISCOVERY_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
 fn default_discover_timeout_ms() -> u64 {
     10_000
 }
@@ -846,6 +948,45 @@ pub struct CancelSendRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confirmed(fingerprint: &str, age: std::time::Duration) -> ConfirmedDevice {
+        ConfirmedDevice {
+            device: DeviceInfo {
+                alias: "peer".to_owned(),
+                version: "2.1".to_owned(),
+                device_model: None,
+                device_type: None,
+                fingerprint: fingerprint.to_owned(),
+                port: 53317,
+                protocol: Protocol::Http,
+                download: false,
+                ip: Some("192.168.0.2".to_owned()),
+            },
+            last_seen: std::time::Instant::now().checked_sub(age).expect("test ages are small"),
+        }
+    }
+
+    /// `LocalSend` has no goodbye, so a departed device just stops confirming.
+    /// Without pruning it is offered as a live send target indefinitely.
+    #[test]
+    fn peers_that_stopped_confirming_are_dropped_from_the_store() {
+        let mut store: HashMap<String, ConfirmedDevice> = HashMap::new();
+        store.insert("fresh".to_owned(), confirmed("fresh", std::time::Duration::from_secs(1)));
+        store.insert("stale".to_owned(), confirmed("stale", CONFIRMED_DEVICE_TTL + std::time::Duration::from_secs(1)));
+
+        let now = std::time::Instant::now();
+        store.retain(|_, entry| now.duration_since(entry.last_seen) < CONFIRMED_DEVICE_TTL);
+
+        assert!(store.contains_key("fresh"), "a peer confirmed moments ago must stay");
+        assert!(!store.contains_key("stale"), "a peer past the TTL must not be offered as a target");
+    }
+
+    /// The TTL has to outlast a single missed sweep, or a device that simply
+    /// did not answer one announcement would vanish and reappear.
+    #[test]
+    fn the_confirmation_ttl_outlasts_a_missed_sweep() {
+        assert!(CONFIRMED_DEVICE_TTL > std::time::Duration::from_secs(30), "TTL {CONFIRMED_DEVICE_TTL:?} is too short to survive a sweep a device missed");
+    }
 
     #[test]
     fn discovery_results_exclude_the_running_receiver_identity() {
