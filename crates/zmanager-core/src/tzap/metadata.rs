@@ -12,7 +12,7 @@ pub(crate) fn system_time_to_archive_timestamp(time: SystemTime) -> Option<Archi
     // had right, so `tzap-cli` -- which used a timespec-style borrow and wrote
     // times a second early -- shares it. `None` still means "no encodable
     // timestamp"; the typed reason is available from the core call directly.
-    tzap_core::entry_metadata::archive_timestamp_from_system_time(time).ok()
+    tzap_core::entry_metadata::archive_timestamp_from_system_time(time)
 }
 
 #[derive(Default)]

@@ -517,6 +517,12 @@ impl LocalSendRegistry {
         };
         let own_fingerprint = Some(announcement_device.fingerprint.clone());
         let announcement_port = announcement_device.port;
+        // The HTTP fallback registers its local device with every host it
+        // probes. It must use the same identity as the announcement and
+        // temporary receiver, otherwise the receiver reports the scanner's
+        // fresh fingerprint back as a confirmed peer (which is this process
+        // discovering itself under a second identity).
+        let http_device = announcement_device.clone();
 
         let result = self.runtime.block_on(async move {
             use localsend_rs::{Discovery, HttpDiscovery, MulticastDiscovery};
@@ -632,7 +638,7 @@ impl LocalSendRegistry {
                 for local_ip in local_ips {
                     let scanner = match client_certificate.as_ref() {
                         Some(certificate) => HttpDiscovery::new_with_client_certificate(request.alias.clone(), announcement_port, protocol, certificate)?,
-                        None => HttpDiscovery::new(request.alias.clone(), announcement_port, protocol)?,
+                        None => HttpDiscovery::for_device(http_device.clone())?,
                     };
                     let base_ip = local_ip.to_string();
                     let timeout = std::time::Duration::from_millis(request.timeout_ms);
