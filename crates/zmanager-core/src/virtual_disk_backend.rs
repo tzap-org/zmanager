@@ -772,7 +772,7 @@ fn mount_entry(archive_path: &Path, allow_logical: bool) -> Result<(forensic_vfs
             .map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
         file.read_exact(&mut bat_bytes).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
 
-        let bat: Vec<u32> = bat_bytes.chunks_exact(4).map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap())).collect();
+        let bat: Vec<u32> = bat_bytes.as_chunks::<4>().0.iter().map(|chunk| u32::from_le_bytes(*chunk)).collect();
         let vdi_src = std::sync::Arc::new(VdiSource {
             file: std::sync::Mutex::new(file),
             offset_data: u64::from(vdi_hdr.offset_data),

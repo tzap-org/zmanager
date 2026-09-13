@@ -141,7 +141,7 @@ pub fn parse_sha256_identifier(value: &str) -> Result<[u8; 32], TrustIdentifierE
     }
 
     let mut bytes = [0u8; 32];
-    for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let hi = hex_value(chunk[0]).ok_or(TrustIdentifierError::InvalidCharacter)?;
         let lo = hex_value(chunk[1]).ok_or(TrustIdentifierError::InvalidCharacter)?;
         bytes[index] = (hi << 4) | lo;

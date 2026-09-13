@@ -234,7 +234,7 @@ fn read_header(file: &mut File, path: &Path) -> Result<Header, RpmError> {
     let mut raw_indexes = vec![0_u8; index_bytes];
     file.read_exact(&mut raw_indexes).map_err(|source| io_error(path, source))?;
     let mut indexes = Vec::with_capacity(usize::try_from(count).unwrap());
-    for chunk in raw_indexes.chunks_exact(16) {
+    for chunk in raw_indexes.as_chunks::<16>().0 {
         indexes.push(Index {
             tag: u32::from_be_bytes(chunk[0..4].try_into().unwrap()),
             kind: u32::from_be_bytes(chunk[4..8].try_into().unwrap()),
