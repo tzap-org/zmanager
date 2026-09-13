@@ -354,12 +354,18 @@ fn collect_archive_sources(
                     },
                     link_target: entry.symlink_target.as_deref().map(path_bytes),
                     size: if entry.file_type == ManifestFileType::File { entry.size } else { 0 },
+                    // Hosts without a POSIX mode project one, and tzap-core owns that
+                    // convention so hosts cannot drift apart on it. See
+                    // `entry_metadata::projected_posix_mode` for why a directory ignores
+                    // the read-only attribute while a regular file keeps it.
                     mode: if options.preserve_metadata {
-                        entry.permissions.unix_mode.unwrap_or_else(|| if entry.file_type == ManifestFileType::Directory { 0o755 } else { 0o644 }) & 0o7777
-                    } else if entry.file_type == ManifestFileType::Directory {
-                        0o755
+                        entry.permissions.unix_mode.unwrap_or_else(|| {
+                            tzap_core::entry_metadata::projected_posix_mode(entry.file_type == ManifestFileType::Directory, entry.permissions.readonly)
+                        }) & 0o7777
                     } else {
-                        0o644
+                        // Not preserving metadata, so the mode is canonical and the source
+                        // read-only attribute must not leak into it.
+                        tzap_core::entry_metadata::projected_posix_mode(entry.file_type == ManifestFileType::Directory, false)
                     },
                     mtime: if options.preserve_metadata {
                         entry.modified.and_then(system_time_to_archive_timestamp).unwrap_or(ArchiveTimestamp::UNIX_EPOCH)

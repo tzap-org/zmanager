@@ -33,9 +33,9 @@ use crate::engine::{TzapCreateOptions, TzapKeySource, TzapX509TrustOptions};
 #[cfg(feature = "reqwest-transport")]
 use crate::enrollment_client::TzapEnrollmentCertificateValidator;
 use crate::jobs::{CancellationToken, JobEvent};
-#[cfg(feature = "keyring")]
+#[cfg(all(feature = "keyring", not(test)))]
 use crate::keyring_store::NativeTzapLocalIdentityStore;
-#[cfg(not(feature = "keyring"))]
+#[cfg(any(not(feature = "keyring"), test))]
 use crate::local_identity_store::FileTzapLocalIdentityStore;
 use crate::local_identity_store::{
     TzapContactRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
@@ -58,18 +58,18 @@ const DEFAULT_TZAP_ACCOUNT_KEY: &str = "default";
 const OP_CERT_ENROLL: &str = "cert_enroll";
 const OP_CERT_RENEW: &str = "cert_renew";
 
-#[cfg(feature = "keyring")]
+#[cfg(all(feature = "keyring", not(test)))]
 type ServiceIdentityStore = NativeTzapLocalIdentityStore;
-#[cfg(not(feature = "keyring"))]
+#[cfg(any(not(feature = "keyring"), test))]
 type ServiceIdentityStore = FileTzapLocalIdentityStore;
 
 #[allow(clippy::unnecessary_wraps)]
 fn new_identity_store(state_dir: &Path, account_key: &str) -> Result<ServiceIdentityStore, String> {
-    #[cfg(feature = "keyring")]
+    #[cfg(all(feature = "keyring", not(test)))]
     {
         NativeTzapLocalIdentityStore::new(state_dir, account_key).map_err(|error| error.to_string())
     }
-    #[cfg(not(feature = "keyring"))]
+    #[cfg(any(not(feature = "keyring"), test))]
     {
         let _ = account_key;
         Ok(FileTzapLocalIdentityStore::new(state_dir))

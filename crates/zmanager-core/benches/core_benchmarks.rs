@@ -2,7 +2,7 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::implicit_clone, clippy::collapsible_if)]
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -315,6 +315,46 @@ fn bench_progress_coalescer() {
     println!("progress coalescer: {total_chunks} 128KiB chunks: {elapsed:?}, per chunk: {:?}", elapsed / total_chunks);
 }
 
+fn bench_indexed_selection_and_source_reopening() {
+    println!("\n=== Benchmark 6: Indexed Selection and Source Reopening ===");
+    let temp = BenchDir::new("indexed_selection");
+    let tar_path = temp.path("archive_5k.tar");
+    create_5k_tar_fixture(&tar_path);
+    let engine = create_default_engine().unwrap();
+
+    // One retained session exercises the normal selected-entry path: the
+    // handle resolves each public EntryId through the adapter's retained
+    // index, then the source cursor factory reopens the underlying file for
+    // the operation. This is the hot path used by preview/copy callers.
+    let mut retained_handle = engine.open(ArchiveSource::from_path_autodetect(&tar_path), zmanager_core::engine::OpenOptions::default()).unwrap();
+    let listing = retained_handle.list().unwrap();
+    let selected_ids: Vec<_> = listing.entries.iter().take(256).map(|entry| entry.id).collect();
+    let start = Instant::now();
+    let mut retained_bytes = 0_u64;
+    for entry_id in &selected_ids {
+        retained_bytes += retained_handle.copy_entry(*entry_id, &mut io::sink()).unwrap().written_bytes;
+    }
+    let retained_elapsed = start.elapsed();
+    println!("retained session: {} indexed selections with source cursors reopened: {retained_elapsed:?} ({retained_bytes} bytes)", selected_ids.len());
+
+    // This deliberately heavier comparison reopens and relists the archive
+    // for every selected entry. It gives the source-reopening cost a visible
+    // baseline without pretending that a microbenchmark can prove global
+    // optimality across every native backend.
+    let start = Instant::now();
+    let mut reopened_bytes = 0_u64;
+    for _ in &selected_ids {
+        let mut reopened_handle = engine.open(ArchiveSource::from_path_autodetect(&tar_path), zmanager_core::engine::OpenOptions::default()).unwrap();
+        let reopened_listing = reopened_handle.list().unwrap();
+        let entry_id = reopened_listing.entries[0].id;
+        reopened_bytes += reopened_handle.copy_entry(entry_id, &mut io::sink()).unwrap().written_bytes;
+    }
+    let reopened_elapsed = start.elapsed();
+    println!("reopen per selection: {} source opens + listings: {reopened_elapsed:?} ({reopened_bytes} bytes)", selected_ids.len());
+    assert!(retained_bytes > 0);
+    assert!(reopened_bytes > 0);
+}
+
 fn main() {
     println!("Running ZManager Core Performance Benchmarks (CR-177)...");
     bench_glob_matching();
@@ -322,5 +362,6 @@ fn main() {
     bench_extract_small_files();
     bench_manifest_walk();
     bench_progress_coalescer();
+    bench_indexed_selection_and_source_reopening();
     println!("\nAll benchmarks completed successfully.");
 }

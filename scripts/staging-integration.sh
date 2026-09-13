@@ -10,6 +10,7 @@ BASE_URL="${ZM_STAGING_BASE_URL:-https://staging.tzap.org}"
 ROOT_CERT="${ZM_STAGING_ROOT_CERT:-$DEFAULT_ROOT_CERT}"
 KEEP_ARTIFACTS=false
 RUN_ORGANIZATION=true
+CURL_TIMEOUT_ARGS=(--connect-timeout 10 --max-time 30)
 
 usage() {
 	cat <<'EOF'
@@ -79,6 +80,11 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+case "$BASE_URL" in
+	"https://staging.tzap.org"|"https://staging.tzap.org/"|"https://staging.tzap.org/"*) ;;
+	*) fail "staging integration is restricted to https://staging.tzap.org (got: $BASE_URL)" ;;
+esac
+
 for command_name in cargo curl jq openssl cmp; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
@@ -114,11 +120,11 @@ post_json() {
 	local path="$1" body="$2" token="${3:-}" response_file status
 	response_file="$(mktemp "$WORK_DIR/response.XXXXXX")"
 	if [[ -n "$token" ]]; then
-		status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+		status="$(curl "${CURL_TIMEOUT_ARGS[@]}" --silent --show-error --output "$response_file" --write-out '%{http_code}' \
 			-H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
 			--data "$body" "$BASE_URL$path")"
 	else
-		status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+		status="$(curl "${CURL_TIMEOUT_ARGS[@]}" --silent --show-error --output "$response_file" --write-out '%{http_code}' \
 			-H 'Content-Type: application/json' --data "$body" "$BASE_URL$path")"
 	fi
 	if [[ "$status" != 2* ]]; then
@@ -213,14 +219,14 @@ decode_recipient_key() {
 }
 
 log "Building the staging-test CLI"
-(cd "$REPO_ROOT" && cargo build -p zmanager-cli)
+(cd "$REPO_ROOT" && cargo build -p zmanager-cli --features tzap-online)
 
 log "Checking staging health and distributed trust material"
-curl --fail --silent --show-error "$BASE_URL/actuator/health" | jq -e '.status == "UP"' >/dev/null
+curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error "$BASE_URL/actuator/health" | jq -e '.status == "UP"' >/dev/null
 root_sha="sha256:$(openssl x509 -in "$ROOT_CERT" -outform DER | openssl dgst -sha256 -hex | awk '{print $2}')"
-curl --fail --silent --show-error "$BASE_URL/v1/trust/roots" |
+curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error "$BASE_URL/v1/trust/roots" |
 	jq -e --arg root "$root_sha" 'any(.[]; .certificateFingerprint == $root and .status == "active")' >/dev/null
-curl --fail --silent --show-error "$BASE_URL/v1/trust/intermediates" |
+curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error "$BASE_URL/v1/trust/intermediates" |
 	jq -e 'any(.[]; .status == "active" and .scope == "platform")' >/dev/null
 
 register_user_if_requested
@@ -247,7 +253,7 @@ printf '%s\n' '{"tzap_payload_version":1,"title":"Staging integration document",
 	--output "$WORK_DIR/document-envelope.json" --json >/dev/null
 "$ZM" tzap verify "$WORK_DIR/document-envelope.json" --custom-trust-root-cert "$ROOT_CERT" --json |
 	jq -e '.state == "cryptographically_intact_offline"' >/dev/null
-curl --fail --silent --show-error "$BASE_URL/v1/status/certificates/by-fingerprint/$CERT_1_SHA" > "$WORK_DIR/status-1.json"
+curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error "$BASE_URL/v1/status/certificates/by-fingerprint/$CERT_1_SHA" > "$WORK_DIR/status-1.json"
 "$ZM" tzap verify "$WORK_DIR/document-envelope.json" --custom-trust-root-cert "$ROOT_CERT" \
 	--status-response "$WORK_DIR/status-1.json" --json | jq -e '.state == "valid_now"' >/dev/null
 
@@ -268,7 +274,7 @@ if [[ "$RUN_ORGANIZATION" == true ]]; then
 		fail "organization enrollment did not report approval pending"
 	ORG_KEY_ID="$(jq -er --arg label "Hosted TZAP enrollment signing key (org:$ORG_ID)" \
 		'.device_signing_keys[] | select(.label == $label) | .key_id' "$STATE_1/default.identity.json")"
-	DEVICES="$(curl --fail --silent --show-error -H "Authorization: Bearer $TOKEN_1" "$BASE_URL/v1/orgs/$ORG_ID/devices")"
+		DEVICES="$(curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error -H "Authorization: Bearer $TOKEN_1" "$BASE_URL/v1/orgs/$ORG_ID/devices")"
 	ORG_DEVICE_ID="$(jq -er --arg key "$ORG_KEY_ID" '.[] | select(.device_public_key_fingerprint == $key) | .organization_device_id' <<<"$DEVICES")"
 	post_json "/v1/orgs/$ORG_ID/devices/$ORG_DEVICE_ID/approve" '{}' "$TOKEN_1" >/dev/null
 	"$ZM" auth cert enroll --state-dir "$STATE_1" --service-base-url "$BASE_URL" \

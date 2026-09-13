@@ -49,6 +49,7 @@ fn invalidate_cached_secret(key: &str) {
 }
 
 #[must_use]
+#[cfg(all(feature = "keyring", not(test)))]
 pub(crate) fn pending_auth_reference() -> TzapSecretRef {
     TzapSecretRef::parse("secret_pending_auth").unwrap_or_else(|_| TzapSecretRef::generate())
 }

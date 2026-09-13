@@ -44,6 +44,14 @@ zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.2" }
 # TZAP 0.2.4 includes the Unicode-safe volume-name parsing fix that previously
 # required a temporary sibling-checkout patch.
 
+# Temporary sibling-checkout patch again: the POSIX mode projection that hosts
+# without one have to apply now lives in tzap-core as
+# `entry_metadata::projected_posix_mode`, so the rule has a single owner instead
+# of one copy here and one in tzap-cli, which had already drifted apart. Drop
+# this patch once a tzap-core release carries that function.
+[patch.crates-io]
+tzap-core = { path = "../tzap/crates/tzap-core" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

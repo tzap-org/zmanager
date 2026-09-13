@@ -20,7 +20,7 @@ pub use zmanager_core::{
     manifest, p256_signature, safety, secrets, trust, x509_format,
 };
 
-#[cfg(not(feature = "keyring"))]
+#[cfg(any(not(feature = "keyring"), test))]
 pub(crate) fn write_atomic_secret_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     zmanager_core::write_atomic_secret_file(path, bytes)
 }

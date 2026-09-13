@@ -51,10 +51,6 @@ pub(super) fn device_retire_command(args: &[String], mut global: GlobalOptions) 
 }
 
 pub(super) fn device_revoke_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
-    if !cfg!(feature = "hosted-revocation") {
-        print_stable_tzap_error("device_revoke", REVOCATION_REQUIRES_HOSTED_CONSOLE, &global);
-        return ExitCode::FAILURE;
-    }
     let mut context = TzapCliContext::default();
     let mut sign_device_id = None;
     let mut service_base_url = None;
@@ -91,6 +87,10 @@ pub(super) fn device_revoke_command(args: &[String], mut global: GlobalOptions) 
     let Some(sign_device_id) = sign_device_id else {
         return command_usage_error("device", "missing --device-id", &global);
     };
+    if !cfg!(feature = "hosted-revocation") {
+        print_stable_tzap_error("device_revoke", REVOCATION_REQUIRES_HOSTED_CONSOLE, &global);
+        return ExitCode::FAILURE;
+    }
     let sign_base_url = service_base_url.unwrap_or_else(|| zmanager_tzap_hosted::auth_client::SIGN_TZAP_BASE_URL.to_owned());
     let session_store = zmanager_tzap_hosted::tzap_service_auth::TzapFfiSessionStore::new(&context.state_dir);
     let Some(session) = session_store.load_session(&context.account_key) else {
