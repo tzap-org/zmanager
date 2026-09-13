@@ -126,3 +126,141 @@ mod tests {
         assert_eq!(system_time_to_timestamp(UNIX_EPOCH), Some(TarTimestamp::new(0, 0)));
     }
 }
+
+/// Produces exactly `declared` bytes from `inner`, whatever the file does.
+///
+/// A tar header states the member's length before its bytes are written, so the
+/// promise is already made by the time the file is read. Anything else leaves
+/// the next header at the wrong offset and truncates the archive at that member.
+pub(crate) struct ExactLengthReader<R> {
+    inner: R,
+    remaining: u64,
+    padded: u64,
+}
+
+impl<R: io::Read> ExactLengthReader<R> {
+    pub(crate) fn new(inner: R, declared: u64) -> Self {
+        Self { inner, remaining: declared, padded: 0 }
+    }
+
+    /// Bytes the file was short by, zero-filled to honour the header.
+    pub(crate) fn padded(&self) -> u64 {
+        self.padded
+    }
+
+    /// Whether the file still had data past the declared length.
+    pub(crate) fn grew(&mut self) -> bool {
+        let mut probe = [0u8; 1];
+        matches!(self.inner.read(&mut probe), Ok(1))
+    }
+}
+
+impl<R: io::Read> io::Read for ExactLengthReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 || out.is_empty() {
+            return Ok(0);
+        }
+        let cap = usize::try_from(self.remaining).unwrap_or(usize::MAX).min(out.len());
+        let read = self.inner.read(&mut out[..cap])?;
+        if read == 0 {
+            // The file ended early. Zero-fill the rest rather than emit a short
+            // member: GNU tar reports "File shrank by N bytes; padding with
+            // zeros" and libarchive pads the same way.
+            out[..cap].fill(0);
+            self.remaining -= cap as u64;
+            self.padded += cap as u64;
+            return Ok(cap);
+        }
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+/// Plain-language note for a file whose length moved while it was being read.
+///
+/// This is ordinary on a live system -- a log being appended to, a database
+/// checkpointing, a build still running -- so it is reported as something that
+/// happened, not as an error the person has to act on. The archive is complete
+/// and readable either way; only this member's contents are as of the moment
+/// archiving started.
+pub(crate) fn changed_during_read_note(archive_path: &str, declared: u64, padded: u64, grew: bool) -> Option<String> {
+    if padded > 0 {
+        let kept = declared.saturating_sub(padded);
+        Some(format!(
+            "{archive_path} was shortened while being archived; kept the {} that was still there and filled the remaining {} with zeros",
+            human_bytes(kept),
+            human_bytes(padded)
+        ))
+    } else if grew {
+        Some(format!("{archive_path} was still being written while being archived; stored the first {}", human_bytes(declared)))
+    } else {
+        None
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
+    // Integer scaling: a byte count can exceed what f64 represents exactly, and
+    // this is a human-readable label where one decimal place is all that shows.
+    let mut scaled = bytes;
+    let mut remainder = 0u64;
+    let mut unit = 0;
+    while scaled >= 1024 && unit + 1 < UNITS.len() {
+        remainder = scaled % 1024;
+        scaled /= 1024;
+        unit += 1;
+    }
+    if unit == 0 { format!("{bytes} {}", UNITS[0]) } else { format!("{scaled}.{} {}", remainder * 10 / 1024, UNITS[unit]) }
+}
+
+#[cfg(test)]
+mod exact_length_tests {
+    use super::{ExactLengthReader, changed_during_read_note};
+    use std::io::{Cursor, Read as _};
+
+    /// A member must be exactly as long as its header promised, whichever way
+    /// the file moved. Anything else leaves the next header at the wrong offset
+    /// and silently truncates the archive from that member onward -- which is
+    /// what `tar::Builder::append_file` does, because it pads from the number of
+    /// bytes it actually copied rather than from the declared size.
+    #[test]
+    fn a_member_is_always_exactly_its_declared_length() {
+        // Shrank: 1000 promised, 400 left on disk.
+        let mut short = ExactLengthReader::new(Cursor::new(vec![b'x'; 400]), 1000);
+        let mut out = Vec::new();
+        short.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 1000, "a shrinking file must still fill its declared length");
+        assert_eq!(&out[..400], &[b'x'; 400], "the bytes that were there must be kept");
+        assert!(out[400..].iter().all(|byte| *byte == 0), "the missing tail must be zeros");
+        assert_eq!(short.padded(), 600);
+
+        // Grew: 1000 promised, 4000 now on disk.
+        let mut long = ExactLengthReader::new(Cursor::new(vec![b'y'; 4000]), 1000);
+        let mut out = Vec::new();
+        long.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 1000, "a growing file must not overrun its declared length");
+        assert_eq!(long.padded(), 0);
+        assert!(long.grew(), "the growth must be detectable so it can be reported");
+
+        // Unchanged: no note, nothing padded.
+        let mut exact = ExactLengthReader::new(Cursor::new(vec![b'z'; 1000]), 1000);
+        let mut out = Vec::new();
+        exact.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 1000);
+        assert_eq!(exact.padded(), 0);
+        assert!(!exact.grew());
+    }
+
+    /// The person reading this is backing something up, not debugging tar.
+    #[test]
+    fn the_note_explains_what_happened_without_jargon() {
+        let shrank = changed_during_read_note("var/log/app.log", 4 * 1024 * 1024, 3 * 1024 * 1024, false).unwrap();
+        assert!(shrank.contains("var/log/app.log"), "{shrank}");
+        assert!(shrank.contains("1.0 MB") && shrank.contains("3.0 MB"), "kept and zero-filled amounts must both be stated: {shrank}");
+
+        let grew = changed_during_read_note("var/log/app.log", 4 * 1024 * 1024, 0, true).unwrap();
+        assert!(grew.contains("still being written") && grew.contains("4.0 MB"), "{grew}");
+
+        assert!(changed_during_read_note("steady.bin", 10, 0, false).is_none(), "an unchanged file needs no note");
+    }
+}

@@ -1,6 +1,7 @@
 use crate::jobs::JobContext;
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::ExtractionSafetyError;
+use crate::tar_metadata::{ExactLengthReader, changed_during_read_note};
 use std::fmt;
 use std::fs::File;
 use std::io;
@@ -187,21 +188,28 @@ fn append_manifest_entry<W: io::Write>(
             0
         }
         ManifestFileType::File => {
+            // The header promises a length before the bytes are written, so the
+            // member must be exactly that long even if the file moves underneath
+            // us. `append_path_with_name`/`append_file` copy to EOF and pad from
+            // the actual length instead, which shifts every later header and
+            // silently truncates the archive at this member.
+            let mut source = File::open(&entry.source_path).map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
+            let mut header = Header::new_gnu();
             if preserve_metadata {
-                builder
-                    .append_path_with_name(&entry.source_path, &entry.archive_path)
-                    .map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
+                let stat = source.metadata().map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
+                header.set_metadata(&stat);
             } else {
-                let mut source = File::open(&entry.source_path).map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
-                let mut header = Header::new_gnu();
-                header.set_entry_type(EntryType::Regular);
-                header.set_size(entry.size);
                 header.set_mode(0o644);
                 header.set_mtime(0);
-                header.set_cksum();
-                builder
-                    .append_data(&mut header, &entry.archive_path, &mut source)
-                    .map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
+            }
+            header.set_entry_type(EntryType::Regular);
+            header.set_size(entry.size);
+            header.set_cksum();
+            let mut exact = ExactLengthReader::new(&mut source, entry.size);
+            builder.append_data(&mut header, &entry.archive_path, &mut exact).map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })?;
+            let (padded, grew) = (exact.padded(), exact.grew());
+            if let Some(note) = changed_during_read_note(&entry.archive_path, entry.size, padded, grew) {
+                report.warnings.push(note);
             }
             report.written_entries += 1;
             report.written_bytes += entry.size;
