@@ -336,10 +336,7 @@ impl WimArchive {
         if total_parts > 1 {
             for part_number in 2..=total_parts {
                 match split_part_path(path, part_number) {
-                    Some(sibling) => match open_part(&sibling) {
-                        Ok(part) => parts.push(part),
-                        Err(error) => return Err(error),
-                    },
+                    Some(sibling) => parts.push(open_part(&sibling)?),
                     None => missing_parts.push(part_number),
                 }
             }
@@ -820,7 +817,7 @@ fn read_utf16_name(dentry: &[u8], offset: usize, nbytes: usize) -> String {
     if nbytes == 0 || offset + nbytes > dentry.len() {
         return String::new();
     }
-    let units: Vec<u16> = dentry[offset..offset + nbytes].chunks_exact(2).map(|chunk| u16::from_le_bytes(chunk.try_into().unwrap())).collect();
+    let units: Vec<u16> = dentry[offset..offset + nbytes].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
     String::from_utf16_lossy(&units).trim_end_matches('\0').to_owned()
 }
 
@@ -875,7 +872,7 @@ fn utf16_slice(buffer: &[u8], offset: usize, length: usize) -> Option<String> {
     if end > buffer.len() {
         return None;
     }
-    let units: Vec<u16> = buffer[offset..end].chunks_exact(2).map(|chunk| u16::from_le_bytes(chunk.try_into().unwrap())).collect();
+    let units: Vec<u16> = buffer[offset..end].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
     Some(String::from_utf16_lossy(&units))
 }
 
