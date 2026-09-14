@@ -480,6 +480,15 @@ impl LocalSendRegistry {
                 .map(|ip| ip.parse().map_err(|error| LocalSendBridgeError::InvalidRequest(format!("invalid LocalSend interface IP {ip}: {error}"))))
                 .collect::<BridgeResult<Vec<std::net::Ipv4Addr>>>()?
         };
+        // An explicitly loopback-scoped request must not also listen to the
+        // machine's LAN multicast sockets. MulticastDiscovery deliberately
+        // ignores loopback interfaces, so starting it here would silently
+        // widen a `127.0.0.1` request to every network interface. Apart from
+        // violating the requested scope, that lets a delayed announcement
+        // from another local test (or another LocalSend process) appear in a
+        // loopback-only discovery result.
+        let loopback_only_scope = !request.interface_ips.is_empty() && local_ips.iter().all(std::net::Ipv4Addr::is_loopback);
+        let multicast_allowed = !loopback_only_scope;
 
         // A peer confirms a multicast announcement by POSTing `/register` to
         // the announcing device. Mobile callers commonly discover before
@@ -563,12 +572,16 @@ impl LocalSendRegistry {
             // reject a socket while HTTP discovery remains usable. Start it
             // first, but never let a multicast bind failure suppress the
             // register-first fallback.
-            let multicast_started = match discovery.start().await {
-                Ok(()) => true,
-                Err(error) => {
-                    self.state.lock().expect("registry lock poisoned").multicast_error = Some(error.to_string());
-                    false
+            let multicast_started = if multicast_allowed {
+                match discovery.start().await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        self.state.lock().expect("registry lock poisoned").multicast_error = Some(error.to_string());
+                        false
+                    }
                 }
+            } else {
+                false
             };
             // Publish this sweep's discovery so `/register` replies reach it.
             self.state.lock().expect("registry lock poisoned").active_discovery = Some(discovery.clone());
@@ -683,6 +696,7 @@ impl LocalSendRegistry {
             let persisted = state
                 .confirmed_devices
                 .values()
+                .filter(|confirmed| !loopback_only_scope || device_is_loopback(&confirmed.device))
                 .filter(|confirmed| !is_own_identity(&confirmed.device.fingerprint, own_fingerprint.as_deref(), &state_announced))
                 .map(|confirmed| DiscoveredDevice {
                     last_seen_unix_seconds: Some(confirmed.last_seen_unix_seconds),
@@ -971,6 +985,16 @@ fn is_own_identity(fingerprint: &str, own_fingerprint: Option<&str>, announced: 
     own_fingerprint == Some(fingerprint) || announced.contains(fingerprint)
 }
 
+/// Whether a discovered device belongs to an explicitly loopback-only sweep.
+///
+/// Confirmed devices intentionally survive across sweeps for a short TTL, so
+/// filtering only the devices found by the current sweep is insufficient: a
+/// peer found on the LAN by an earlier sweep could otherwise leak into a later
+/// `127.0.0.1`-only request.
+fn device_is_loopback(device: &DeviceInfo) -> bool {
+    device.ip.as_deref().and_then(|ip| ip.parse::<std::net::Ipv4Addr>().ok()).is_some_and(|ip| ip.is_loopback())
+}
+
 #[derive(Debug, Serialize)]
 pub struct TransferFile {
     pub id: String,
@@ -1124,6 +1148,25 @@ mod tests {
 
         assert!(is_own_identity("sweep-identity", None, &announced));
         assert!(!is_own_identity("a-real-phone", None, &announced));
+    }
+
+    #[test]
+    fn loopback_scoped_discovery_does_not_return_lan_peers() {
+        let loopback_peer = DeviceInfo {
+            alias: "local-test-peer".to_owned(),
+            version: "2.1".to_owned(),
+            device_model: None,
+            device_type: None,
+            fingerprint: "loopback-peer".to_owned(),
+            port: 53317,
+            protocol: Protocol::Http,
+            download: false,
+            ip: Some("127.0.0.1".to_owned()),
+        };
+        let lan_peer = DeviceInfo { ip: Some("10.1.0.134".to_owned()), ..loopback_peer.clone() };
+
+        assert!(device_is_loopback(&loopback_peer));
+        assert!(!device_is_loopback(&lan_peer));
     }
 
     /// `LocalSend` has no goodbye, so a departed device just stops confirming.
