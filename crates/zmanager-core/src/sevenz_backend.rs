@@ -70,7 +70,7 @@ impl Default for SevenZCreateOptions {
         Self {
             solid: true,
             level: None,
-            threads: crate::tar_metadata::available_parallelism_at_least_two(),
+            threads: crate::parallelism::available_parallelism_at_least_two(),
             chunk_size: Some(DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES),
             preserve_metadata: true,
             password: None,
@@ -1160,7 +1160,7 @@ mod tests {
     fn default_7z_create_options_request_parallel_lzma2_when_available() {
         let options = SevenZCreateOptions::default();
 
-        assert_eq!(options.threads, crate::tar_metadata::available_parallelism_at_least_two());
+        assert_eq!(options.threads, crate::parallelism::available_parallelism_at_least_two());
         assert_eq!(options.chunk_size, Some(super::DEFAULT_SEVENZ_LZMA2_CHUNK_SIZE_BYTES));
     }
 

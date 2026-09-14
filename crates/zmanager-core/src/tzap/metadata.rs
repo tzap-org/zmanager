@@ -4,7 +4,7 @@
 use super::TzapError;
 use std::fs;
 use std::path::Path;
-use tzap_core::{MetadataDiagnostic, MetadataDiagnosticStatus, MetadataOperation, PortableFileMetadata};
+use tzap_core::{MetadataDiagnostic, PortableFileMetadata};
 
 #[derive(Default)]
 pub(crate) struct CapturedPortableFileMetadata {
@@ -22,10 +22,14 @@ pub(crate) fn portable_file_metadata(path: &Path) -> Result<CapturedPortableFile
     Ok(CapturedPortableFileMetadata {
         metadata: captured.metadata,
         #[cfg(target_os = "macos")]
-        macos_identity: captured.macos_identity,
+        macos_identity: Some(captured.macos_identity),
     })
 }
 
+/// Renders diagnostics for display.
+///
+/// The spelling of each operation and status comes from `tzap-core`, so this
+/// host and `tzap-cli` cannot drift apart on what a diagnostic is called.
 pub(crate) fn metadata_diagnostic_labels(diagnostics: &[MetadataDiagnostic]) -> Vec<String> {
     diagnostics
         .iter()
@@ -34,32 +38,12 @@ pub(crate) fn metadata_diagnostic_labels(diagnostics: &[MetadataDiagnostic]) -> 
                 "profile={} class={} operation={} status={}: {}",
                 diagnostic.profile,
                 diagnostic.metadata_class,
-                metadata_operation_label(&diagnostic.operation),
-                metadata_diagnostic_status_label(&diagnostic.status),
+                diagnostic.operation.label(),
+                diagnostic.status.label(),
                 diagnostic.message
             )
         })
         .collect()
-}
-
-fn metadata_operation_label(operation: &MetadataOperation) -> &'static str {
-    match operation {
-        MetadataOperation::Capture => "capture",
-        MetadataOperation::Parse => "parse",
-        MetadataOperation::Verify => "verify",
-        MetadataOperation::Plan => "plan",
-        MetadataOperation::Restore => "restore",
-    }
-}
-
-fn metadata_diagnostic_status_label(status: &MetadataDiagnosticStatus) -> &'static str {
-    match status {
-        MetadataDiagnosticStatus::Partial => "partial",
-        MetadataDiagnosticStatus::Unsupported => "unsupported",
-        MetadataDiagnosticStatus::Skipped => "skipped",
-        MetadataDiagnosticStatus::Materialized => "materialized",
-        MetadataDiagnosticStatus::Failed => "failed",
-    }
 }
 
 #[cfg(unix)]

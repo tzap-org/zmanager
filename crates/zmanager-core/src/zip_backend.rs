@@ -407,7 +407,7 @@ pub(crate) fn test_zip_archive<R: Read + Seek>(
         to_test.push(index);
     }
 
-    if to_test.len() >= 4 && crate::tar_metadata::available_parallelism_at_least_two().is_some() && archive_path.is_file() {
+    if to_test.len() >= 4 && crate::parallelism::available_parallelism_at_least_two().is_some() && archive_path.is_file() {
         use rayon::prelude::*;
         let is_cancelled = &is_cancelled;
         let results: Result<Vec<(usize, u64)>, ZipBackendError> = to_test

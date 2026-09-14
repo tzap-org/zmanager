@@ -462,7 +462,7 @@ impl Default for SevenZCreateOptions {
         Self {
             solid: true,
             level: None,
-            threads: crate::tar_metadata::available_parallelism_at_least_two(),
+            threads: crate::parallelism::available_parallelism_at_least_two(),
             chunk_size: Some(16 * 1024 * 1024),
             preserve_metadata: true,
             password: None,
@@ -488,7 +488,7 @@ pub struct TarZstdCreateOptions {
 
 impl Default for TarZstdCreateOptions {
     fn default() -> Self {
-        Self { level: 3, threads: crate::tar_metadata::available_parallelism_at_least_two(), preserve_metadata: true, replace_existing: false }
+        Self { level: 3, threads: crate::parallelism::available_parallelism_at_least_two(), preserve_metadata: true, replace_existing: false }
     }
 }
 

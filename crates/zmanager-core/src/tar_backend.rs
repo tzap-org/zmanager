@@ -134,17 +134,17 @@ impl From<JobCancelled> for TarError {
     }
 }
 
-/// Lists entries from any TAR-compatible decoder.
-pub fn list<R: Read>(reader: R, archive_path: &Path) -> Result<Vec<TarEntry>, TarError> {
+/// Lists entries from any TAR input.
+pub fn list<R: TarInput>(reader: R, archive_path: &Path) -> Result<Vec<TarEntry>, TarError> {
     list_with_temp_root(reader, archive_path, None)
 }
 
 /// Lists entries using an optional caller-owned temporary root.
-pub fn list_with_temp_root<R: Read>(reader: R, archive_path: &Path, temp_root: Option<&Path>) -> Result<Vec<TarEntry>, TarError> {
-    let (_temporary, reader) = spool_validated_tar(reader, archive_path, &|| false, temp_root)?;
+pub fn list_with_temp_root<R: TarInput>(reader: R, archive_path: &Path, temp_root: Option<&Path>) -> Result<Vec<TarEntry>, TarError> {
+    let reader = reader.open_validated(archive_path, &|| false, temp_root)?;
     let mut archive = tar::Archive::new(reader);
     archive
-        .entries()
+        .entries_with_seek()
         .map_err(|source| io_error(archive_path, source))?
         .enumerate()
         .map(|(index, entry)| {
@@ -164,23 +164,23 @@ pub fn list_with_temp_root<R: Read>(reader: R, archive_path: &Path, temp_root: O
         .collect()
 }
 
-/// Verifies payloads from any TAR-compatible decoder.
-pub fn test<R: Read>(reader: R, archive_path: &Path, selects: impl Fn(&str) -> bool, is_cancelled: impl Fn() -> bool) -> Result<TarReport, TarError> {
+/// Verifies payloads from any TAR input.
+pub fn test<R: TarInput>(reader: R, archive_path: &Path, selects: impl Fn(&str) -> bool, is_cancelled: impl Fn() -> bool) -> Result<TarReport, TarError> {
     test_with_temp_root(reader, archive_path, selects, is_cancelled, None)
 }
 
 /// Verifies payloads using an optional caller-owned temporary root.
-pub fn test_with_temp_root<R: Read>(
+pub fn test_with_temp_root<R: TarInput>(
     reader: R,
     archive_path: &Path,
     selects: impl Fn(&str) -> bool,
     is_cancelled: impl Fn() -> bool,
     temp_root: Option<&Path>,
 ) -> Result<TarReport, TarError> {
-    let (_temporary, reader) = spool_validated_tar(reader, archive_path, &is_cancelled, temp_root)?;
+    let reader = reader.open_validated(archive_path, &is_cancelled, temp_root)?;
     let mut archive = tar::Archive::new(reader);
     let mut report = TarReport::default();
-    for entry in archive.entries().map_err(|source| io_error(archive_path, source))? {
+    for entry in archive.entries_with_seek().map_err(|source| io_error(archive_path, source))? {
         if is_cancelled() {
             return Err(TarError::Cancelled);
         }
@@ -199,9 +199,9 @@ pub fn test_with_temp_root<R: Read>(
     Ok(report)
 }
 
-/// Extracts all entries, or one retained archive-order entry, from any TAR-compatible decoder.
+/// Extracts all entries, or one retained archive-order entry, from any TAR input.
 #[allow(clippy::too_many_arguments)]
-pub fn extract<R: Read>(
+pub fn extract<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -216,7 +216,7 @@ pub fn extract<R: Read>(
 
 /// Extracts using an optional caller-owned temporary root.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_with_temp_root<R: Read>(
+pub fn extract_with_temp_root<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -233,7 +233,7 @@ pub fn extract_with_temp_root<R: Read>(
 /// Extracts one retained TAR entry by its path and duplicate occurrence in the
 /// session listing.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_by_path_occurrence<R: Read>(
+pub fn extract_by_path_occurrence<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -248,7 +248,7 @@ pub fn extract_by_path_occurrence<R: Read>(
 
 /// Extracts one retained TAR entry using an optional caller-owned temporary root.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_by_path_occurrence_with_temp_root<R: Read>(
+pub fn extract_by_path_occurrence_with_temp_root<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -274,7 +274,7 @@ pub fn extract_by_path_occurrence_with_temp_root<R: Read>(
 
 /// Extracts retained TAR entries using an optional caller-owned temporary root.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_by_selectors_with_temp_root<R: Read>(
+pub fn extract_by_selectors_with_temp_root<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -315,7 +315,7 @@ enum TarSelection<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn extract_with_selector<R: Read>(
+fn extract_with_selector<R: TarInput>(
     reader: R,
     archive_path: &Path,
     destination: &Path,
@@ -326,10 +326,10 @@ fn extract_with_selector<R: Read>(
     mut context: Option<&mut JobContext<'_>>,
     temp_root: Option<&Path>,
 ) -> Result<TarReport, TarError> {
-    // Validate and spool before touching the destination. This keeps corrupt
-    // TAR input fail-closed even when the missing end records occur after a
-    // large, otherwise readable entry.
-    let (_temporary, reader) = spool_validated_tar(reader, archive_path, &|| cancellation.is_some_and(CancellationToken::is_cancelled), temp_root)?;
+    // Validate the whole archive before touching the destination. This keeps
+    // corrupt TAR input fail-closed even when the missing end records occur
+    // after a large, otherwise readable entry.
+    let reader = reader.open_validated(archive_path, &|| cancellation.is_some_and(CancellationToken::is_cancelled), temp_root)?;
     let root = crate::safety::prepare_destination_root(destination).map_err(|source| io_error(destination, source))?;
     let mut archive = tar::Archive::new(reader);
     let mut planner = crate::safety::ExtractionSafetyPlanner::with_overwrite_resolver(&root, policy, resolver);
@@ -339,7 +339,7 @@ fn extract_with_selector<R: Read>(
     let mut deferred_hardlinks = Vec::new();
 
     let mut path_occurrences: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (index, item) in archive.entries().map_err(|source| io_error(archive_path, source))?.enumerate() {
+    for (index, item) in archive.entries_with_seek().map_err(|source| io_error(archive_path, source))?.enumerate() {
         if context.as_deref_mut().is_some_and(|ctx| ctx.check_cancelled().is_err()) || cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(TarError::Cancelled);
         }
@@ -432,17 +432,17 @@ fn extract_with_selector<R: Read>(
 }
 
 /// Copies one retained regular-file TAR entry to a caller-owned writer.
-pub fn copy<R: Read>(reader: R, archive_path: &Path, entry_index: usize, output: &mut dyn Write) -> Result<u64, TarError> {
+pub fn copy<R: TarInput>(reader: R, archive_path: &Path, entry_index: usize, output: &mut dyn Write) -> Result<u64, TarError> {
     copy_with_selector(reader, archive_path, TarSelection::Index(entry_index), output, None)
 }
 
 /// Copies one retained regular-file TAR entry by path and duplicate occurrence.
-pub fn copy_by_path_occurrence<R: Read>(reader: R, archive_path: &Path, selector: TarEntrySelector<'_>, output: &mut dyn Write) -> Result<u64, TarError> {
+pub fn copy_by_path_occurrence<R: TarInput>(reader: R, archive_path: &Path, selector: TarEntrySelector<'_>, output: &mut dyn Write) -> Result<u64, TarError> {
     copy_by_path_occurrence_with_temp_root(reader, archive_path, selector, output, None)
 }
 
 /// Copies one retained regular-file TAR entry using an optional caller-owned temporary root.
-pub fn copy_by_path_occurrence_with_temp_root<R: Read>(
+pub fn copy_by_path_occurrence_with_temp_root<R: TarInput>(
     reader: R,
     archive_path: &Path,
     selector: TarEntrySelector<'_>,
@@ -452,18 +452,18 @@ pub fn copy_by_path_occurrence_with_temp_root<R: Read>(
     copy_with_selector(reader, archive_path, TarSelection::PathOccurrence { path: selector.path, occurrence: selector.occurrence }, output, temp_root)
 }
 
-fn copy_with_selector<R: Read>(
+fn copy_with_selector<R: TarInput>(
     reader: R,
     archive_path: &Path,
     selection: TarSelection<'_>,
     output: &mut dyn Write,
     temp_root: Option<&Path>,
 ) -> Result<u64, TarError> {
-    let (_temporary, reader) = spool_validated_tar(reader, archive_path, &|| false, temp_root)?;
+    let reader = reader.open_validated(archive_path, &|| false, temp_root)?;
     let mut archive = tar::Archive::new(reader);
     let mut path_occurrence = 0_usize;
     let mut entry = None;
-    for (index, item) in archive.entries().map_err(|source| io_error(archive_path, source))?.enumerate() {
+    for (index, item) in archive.entries_with_seek().map_err(|source| io_error(archive_path, source))?.enumerate() {
         let mut candidate = item.map_err(|source| io_error(archive_path, source))?;
         let path = entry_path(&mut candidate, archive_path)?;
         let selected = match selection {
@@ -494,34 +494,116 @@ fn copy_with_selector<R: Read>(
     io::copy(&mut entry, output).map_err(|source| io_error(Path::new(&path), source))
 }
 
-fn spool_validated_tar<R: Read>(
-    reader: R,
-    archive_path: &Path,
-    is_cancelled: &dyn Fn() -> bool,
-    temp_root: Option<&Path>,
-) -> Result<(crate::temp_names::TemporaryDirectory, File), TarError> {
-    let temporary = match temp_root {
-        Some(parent) => crate::temp_names::TemporaryDirectory::new_in(parent, "zmanager-tar-validation"),
-        None => crate::temp_names::TemporaryDirectory::new("zmanager-tar-validation"),
-    }
-    .map_err(|error| io_error(&error.path, error.source))?;
-    let spool_path = temporary.path().join("archive.tar");
-    let mut spool = File::options().read(true).write(true).create_new(true).open(&spool_path).map_err(|source| io_error(&spool_path, source))?;
-    let mut decoded = reader;
-    let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
-    loop {
-        if is_cancelled() {
-            return Err(TarError::Cancelled);
+/// A validated TAR byte source that can seek.
+///
+/// Follows 7-Zip's split between a seekable and a sequential archive
+/// (`CHandler::Open` and `CHandler::OpenSeq` in `CPP/7zip/Archive/Tar`): an input
+/// that can already seek is walked where it lies, header to header, and never
+/// copied. Listing a plain `.tar` therefore costs a pass over its headers rather
+/// than a full copy of the archive, and needs no temporary space at all.
+pub struct TarReadSource(TarSourceKind);
+
+/// Where a [`TarReadSource`] reads from. Private: a caller obtains a source from
+/// [`TarInput`], which is what decides whether a copy was needed.
+enum TarSourceKind {
+    /// A seekable input, walked in place.
+    File(File),
+    /// A decoder materialised to a temporary file so that it can seek.
+    Spooled {
+        spool: File,
+        /// Held so the temporary directory outlives the spool file.
+        _temporary: crate::temp_names::TemporaryDirectory,
+    },
+}
+
+impl Read for TarReadSource {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            TarSourceKind::File(file) => file.read(buffer),
+            TarSourceKind::Spooled { spool, .. } => spool.read(buffer),
         }
-        let read = decoded.read(&mut buffer).map_err(|source| io_error(archive_path, source))?;
-        if read == 0 {
-            break;
-        }
-        spool.write_all(&buffer[..read]).map_err(|source| io_error(&spool_path, source))?;
     }
-    spool.rewind().map_err(|source| io_error(&spool_path, source))?;
+}
+
+impl Seek for TarReadSource {
+    fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+        match &mut self.0 {
+            TarSourceKind::File(file) => file.seek(position),
+            TarSourceKind::Spooled { spool, .. } => spool.seek(position),
+        }
+    }
+}
+
+/// An input the shared TAR read operations can validate and then walk.
+pub trait TarInput {
+    /// Validates the archive structure and yields a seekable source rewound to the start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TarError`] when the input cannot be read, is structurally
+    /// incomplete, or the caller cancelled.
+    fn open_validated(self, archive_path: &Path, is_cancelled: &dyn Fn() -> bool, temp_root: Option<&Path>) -> Result<TarReadSource, TarError>;
+}
+
+/// A decoder that cannot seek, and so is materialised before it is walked.
+///
+/// 7-Zip handles this case without a copy (`OpenSeq`), at the price of not
+/// knowing the archive contents up front: it reports the entry count as unknown
+/// and discovers members as it advances. zmanager reaches the end first instead,
+/// because extraction must be able to reject a truncated archive
+/// *before* it writes anything to the destination. `list` and `test` have no
+/// destination to protect and could stream in 7-Zip's manner; they do not yet.
+///
+/// Wrapping is explicit so that a caller already holding a seekable file cannot
+/// silently pay for a copy of the whole archive that it does not need.
+pub struct Decoded<R>(pub R);
+
+impl TarInput for File {
+    fn open_validated(mut self, archive_path: &Path, is_cancelled: &dyn Fn() -> bool, _temp_root: Option<&Path>) -> Result<TarReadSource, TarError> {
+        validate_tar_structure(&mut self, archive_path, is_cancelled)?;
+        Ok(TarReadSource(TarSourceKind::File(self)))
+    }
+}
+
+impl<R: Read> TarInput for Decoded<R> {
+    fn open_validated(self, archive_path: &Path, is_cancelled: &dyn Fn() -> bool, temp_root: Option<&Path>) -> Result<TarReadSource, TarError> {
+        let temporary = match temp_root {
+            Some(parent) => crate::temp_names::TemporaryDirectory::new_in(parent, "zmanager-tar-validation"),
+            None => crate::temp_names::TemporaryDirectory::new("zmanager-tar-validation"),
+        }
+        .map_err(|error| io_error(&error.path, error.source))?;
+        let spool_path = temporary.path().join("archive.tar");
+        let mut spool = File::options().read(true).write(true).create_new(true).open(&spool_path).map_err(|source| io_error(&spool_path, source))?;
+        let mut decoded = self.0;
+        let mut buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+        loop {
+            if is_cancelled() {
+                return Err(TarError::Cancelled);
+            }
+            let read = decoded.read(&mut buffer).map_err(|source| io_error(archive_path, source))?;
+            if read == 0 {
+                break;
+            }
+            spool.write_all(&buffer[..read]).map_err(|source| io_error(&spool_path, source))?;
+        }
+        spool.rewind().map_err(|source| io_error(&spool_path, source))?;
+        validate_tar_structure(&mut spool, archive_path, is_cancelled)?;
+        Ok(TarReadSource(TarSourceKind::Spooled { spool, _temporary: temporary }))
+    }
+}
+
+/// Rejects an archive that does not end in its two zero-filled records, and
+/// leaves the reader rewound for the caller to walk.
+///
+/// This is 7-Zip's `CHandler::Open2` pass: read a header, seek over the payload
+/// it declares, repeat. Payload bytes are never read, so the cost is the number
+/// of members rather than the size of the archive.
+///
+/// Reaching the end before anything is written keeps truncated input fail-closed
+/// even when the missing end records follow a large, otherwise readable entry.
+fn validate_tar_structure<R: Read + Seek>(reader: &mut R, archive_path: &Path, is_cancelled: &dyn Fn() -> bool) -> Result<(), TarError> {
     let consecutive_zero_records = {
-        let mut archive = tar::Archive::new(TarStructureObserver::new(&mut spool));
+        let mut archive = tar::Archive::new(TarStructureObserver::new(&mut *reader));
         archive.set_ignore_zeros(true);
         for entry in archive.entries_with_seek().map_err(|source| io_error(archive_path, source))? {
             if is_cancelled() {
@@ -534,8 +616,8 @@ fn spool_validated_tar<R: Read>(
     if consecutive_zero_records < 2 {
         return Err(io_error(archive_path, io::Error::new(io::ErrorKind::UnexpectedEof, "TAR archive is missing its two zero-filled end records")));
     }
-    spool.rewind().map_err(|source| io_error(&spool_path, source))?;
-    Ok((temporary, spool))
+    reader.rewind().map_err(|source| io_error(archive_path, source))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]

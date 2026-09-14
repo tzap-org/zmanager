@@ -46,6 +46,7 @@ pub(crate) use backend_impl::{
     rar_backend, raw_stream_backend, rpm_backend, sevenz_backend, squashfs_backend, tar_backend, tar_gz_backend, tar_zst_backend, unix_compress_decoder,
     uu_decoder, virtual_disk_backend, warc_backend, wim_backend, xar_backend, zip_backend,
 };
+mod parallelism;
 mod tar_metadata;
 mod temp_names;
 #[cfg(test)]

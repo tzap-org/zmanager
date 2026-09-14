@@ -23,7 +23,7 @@ pub struct TarZstdCreateOptions {
 
 impl Default for TarZstdCreateOptions {
     fn default() -> Self {
-        Self { level: 3, threads: crate::tar_metadata::available_parallelism_at_least_two(), preserve_metadata: true, replace_existing: false }
+        Self { level: 3, threads: crate::parallelism::available_parallelism_at_least_two(), preserve_metadata: true, replace_existing: false }
     }
 }
 
@@ -286,7 +286,7 @@ fn append_symlink<W: io::Write>(builder: &mut Builder<W>, entry: &ManifestEntry,
     builder.append_link(&mut header, &entry.archive_path, target).map_err(|source| TarZstdError::Io { path: entry.source_path.clone(), source })
 }
 
-// See `crate::tar_metadata::available_parallelism_at_least_two`.
+// See `crate::parallelism::available_parallelism_at_least_two`.
 #[cfg(test)]
 mod tests {
     use super::{TarZstdCreateOptions, create_tar_zst_from_path};
