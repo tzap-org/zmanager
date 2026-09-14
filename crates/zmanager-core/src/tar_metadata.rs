@@ -297,3 +297,107 @@ mod skip_unreadable_tests {
         assert!(zip.written_entries >= 1, "zip must archive the readable member");
     }
 }
+
+#[cfg(all(test, unix))]
+mod pax_extension_ordering_tests {
+    use crate::manifest::{PlanOptions, plan_archive};
+    use crate::test_support::TestDir;
+    use filetime::FileTime;
+    use std::fs;
+    use std::io::Read as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    const SKIPPED_MTIME: i64 = 1_700_000_000;
+    const KEPT_MTIME: i64 = 1_767_229_200;
+
+    fn octal(field: &[u8]) -> u64 {
+        let text = String::from_utf8_lossy(field);
+        u64::from_str_radix(text.trim_matches(['\0', ' ']), 8).unwrap_or(0)
+    }
+
+    fn pax_mtime_seconds(body: &str) -> Option<i64> {
+        body.split('\n').find_map(|record| record.split_once("mtime=")).and_then(|(_, value)| value.split('.').next()?.parse::<i64>().ok())
+    }
+
+    /// Resolve each member's mtime the way POSIX requires a reader to: a PAX
+    /// extension header applies to the member that *follows* it.
+    ///
+    /// The `tar` crate's `header().mtime()` reads the ustar field and ignores
+    /// the override, so it cannot see this bug at all -- but GNU tar, bsdtar and
+    /// 7-Zip all apply the record, which is what the archive actually means.
+    fn effective_mtimes(bytes: &[u8]) -> Vec<(String, i64)> {
+        let mut members = Vec::new();
+        let mut pending: Option<i64> = None;
+        let mut offset = 0usize;
+        while offset + 512 <= bytes.len() {
+            let header = &bytes[offset..offset + 512];
+            if header.iter().all(|byte| *byte == 0) {
+                break;
+            }
+            let size = usize::try_from(octal(&header[124..136])).unwrap_or(0);
+            let body = &bytes[offset + 512..(offset + 512 + size).min(bytes.len())];
+            if header[156] == b'x' {
+                pending = pax_mtime_seconds(&String::from_utf8_lossy(body));
+            } else {
+                let name = String::from_utf8_lossy(&header[0..100]).trim_end_matches('\0').to_string();
+                let stated = i64::try_from(octal(&header[136..148])).unwrap_or(0);
+                members.push((name, pending.take().unwrap_or(stated)));
+            }
+            offset += 512 + size.div_ceil(512) * 512;
+        }
+        assert!(pending.is_none(), "a PAX record was left with no member of its own to describe");
+        members
+    }
+
+    /// A skipped member must not retime the member that follows it.
+    ///
+    /// A PAX `mtime` record binds to the next member in the stream. Writing one
+    /// before deciding whether the member can be produced meant an unreadable
+    /// file handed its timestamp to whichever file came next -- silently, since
+    /// the archive stays structurally valid and only the date is wrong.
+    #[test]
+    fn a_skipped_member_does_not_retime_the_next_one() {
+        let temp = TestDir::new("pax-ordering");
+        let source = temp.path("tree");
+        fs::create_dir_all(&source).unwrap();
+        let skipped = source.join("a_locked.txt");
+        let kept = source.join("b_readable.txt");
+        fs::write(&skipped, b"secret\n").unwrap();
+        fs::write(&kept, b"kept\n").unwrap();
+
+        // The skipped file carries a sub-second mtime, so it emits a PAX record;
+        // the survivor's is a whole second, so it emits none of its own and
+        // would silently inherit the record left dangling before it.
+        filetime::set_file_mtime(&skipped, FileTime::from_unix_time(SKIPPED_MTIME, 123_456_789)).unwrap();
+        filetime::set_file_mtime(&kept, FileTime::from_unix_time(KEPT_MTIME, 0)).unwrap();
+        fs::set_permissions(&skipped, fs::Permissions::from_mode(0o000)).unwrap();
+        // Running as root defeats the fixture: nothing would be skipped.
+        if fs::File::open(&skipped).is_ok() {
+            return;
+        }
+
+        let manifest = plan_archive(&source, &PlanOptions::default()).expect("plan");
+
+        let zst_path = temp.path("out.tar.zst");
+        let zst = crate::tar_zst_backend::create_tar_zst_from_manifest(&manifest, &zst_path, &crate::tar_zst_backend::TarZstdCreateOptions::default())
+            .expect("tar.zst must still produce an archive");
+        assert!(zst.warnings.iter().any(|warning| warning.contains("a_locked.txt")), "the skipped file must be named: {:?}", zst.warnings);
+        let zst_bytes = zstd::decode_all(fs::File::open(&zst_path).unwrap()).unwrap();
+
+        let gz_path = temp.path("out.tar.gz");
+        let gz = crate::tar_gz_backend::create_tar_gz_from_manifest(&manifest, &gz_path, &crate::tar_gz_backend::TarGzCreateOptions::default())
+            .expect("tar.gz must still produce an archive");
+        assert!(gz.warnings.iter().any(|warning| warning.contains("a_locked.txt")), "the skipped file must be named: {:?}", gz.warnings);
+        let mut gz_bytes = Vec::new();
+        flate2::read::GzDecoder::new(fs::File::open(&gz_path).unwrap()).read_to_end(&mut gz_bytes).unwrap();
+
+        for (format, bytes) in [("tar.zst", zst_bytes), ("tar.gz", gz_bytes)] {
+            let members = effective_mtimes(&bytes);
+            assert!(!members.iter().any(|(name, _)| name.contains("a_locked.txt")), "{format}: the unreadable file must not be in the archive: {members:?}");
+            let (_, mtime) =
+                members.iter().find(|(name, _)| name.contains("b_readable.txt")).unwrap_or_else(|| panic!("{format}: the readable file must be archived"));
+            assert_ne!(*mtime, SKIPPED_MTIME, "{format}: the surviving file inherited the skipped file's timestamp");
+            assert_eq!(*mtime, KEPT_MTIME, "{format}: the surviving file must keep its own timestamp");
+        }
+    }
+}

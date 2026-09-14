@@ -187,10 +187,13 @@ fn append_manifest_entry<W: io::Write>(
         context.check_cancelled()?;
     }
 
-    append_manifest_mtime(builder, entry, preserve_metadata)?;
-
+    // A PAX mtime record applies to the *next* member in the stream, so it is
+    // written per branch, once this entry is certain to produce a member.
+    // Writing it up front left a skipped member's timestamp attached to
+    // whichever member happened to follow it.
     let processed = match entry.file_type {
         ManifestFileType::Directory => {
+            append_manifest_mtime(builder, entry, preserve_metadata)?;
             if preserve_metadata {
                 builder.append_dir(&entry.archive_path, &entry.source_path).map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
             } else {
@@ -216,6 +219,7 @@ fn append_manifest_entry<W: io::Write>(
             let Some(mut source) = open_member_source(&entry.source_path, &mut report.warnings) else {
                 return Ok(());
             };
+            append_manifest_mtime(builder, entry, preserve_metadata)?;
             let mut header = Header::new_gnu();
             if preserve_metadata {
                 let stat = source.metadata().map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
@@ -250,6 +254,7 @@ fn append_manifest_entry<W: io::Write>(
                 }
                 return Ok(());
             };
+            append_manifest_mtime(builder, entry, preserve_metadata)?;
             append_symlink(builder, entry, target, preserve_metadata)?;
             report.written_entries += 1;
             0
@@ -271,8 +276,14 @@ fn append_manifest_entry<W: io::Write>(
     Ok(())
 }
 
+/// Writes this entry's PAX `mtime` record, when tar needs one.
+///
+/// A PAX extension header applies to the member that *follows* it, so the
+/// caller must already be committed to writing that member. Call this only
+/// after the last point at which the entry can still be skipped, never before
+/// one -- a record with no member of its own silently retimes the next file.
 fn append_manifest_mtime<W: io::Write>(builder: &mut Builder<W>, entry: &ManifestEntry, preserve_metadata: bool) -> Result<(), TarGzError> {
-    if !preserve_metadata || entry.file_type == ManifestFileType::Other {
+    if !preserve_metadata {
         return Ok(());
     }
     crate::tar_metadata::append_pax_mtime(builder, entry.modified).map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })
