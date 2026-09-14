@@ -188,29 +188,14 @@ pub(crate) fn changed_during_read_note(archive_path: &str, declared: u64, padded
         let kept = declared.saturating_sub(padded);
         Some(format!(
             "{archive_path} was shortened while being archived; kept the {} that was still there and filled the remaining {} with zeros",
-            human_bytes(kept),
-            human_bytes(padded)
+            tzap_core::entry_metadata::human_bytes(kept),
+            tzap_core::entry_metadata::human_bytes(padded)
         ))
     } else if grew {
-        Some(format!("{archive_path} was still being written while being archived; stored the first {}", human_bytes(declared)))
+        Some(format!("{archive_path} was still being written while being archived; stored the first {}", tzap_core::entry_metadata::human_bytes(declared)))
     } else {
         None
     }
-}
-
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
-    // Integer scaling: a byte count can exceed what f64 represents exactly, and
-    // this is a human-readable label where one decimal place is all that shows.
-    let mut scaled = bytes;
-    let mut remainder = 0u64;
-    let mut unit = 0;
-    while scaled >= 1024 && unit + 1 < UNITS.len() {
-        remainder = scaled % 1024;
-        scaled /= 1024;
-        unit += 1;
-    }
-    if unit == 0 { format!("{bytes} {}", UNITS[0]) } else { format!("{scaled}.{} {}", remainder * 10 / 1024, UNITS[unit]) }
 }
 
 #[cfg(test)]
