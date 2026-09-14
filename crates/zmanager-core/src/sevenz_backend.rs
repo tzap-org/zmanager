@@ -9,6 +9,7 @@
 //!   deliberately safer than materializing links that cannot be validated;
 //!   see [`extraction_kind`].
 
+use crate::backend_impl::backend_report::open_member_source;
 use crate::jobs::{CancellationToken, JobContext};
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::{
@@ -871,7 +872,9 @@ fn append_manifest_entry<'a, W: Write + Seek>(
         }
         ManifestFileType::File => {
             let archive_entry = sevenz_archive_entry(entry, preserve_metadata);
-            let file = File::open(&entry.source_path).map_err(|source| SevenZError::Io { path: entry.source_path.clone(), source })?;
+            let Some(file) = open_member_source(&entry.source_path, &mut report.warnings) else {
+                return Ok(None);
+            };
             let reader =
                 SevenZProgressReader::new(file, entry.archive_path.clone(), progress.cloned(), cancellation_token.cloned(), cancellation_observed.cloned());
             let pending = if solid {

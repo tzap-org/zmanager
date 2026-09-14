@@ -1,5 +1,6 @@
 //! Native `.tar.gz` / `.tgz` archive creation.
 
+use crate::backend_impl::backend_report::open_member_source;
 use crate::jobs::{JobCancelled, JobContext};
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::ExtractionSafetyError;
@@ -7,7 +8,6 @@ use crate::tar_metadata::{ExactLengthReader, changed_during_read_note};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::fmt;
-use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use tar::{Builder, EntryType, Header};
@@ -213,7 +213,9 @@ fn append_manifest_entry<W: io::Write>(
             // us. `append_path_with_name`/`append_file` copy to EOF and pad from
             // the actual length instead, which shifts every later header and
             // silently truncates the archive at this member.
-            let mut source = File::open(&entry.source_path).map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;
+            let Some(mut source) = open_member_source(&entry.source_path, &mut report.warnings) else {
+                return Ok(());
+            };
             let mut header = Header::new_gnu();
             if preserve_metadata {
                 let stat = source.metadata().map_err(|source| TarGzError::Io { path: entry.source_path.clone(), source })?;

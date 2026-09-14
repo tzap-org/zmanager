@@ -750,6 +750,12 @@ pub(crate) fn print_create_summary(archive: &Path, outcome: &CreateOutcome, glob
     } else if !global.quiet {
         print_success_line(global, format_args!("{}", outcome.summary));
     }
+    // Named on stderr even under --quiet and --json: the archive is missing
+    // something the caller asked for, and a count in a summary line they may not
+    // be reading is not telling them.
+    for warning in &outcome.warning_texts {
+        eprintln!("warning: {warning}");
+    }
 }
 
 pub(crate) fn print_create_summary_json(archive: &Path, outcome: &CreateOutcome) {

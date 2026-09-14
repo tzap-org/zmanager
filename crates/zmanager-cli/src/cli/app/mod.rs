@@ -283,6 +283,10 @@ pub(crate) struct CreateOutcome {
     pub(crate) entries: usize,
     pub(crate) bytes: u64,
     pub(crate) warnings: usize,
+    /// What each warning actually said. A count alone tells someone that
+    /// something was left out without telling them what, which is the part they
+    /// need -- 7-Zip names every file it could not read.
+    pub(crate) warning_texts: Vec<String>,
     pub(crate) encrypted: Option<bool>,
     pub(crate) solid: Option<bool>,
     pub(crate) volume_size: Option<u64>,

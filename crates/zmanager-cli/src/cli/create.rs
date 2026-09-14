@@ -384,6 +384,12 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         let archive = create_test_archive_path(&destination, format, split_output).to_string_lossy().into_owned();
         return run_test_request(&TestRequest { archive, ..TestRequest::default() }, global);
     }
+    // The archive exists and is valid, but does not contain everything that was
+    // asked for. 7-Zip exits 1 here and GNU tar exits 2; a script that only looks
+    // at the exit code would otherwise believe the backup was complete.
+    if outcome.warnings > 0 {
+        return ExitCode::from(1);
+    }
     ExitCode::SUCCESS
 }
 
@@ -525,6 +531,7 @@ fn run_engine_create_backend(
         entries: usize::try_from(report.written_entries).unwrap_or(usize::MAX),
         bytes: report.written_bytes,
         warnings: report.warnings.len(),
+        warning_texts: report.warnings.clone(),
         encrypted: report.encrypted,
         solid: report.solid,
         volume_size: report.volume_size,

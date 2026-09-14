@@ -249,3 +249,51 @@ mod exact_length_tests {
         assert!(changed_during_read_note("steady.bin", 10, 0, false).is_none(), "an unchanged file needs no note");
     }
 }
+
+#[cfg(all(test, unix))]
+mod skip_unreadable_tests {
+    use crate::manifest::{PlanOptions, plan_archive};
+    use crate::test_support::TestDir;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// One unreadable file must not cost the whole archive, in any backend.
+    ///
+    /// GNU tar warns and exits 2, bsdtar warns and exits 1, 7-Zip warns and
+    /// exits 1 -- all three still write an archive holding everything they could
+    /// read. A combined tool is held to the same standard: refusing outright
+    /// means a backup of a live tree produces nothing because one file had the
+    /// wrong permissions.
+    #[test]
+    fn every_create_backend_skips_an_unreadable_file_and_still_writes_the_archive() {
+        let temp = TestDir::new("skip-unreadable");
+        let source = temp.path("tree");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("readable.txt"), b"kept\n").unwrap();
+        fs::write(source.join("locked.txt"), b"secret\n").unwrap();
+        fs::set_permissions(source.join("locked.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        // Running as root defeats the fixture: nothing would be skipped.
+        if fs::File::open(source.join("locked.txt")).is_ok() {
+            return;
+        }
+
+        let manifest = plan_archive(&source, &PlanOptions::default()).expect("plan");
+
+        let named = |warnings: &[String]| warnings.iter().any(|warning| warning.contains("locked.txt"));
+
+        let zst =
+            crate::tar_zst_backend::create_tar_zst_from_manifest(&manifest, temp.path("out.tar.zst"), &crate::tar_zst_backend::TarZstdCreateOptions::default())
+                .expect("tar.zst must still produce an archive");
+        assert!(named(&zst.warnings), "tar.zst must name the skipped file: {:?}", zst.warnings);
+        assert!(zst.written_entries >= 1, "tar.zst must archive the readable member");
+
+        let gz = crate::tar_gz_backend::create_tar_gz_from_manifest(&manifest, temp.path("out.tar.gz"), &crate::tar_gz_backend::TarGzCreateOptions::default())
+            .expect("tar.gz must still produce an archive");
+        assert!(named(&gz.warnings), "tar.gz must name the skipped file: {:?}", gz.warnings);
+
+        let zip = crate::zip_backend::create_zip_from_manifest(&manifest, temp.path("out.zip"), &crate::zip_backend::ZipCreateOptions::default())
+            .expect("zip must still produce an archive");
+        assert!(named(&zip.warnings), "zip must name the skipped file: {:?}", zip.warnings);
+        assert!(zip.written_entries >= 1, "zip must archive the readable member");
+    }
+}

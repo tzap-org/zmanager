@@ -10,6 +10,7 @@
 //!   as link-like are extracted as regular files; see
 //!   `crate::sevenz_backend::extraction_kind` for the rationale.
 
+use crate::backend_impl::backend_report::open_member_source;
 use crate::jobs::{CancellationToken, JobContext};
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver};
@@ -620,18 +621,23 @@ fn write_manifest_to_zip<W: Write + Seek>(
                 report.written_entries += 1;
                 0
             }
-            ManifestFileType::File => {
-                writer.start_file(&entry.archive_path, zip_options(entry, options))?;
-                let mut source = File::open(&entry.source_path).map_err(|source| ZipBackendError::Io { path: entry.source_path.clone(), source })?;
-                let copied = if let Some(context) = context.as_deref_mut() {
-                    copy_with_progress(&mut source, writer, &entry.archive_path, &entry.source_path, context, &mut io_buffer)?
-                } else {
-                    io::copy(&mut source, writer).map_err(|source| ZipBackendError::Io { path: entry.source_path.clone(), source })?
-                };
-                report.written_entries += 1;
-                report.written_bytes += copied;
-                copied
-            }
+            // Open before starting the member: an entry that cannot be filled
+            // must not be started at all, or the archive would carry an empty
+            // member claiming the file is present.
+            ManifestFileType::File => match open_member_source(&entry.source_path, &mut report.warnings) {
+                None => 0,
+                Some(mut source) => {
+                    writer.start_file(&entry.archive_path, zip_options(entry, options))?;
+                    let copied = if let Some(context) = context.as_deref_mut() {
+                        copy_with_progress(&mut source, writer, &entry.archive_path, &entry.source_path, context, &mut io_buffer)?
+                    } else {
+                        io::copy(&mut source, writer).map_err(|source| ZipBackendError::Io { path: entry.source_path.clone(), source })?
+                    };
+                    report.written_entries += 1;
+                    report.written_bytes += copied;
+                    copied
+                }
+            },
             ManifestFileType::Symlink => {
                 if let Some(target) = entry.symlink_target.as_ref() {
                     let target_str = target.to_str().ok_or_else(|| ZipBackendError::InvalidSymlinkTarget { archive_path: entry.archive_path.clone() })?;
