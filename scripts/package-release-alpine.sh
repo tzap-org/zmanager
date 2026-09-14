@@ -34,13 +34,16 @@ mkdir -p "$OUT_DIR"
 
 # zmanager-core path-depends on the forensic-vfs-engine sibling, which in turn
 # path-depends on the udf-forensic and ntfs-forensic siblings. zmanager-ffi also
-# path-depends on the localsend-rs sibling. From the container's /workspace
-# checkout those resolve to the mount points below, so all four must be mounted.
+# path-depends on the localsend-rs sibling, and the root manifest patches
+# tzap-core to the tzap sibling. From the container's /workspace checkout those
+# all resolve to the mount points below, so every one of them must be mounted --
+# a `[patch.crates-io]` path counts, which is what this was missing.
 LOCALSEND_DIR="$ROOT/../localsend-rs"
 FVE_DIR="$ROOT/../forensic-vfs-engine"
 UDF_DIR="$ROOT/../udf-forensic"
 NTFS_DIR="$ROOT/../ntfs-forensic"
-for d in "$LOCALSEND_DIR" "$FVE_DIR" "$UDF_DIR" "$NTFS_DIR"; do
+TZAP_DIR="$ROOT/../tzap"
+for d in "$LOCALSEND_DIR" "$FVE_DIR" "$UDF_DIR" "$NTFS_DIR" "$TZAP_DIR"; do
   if [ ! -d "$d" ]; then
     echo "sibling directory not found at $d — clone it first" >&2
     exit 1
@@ -54,6 +57,7 @@ docker run --rm \
   -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine" \
   -v "$(cd "$UDF_DIR" && pwd):/udf-forensic" \
   -v "$(cd "$NTFS_DIR" && pwd):/ntfs-forensic" \
+  -v "$(cd "$TZAP_DIR" && pwd):/tzap" \
   -w /workspace \
   -e TARGET="$TARGET" \
   -e OUT_DIR="$OUT_DIR" \
