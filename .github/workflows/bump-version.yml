@@ -19,10 +19,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Clone tzap
-        run: |
-          TZAP_REV=$(cat tzap-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/tzap-org/tzap.git ../tzap
-          git -C ../tzap checkout "$TZAP_REV" || git -C ../tzap checkout main
+        run: git clone https://github.com/tzap-org/tzap.git ../tzap
 
       - name: Clone localsend-rs
         run: |

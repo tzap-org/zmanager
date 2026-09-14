@@ -28,10 +28,7 @@ jobs:
 
       - name: Clone tzap
         shell: bash
-        run: |
-          TZAP_REV=$(cat tzap-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/tzap-org/tzap.git ../tzap
-          git -C ../tzap checkout "$TZAP_REV" || git -C ../tzap checkout main
+        run: git clone https://github.com/tzap-org/tzap.git ../tzap
 
       - name: Clone localsend-rs
         shell: bash
