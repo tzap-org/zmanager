@@ -1655,15 +1655,40 @@ fn system_time_string(time: SystemTime) -> Option<String> {
     Some(duration.as_secs().to_string())
 }
 
+/// Renders a TZAP entry timestamp for a listing.
+///
+/// The two fields are a timespec: the instant is `seconds + nanoseconds / 1e9`,
+/// with `nanoseconds` always counting *forward*. A pre-epoch time with a
+/// fraction therefore carries a borrowed second -- `(-2, 750_000_000)` is 1.25s
+/// before the epoch, not 2.75s. Printing the fields side by side reported every
+/// such entry as up to a second older than it is.
+///
+/// `ArchiveTimestamp::canonical_pax_value` is deliberately not reused. §16.7.2
+/// forbids an integer part of `-0`, so it refuses the last second before the
+/// epoch outright; that is correct for an archive field and wrong for a label,
+/// which should still be able to say `-0.5`. Same split as
+/// `tar_metadata::timestamp_to_pax_value`.
 fn tzap_timestamp_string(seconds: i64, nanoseconds: u32) -> Option<String> {
+    if nanoseconds >= 1_000_000_000 {
+        // Not a timespec this function can describe; say nothing rather than
+        // underflow the borrow below.
+        return None;
+    }
     if seconds == 0 && nanoseconds == 0 {
         return None;
     }
     if nanoseconds == 0 {
         return Some(seconds.to_string());
     }
-    let fraction = format!("{nanoseconds:09}");
-    Some(format!("{seconds}.{}", fraction.trim_end_matches('0')))
+    let (sign, whole, fraction) = if seconds < 0 {
+        // Borrow back out of the seconds: the magnitude is one whole second
+        // less than `tv_sec`, and the fraction is its complement.
+        ("-", seconds.unsigned_abs() - 1, 1_000_000_000 - nanoseconds)
+    } else {
+        ("", seconds.unsigned_abs(), nanoseconds)
+    };
+    let fraction = format!("{fraction:09}");
+    Some(format!("{sign}{whole}.{}", fraction.trim_end_matches('0')))
 }
 
 fn sevenz_archive_error(error: sevenz_backend::SevenZError, path: &std::path::Path) -> ArchiveError {
@@ -3450,5 +3475,37 @@ mod tests {
             &NativeEntrySelector { id: EntryId(4), path: "duplicate.txt".to_owned(), kind: BrowserEntryKind::File, occurrence: 0 }
         );
         assert_eq!(context.retained_entry(EntryId(9)).unwrap().occurrence, 1);
+    }
+
+    /// A pre-epoch TZAP timestamp must be reported as the instant it is.
+    ///
+    /// `nanoseconds` counts forward from `seconds`, so a negative time with a
+    /// fraction has borrowed a whole second. Rendering the fields side by side
+    /// made `(-2, 750_000_000)` -- 1.25s before the epoch -- read as `-2.75`,
+    /// dating every such entry up to a second early.
+    #[test]
+    fn tzap_timestamps_render_pre_epoch_times_as_the_instant_they_are() {
+        use super::tzap_timestamp_string;
+
+        // Post-epoch: unchanged by the fix.
+        assert_eq!(tzap_timestamp_string(1_700_000_000, 0).as_deref(), Some("1700000000"));
+        assert_eq!(tzap_timestamp_string(1, 250_000_000).as_deref(), Some("1.25"));
+        assert_eq!(tzap_timestamp_string(1, 500_000_000).as_deref(), Some("1.5"));
+
+        // Pre-epoch with a fraction: the borrowed second must be given back.
+        assert_eq!(tzap_timestamp_string(-2, 750_000_000).as_deref(), Some("-1.25"), "-2 + 0.75s is 1.25s before the epoch");
+        assert_eq!(tzap_timestamp_string(-1, 750_000_000).as_deref(), Some("-0.25"));
+
+        // The last second before the epoch has no `-0` integer part in a TZAP
+        // field, but a label can still say it plainly.
+        assert_eq!(tzap_timestamp_string(-1, 500_000_000).as_deref(), Some("-0.5"));
+
+        // Pre-epoch on a whole second needs no borrow.
+        assert_eq!(tzap_timestamp_string(-5, 0).as_deref(), Some("-5"));
+
+        // The epoch itself is "unset" for a listing, and a malformed timespec
+        // is described as nothing rather than underflowing the borrow.
+        assert_eq!(tzap_timestamp_string(0, 0), None);
+        assert_eq!(tzap_timestamp_string(-1, 1_000_000_000), None);
     }
 }
