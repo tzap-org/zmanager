@@ -64,8 +64,15 @@ fn localsend_ffi_receiver_lifecycle_is_wired_to_the_shared_registry() {
     })
     .expect("FFI receiver start should reach the shared registry");
 
+    // No *transfer* event, which is what starting a receiver must not invent.
+    // `PeerRegistered` is a discovery event and is not manufactured by this call:
+    // the receiver joins a live network, so on a shared segment -- CI runners sit
+    // on one -- a real peer can announce itself mid-test. Asserting the queue is
+    // wholly empty made that legitimate observation fail the build on Linux and
+    // Windows while passing on the more isolated macOS runners.
     let events = localsendPollEvents();
-    assert!(events.events.is_empty(), "starting a receiver should not manufacture transfer events");
+    let transfers: Vec<_> = events.events.iter().filter(|event| !matches!(event, QueuedEvent::PeerRegistered { .. })).collect();
+    assert!(transfers.is_empty(), "starting a receiver should not manufacture transfer events, got: {transfers:?}");
     localsendStopReceiver().expect("FFI receiver stop should reach the shared registry");
 }
 
