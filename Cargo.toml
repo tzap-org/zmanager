@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "2.1.2"
+version = "2.1.3"
 edition = "2024"
 # Floor set by the forensic-vfs-engine sibling (rust-version = "1.93"); keep in
 # sync with the engine's declared MSRV when the family updates.
@@ -29,17 +29,17 @@ all = "warn"
 pedantic = "warn"
 
 [workspace.dependencies]
-zmanager-apple-archive = { path = "crates/zmanager-apple-archive", version = "2.1.2" }
-zmanager-cli = { path = "crates/zmanager-cli", version = "2.1.2" }
+zmanager-apple-archive = { path = "crates/zmanager-apple-archive", version = "2.1.3" }
+zmanager-cli = { path = "crates/zmanager-cli", version = "2.1.3" }
 # default-features = false: the core crate has no hosted transport feature;
 # hosted account/certificate behavior is composed explicitly by products that
 # depend on `zmanager-tzap-hosted`.
-zmanager-core = { path = "crates/zmanager-core", version = "2.1.2", default-features = false }
-zmanager-tzap-hosted = { path = "crates/zmanager-tzap-hosted", version = "2.1.2" }
-zmanager-localsend = { path = "crates/zmanager-localsend", version = "2.1.2" }
-zmanager-ffi = { path = "crates/zmanager-ffi", version = "2.1.2" }
-zmanager-wim = { path = "crates/zmanager-wim", version = "2.1.2" }
-zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.2" }
+zmanager-core = { path = "crates/zmanager-core", version = "2.1.3", default-features = false }
+zmanager-tzap-hosted = { path = "crates/zmanager-tzap-hosted", version = "2.1.3" }
+zmanager-localsend = { path = "crates/zmanager-localsend", version = "2.1.3" }
+zmanager-ffi = { path = "crates/zmanager-ffi", version = "2.1.3" }
+zmanager-wim = { path = "crates/zmanager-wim", version = "2.1.3" }
+zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.3" }
 
 # The TZAP 0.2.5 release carries `entry_metadata::projected_posix_mode`, so the
 # whole family (core plus the keywrap and signing plugins) now comes from
