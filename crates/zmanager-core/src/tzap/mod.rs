@@ -17,11 +17,11 @@ mod x509;
 mod tests;
 
 pub use display::{TzapPublicDisplaySummary, TzapPublicSignatureStatus, inspect_tzap_public_footer_signature, summarize_tzap_public_display};
-pub(crate) use extract::extract_tzap_file_to_destination;
 pub use extract::{
     TzapExtractKeySource, TzapExtractReport, TzapExtractRequest, TzapRestoreOptions, TzapRestorePolicy, copy_tzap_file_to_writer, copy_tzap_files_to_writer,
     extract_tzap,
 };
+pub(crate) use extract::{extract_tzap_file_to_destination, restore_selected_directory_metadata};
 pub use listing::{
     TzapEntryKind, TzapListing, list_tzap_with_optional_password, list_tzap_with_password, list_tzap_with_recipient_key, list_tzap_with_recipient_key_bytes,
 };

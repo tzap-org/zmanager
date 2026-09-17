@@ -8,10 +8,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use zmanager_core::archive_browser::{BrowserExtractOptions, extract_entry_with_options};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use zmanager_core::backend_test_support::apple_archive_backend::{AppleArchiveCompression, AppleArchiveCreateOptions, create_apple_archive_from_path};
 use zmanager_core::backend_test_support::sevenz_backend::{SevenZCreateOptions, create_7z_from_path};
 use zmanager_core::backend_test_support::tar_gz_backend::{TarGzCreateOptions, create_tar_gz_from_path};
 use zmanager_core::backend_test_support::tar_zst_backend::{TarZstdCreateOptions, create_tar_zst_from_path};
+use zmanager_core::backend_test_support::tzap::{TzapCreateOptions, TzapKeySource, create_tzap_from_manifest_with_context};
+use zmanager_core::backend_test_support::zip_backend::{ZipCompression, ZipCreateOptions, create_zip_from_manifest};
+use zmanager_core::jobs::{CancellationToken, JobContext};
+use zmanager_core::manifest::{PlanOptions, plan_archive};
 use zmanager_core::safety::OverwritePolicy;
+
+const SPLIT_ZIP_VOLUME_SIZE_BYTES: u64 = 65_536;
 
 struct MetadataFixture {
     temp: TestDir,
@@ -109,6 +117,31 @@ fn tar_zst_manager_round_trip_restores_portable_metadata() {
 }
 
 #[test]
+fn zip_manager_round_trip_restores_portable_metadata() {
+    let mut fixture = metadata_fixture();
+    let archive = fixture.temp.path("metadata.zip");
+    let manifest = plan_archive(&fixture.source, &PlanOptions::default()).unwrap();
+    create_zip_from_manifest(&manifest, &archive, &ZipCreateOptions::default()).unwrap();
+    assert_metadata_round_trip(&mut fixture, &archive);
+}
+
+#[test]
+fn split_zip_manager_round_trip_restores_portable_metadata() {
+    let mut fixture = metadata_fixture();
+    // Make the archive larger than the minimum ZIP volume size while keeping
+    // the metadata assertions focused on the same small file and directory.
+    let large_payload = vec![0_u8; 131_072];
+    fs::write(fixture.source.join("large.bin"), large_payload).unwrap();
+
+    let archive = fixture.temp.path("metadata.zip");
+    let manifest = plan_archive(&fixture.source, &PlanOptions::default()).unwrap();
+    let options = ZipCreateOptions { compression: ZipCompression::Store, volume_size: Some(SPLIT_ZIP_VOLUME_SIZE_BYTES), ..Default::default() };
+    let report = create_zip_from_manifest(&manifest, &archive, &options).unwrap();
+    assert!(report.volume_count > 1, "fixture should exercise split ZIP extraction");
+    assert_metadata_round_trip(&mut fixture, &archive);
+}
+
+#[test]
 fn tar_gz_manager_round_trip_restores_portable_metadata() {
     let mut fixture = metadata_fixture();
     let archive = fixture.temp.path("metadata.tgz");
@@ -122,5 +155,39 @@ fn sevenz_manager_round_trip_restores_portable_metadata() {
     let archive = fixture.temp.path("metadata.7z");
     let options = SevenZCreateOptions { encrypt_file_names: false, ..Default::default() };
     create_7z_from_path(&fixture.source, &archive, &options).unwrap();
+    assert_metadata_round_trip(&mut fixture, &archive);
+}
+
+#[test]
+fn tzap_manager_round_trip_restores_portable_metadata() {
+    let mut fixture = metadata_fixture();
+    let archive = fixture.temp.path("metadata.tzap");
+    let manifest = plan_archive(&fixture.source, &PlanOptions::default()).unwrap();
+    let options = TzapCreateOptions {
+        key_source: TzapKeySource::NoPassword,
+        level: 1,
+        preserve_metadata: true,
+        replace_existing: false,
+        volume_size: None,
+        volume_count: None,
+        recovery_percentage: 0,
+        volume_loss_tolerance: 0,
+        x509_signing: None,
+        emit_bootstrap_sidecar: false,
+    };
+    let token = CancellationToken::new();
+    let mut events = |_| {};
+    let mut context = JobContext::new(&token, &mut events);
+    create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
+    assert_metadata_round_trip(&mut fixture, &archive);
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn apple_archive_manager_round_trip_restores_portable_metadata() {
+    let mut fixture = metadata_fixture();
+    let archive = fixture.temp.path("metadata.aar");
+    let options = AppleArchiveCreateOptions { compression: AppleArchiveCompression::None, ..Default::default() };
+    create_apple_archive_from_path(&fixture.source, &archive, &options).unwrap();
     assert_metadata_round_trip(&mut fixture, &archive);
 }

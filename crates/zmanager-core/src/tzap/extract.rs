@@ -722,6 +722,38 @@ fn apply_deferred_tzap_directory_metadata(directories: &[(PathBuf, TzapPortableE
     Ok(())
 }
 
+/// Restores directory metadata after selected extraction has materialized all
+/// descendants. The regular full-archive path already defers this work; the
+/// engine's selected-entry path needs the same ordering when a directory
+/// selector expands to multiple entries.
+pub(crate) fn restore_selected_directory_metadata(
+    archive: impl AsRef<Path>,
+    key: TzapExtractKeySource<'_>,
+    destination: impl AsRef<Path>,
+    directory_paths: &[String],
+    restore_options: TzapRestoreOptions,
+) -> Result<(), TzapError> {
+    if directory_paths.is_empty() || !should_restore_tzap_metadata(restore_options) {
+        return Ok(());
+    }
+
+    let (password, recipient_private_key, key_bytes_list) = key_components(key);
+    let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, key_bytes_list.as_deref())?;
+    let entries = opened.list_files()?;
+    let destination = destination.as_ref();
+    let directories = directory_paths
+        .iter()
+        .filter_map(|path| {
+            entries
+                .iter()
+                .find(|entry| entry.path == *path && entry.kind == TarEntryKind::Directory)
+                .map(|entry| (destination.join(path), TzapPortableEntryMetadata::from_archive_entry(entry)))
+        })
+        .collect::<Vec<_>>();
+
+    apply_deferred_tzap_directory_metadata(&directories, restore_options)
+}
+
 fn should_restore_tzap_metadata(restore_options: TzapRestoreOptions) -> bool {
     restore_options.policy != TzapRestorePolicy::Content
 }

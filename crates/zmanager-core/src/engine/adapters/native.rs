@@ -2239,6 +2239,21 @@ impl NativeReadAdapter for TzapListAdapter {
         // reader without re-listing or treating the engine ID as a fresh index.
         if matches!(selector.kind, BrowserEntryKind::Directory) {
             std::fs::create_dir_all(&destination_path).map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
+            let key = if let Some(recipient_key_bytes) = archive.options().recipient_key_bytes() {
+                tzap::TzapExtractKeySource::RecipientKeyBytesList(recipient_key_bytes)
+            } else if let Some(recipient_key) = archive.options().recipient_key_path() {
+                tzap::TzapExtractKeySource::RecipientKeyPath(recipient_key)
+            } else {
+                tzap::TzapExtractKeySource::Password(archive.options().password.as_deref().unwrap_or(""))
+            };
+            tzap::restore_selected_directory_metadata(
+                path,
+                key,
+                &options.destination,
+                std::slice::from_ref(&selector.path),
+                options.tzap_restore_options.unwrap_or_default().into(),
+            )
+            .map_err(|error| tzap_error(path, &error))?;
             return Ok(ExtractReport { written_entries: 1, ..ExtractReport::default() });
         }
         if !matches!(selector.kind, BrowserEntryKind::File) {
@@ -2268,6 +2283,44 @@ impl NativeReadAdapter for TzapListAdapter {
             return Ok(ExtractReport { skipped_entries: 1, ..ExtractReport::default() });
         };
         Ok(ExtractReport { written_entries: 1, written_bytes: report.written_bytes, warnings: report.metadata_diagnostics, ..ExtractReport::default() })
+    }
+
+    fn selected_extract_many(
+        &self,
+        archive: &NativeReadContext,
+        entry_ids: &[EntryId],
+        options: &mut SelectedExtractOptions<'_>,
+    ) -> Result<ExtractReport, ArchiveError> {
+        let directory_paths = entry_ids
+            .iter()
+            .filter_map(|entry_id| archive.retained_entry(*entry_id).ok())
+            .filter(|entry| entry.kind == BrowserEntryKind::Directory)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let mut report = ExtractReport::default();
+        for &entry_id in entry_ids {
+            archive.set_selected_entry(entry_id);
+            let item_report = self.selected_extract(archive, entry_id, options)?;
+            report.written_entries = report.written_entries.saturating_add(item_report.written_entries);
+            report.skipped_entries = report.skipped_entries.saturating_add(item_report.skipped_entries);
+            report.written_bytes = report.written_bytes.saturating_add(item_report.written_bytes);
+            report.warnings.extend(item_report.warnings);
+        }
+        if directory_paths.is_empty() {
+            return Ok(report);
+        }
+
+        let path = archive.primary_path();
+        let key = if let Some(recipient_key_bytes) = archive.options().recipient_key_bytes() {
+            tzap::TzapExtractKeySource::RecipientKeyBytesList(recipient_key_bytes)
+        } else if let Some(recipient_key) = archive.options().recipient_key_path() {
+            tzap::TzapExtractKeySource::RecipientKeyPath(recipient_key)
+        } else {
+            tzap::TzapExtractKeySource::Password(archive.options().password.as_deref().unwrap_or(""))
+        };
+        tzap::restore_selected_directory_metadata(path, key, &options.destination, &directory_paths, options.tzap_restore_options.unwrap_or_default().into())
+            .map_err(|error| tzap_error(path, &error))?;
+        Ok(report)
     }
 
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
