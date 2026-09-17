@@ -1019,6 +1019,13 @@ pub fn remove_destination_for_replace(path: &Path) -> std::io::Result<()> {
         Err(error) => return Err(error),
     };
 
+    #[cfg(not(unix))]
+    if !metadata.file_type().is_dir() && !metadata.file_type().is_symlink() && metadata.permissions().readonly() {
+        let mut permissions = metadata.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions)?;
+    }
+
     if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
 }
 

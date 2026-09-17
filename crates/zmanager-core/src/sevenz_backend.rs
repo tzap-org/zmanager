@@ -38,6 +38,9 @@ const SEVENZ_MODE_MASK: u32 = 0o7777;
 /// Bit 31 in 7z `windows_attributes` signals that Unix permission bits are
 /// present in the upper half-word (bits 16–27).
 const SEVENZ_UNIX_ATTRIBUTES_FLAG: u32 = 0x8000_0000;
+/// Windows `FILE_ATTRIBUTE_READONLY`, projected by extraction into the
+/// portable read-only permission mode used by the shared materializer.
+const SEVENZ_WINDOWS_READONLY_ATTRIBUTE: u32 = 0x0000_0001;
 
 type SevenZProgressCallback<'a> = Rc<RefCell<dyn FnMut(Option<&str>, u64) + 'a>>;
 
@@ -907,6 +910,17 @@ fn sevenz_archive_entry(entry: &ManifestEntry, preserve_metadata: bool) -> Archi
             archive_entry.has_windows_attributes = true;
             archive_entry.windows_attributes |= SEVENZ_UNIX_ATTRIBUTES_FLAG | ((mode & SEVENZ_MODE_MASK) << 16);
         }
+        #[cfg(windows)]
+        {
+            // sevenz-rust2's `ArchiveEntry::from_path` records timestamps but
+            // does not derive Windows attributes from std::fs metadata. Set
+            // the read-only bit explicitly so a manager-created 7z archive
+            // round-trips this supported portable metadata class.
+            archive_entry.has_windows_attributes = true;
+            if fs::metadata(&entry.source_path).is_ok_and(|metadata| metadata.permissions().readonly()) {
+                archive_entry.windows_attributes |= SEVENZ_WINDOWS_READONLY_ATTRIBUTE;
+            }
+        }
         return archive_entry;
     }
 
@@ -941,6 +955,8 @@ fn extraction_kind(entry: &ArchiveEntry) -> ExtractionEntryKind {
 fn sevenz_unix_mode(entry: &ArchiveEntry) -> Option<u32> {
     if entry.has_windows_attributes && (entry.windows_attributes() & SEVENZ_UNIX_ATTRIBUTES_FLAG) != 0 {
         Some((entry.windows_attributes() >> 16) & SEVENZ_MODE_MASK)
+    } else if cfg!(windows) && entry.has_windows_attributes {
+        Some(if entry.windows_attributes() & SEVENZ_WINDOWS_READONLY_ATTRIBUTE != 0 { 0o444 } else { 0o644 })
     } else {
         None
     }

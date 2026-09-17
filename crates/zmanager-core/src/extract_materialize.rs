@@ -57,6 +57,23 @@ pub(crate) fn materialize_deferred_hardlinks(hardlinks: &[DeferredHardlink]) -> 
 
 /// Applies restored mode bits and modification time to an extracted path.
 pub(crate) fn apply_metadata(path: &Path, mode: Option<u32>, mtime: Option<FileTime>) -> io::Result<()> {
+    // Windows uses the Read-only attribute for the POSIX write-bit projection.
+    // Apply the timestamp while the path is writable: setting Read-only first
+    // makes `filetime` reopen the file with insufficient access rights.
+    #[cfg(not(unix))]
+    if mode.is_some()
+        && let Ok(fs_metadata) = fs::metadata(path)
+        && fs_metadata.permissions().readonly()
+    {
+        let mut perms = fs_metadata.permissions();
+        perms.set_readonly(false);
+        fs::set_permissions(path, perms)?;
+    }
+
+    if let Some(mtime) = mtime {
+        filetime::set_file_mtime(path, mtime)?;
+    }
+
     #[cfg(unix)]
     if let Some(mode) = mode {
         use std::os::unix::fs::PermissionsExt;
@@ -65,17 +82,11 @@ pub(crate) fn apply_metadata(path: &Path, mode: Option<u32>, mtime: Option<FileT
     }
 
     #[cfg(not(unix))]
-    if let Some(mode) = mode
-        && mode & 0o222 == 0
-        && let Ok(fs_metadata) = fs::metadata(path)
-    {
+    if let Some(mode) = mode {
+        let fs_metadata = fs::metadata(path)?;
         let mut perms = fs_metadata.permissions();
-        perms.set_readonly(true);
+        perms.set_readonly(mode & 0o222 == 0);
         fs::set_permissions(path, perms)?;
-    }
-
-    if let Some(mtime) = mtime {
-        filetime::set_file_mtime(path, mtime)?;
     }
 
     Ok(())
@@ -120,4 +131,28 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_metadata;
+    use filetime::FileTime;
+    use std::fs;
+
+    #[test]
+    fn applies_mtime_before_windows_read_only_attribute() {
+        let root = std::env::temp_dir().join(format!(
+            "zmanager-extract-materialize-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock should be after the Unix epoch").as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let path = root.join("read-only.txt");
+        fs::write(&path, b"read-only\n").expect("test file should be written");
+
+        let result = apply_metadata(&path, Some(0o444), Some(FileTime::from_unix_time(1_500_000_000, 0)));
+
+        let _ = fs::remove_dir_all(&root);
+        result.expect("read-only metadata should be applied without blocking mtime restoration");
+    }
 }
