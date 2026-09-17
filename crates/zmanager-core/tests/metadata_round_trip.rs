@@ -25,6 +25,8 @@ struct MetadataFixture {
     temp: TestDir,
     source: PathBuf,
     file: PathBuf,
+    setuid_file: PathBuf,
+    setgid_directory: PathBuf,
     file_mtime: FileTime,
     directory_mtime: FileTime,
 }
@@ -59,9 +61,13 @@ fn metadata_fixture() -> MetadataFixture {
     let source = temp.path("src");
     let directory = source.join("folder");
     let file = source.join("data.bin");
+    let setuid_file = source.join("setuid.bin");
+    let setgid_directory = source.join("setgid-folder");
 
     fs::create_dir_all(&directory).unwrap();
+    fs::create_dir_all(&setgid_directory).unwrap();
     fs::write(&file, b"metadata payload\n").unwrap();
+    fs::write(&setuid_file, b"setuid payload\n").unwrap();
     fs::write(directory.join("child.txt"), b"child payload\n").unwrap();
 
     let file_mtime = FileTime::from_unix_time(1_500_000_000, 0);
@@ -69,25 +75,35 @@ fn metadata_fixture() -> MetadataFixture {
     filetime::set_file_mtime(&file, file_mtime).unwrap();
     set_mode(&file, 0o444);
     filetime::set_file_mtime(&directory, directory_mtime).unwrap();
-    set_mode(&directory, 0o755);
+    set_mode(&directory, 0o1755);
+    set_mode(&setuid_file, 0o4755);
+    set_mode(&setgid_directory, 0o2755);
 
-    MetadataFixture { temp, source, file, file_mtime, directory_mtime }
+    MetadataFixture { temp, source, file, setuid_file, setgid_directory, file_mtime, directory_mtime }
 }
 
-fn assert_metadata_round_trip(fixture: &mut MetadataFixture, archive: &Path) {
+fn assert_metadata_round_trip(fixture: &mut MetadataFixture, archive: &Path, restore_privileged_mode_bits: bool) {
+    #[cfg(not(unix))]
+    let _ = restore_privileged_mode_bits;
+
     let output = fixture.temp.path("out");
     let options = BrowserExtractOptions { overwrite: OverwritePolicy::Replace, ..Default::default() };
 
     let first = extract_entry_with_options(archive, "src", &output, options).unwrap();
     assert!(first.written_bytes > 0);
     assert_eq!(fs::read(output.join("src/data.bin")).unwrap(), b"metadata payload\n");
+    assert_eq!(fs::read(output.join("src/setuid.bin")).unwrap(), b"setuid payload\n");
     assert_eq!(observed_mtime(&output.join("src/data.bin")), fixture.file_mtime, "file mtime");
     assert_eq!(observed_mtime(&output.join("src/folder")), fixture.directory_mtime, "directory mtime");
 
     #[cfg(unix)]
     {
         assert_eq!(observed_mode(&output.join("src/data.bin")), 0o444, "file mode");
-        assert_eq!(observed_mode(&output.join("src/folder")), 0o755, "directory mode");
+        assert_eq!(observed_mode(&output.join("src/folder")), 0o1755, "directory mode");
+        let expected_setuid_file_mode = if restore_privileged_mode_bits { 0o4755 } else { 0o755 };
+        let expected_setgid_directory_mode = if restore_privileged_mode_bits { 0o2755 } else { 0o755 };
+        assert_eq!(observed_mode(&output.join("src/setuid.bin")), expected_setuid_file_mode, "setuid file mode");
+        assert_eq!(observed_mode(&output.join("src/setgid-folder")), expected_setgid_directory_mode, "setgid directory mode");
     }
     #[cfg(not(unix))]
     {
@@ -105,6 +121,8 @@ fn assert_metadata_round_trip(fixture: &mut MetadataFixture, archive: &Path) {
     // Keep the temporary test tree removable on Windows after asserting the
     // archived read-only projection.
     set_mode(&fixture.file, 0o644);
+    set_mode(&fixture.setuid_file, 0o755);
+    set_mode(&fixture.setgid_directory, 0o755);
     set_mode(&output.join("src/data.bin"), 0o644);
 }
 
@@ -113,7 +131,7 @@ fn tar_zst_manager_round_trip_restores_portable_metadata() {
     let mut fixture = metadata_fixture();
     let archive = fixture.temp.path("metadata.tzst");
     create_tar_zst_from_path(&fixture.source, &archive, &TarZstdCreateOptions::default()).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
 }
 
 #[test]
@@ -122,7 +140,7 @@ fn zip_manager_round_trip_restores_portable_metadata() {
     let archive = fixture.temp.path("metadata.zip");
     let manifest = plan_archive(&fixture.source, &PlanOptions::default()).unwrap();
     create_zip_from_manifest(&manifest, &archive, &ZipCreateOptions::default()).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
 }
 
 #[test]
@@ -138,7 +156,7 @@ fn split_zip_manager_round_trip_restores_portable_metadata() {
     let options = ZipCreateOptions { compression: ZipCompression::Store, volume_size: Some(SPLIT_ZIP_VOLUME_SIZE_BYTES), ..Default::default() };
     let report = create_zip_from_manifest(&manifest, &archive, &options).unwrap();
     assert!(report.volume_count > 1, "fixture should exercise split ZIP extraction");
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
 }
 
 #[test]
@@ -146,7 +164,7 @@ fn tar_gz_manager_round_trip_restores_portable_metadata() {
     let mut fixture = metadata_fixture();
     let archive = fixture.temp.path("metadata.tgz");
     create_tar_gz_from_path(&fixture.source, &archive, &TarGzCreateOptions::default()).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
 }
 
 #[test]
@@ -155,7 +173,7 @@ fn sevenz_manager_round_trip_restores_portable_metadata() {
     let archive = fixture.temp.path("metadata.7z");
     let options = SevenZCreateOptions { encrypt_file_names: false, ..Default::default() };
     create_7z_from_path(&fixture.source, &archive, &options).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
 }
 
 #[test]
@@ -179,7 +197,7 @@ fn tzap_manager_round_trip_restores_portable_metadata() {
     let mut events = |_| {};
     let mut context = JobContext::new(&token, &mut events);
     create_tzap_from_manifest_with_context(&manifest, &archive, &options, &mut context).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, false);
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -189,5 +207,21 @@ fn apple_archive_manager_round_trip_restores_portable_metadata() {
     let archive = fixture.temp.path("metadata.aar");
     let options = AppleArchiveCreateOptions { compression: AppleArchiveCompression::None, ..Default::default() };
     create_apple_archive_from_path(&fixture.source, &archive, &options).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive);
+    assert_metadata_round_trip(&mut fixture, &archive, true);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_archive_manager_round_trip_restores_native_file_flags() {
+    use std::os::macos::fs::MetadataExt;
+
+    let mut fixture = metadata_fixture();
+    assert!(std::process::Command::new("/usr/bin/chflags").arg("hidden").arg(&fixture.file).status().unwrap().success());
+    let expected_flags = fs::metadata(&fixture.file).unwrap().st_flags();
+    let archive = fixture.temp.path("metadata-flags.aar");
+    let options = AppleArchiveCreateOptions { compression: AppleArchiveCompression::None, ..Default::default() };
+    create_apple_archive_from_path(&fixture.source, &archive, &options).unwrap();
+
+    assert_metadata_round_trip(&mut fixture, &archive, true);
+    assert_eq!(fs::metadata(fixture.temp.path("out/src/data.bin")).unwrap().st_flags(), expected_flags, "selected extraction file flags");
 }

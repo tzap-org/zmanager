@@ -16,8 +16,9 @@ use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanErro
 use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver};
 use crate::secrets::SecretString;
 use crate::zip_split::{MIN_ZIP_VOLUME_SIZE_BYTES, open_zip_reader, split_zip_temp_archive};
+use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use zip::write::{FileOptions, SimpleFileOptions};
@@ -231,6 +232,10 @@ pub fn create_zip_from_manifest(
     let mut writer = ZipWriter::new(file);
     let mut report = write_manifest_to_zip(&mut writer, manifest, options, None)?;
     writer.finish()?;
+    if options.preserve_metadata {
+        output.close();
+        patch_zip_metadata_attributes(output.temp_path(), manifest).map_err(|source| ZipBackendError::Io { path: output.temp_path().to_path_buf(), source })?;
+    }
     if let Some(volume_size) = options.volume_size {
         output.close();
         report.volume_count = split_zip_temp_archive(output.temp_path(), destination, volume_size, options.replace_existing)?;
@@ -262,6 +267,10 @@ pub fn create_zip_from_manifest_with_context(
     let mut writer = ZipWriter::new(file);
     let mut report = write_manifest_to_zip(&mut writer, manifest, options, Some(context))?;
     writer.finish()?;
+    if options.preserve_metadata {
+        output.close();
+        patch_zip_metadata_attributes(output.temp_path(), manifest).map_err(|source| ZipBackendError::Io { path: output.temp_path().to_path_buf(), source })?;
+    }
     if let Some(volume_size) = options.volume_size {
         output.close();
         report.volume_count = split_zip_temp_archive(output.temp_path(), destination, volume_size, options.replace_existing)?;
@@ -716,6 +725,137 @@ fn zip_compression_level(options: &ZipCreateOptions) -> Option<i64> {
         ZipCompression::Store => None,
         ZipCompression::Deflate => options.level,
     }
+}
+
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0201_4b50;
+const ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0605_4b50;
+const ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0606_4b50;
+const ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE: u32 = 0x0706_4b50;
+const ZIP_CENTRAL_DIRECTORY_HEADER_SIZE: u64 = 46;
+const ZIP_END_OF_CENTRAL_DIRECTORY_SIZE: u64 = 22;
+const ZIP_MAX_COMMENT_SIZE: u64 = u16::MAX as u64;
+
+#[derive(Clone, Copy)]
+struct ZipMetadataAttributes {
+    special_mode: u32,
+    readonly: bool,
+}
+
+/// The zip crate's public permissions API intentionally keeps only `0o777`.
+/// Restore Unix special bits and the Windows/DOS read-only attribute in the
+/// central directory after it has written the archive.
+fn patch_zip_metadata_attributes(path: &Path, manifest: &ArchiveManifest) -> io::Result<()> {
+    let metadata_attributes: HashMap<&str, ZipMetadataAttributes> = manifest
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let special_mode = entry.permissions.unix_mode.map_or(0, |mode| mode & 0o7000);
+            let readonly = entry.file_type == ManifestFileType::File && entry.permissions.unix_mode.is_none() && entry.permissions.readonly;
+            (special_mode != 0 || readonly).then_some((entry.archive_path.trim_end_matches('/'), ZipMetadataAttributes { special_mode, readonly }))
+        })
+        .collect();
+    if metadata_attributes.is_empty() {
+        return Ok(());
+    }
+
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    let archive_length = file.metadata()?.len();
+    let tail_length = archive_length.min(ZIP_END_OF_CENTRAL_DIRECTORY_SIZE + ZIP_MAX_COMMENT_SIZE);
+    let tail_start = archive_length - tail_length;
+    file.seek(io::SeekFrom::Start(tail_start))?;
+    let mut tail = vec![0_u8; usize::try_from(tail_length).map_err(|_| invalid_zip_metadata("ZIP footer is too large"))?];
+    file.read_exact(&mut tail)?;
+
+    let eocd_offset = tail
+        .windows(4)
+        .rposition(|window| u32::from_le_bytes(window.try_into().expect("ZIP signature window has four bytes")) == ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE)
+        .ok_or_else(|| invalid_zip_metadata("ZIP end-of-central-directory record is missing"))?;
+    let eocd_position = tail_start + u64::try_from(eocd_offset).map_err(|_| invalid_zip_metadata("ZIP footer offset does not fit"))?;
+    let eocd = &tail[eocd_offset..];
+    if eocd.len() < usize::try_from(ZIP_END_OF_CENTRAL_DIRECTORY_SIZE).unwrap() {
+        return Err(invalid_zip_metadata("ZIP end-of-central-directory record is truncated"));
+    }
+
+    let entries = u64::from(u16::from_le_bytes([eocd[10], eocd[11]]));
+    let central_size = u64::from(u32::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15]]));
+    let central_offset = u64::from(u32::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19]]));
+    let (entries, central_size, central_offset) =
+        if entries == u64::from(u16::MAX) || central_size == u64::from(u32::MAX) || central_offset == u64::from(u32::MAX) {
+            let locator_position = eocd_position.checked_sub(20).ok_or_else(|| invalid_zip_metadata("ZIP64 locator is missing"))?;
+            file.seek(io::SeekFrom::Start(locator_position))?;
+            let mut locator = [0_u8; 20];
+            file.read_exact(&mut locator)?;
+            if u32::from_le_bytes(locator[0..4].try_into().unwrap()) != ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE {
+                return Err(invalid_zip_metadata("ZIP64 end-of-central-directory locator is missing"));
+            }
+            let zip64_position = u64::from_le_bytes(locator[8..16].try_into().unwrap());
+            file.seek(io::SeekFrom::Start(zip64_position))?;
+            let mut zip64 = [0_u8; 56];
+            file.read_exact(&mut zip64)?;
+            if u32::from_le_bytes(zip64[0..4].try_into().unwrap()) != ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE {
+                return Err(invalid_zip_metadata("ZIP64 end-of-central-directory record is missing"));
+            }
+            (
+                u64::from_le_bytes(zip64[32..40].try_into().unwrap()),
+                u64::from_le_bytes(zip64[40..48].try_into().unwrap()),
+                u64::from_le_bytes(zip64[48..56].try_into().unwrap()),
+            )
+        } else {
+            (entries, central_size, central_offset)
+        };
+
+    let central_end = central_offset.checked_add(central_size).ok_or_else(|| invalid_zip_metadata("ZIP central directory range overflows"))?;
+    if central_end > archive_length {
+        return Err(invalid_zip_metadata("ZIP central directory extends past the archive"));
+    }
+
+    let mut position = central_offset;
+    for _ in 0..entries {
+        if position.checked_add(ZIP_CENTRAL_DIRECTORY_HEADER_SIZE).is_none_or(|end| end > central_end) {
+            return Err(invalid_zip_metadata("ZIP central directory entry is truncated"));
+        }
+
+        file.seek(io::SeekFrom::Start(position))?;
+        let mut header = [0_u8; 46];
+        file.read_exact(&mut header)?;
+        if u32::from_le_bytes(header[0..4].try_into().unwrap()) != ZIP_CENTRAL_DIRECTORY_SIGNATURE {
+            return Err(invalid_zip_metadata("ZIP central directory signature is invalid"));
+        }
+
+        let name_length = u64::from(u16::from_le_bytes([header[28], header[29]]));
+        let extra_length = u64::from(u16::from_le_bytes([header[30], header[31]]));
+        let comment_length = u64::from(u16::from_le_bytes([header[32], header[33]]));
+        let record_length = ZIP_CENTRAL_DIRECTORY_HEADER_SIZE
+            .checked_add(name_length)
+            .and_then(|length| length.checked_add(extra_length))
+            .and_then(|length| length.checked_add(comment_length))
+            .ok_or_else(|| invalid_zip_metadata("ZIP central directory entry length overflows"))?;
+        let record_end = position.checked_add(record_length).ok_or_else(|| invalid_zip_metadata("ZIP central directory entry range overflows"))?;
+        if record_end > central_end {
+            return Err(invalid_zip_metadata("ZIP central directory entry extends past the directory"));
+        }
+
+        let mut name = vec![0_u8; usize::try_from(name_length).map_err(|_| invalid_zip_metadata("ZIP entry name is too large"))?];
+        file.read_exact(&mut name)?;
+        let name = String::from_utf8_lossy(&name);
+        if let Some(metadata) = metadata_attributes.get(name.trim_end_matches('/')) {
+            let external_attributes = u32::from_le_bytes(header[38..42].try_into().unwrap());
+            let patched_attributes =
+                if metadata.readonly { (external_attributes & 0xffff) | 0x01 } else { external_attributes | (metadata.special_mode << 16) };
+            if patched_attributes != external_attributes {
+                file.seek(io::SeekFrom::Start(position + 38))?;
+                file.write_all(&patched_attributes.to_le_bytes())?;
+            }
+        }
+
+        position = record_end;
+    }
+
+    Ok(())
+}
+
+fn invalid_zip_metadata(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 fn password_bytes(password: Option<&str>) -> Option<&[u8]> {

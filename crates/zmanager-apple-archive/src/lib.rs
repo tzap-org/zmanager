@@ -1100,6 +1100,18 @@ mod platform {
             }
         }
 
+        // chown clears setuid/setgid on macOS. Reapply the portable mode after
+        // ownership and before flags so a complete metadata restore does not
+        // silently lose privileged mode bits.
+        if !symlink && let Some(mode) = metadata.mode {
+            // SAFETY: `path` is NUL-terminated and the mode is copied from the
+            // archive's validated portable metadata.
+            let status = unsafe { libc::chmod(path.as_ptr(), (mode & 0o7777) as libc::mode_t) };
+            if status != 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+        }
+
         if let Some(flags) = metadata.flags {
             // SAFETY: `path` is NUL-terminated. Flags are applied last so
             // immutable bits cannot prevent timestamp or ownership updates.
