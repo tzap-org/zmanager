@@ -569,6 +569,11 @@ struct OpticalTrackSource {
     reader: std::sync::Mutex<SendReadSeek>,
     sector_mode: iso::SectorMode,
     total_logical_bytes: u64,
+    /// Number of logical sectors physically stored in the selected track.
+    track_sector_count: u64,
+    /// Multi-session ISO directory records can use absolute disc LBAs even
+    /// though this source exposes only the selected data track.
+    extent_lba_base: u64,
 }
 
 /// `iso9660-forensic` erases the concrete reader's auto traits from its
@@ -622,9 +627,17 @@ impl forensic_vfs::ImageSource for OpticalTrackSource {
             let in_sector_offset = cur_offset % 2048;
             let bytes_in_sector = (2048 - in_sector_offset).min(cur_buf.len() as u64).min(self.total_logical_bytes - cur_offset) as usize;
 
-            let phys_pos = self.sector_mode.user_data_pos(lba) + in_sector_offset;
-            reader.seek(io::SeekFrom::Start(phys_pos)).map_err(|source| forensic_vfs::VfsError::Io { op: "seek", source })?;
-            reader.read_exact(&mut cur_buf[..bytes_in_sector]).map_err(|source| forensic_vfs::VfsError::Io { op: "read", source })?;
+            if self.extent_lba_base > 0 && lba >= self.track_sector_count && lba < self.extent_lba_base {
+                // DiscJuggler stores only the selected session's sectors, but
+                // ISO 9660 extents retain absolute disc LBAs. Model the
+                // omitted inter-session span as unrecorded zero sectors.
+                cur_buf[..bytes_in_sector].fill(0);
+            } else {
+                let physical_lba = if self.extent_lba_base > 0 && lba >= self.extent_lba_base { lba - self.extent_lba_base } else { lba };
+                let phys_pos = self.sector_mode.user_data_pos(physical_lba) + in_sector_offset;
+                reader.seek(io::SeekFrom::Start(phys_pos)).map_err(|source| forensic_vfs::VfsError::Io { op: "seek", source })?;
+                reader.read_exact(&mut cur_buf[..bytes_in_sector]).map_err(|source| forensic_vfs::VfsError::Io { op: "read", source })?;
+            }
 
             total_read += bytes_in_sector;
             cur_offset += bytes_in_sector as u64;
@@ -668,6 +681,118 @@ fn resolve_mdf_descriptor(archive_path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn cdi_sector_mode(track: &iso::cdi::CdiTrack) -> Option<iso::SectorMode> {
+    match (track.kind, track.raw_bytes_per_sector) {
+        (iso::cdi::CdiTrackKind::Mode1, 2048) => Some(iso::SectorMode::Iso2048),
+        (iso::cdi::CdiTrackKind::Mode1, 2352) => Some(iso::SectorMode::Raw2352),
+        (iso::cdi::CdiTrackKind::Mode2Formless, 2336) => Some(iso::SectorMode::Mode2_2336),
+        (iso::cdi::CdiTrackKind::Mode2Formless, 2352) => Some(iso::SectorMode::Raw2352Mode2),
+        _ => None,
+    }
+}
+
+/// Finds the start of an ISO 9660 data track inside a real `DiscJuggler` image.
+///
+/// CDI track LBAs describe the *disc* timeline, including session gaps that do
+/// not occupy bytes in the image. They therefore cannot be multiplied by the
+/// sector size to obtain a file offset. Locate the primary volume descriptor
+/// instead: it is always logical sector 16 from the filesystem's index-1
+/// start. Both-endian volume-space fields then provide an independently
+/// validated bound for the returned track window.
+fn find_cdi_iso_track(file: &mut std::fs::File, data_end: u64, modes: &[iso::SectorMode]) -> Result<Option<(u64, u64, iso::SectorMode, u64)>, io::Error> {
+    const SCAN_CHUNK_BYTES: usize = 1024 * 1024;
+    const PVD_MAGIC: &[u8; 6] = b"\x01CD001";
+
+    let mut offset = 0_u64;
+    let mut carry = Vec::new();
+    let mut read_buffer = vec![0_u8; SCAN_CHUNK_BYTES];
+    while offset < data_end {
+        file.seek(io::SeekFrom::Start(offset))?;
+        let remaining = usize::try_from((data_end - offset).min(SCAN_CHUNK_BYTES as u64)).unwrap_or(SCAN_CHUNK_BYTES);
+        let read = file.read(&mut read_buffer[..remaining])?;
+        if read == 0 {
+            break;
+        }
+
+        let base_offset = offset.saturating_sub(carry.len() as u64);
+        let mut scan = Vec::with_capacity(carry.len() + read);
+        scan.extend_from_slice(&carry);
+        scan.extend_from_slice(&read_buffer[..read]);
+
+        for (index, window) in scan.windows(PVD_MAGIC.len()).enumerate() {
+            if window != PVD_MAGIC {
+                continue;
+            }
+            let pvd_offset = base_offset + index as u64;
+            for &mode in modes {
+                let pvd_relative = 16_u64.checked_mul(mode.physical_sector_size()).and_then(|value| value.checked_add(mode.data_offset()));
+                let Some(track_start) = pvd_relative.and_then(|relative| pvd_offset.checked_sub(relative)) else {
+                    continue;
+                };
+
+                let mut volume_size = [0_u8; 8];
+                file.seek(io::SeekFrom::Start(pvd_offset + 80))?;
+                file.read_exact(&mut volume_size)?;
+                let little = u32::from_le_bytes(volume_size[..4].try_into().expect("four-byte slice"));
+                let big = u32::from_be_bytes(volume_size[4..].try_into().expect("four-byte slice"));
+                if little <= 16 || little != big {
+                    continue;
+                }
+
+                let Some(physical_bytes) = u64::from(little).checked_mul(mode.physical_sector_size()) else {
+                    continue;
+                };
+                if track_start.checked_add(physical_bytes).is_some_and(|end| end <= data_end) {
+                    let mut pvd = [0_u8; 190];
+                    file.seek(io::SeekFrom::Start(pvd_offset))?;
+                    file.read_exact(&mut pvd)?;
+                    let root_extent = u32::from_le_bytes(pvd[158..162].try_into().expect("four-byte slice"));
+                    let root_extent_be = u32::from_be_bytes(pvd[162..166].try_into().expect("four-byte slice"));
+                    let root_size = u32::from_le_bytes(pvd[166..170].try_into().expect("four-byte slice"));
+                    let root_size_be = u32::from_be_bytes(pvd[170..174].try_into().expect("four-byte slice"));
+                    if root_extent != root_extent_be || root_size != root_size_be {
+                        continue;
+                    }
+
+                    let mut root_header = [0_u8; 34];
+                    let mut extent_lba_base = None;
+                    for relative_lba in 0..little {
+                        let sector_offset = track_start + mode.user_data_pos(u64::from(relative_lba));
+                        file.seek(io::SeekFrom::Start(sector_offset))?;
+                        file.read_exact(&mut root_header)?;
+                        let extent = u32::from_le_bytes(root_header[2..6].try_into().expect("four-byte slice"));
+                        let extent_be = u32::from_be_bytes(root_header[6..10].try_into().expect("four-byte slice"));
+                        let size = u32::from_le_bytes(root_header[10..14].try_into().expect("four-byte slice"));
+                        let size_be = u32::from_be_bytes(root_header[14..18].try_into().expect("four-byte slice"));
+                        if root_header[0] >= 34
+                            && extent == root_extent
+                            && extent_be == root_extent
+                            && size == root_size
+                            && size_be == root_size
+                            && root_header[32] == 1
+                            && root_header[33] == 0
+                            && root_extent >= relative_lba
+                        {
+                            extent_lba_base = Some(u64::from(root_extent - relative_lba));
+                            break;
+                        }
+                    }
+                    if let Some(extent_lba_base) = extent_lba_base {
+                        return Ok(Some((track_start, u64::from(little) * 2048, mode, extent_lba_base)));
+                    }
+                }
+            }
+        }
+
+        let carry_len = scan.len().min(PVD_MAGIC.len() - 1);
+        carry.clear();
+        carry.extend_from_slice(&scan[scan.len() - carry_len..]);
+        offset += read as u64;
+    }
+
+    Ok(None)
+}
+
 /// Opens an optical image or sector dump into a unified `forensic_vfs::ImageSource`.
 #[allow(clippy::cast_possible_truncation)]
 fn open_optical_source(archive_path: &Path) -> Result<std::sync::Arc<dyn forensic_vfs::ImageSource>, VirtualDiskBackendError> {
@@ -708,7 +833,13 @@ fn open_optical_source(archive_path: &Path) -> Result<std::sync::Arc<dyn forensi
             let mut reader = SendReadSeek(Box::new(cursor));
             let sector_mode = iso::SectorMode::detect(&mut reader).unwrap_or(iso::SectorMode::Raw2352);
             let total_logical_bytes = (len / sector_mode.physical_sector_size()) * 2048;
-            return Ok(std::sync::Arc::new(OpticalTrackSource { reader: std::sync::Mutex::new(reader), sector_mode, total_logical_bytes }));
+            return Ok(std::sync::Arc::new(OpticalTrackSource {
+                reader: std::sync::Mutex::new(reader),
+                sector_mode,
+                total_logical_bytes,
+                track_sector_count: total_logical_bytes / 2048,
+                extent_lba_base: 0,
+            }));
         }
 
         return Ok(isz_src);
@@ -717,18 +848,33 @@ fn open_optical_source(archive_path: &Path) -> Result<std::sync::Arc<dyn forensi
     let ext = archive_path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     if ext.as_deref() == Some("cdi") {
         let mut file = std::fs::File::open(archive_path).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
-        if let Some(tracks) = iso::cdi::tracks(&mut file)
-            && let Some(data_track) = tracks.into_iter().find(|t| t.kind != iso::cdi::CdiTrackKind::Audio)
+        if let Some(info) = iso::cdi::detect(&mut file)
+            && let Some(tracks) = iso::cdi::tracks(&mut file)
         {
-            let raw_sector_size = if data_track.raw_bytes_per_sector > 0 { u64::from(data_track.raw_bytes_per_sector) } else { 2048 };
-            let start_offset = u64::from(data_track.start_sector) * raw_sector_size;
-            let track_len = u64::from(data_track.length_sectors) * raw_sector_size;
-            let offset_reader = iso::offset::OffsetReader::new(std::io::BufReader::new(file), start_offset, track_len)
-                .map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
-            let mut reader = SendReadSeek(Box::new(offset_reader));
-            let sector_mode = iso::SectorMode::detect(&mut reader).unwrap_or(iso::SectorMode::Iso2048);
-            let total_logical_bytes = (track_len / sector_mode.physical_sector_size()) * 2048;
-            return Ok(std::sync::Arc::new(OpticalTrackSource { reader: std::sync::Mutex::new(reader), sector_mode, total_logical_bytes }));
+            let mut modes = Vec::new();
+            for mode in tracks.iter().filter_map(cdi_sector_mode) {
+                if !modes.contains(&mode) {
+                    modes.push(mode);
+                }
+            }
+            let file_size = file.seek(io::SeekFrom::End(0)).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
+            let data_end = file_size.saturating_sub(u64::from(info.descriptor_length));
+            if let Some((start_offset, volume_logical_bytes, sector_mode, extent_lba_base)) =
+                find_cdi_iso_track(&mut file, data_end, &modes).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?
+            {
+                let track_len = (volume_logical_bytes / 2048) * sector_mode.physical_sector_size();
+                let offset_reader = iso::offset::OffsetReader::new(std::io::BufReader::new(file), start_offset, track_len)
+                    .map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
+                let reader = SendReadSeek(Box::new(offset_reader));
+                let total_logical_bytes = extent_lba_base.saturating_mul(2048).saturating_add(volume_logical_bytes);
+                return Ok(std::sync::Arc::new(OpticalTrackSource {
+                    reader: std::sync::Mutex::new(reader),
+                    sector_mode,
+                    total_logical_bytes,
+                    track_sector_count: volume_logical_bytes / 2048,
+                    extent_lba_base,
+                }));
+            }
         }
     }
 
@@ -745,7 +891,13 @@ fn open_optical_source(archive_path: &Path) -> Result<std::sync::Arc<dyn forensi
     let track_len = reader.seek(io::SeekFrom::End(0)).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
     let total_logical_bytes = (track_len / sector_mode.physical_sector_size()) * 2048;
 
-    Ok(std::sync::Arc::new(OpticalTrackSource { reader: std::sync::Mutex::new(reader), sector_mode, total_logical_bytes }))
+    Ok(std::sync::Arc::new(OpticalTrackSource {
+        reader: std::sync::Mutex::new(reader),
+        sector_mode,
+        total_logical_bytes,
+        track_sector_count: total_logical_bytes / 2048,
+        extent_lba_base: 0,
+    }))
 }
 
 /// Opens `archive_path` through the engine and returns the mounted read-only
@@ -2064,6 +2216,34 @@ mod tests {
             offset += read;
         }
         assert_eq!(decoded, payload[..aligned_len], "decoded ISZ bytes must match the source ISO");
+    }
+
+    #[test]
+    fn real_mkdcdisc_cdi_lists_its_iso9660_data_session() {
+        let archive = fixture("mkdcdisc-basic.cdi");
+        let mut file = fs::File::open(&archive).unwrap();
+        let info = iso::cdi::detect(&mut file).expect("detect DiscJuggler footer");
+        let tracks = iso::cdi::tracks(&mut file).expect("decode DiscJuggler tracks");
+        let modes = tracks.iter().filter_map(super::cdi_sector_mode).collect::<Vec<_>>();
+        let data_end = fs::metadata(&archive).unwrap().len() - u64::from(info.descriptor_length);
+        let located = super::find_cdi_iso_track(&mut file, data_end, &modes).unwrap();
+        assert!(located.is_some(), "tracks={tracks:?}, modes={modes:?}, data_end={data_end}");
+
+        let source = open_optical_source(&archive).expect("open DiscJuggler data track");
+        let mut pvd = [0_u8; 6];
+        source.read_at(16 * 2048, &mut pvd).unwrap();
+        assert_eq!(&pvd, b"\x01CD001", "located track did not expose the ISO primary volume descriptor");
+        let len = source.len();
+        let cursor = forensic_vfs::adapters::SourceCursor::new(source, 0, len);
+        let mut reader = super::SendReadSeek(Box::new(cursor));
+        let mut iso = iso::IsoReader::open(&mut reader).expect("open remapped DiscJuggler ISO session");
+        let walked = iso.walk().expect("walk remapped DiscJuggler ISO session");
+        assert!(walked.iter().any(|entry| entry.path == "README.txt"));
+
+        let entries = list_mdf(&archive).expect("list open-source mkdcdisc CDI fixture");
+        let paths = entries.iter().map(|entry| entry.path.as_str()).collect::<Vec<_>>();
+        assert!(paths.contains(&"README.txt"), "{paths:?}");
+        assert!(paths.contains(&"nested/file.txt"), "{paths:?}");
     }
 
     #[test]

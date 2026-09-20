@@ -820,18 +820,14 @@ fn relative_path(from_parent: &str, to: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::{DeferredLink, DeferredLinkKind, RarExtractReport, extract_rar_with_password, list_rar_with_password, materialize_deferred_links};
     #[cfg(unix)]
-    use super::{
-        DeferredLink, DeferredLinkKind, RAR_FILETIME_TICKS_PER_SECOND, RarExtractReport, WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata,
-        materialize_deferred_links,
-    };
-    use super::{extract_rar_with_password, list_rar_with_password};
+    use super::{RAR_FILETIME_TICKS_PER_SECOND, WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata};
     use crate::safety::{ExtractionPolicy, OverwritePolicy};
     use crate::test_support::TestDir;
     use std::collections::HashSet;
-    #[cfg(unix)]
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn rar_fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(name)
@@ -915,11 +911,8 @@ mod tests {
         assert_eq!(metadata.mtime_nsec(), 250_000_000);
     }
 
-    #[cfg(unix)]
     #[test]
     fn rar_deferred_hardlink_chains_do_not_depend_on_archive_order() {
-        use std::os::unix::fs::MetadataExt;
-
         let temp = TestDir::new("rar_forward_hardlink_chain");
         let target = temp.path("target.txt");
         let middle = temp.path("middle.txt");
@@ -946,8 +939,21 @@ mod tests {
         materialize_deferred_links(&links, &mut report).unwrap();
 
         assert_eq!(report.written_entries, 2);
-        assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&first).unwrap().ino());
-        assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&middle).unwrap().ino());
+        assert_hardlink_aliases(&target, &first);
+        assert_hardlink_aliases(&target, &middle);
+    }
+
+    fn assert_hardlink_aliases(first: &Path, second: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+
+            assert_eq!(fs::metadata(first).unwrap().ino(), fs::metadata(second).unwrap().ino());
+        }
+
+        let probe = b"RAR hardlink identity probe";
+        fs::write(first, probe).unwrap();
+        assert_eq!(fs::read(second).unwrap(), probe);
     }
 
     #[test]

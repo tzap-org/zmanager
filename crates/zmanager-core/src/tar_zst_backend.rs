@@ -484,11 +484,8 @@ mod tests {
         assert_eq!(fs::read_link(temp.path("out/project/link.txt")).unwrap(), PathBuf::from("target.txt"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn extracts_hardlinks_inside_destination() {
-        use std::os::unix::fs::MetadataExt;
-
         let temp = TestDir::new("extracts_hardlinks_inside_destination_tar_zst");
         let archive = temp.path("archive.tar.zst");
         write_tar_zst_with_hardlink(&archive, "project/target.txt", "project/link.txt", b"target");
@@ -499,14 +496,11 @@ mod tests {
         let link = temp.path("out/project/link.txt");
         assert_eq!(report.written_entries, 2);
         assert_eq!(fs::read(&link).unwrap(), b"target");
-        assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&link).unwrap().ino());
+        assert_hardlink_aliases(&target, &link);
     }
 
-    #[cfg(unix)]
     #[test]
     fn extracts_forward_hardlinks_inside_destination() {
-        use std::os::unix::fs::MetadataExt;
-
         let temp = TestDir::new("extracts_forward_hardlinks_inside_destination_tar_zst");
         let archive = temp.path("archive.tar.zst");
         write_tar_zst_with_forward_hardlink(&archive, "project/target.txt", "project/link.txt", b"target");
@@ -517,7 +511,7 @@ mod tests {
         let link = temp.path("out/project/link.txt");
         assert_eq!(report.written_entries, 2);
         assert_eq!(fs::read(&link).unwrap(), b"target");
-        assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&link).unwrap().ino());
+        assert_hardlink_aliases(&target, &link);
     }
 
     #[test]
@@ -564,7 +558,6 @@ mod tests {
         encoder.finish().unwrap();
     }
 
-    #[cfg(unix)]
     fn write_tar_zst_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
         let file = File::create(path).unwrap();
         let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
@@ -590,7 +583,6 @@ mod tests {
         encoder.finish().unwrap();
     }
 
-    #[cfg(unix)]
     fn write_tar_zst_with_forward_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
         let file = File::create(path).unwrap();
         let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
@@ -614,6 +606,19 @@ mod tests {
 
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
+    }
+
+    fn assert_hardlink_aliases(first: &Path, second: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+
+            assert_eq!(fs::metadata(first).unwrap().ino(), fs::metadata(second).unwrap().ino());
+        }
+
+        let probe = b"hardlink identity probe";
+        fs::write(first, probe).unwrap();
+        assert_eq!(fs::read(second).unwrap(), probe);
     }
 
     fn write_tar_zst_with_root_directory(path: &Path, entry_path: &str, contents: &[u8]) {

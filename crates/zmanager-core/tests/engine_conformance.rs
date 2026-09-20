@@ -12,11 +12,13 @@ use std::sync::{
 };
 
 use zmanager_core::archive_browser::BrowserEntryKind;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use zmanager_core::engine::AppleArchiveCreateOptions;
 use zmanager_core::engine::{
     AdapterDescriptor, ArchiveEngineBuilder, ArchiveError, ArchiveListing, ArchiveOperation, ArchivePlugin, ArchivePluginRole, ArchiveSource, CreateOptions,
     CreateRequest, CredentialRequirement, EngineEntry, ExtractOptions, FormatId, NavigationMode, OpenLimits, OpenOptions, ReadAdapterFactory,
     ReadAdapterSession, SelectedExtractOptions, SevenZCreateOptions, SourceAccess, TarGzCreateOptions, TarZstdCreateOptions, TzapCreateOptions, TzapKeySource,
-    ZipCreateOptions, create_default_engine, is_split_zip_archive_path,
+    ZipCompression, ZipCreateOptions, create_default_engine, is_split_zip_archive_path,
 };
 
 struct NoopSink;
@@ -206,6 +208,35 @@ fn capability_snapshot_reports_registration_and_platform_state() {
 }
 
 #[test]
+fn capability_snapshot_matches_every_registered_format_and_platform_status() {
+    let snapshot = create_default_engine().unwrap().capability_snapshot();
+    assert_eq!(snapshot.len(), zmanager_core::archive_format::FORMAT_CAPABILITIES.len());
+
+    for capability in zmanager_core::archive_format::FORMAT_CAPABILITIES {
+        let format = FormatId::from_archive_format_kind(capability.kind).expect("registered formats must map to an engine format id");
+        let actual = snapshot.iter().find(|candidate| candidate.format == format).unwrap_or_else(|| panic!("missing capability snapshot row for {format}"));
+        assert!(actual.recognized, "{format} must remain recognized on every platform");
+
+        match capability.status {
+            zmanager_core::archive_format::BackendStatus::Available => {
+                assert!(actual.platform_available, "{format} is available but has no registered adapter");
+                assert!(actual.unavailable_reason.is_none(), "{format} reported a spurious unavailable reason");
+                assert!(actual.operations.contains(&ArchiveOperation::List), "{format} must expose listing when available");
+                assert!(actual.operations.contains(&ArchiveOperation::Extract), "{format} must expose extraction when available");
+            }
+            zmanager_core::archive_format::BackendStatus::UnsupportedPlatform => {
+                assert!(!actual.platform_available, "{format} must not claim availability on this platform");
+                assert_eq!(actual.unavailable_reason.as_deref(), Some("unsupported platform"));
+            }
+            zmanager_core::archive_format::BackendStatus::Unavailable { reason } => {
+                assert!(!actual.platform_available, "{format} must not claim availability while disabled");
+                assert_eq!(actual.unavailable_reason.as_deref(), Some(reason));
+            }
+        }
+    }
+}
+
+#[test]
 fn engine_creates_zip_through_one_shot_contract_and_commits_before_returning() {
     let temp = TestDir::new("engine-conformance-create-zip");
     let source = temp.path("source.txt");
@@ -252,12 +283,13 @@ fn engine_creation_adapters_round_trip_portable_formats() {
     fs::write(source.join("file.txt"), b"portable create matrix").unwrap();
     let engine = create_default_engine().unwrap();
 
-    let cases = [
-        ("created.tar.gz", CreateOptions::TarGz(TarGzCreateOptions::default())),
-        ("created.tar.zst", CreateOptions::TarZstd(TarZstdCreateOptions::default())),
-        ("created.7z", CreateOptions::SevenZ(SevenZCreateOptions { encrypt_file_names: false, ..Default::default() })),
+    let cases = vec![
+        ("created.tar.gz", FormatId::TAR_GZ, CreateOptions::TarGz(TarGzCreateOptions::default())),
+        ("created.tar.zst", FormatId::TAR_ZST, CreateOptions::TarZstd(TarZstdCreateOptions::default())),
+        ("created.7z", FormatId::SEVEN_Z, CreateOptions::SevenZ(SevenZCreateOptions { encrypt_file_names: false, ..Default::default() })),
         (
             "created.tzap",
+            FormatId::TZAP,
             CreateOptions::Tzap(TzapCreateOptions {
                 key_source: TzapKeySource::NoPassword,
                 level: 1,
@@ -272,10 +304,15 @@ fn engine_creation_adapters_round_trip_portable_formats() {
             }),
         ),
     ];
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let apple_case = Some(("created.aar", FormatId::APPLE_ARCHIVE, CreateOptions::AppleArchive(AppleArchiveCreateOptions::default())));
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let apple_case: Option<(&str, FormatId, CreateOptions)> = None;
 
-    for (name, options) in cases {
+    for (name, expected_format, options) in cases.into_iter().chain(apple_case) {
         let archive = temp.path(name);
         let report = create_engine_fixture(&engine, &source, &archive, options);
+        assert_eq!(report.format, expected_format);
         assert_eq!(report.written_entries, 2, "{name} should include the project directory and file");
         assert!(archive.is_file(), "{name} should be committed before create returns");
         let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
@@ -285,6 +322,36 @@ fn engine_creation_adapters_round_trip_portable_formats() {
         let mut extract = ExtractOptions { destination, ..Default::default() };
         assert_eq!(handle.extract(&mut extract).unwrap().written_bytes, b"portable create matrix".len() as u64);
     }
+}
+
+#[test]
+fn engine_split_zip_creation_round_trips_all_volumes() {
+    let temp = TestDir::new("engine-conformance-create-split-zip");
+    let source = temp.path("project");
+    fs::create_dir_all(&source).unwrap();
+    let payload = (0..200_000_u32).flat_map(u32::to_le_bytes).take(200_000).collect::<Vec<_>>();
+    fs::write(source.join("blob.bin"), &payload).unwrap();
+    let archive = temp.path("created.zip");
+    let engine = create_default_engine().unwrap();
+    let report = create_engine_fixture(
+        &engine,
+        &source,
+        &archive,
+        CreateOptions::Zip(ZipCreateOptions { compression: ZipCompression::Store, volume_size: Some(65_536), ..Default::default() }),
+    );
+
+    assert_eq!(report.format, FormatId::SPLIT_ZIP);
+    assert!(report.volume_count > 1);
+    assert_eq!(fs::metadata(temp.path("created.z01")).unwrap().len(), 65_536);
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    assert!(listing.entries.iter().any(|entry| entry.path == "project/blob.bin"));
+    let destination = temp.path("out-split-zip");
+    let mut extract = ExtractOptions { destination: destination.clone(), ..Default::default() };
+    let extract_report = handle.extract(&mut extract).unwrap();
+    assert_eq!(extract_report.written_bytes, payload.len() as u64);
+    assert_eq!(fs::read(destination.join("project/blob.bin")).unwrap(), payload);
 }
 
 #[test]

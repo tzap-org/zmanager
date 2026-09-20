@@ -64,11 +64,15 @@ installed on a developer machine.
 | `basic.cpio` … `basic.cpio.zst` | CPIO | `bsdtar --format=cpio` plus compressors | Uncompressed and every supported compressed CPIO spelling. |
 | `basic.cab` | CAB | `gcab -c` | Small Cabinet fixture for list/test/extract coverage. |
 | `basic.rar` | RAR5 | `rar` | Small single-volume RAR fixture for list/test/extract coverage. |
+| `rar5-links.rar` | RAR5 | `rar 7.23 -ol -oh` | External-tool-authored symlink and hardlink records. Unix extracts both; Windows must retain the hardlink and report the unsupported symlink as skipped. |
 | `basic.lha`, `basic.lzh` | LHA | `jlha-utils` in Docker | Both supported LHA spellings; Docker supplies the creator on macOS/Linux hosts. |
 | `basic.rpm` | RPM | `rpmbuild` | Small noarch RPM package fixture. |
 | `basic.xar` | XAR | macOS `xar` | Apple package-adjacent archive fixture. |
 | `basic.warc` | WARC | `bsdtar --format=warc` | Small WARC container fixture. |
 | `basic.iso` | ISO 9660/Joliet | macOS `hdiutil makehybrid` | Disk/container listing and extraction fixture; generated without symlink because ISO/Joliet is not the symlink-preserving path. |
+| `aaru-optical.mds`, `aaru-optical.mdf` | Alcohol MDS/MDF | Aaru 5.4.2 | Independently authored from a raw Mode 1 CUE/BIN conversion of `basic.iso`; both descriptor and data-file entry paths are manifest fixtures. |
+| `aaru-optical.ccd`, `aaru-optical.img` | CloneCD CCD/IMG | Aaru 5.4.2 | Independently authored from the same raw Mode 1 source. The descriptor is a manifest entry; the required IMG sidecar has a separately pinned checksum. |
+| `mkdcdisc-basic.cdi` | DiscJuggler CDI | `mkdcdisc` | Authentic open-source CDI with a second ISO9660 data session and absolute multisession extents. |
 | `basic.deb` | Debian package | `bsdtar --format=ar` plus tar members | Package/container fixture; extraction exposes package members. |
 | `basic.ar`, `basic.a`, `basic.lib` | AR | platform `ar` | All supported AR spellings. |
 | `basic.dmg` | DMG disk image | macOS `hdiutil create -format UDZO` | Apple disk image fixture. HFS+ symlink targets live in the resource fork, which the reader cannot expose, so the symlink is skipped with a warning instead of materializing a broken empty link. |
@@ -100,91 +104,49 @@ installed on a developer machine.
 | `basic.ad1` | FTK Imager AD1 | `crates/zmanager-core/examples/make_forensic_fixtures.rs` (`ad1-core`'s `testfix` builder) | Carries the whole canonical payload tree including the empty directory. **No symlink**: AD1's `Node` builder has no symlink variant (`ad1-core`'s `vfs.rs` doc comment: AD1 does not surface symlink targets), so this is a format limitation, not a fixture gap. |
 | `basic.dar` | DAR (single slice) | checked in; minted with the `dar` CLI 2.8.5, no writer in this toolchain | Carries `hello.txt`, `sub_note.txt`, `sub/deep.txt` — **not** the shared payload tree (no Unicode name, no spaces-in-name, no empty dir, no symlink). Regenerating a richer DAR fixture needs a machine with the `dar` CLI installed; nothing in this repo can mint one. |
 
-## Optical disc formats built at test time, not committed
+## Optical disc format coverage
 
-NRG, CUE/BIN, CCD/IMG, MDF, and ISZ are exercised by
-`cli_lists_tests_and_extracts_optical_disc_fixtures` in
-`crates/zmanager-cli/tests/fixture_cli.rs`, which builds each container's small
-format-specific header/sidecar around `basic.iso`'s bytes at test time rather
-than shipping it as a binary fixture — there is no macOS-available writer for
-Nero/CloneCD/Alcohol/UltraISO images. **CDI is the same trick** (confirmed
-against the reader: `list_cdi`/`list_mdf` are both `list_virtual_disk_inner` —
-CDI has no DiscJuggler-specific header this backend parses, so raw ISO bytes
-under the `.cdi` extension exercise the real code path exactly like MDF does),
-and is covered the same way in that test. **ISZ is the one exception with a
-real container format**: `build_isz` in that same test file constructs a
-genuine compressed-chunk ISZ byte stream (48-byte packed header, a chunk
-pointer table, zlib-compressed blocks) — a second, independent encoder against
-the documented wire shape, not a shortcut through the reference decoder.
+The committed Aaru-authored MDS/MDF and CCD/IMG pairs and the `mkdcdisc` CDI
+fixture are independent-oracle inputs, not files synthesized by ZManager's own
+reader tests. Their manifest-backed lifecycle coverage includes list,
+integrity-test, full extraction, exact-file extraction, directory extraction,
+and byte-identical stdout extraction. The CDI fixture is especially useful:
+its ISO9660 records use absolute second-session LBAs, so a renamed ISO cannot
+stand in for it.
 
-Every one of these six formats — plus the pre-existing `basic.iso` baseline —
-is held to the complete six-operation matrix: list, view/test, open one
-(`--to-stdout`, a preview that writes nothing to disk), extract one (a single
-named file written to a directory), extract a subfolder, and extract all. The
-shared `assert_optical_open_extract_matrix` helper drives the last three
-uniformly, since every one of these readers ends up at the same ISO 9660
-volume underneath. The only genuinely open gap left in this family is fixture
-*authenticity*: these seven are all synthesized against this codebase's own
-understanding of each header, not authored by the real Nero/CloneCD/Alcohol/
-UltraISO tools. Upgrading them to real tool output is a fidelity improvement a
-human needs to do — Windows/Parallels + ImgBurn (free) or the UltraISO/Alcohol
-120%/Nero trials, minted once and committed like the UDF/NTFS fixtures below —
-not a coverage gap this test suite can close on its own.
+The Aaru inputs are reproducible with free, open-source software. Aaru 5.4.2
+needs long Mode 1 sectors rather than the cooked 2048-byte `basic.iso`; the
+repository helper supplies valid sync/header, EDC, and P/Q ECC fields before
+Aaru authors both descriptor/data pairs:
 
-Because none of these seven live in `fixtures/archives`, they are **not**
-covered by `fixture_manifest_covers_every_supported_extension`'s sweep over
-`manifest.tsv` — that check only validates the committed binary corpus. This is
-an intentional scope boundary, not an oversight: the sweep exists to catch a
-committed fixture going stale, which does not apply to a container built fresh
-in the test body every run.
+```sh
+work="$(mktemp -d)"
+python3 scripts/make_raw_mode1_cue.py fixtures/archives/basic.iso "$work/basic.cue"
+(cd "$work" && aaru image convert --force basic.cue aaru-optical.mds)
+(cd "$work" && aaru image convert --force basic.cue aaru-optical.ccd)
+```
 
-ISZ also carries its own independent, lower-level coverage:
-`crates/zmanager-core/src/virtual_disk_backend.rs` has an internal
-`#[cfg(test)] build_isz` encoder and a dedicated test suite
-(`isz_roundtrip_list_test_and_extract`,
-`isz_decodes_byte_identically_to_the_source_image`, malformed-header rejection)
-that exercises both supported chunk-pointer widths and all four documented
-chunk types directly against the reader, byte-for-byte against the source ISO.
+`mkdcdisc-basic.cdi` was authored with the MIT-licensed `mkdcdisc` utility from
+an ISO9660 source tree. Aaru can read CDI but does not write it, so `mkdcdisc`
+provides the independent free authoring path.
 
-### Upgrading NRG/CCD/MDF/ISZ to real tool output (manual, one-time)
+NRG, CUE/BIN, and ISZ remain deterministic runtime-built lifecycle fixtures in
+`cli_lists_tests_and_extracts_optical_disc_fixtures`. The CUE/BIN shape is also
+independently consumed by Aaru during the committed-pair generation above.
+The ISZ builder emits the actual packed header, chunk table, and compressed
+chunks; core tests additionally cover both pointer widths, all four chunk
+types, malformed headers, and byte-for-byte decoding against the source ISO.
 
-No macOS tool authors these formats, and none of the original vendors ship a
-Linux build either, so this is a Windows job. Every fixture in this corpus
-that needed Windows-only or Docker-only tooling was minted the same way —
-once, by hand, then committed — see `basic.vhd`/`basic.udf` above for the
-precedent. This isn't scripted because it goes through GUI installers; do it
-once in the Windows 11 Parallels VM already set up for this repo:
+The remaining fixture-authenticity gaps are NRG and ISZ: no maintained
+open-source writer was found for either format. This is not a lifecycle gap —
+both execute the complete operation matrix on macOS, Linux, and Windows — but
+vendor-authored samples would provide an additional independent oracle.
 
-1. **Boot the VM**: `prlctl start "Windows 11"` (or resume it from Parallels
-   Desktop). Copy `fixtures/archives/basic.iso` into it — it's 900 KB, so any
-   transfer method (shared folder, drag-and-drop) works.
-2. **Install ImgBurn** (free, no trial limits — get it from imgburn.com, the
-   official site). Open `basic.iso` in it, switch to "Write image file to
-   image file" mode, and save it out as:
-   - **CCD**: destination format CloneCD → produces `disc.ccd` + `disc.img`
-     (and possibly a `.sub` subchannel file the reader doesn't currently need)
-   - **NRG**: destination format Nero → produces `disc.nrg`
-   - **MDS/MDF**: if ImgBurn's format list includes it, produces `disc.mds` +
-     `disc.mdf`
-3. **Install UltraISO** (trial from ultraiso.com; the trial's 300 MB cap is
-   irrelevant at this file size). Open `basic.iso`, then File → Save As →
-   `.isz`, any compression level → produces `disc.isz`. If ImgBurn didn't
-   cover NRG or MDS/MDF, UltraISO's Save As also targets both.
-4. **If MDF/MDS still isn't covered**, install Alcohol 120% (official site,
-   alcohol-soft.com) specifically for it: Image Making Wizard → source
-   `basic.iso` → output `.mds`/`.mdf`.
-5. **Rename and hand back**: rename the outputs to match this corpus's
-   `basic.*` convention (`basic.ccd` + `basic.img`, `basic.nrg`,
-   `basic.mdf` + `basic.mds`, `basic.isz`) and drop them into
-   `fixtures/archives/`. From there, wiring them in is a normal PR: add
-   `manifest.tsv` rows (sha256 of the real bytes), swap
-   `cli_lists_tests_and_extracts_optical_disc_fixtures` from building the
-   synthetic version to reading the committed one, and note the authoring
-   tool + version in the table above, matching how every other externally-
-   authored fixture here is documented.
-The CLI-level `build_isz` above is a separate, from-scratch construction
-mirroring that same recipe — not a copy of it — so the two are independent
-evidence the format is understood correctly.
+`every_registered_format_and_extension_has_a_committed_or_generated_lifecycle_fixture`
+derives its expectations directly from `FORMAT_CAPABILITIES`. It therefore
+fails when a new format kind or extension is added without a committed or
+explicitly runtime-generated lifecycle fixture. Ambiguous sidecars such as
+`.img` are pinned separately and cannot accidentally satisfy the wrong backend.
 
 The external-fixture test skips unavailable tools for local runs; Unix CI checks
 the required commands first, so the committed-fixture validation is mandatory

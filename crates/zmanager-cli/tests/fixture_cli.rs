@@ -15,6 +15,23 @@ use zip::{CompressionMethod, ZipWriter};
 
 const ANSI_PROGRESS_PREFIX: &str = "\x1b[36mprogress\x1b[0m:";
 
+/// Extensions whose full lifecycle fixtures are constructed in this test
+/// binary instead of being stored in `fixtures/archives/manifest.tsv`.
+const RUNTIME_GENERATED_LIFECYCLE_EXTENSIONS: &[&str] = &[".nrg", ".isz", ".cue"];
+
+const RUNTIME_GENERATED_LIFECYCLE_FORMATS: &[zmanager_core::archive_format::ArchiveFormatKind] = &[
+    zmanager_core::archive_format::ArchiveFormatKind::SplitZip,
+    zmanager_core::archive_format::ArchiveFormatKind::Nrg,
+    zmanager_core::archive_format::ArchiveFormatKind::Isz,
+    zmanager_core::archive_format::ArchiveFormatKind::Cue,
+];
+
+/// Formats whose primary detection path cannot be audited by enumerating
+/// registered extensions. Their lifecycle coverage is exercised explicitly by
+/// the split-ZIP and TZAP tests in this binary.
+const PREDICATE_LIFECYCLE_FORMATS: &[zmanager_core::archive_format::ArchiveFormatKind] =
+    &[zmanager_core::archive_format::ArchiveFormatKind::SplitZip, zmanager_core::archive_format::ArchiveFormatKind::Tzap];
+
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn unix_process_is_elevated() -> bool {
@@ -106,6 +123,21 @@ fn windows_process_is_elevated() -> bool {
     result != 0 && elevation.TokenIsElevated != 0
 }
 
+fn assert_same_file_identity(first: &Path, second: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let first = fs::metadata(first).unwrap();
+        let second = fs::metadata(second).unwrap();
+        assert_eq!((first.dev(), first.ino()), (second.dev(), second.ino()));
+    }
+
+    let probe = b"hardlink identity probe\n";
+    fs::write(first, probe).unwrap();
+    assert_eq!(fs::read(second).unwrap(), probe, "writing one hardlink name must update the other");
+}
+
 #[test]
 fn cli_lists_all_fixture_archives() {
     for fixture in fixture_manifest() {
@@ -127,61 +159,52 @@ fn cli_lists_all_fixture_archives() {
 }
 
 #[test]
-fn fixture_manifest_covers_every_supported_extension() {
+fn every_registered_format_and_extension_has_a_committed_or_generated_lifecycle_fixture() {
     let fixtures = fixture_manifest();
-    let extensions = [
-        zmanager_core::archive_format::ZIP_FAMILY_EXTENSIONS,
-        zmanager_core::archive_format::SEVEN_Z_EXTENSIONS,
-        zmanager_core::archive_format::RAR_EXTENSIONS,
-        zmanager_core::archive_format::TAR_EXTENSIONS,
-        zmanager_core::archive_format::TAR_BZ2_EXTENSIONS,
-        zmanager_core::archive_format::TAR_XZ_EXTENSIONS,
-        zmanager_core::archive_format::TAR_LZMA_EXTENSIONS,
-        zmanager_core::archive_format::TAR_LZ_EXTENSIONS,
-        zmanager_core::archive_format::TAR_LZO_EXTENSIONS,
-        zmanager_core::archive_format::TAR_COMPRESS_EXTENSIONS,
-        zmanager_core::archive_format::TAR_LZ4_EXTENSIONS,
-        zmanager_core::archive_format::TAR_UU_EXTENSIONS,
-        zmanager_core::archive_format::ISO_EXTENSIONS,
-        zmanager_core::archive_format::CAB_EXTENSIONS,
-        zmanager_core::archive_format::CPIO_EXTENSIONS,
-        zmanager_core::archive_format::RPM_EXTENSIONS,
-        zmanager_core::archive_format::XAR_EXTENSIONS,
-        zmanager_core::archive_format::PKG_EXTENSIONS,
-        zmanager_core::archive_format::DMG_EXTENSIONS,
-        zmanager_core::archive_format::LHA_EXTENSIONS,
-        zmanager_core::archive_format::AR_EXTENSIONS,
-        zmanager_core::archive_format::WARC_EXTENSIONS,
-        zmanager_core::archive_format::MTREE_EXTENSIONS,
-        zmanager_core::archive_format::TAR_ZST_EXTENSIONS,
-        zmanager_core::archive_format::TGZ_EXTENSIONS,
-        zmanager_core::archive_format::TZAP_EXTENSIONS,
-        zmanager_core::archive_format::APPLE_ARCHIVE_EXTENSIONS,
-        zmanager_core::archive_format::DEB_EXTENSIONS,
-        zmanager_core::archive_format::MSI_EXTENSIONS,
-        zmanager_core::archive_format::VHD_EXTENSIONS,
-        zmanager_core::archive_format::VMDK_EXTENSIONS,
-        zmanager_core::archive_format::UDF_EXTENSIONS,
-        zmanager_core::archive_format::SQUASHFS_EXTENSIONS,
-        zmanager_core::archive_format::APPIMAGE_EXTENSIONS,
-        zmanager_core::archive_format::WIM_EXTENSIONS,
-        zmanager_core::archive_format::VDI_EXTENSIONS,
-        zmanager_core::archive_format::VHDX_EXTENSIONS,
-        zmanager_core::archive_format::QCOW2_EXTENSIONS,
-        zmanager_core::archive_format::EWF_EXTENSIONS,
-        zmanager_core::archive_format::AD1_EXTENSIONS,
-        zmanager_core::archive_format::DAR_EXTENSIONS,
-        zmanager_core::archive_format::AFF4_EXTENSIONS,
-        zmanager_core::archive_format::RAW_DISK_EXTENSIONS,
-        zmanager_core::engine::raw_stream_suffixes(),
-    ];
 
-    for extension in extensions.into_iter().flatten() {
+    for capability in zmanager_core::archive_format::FORMAT_CAPABILITIES {
+        assert!(
+            fixtures.iter().any(|fixture| fixture.extract && zmanager_core::archive_format::detect_archive_format(fixture.path()) == capability.kind)
+                || RUNTIME_GENERATED_LIFECYCLE_FORMATS.contains(&capability.kind),
+            "registered format {:?} has no committed or runtime-generated lifecycle fixture",
+            capability.kind
+        );
+    }
+
+    for extension in zmanager_core::archive_format::FORMAT_CAPABILITIES.iter().flat_map(|capability| capability.extensions) {
         let extension = extension.to_ascii_lowercase();
         assert!(
-            fixtures.iter().any(|fixture| fixture.filename.to_ascii_lowercase().ends_with(&extension)),
-            "fixture manifest has no file exercising supported extension {extension}"
+            fixtures.iter().any(|fixture| fixture.filename.to_ascii_lowercase().ends_with(&extension))
+                || RUNTIME_GENERATED_LIFECYCLE_EXTENSIONS.contains(&extension.as_str()),
+            "no committed or runtime-generated lifecycle fixture exercises registered extension {extension}"
         );
+    }
+
+    for capability in zmanager_core::archive_format::FORMAT_CAPABILITIES.iter().filter(|capability| capability.extensions.is_empty()) {
+        assert!(
+            PREDICATE_LIFECYCLE_FORMATS.contains(&capability.kind),
+            "predicate-only format {:?} has no explicit lifecycle coverage declaration",
+            capability.kind
+        );
+    }
+    for kind in PREDICATE_LIFECYCLE_FORMATS {
+        assert!(
+            zmanager_core::archive_format::FORMAT_CAPABILITIES.iter().any(|capability| capability.kind == *kind && capability.extensions.is_empty()),
+            "stale predicate-only lifecycle coverage declaration for {kind:?}"
+        );
+    }
+}
+
+#[test]
+fn committed_optical_descriptor_sidecars_are_present_and_pinned() {
+    // `manifest.tsv` pins every archive entry point. The CloneCD `.img` is a
+    // required data sidecar rather than a separately openable fixture, so pin
+    // it here as well to keep the independently authored pair reproducible.
+    let sidecars = [("aaru-optical.img", "b9c6ec1e6b3adb6942053fe16393d8ddad3e4dedaf0cc37ef701f5c28c40d463")];
+    for (filename, expected_sha256) in sidecars {
+        let path = archives_dir().join(filename);
+        assert!(path.is_file(), "missing optical fixture sidecar: {}", path.display());
+        assert_eq!(sha256_hex(&path), expected_sha256, "optical fixture sidecar checksum drifted: {filename}");
     }
 }
 
@@ -401,7 +424,6 @@ fn cli_fixture_listings_preserve_entry_kinds_across_formats() {
     assert!(rar.is_file(), "committed fixture is missing: {}", rar.display());
     assert_listing_kinds(&rar, &[("rar-fixture", "directory"), ("rar-fixture/docs/readme.txt", "file")]);
 
-    #[cfg(unix)]
     assert_listing_kinds(
         &archives_dir().join("basic.mtree"),
         &[
@@ -411,6 +433,28 @@ fn cli_fixture_listings_preserve_entry_kinds_across_formats() {
             ("payload/nested/file.txt", "file"),
             ("payload/nested/readme-link.txt", "symlink"),
         ],
+    );
+}
+
+#[test]
+fn committed_optical_fixtures_expose_the_expected_complete_trees() {
+    let aaru_tree = &[
+        ("DIR WITH SPACES", "directory"),
+        ("NESTED", "directory"),
+        ("README.TXT", "file"),
+        ("UNICODE", "directory"),
+        ("UNICODE/_.TXT", "file"),
+        ("NESTED/EMPTY-DIR", "directory"),
+        ("NESTED/FILE.TXT", "file"),
+        ("DIR WITH SPACES/FILE WITH SPACES.TXT", "file"),
+    ];
+    for filename in ["aaru-optical.mds", "aaru-optical.mdf", "aaru-optical.ccd"] {
+        assert_listing_is_exactly(&archives_dir().join(filename), aaru_tree);
+    }
+
+    assert_listing_is_exactly(
+        &archives_dir().join("mkdcdisc-basic.cdi"),
+        &[("1ST_READ.BIN", "file"), ("nested", "directory"), ("README.txt", "file"), ("nested/file.txt", "file")],
     );
 }
 
@@ -425,6 +469,16 @@ fn cli_extracts_extractable_fixture_archives() {
             command.arg("--allow-degraded");
         }
         let output = command.output().unwrap();
+
+        if cfg!(windows) && (fixture.format == "MTREE" || fixture.filename == "rar5-links.rar") {
+            assert_failure(&format!("zm extract {} on Windows", fixture.filename), &output);
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("symlink extraction is not supported on this platform"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            continue;
+        }
 
         assert!(
             output.status.success(),
@@ -444,6 +498,93 @@ fn cli_tests_all_fixture_archives() {
         let output = Command::new(cli_path()).arg("test").arg(fixture.path()).output().unwrap();
         assert_success(&format!("zm test {}", fixture.filename), &output);
     }
+}
+
+/// Drives the selective-operation contract through one committed fixture for
+/// every format kind represented by the corpus. Extension aliases and codec
+/// variants are already covered by the list/test/full-extract sweeps above;
+/// repeating this slower matrix once per backend keeps the scenario coverage
+/// exhaustive without multiplying the test runtime by every alias.
+#[test]
+fn every_committed_format_supports_its_selective_operation_contract() {
+    let mut exercised = Vec::new();
+
+    for fixture in fixture_manifest().into_iter().filter(fixture_supported_on_target) {
+        let kind = zmanager_core::archive_format::detect_archive_format(fixture.path());
+        if exercised.contains(&kind) {
+            continue;
+        }
+        exercised.push(kind);
+
+        let list = Command::new(cli_path()).arg("list").arg(fixture.path()).arg("--json").output().unwrap();
+        assert_success(&format!("zm list {} --json", fixture.filename), &list);
+        let listing: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+        let entries = listing["entries"].as_array().expect("JSON listing entries array");
+        let selected_path = entries
+            .iter()
+            .find(|entry| entry["kind"].as_str() == Some("file"))
+            .and_then(|entry| entry["name"].as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| panic!("{} ({kind:?}) has no selectable regular file: {listing}", fixture.filename));
+
+        let temp = TestDir::new("fixture-selective-contract");
+        let selected_output = temp.path("selected");
+        let mut selected = Command::new(cli_path());
+        selected.arg("extract").arg(fixture.path()).arg("-C").arg(&selected_output).arg("--include").arg(selected_path);
+        configure_fixture_extract_command(&mut selected, &fixture);
+        let selected = selected.output().unwrap();
+        assert_success(&format!("zm extract {} --include {selected_path}", fixture.filename), &selected);
+
+        let selected_file = selected_output.join(selected_path);
+        assert!(selected_file.is_file(), "{} ({kind:?}) did not materialize selected file {selected_path}", fixture.filename);
+        let selected_bytes = fs::read(&selected_file).unwrap();
+
+        if let Some((parent, _)) = selected_path.rsplit_once('/').filter(|(parent, _)| !parent.is_empty()) {
+            let directory_output = temp.path("directory");
+            let mut directory = Command::new(cli_path());
+            directory.arg("extract").arg(fixture.path()).arg("-C").arg(&directory_output).arg("--include").arg(parent);
+            configure_fixture_extract_command(&mut directory, &fixture);
+            let directory = directory.output().unwrap();
+            if cfg!(windows) && fixture.format == "MTREE" {
+                assert_failure(&format!("zm extract {} --include {parent}", fixture.filename), &directory);
+                assert!(
+                    String::from_utf8_lossy(&directory.stderr).contains("symlink extraction is not supported on this platform"),
+                    "{}",
+                    String::from_utf8_lossy(&directory.stderr)
+                );
+            } else {
+                assert_success(&format!("zm extract {} --include {parent}", fixture.filename), &directory);
+                assert_eq!(
+                    fs::read(directory_output.join(selected_path)).unwrap(),
+                    selected_bytes,
+                    "{} ({kind:?}) directory selection changed {selected_path}",
+                    fixture.filename
+                );
+            }
+        }
+
+        let mut stdout = Command::new(cli_path());
+        stdout.arg("extract").arg(fixture.path()).arg("--include").arg(selected_path).arg("--to-stdout");
+        configure_fixture_extract_command(&mut stdout, &fixture);
+        let stdout = stdout.output().unwrap();
+        if matches!(fixture.format.as_str(), "DMG" | "PKG" | "MSI" | "MTREE") {
+            assert_failure(&format!("zm extract {} --include {selected_path} --to-stdout", fixture.filename), &stdout);
+            assert!(!stdout.stderr.is_empty(), "{} ({kind:?}) rejected stdout extraction without a diagnostic", fixture.filename);
+        } else {
+            assert_success(&format!("zm extract {} --include {selected_path} --to-stdout", fixture.filename), &stdout);
+            assert_eq!(stdout.stdout, selected_bytes, "{} ({kind:?}) stdout bytes differ for {selected_path}", fixture.filename);
+        }
+    }
+}
+
+fn configure_fixture_extract_command(command: &mut Command, fixture: &Fixture) {
+    #[cfg(windows)]
+    if fixture.format == "TZAP" {
+        command.arg("--allow-degraded");
+    }
+
+    #[cfg(not(windows))]
+    let _ = (command, fixture);
 }
 
 #[test]
@@ -899,6 +1040,37 @@ fn build_isz(payload: &[u8], sector_size: u16, block_size: u32, ptr_len: u8) -> 
     out
 }
 
+/// Builds a minimal one-session Alcohol 120% MDS descriptor for a sibling
+/// `.mdf`. The layout follows the independently implemented libmirage/Aaru
+/// wire format: header at 0, session block at 88, track block at 112, and the
+/// track-length extra block at 192.
+fn build_mds(sector_size: u16, start_offset: u64, num_sectors: u32) -> Vec<u8> {
+    let mut descriptor = vec![0_u8; 200];
+    descriptor[0..16].copy_from_slice(b"MEDIA DESCRIPTOR");
+    descriptor[16] = 0x01;
+    descriptor[18..20].copy_from_slice(&0_u16.to_le_bytes());
+    descriptor[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    descriptor[80..84].copy_from_slice(&88_u32.to_le_bytes());
+
+    let session = 88;
+    descriptor[session + 8..session + 10].copy_from_slice(&1_u16.to_le_bytes());
+    descriptor[session + 10] = 1;
+    descriptor[session + 12..session + 14].copy_from_slice(&1_u16.to_le_bytes());
+    descriptor[session + 14..session + 16].copy_from_slice(&1_u16.to_le_bytes());
+    descriptor[session + 20..session + 24].copy_from_slice(&112_u32.to_le_bytes());
+
+    let track = 112;
+    descriptor[track] = 0x02;
+    descriptor[track + 4] = 1;
+    descriptor[track + 12..track + 16].copy_from_slice(&192_u32.to_le_bytes());
+    descriptor[track + 16..track + 18].copy_from_slice(&sector_size.to_le_bytes());
+    descriptor[track + 40..track + 48].copy_from_slice(&start_offset.to_le_bytes());
+
+    let extra = 192;
+    descriptor[extra + 4..extra + 8].copy_from_slice(&num_sectors.to_le_bytes());
+    descriptor
+}
+
 /// Open one (preview without writing to disk), extract one, and extract
 /// subfolder against an ISO-9660-shaped fixture that carries the canonical
 /// tree upcased: `README.TXT` at the root and `NESTED/FILE.TXT` +
@@ -920,6 +1092,41 @@ fn assert_optical_open_extract_matrix(label: &str, path: &Path, temp: &TestDir) 
     assert!(out_sub.join("NESTED/FILE.TXT").is_file(), "{label}");
     assert!(out_sub.join("NESTED/EMPTY-DIR").is_dir(), "{label}");
     assert!(!out_sub.join("README.TXT").exists(), "{label}");
+}
+
+#[test]
+fn cli_exercises_the_complete_authentic_cdi_operation_matrix() {
+    let archive = archives_dir().join("mkdcdisc-basic.cdi");
+    let temp = TestDir::new("fixture-cli-authentic-cdi");
+
+    let list = Command::new(cli_path()).arg("list").arg(&archive).output().unwrap();
+    assert_success("zm list mkdcdisc-basic.cdi", &list);
+    let test = Command::new(cli_path()).arg("test").arg(&archive).output().unwrap();
+    assert_success("zm test mkdcdisc-basic.cdi", &test);
+
+    let all_output = temp.path("all");
+    let extract_all = Command::new(cli_path()).arg("extract").arg(&archive).arg("-C").arg(&all_output).output().unwrap();
+    assert_success("zm extract mkdcdisc-basic.cdi", &extract_all);
+    assert_eq!(fs::read(all_output.join("README.txt")).unwrap(), b"ZManager free-tool CDI fixture\n");
+    assert_eq!(fs::read(all_output.join("nested/file.txt")).unwrap(), b"nested CDI payload\n");
+
+    let stdout = Command::new(cli_path()).arg("extract").arg(&archive).arg("--include").arg("README.txt").arg("--to-stdout").output().unwrap();
+    assert_success("zm extract mkdcdisc-basic.cdi --to-stdout", &stdout);
+    assert_eq!(stdout.stdout, b"ZManager free-tool CDI fixture\n");
+
+    let file_output = temp.path("one");
+    let extract_file =
+        Command::new(cli_path()).arg("extract").arg(&archive).arg("-C").arg(&file_output).arg("--include").arg("nested/file.txt").output().unwrap();
+    assert_success("zm extract mkdcdisc-basic.cdi --include nested/file.txt", &extract_file);
+    assert_eq!(fs::read(file_output.join("nested/file.txt")).unwrap(), b"nested CDI payload\n");
+    assert!(!file_output.join("README.txt").exists());
+
+    let directory_output = temp.path("directory");
+    let extract_directory =
+        Command::new(cli_path()).arg("extract").arg(&archive).arg("-C").arg(&directory_output).arg("--include").arg("nested").output().unwrap();
+    assert_success("zm extract mkdcdisc-basic.cdi --include nested", &extract_directory);
+    assert_eq!(fs::read(directory_output.join("nested/file.txt")).unwrap(), b"nested CDI payload\n");
+    assert!(!directory_output.join("README.txt").exists());
 }
 
 #[test]
@@ -989,41 +1196,27 @@ fn cli_lists_tests_and_extracts_optical_disc_fixtures() {
     assert!(out_ccd.join("README.TXT").is_file());
     assert_optical_open_extract_matrix("disc.ccd", &ccd_path, &temp);
 
-    // 4. MDF
+    // 4. MDS/MDF. Enter through both supported suffixes: `.mds` exercises the
+    // descriptor directly, while `.mdf` proves sibling descriptor discovery.
     let mdf_path = temp.path("disc.mdf");
+    let mds_path = temp.path("disc.mds");
     fs::write(&mdf_path, &iso_bytes).unwrap();
+    let sector_count = u32::try_from(iso_bytes.len() / 2048).unwrap();
+    fs::write(&mds_path, build_mds(2048, 0, sector_count)).unwrap();
 
-    let list_mdf = Command::new(cli_path()).arg("list").arg(&mdf_path).output().unwrap();
-    assert_success("zm list disc.mdf", &list_mdf);
-    let test_mdf = Command::new(cli_path()).arg("test").arg(&mdf_path).output().unwrap();
-    assert_success("zm test disc.mdf", &test_mdf);
-    let out_mdf = temp.path("out_mdf");
-    let extract_mdf = Command::new(cli_path()).arg("extract").arg(&mdf_path).arg("-C").arg(&out_mdf).output().unwrap();
-    assert_success("zm extract disc.mdf", &extract_mdf);
-    assert!(out_mdf.join("README.TXT").is_file());
-    assert_optical_open_extract_matrix("disc.mdf", &mdf_path, &temp);
+    for (label, path) in [("disc.mdf", &mdf_path), ("disc.mds", &mds_path)] {
+        let list = Command::new(cli_path()).arg("list").arg(path).output().unwrap();
+        assert_success(&format!("zm list {label}"), &list);
+        let test = Command::new(cli_path()).arg("test").arg(path).output().unwrap();
+        assert_success(&format!("zm test {label}"), &test);
+        let out = temp.path(format!("out_{label}"));
+        let extract = Command::new(cli_path()).arg("extract").arg(path).arg("-C").arg(&out).output().unwrap();
+        assert_success(&format!("zm extract {label}"), &extract);
+        assert!(out.join("README.TXT").is_file(), "{label}");
+        assert_optical_open_extract_matrix(label, path, &temp);
+    }
 
-    // 5. CDI. Like MDF, `.cdi` is routed through the generic ISO 9660 sector
-    // reader by extension alone -- there is no DiscJuggler-specific header
-    // this backend parses -- so the same raw-bytes-under-the-extension trick
-    // exercises the real code path (confirmed against the CDI reader before
-    // writing this: `list_virtual_disk_inner` behind both `list_cdi` and
-    // `list_mdf` is the same function).
-    let cdi_path = temp.path("disc.cdi");
-    fs::write(&cdi_path, &iso_bytes).unwrap();
-
-    let list_cdi = Command::new(cli_path()).arg("list").arg(&cdi_path).output().unwrap();
-    assert_success("zm list disc.cdi", &list_cdi);
-    let test_cdi = Command::new(cli_path()).arg("test").arg(&cdi_path).output().unwrap();
-    assert_success("zm test disc.cdi", &test_cdi);
-    let out_cdi = temp.path("out_cdi");
-    let extract_cdi = Command::new(cli_path()).arg("extract").arg(&cdi_path).arg("-C").arg(&out_cdi).output().unwrap();
-    assert_success("zm extract disc.cdi", &extract_cdi);
-    assert!(out_cdi.join("README.TXT").is_file());
-    assert_eq!(fs::read(out_cdi.join("NESTED/FILE.TXT")).unwrap(), b"nested fixture file\n");
-    assert_optical_open_extract_matrix("disc.cdi", &cdi_path, &temp);
-
-    // 6. ISZ (UltraISO). Unlike CDI/MDF, ISZ has a real compressed-chunk
+    // 5. ISZ (UltraISO). ISZ has a real compressed-chunk
     // container format, so `build_isz` above constructs a genuine ISZ byte
     // stream (2 pointer widths and all 4 chunk types are exercised by
     // `zmanager-core`'s own unit tests against this exact recipe) rather than
@@ -1227,6 +1420,67 @@ fn cli_lists_tests_and_extracts_checked_in_multipart_rar_fixtures() {
         assert_success(&format!("zm extract {filename}"), &extract);
         assert_eq!(fs::read(output.join("rar-fixture/data/stream.bin")).unwrap(), vec![0; 196_608]);
         assert_eq!(fs::read_to_string(output.join("rar-fixture/docs/readme.txt")).unwrap(), "RAR multipart fixture\n");
+    }
+}
+
+#[test]
+fn cli_preserves_rar_link_records_on_every_supported_platform() {
+    let archive = archives_dir().join("rar5-links.rar");
+    let list = Command::new(cli_path()).arg("list").arg(&archive).arg("--json").output().unwrap();
+    assert_success("zm list rar5-links.rar --json", &list);
+    let listing: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let entries = listing["entries"].as_array().unwrap();
+    for (path, kind, target) in [
+        ("rar-links/target.txt", "file", None),
+        ("rar-links/link.txt", "symlink", Some("target.txt")),
+        ("rar-links/hard.txt", "hardlink", Some("rar-links/target.txt")),
+        ("rar-links", "directory", None),
+    ] {
+        let entry = entries.iter().find(|entry| entry["name"].as_str() == Some(path)).unwrap_or_else(|| panic!("missing {path}: {listing}"));
+        assert_eq!(entry["kind"].as_str(), Some(kind), "{path}");
+        assert_eq!(entry["link_target"].as_str(), target, "{path}");
+    }
+
+    let tested = Command::new(cli_path()).arg("test").arg(&archive).output().unwrap();
+    assert_success("zm test rar5-links.rar", &tested);
+
+    #[cfg(unix)]
+    {
+        let temp = TestDir::new("fixture-cli-rar-links");
+        let output = Command::new(cli_path()).arg("extract").arg(&archive).arg("-C").arg(temp.path("out")).output().unwrap();
+        assert_success("zm extract rar5-links.rar", &output);
+        let target = temp.path("out/rar-links/target.txt");
+        let hardlink = temp.path("out/rar-links/hard.txt");
+        assert_same_file_identity(&target, &hardlink);
+
+        let symlink = temp.path("out/rar-links/link.txt");
+        assert!(fs::symlink_metadata(&symlink).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&symlink).unwrap(), PathBuf::from("target.txt"));
+    }
+    #[cfg(windows)]
+    {
+        let temp = TestDir::new("fixture-cli-rar-links-windows");
+        let full = Command::new(cli_path()).arg("extract").arg(&archive).arg("-C").arg(temp.path("full")).output().unwrap();
+        assert_failure("zm extract rar5-links.rar on Windows", &full);
+        assert!(
+            String::from_utf8_lossy(&full.stderr).contains("symlink extraction is not supported on this platform"),
+            "{}",
+            String::from_utf8_lossy(&full.stderr)
+        );
+
+        let selected = Command::new(cli_path())
+            .arg("extract")
+            .arg(&archive)
+            .arg("-C")
+            .arg(temp.path("selected"))
+            .arg("--include")
+            .arg("rar-links/target.txt")
+            .arg("--include")
+            .arg("rar-links/hard.txt")
+            .output()
+            .unwrap();
+        assert_success("zm extract RAR target and hardlink on Windows", &selected);
+        assert_same_file_identity(&temp.path("selected/rar-links/target.txt"), &temp.path("selected/rar-links/hard.txt"));
     }
 }
 
@@ -2332,7 +2586,9 @@ fn zm_create_split_zip_lists_extracts_and_7zip_tests_when_available() {
 
     let extract = Command::new(zm_path()).arg("extract").arg(&archive).arg("-C").arg(temp.path("out")).arg("--overwrite").arg("always").output().unwrap();
     assert_success("zm extract split zip", &extract);
-    assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), fs::read(temp.path("project/blob.bin")).unwrap());
+    let expected = fs::read(temp.path("project/blob.bin")).unwrap();
+    assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), expected);
+    assert_split_archive_selective_matrix("split-zip", &archive, &temp, &expected);
 
     if let Some(sevenzip) = find_7zip() {
         let test = Command::new(sevenzip).arg("t").arg(&archive).output().unwrap();
@@ -2373,12 +2629,30 @@ fn zm_create_split_7z_lists_extracts_and_7zip_tests_when_available() {
 
     let extract = Command::new(zm_path()).arg("extract").arg(&first_volume).arg("-C").arg(temp.path("out")).arg("--overwrite").arg("always").output().unwrap();
     assert_success("zm extract split 7z", &extract);
-    assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), fs::read(temp.path("project/blob.bin")).unwrap());
+    let expected = fs::read(temp.path("project/blob.bin")).unwrap();
+    assert_eq!(fs::read(temp.path("out/project/blob.bin")).unwrap(), expected);
+    assert_split_archive_selective_matrix("split-7z", &first_volume, &temp, &expected);
 
     if let Some(sevenzip) = find_7zip() {
         let test = Command::new(sevenzip).arg("t").arg(&first_volume).output().unwrap();
         assert_success("7zz test zm split 7z", &test);
     }
+}
+
+fn assert_split_archive_selective_matrix(label: &str, archive: &Path, temp: &TestDir, expected: &[u8]) {
+    let one_output = temp.path(format!("out-{label}-one"));
+    let one = Command::new(zm_path()).arg("extract").arg(archive).arg("-C").arg(&one_output).arg("--include").arg("project/blob.bin").output().unwrap();
+    assert_success(&format!("zm extract {label} selected file"), &one);
+    assert_eq!(fs::read(one_output.join("project/blob.bin")).unwrap(), expected);
+
+    let directory_output = temp.path(format!("out-{label}-directory"));
+    let directory = Command::new(zm_path()).arg("extract").arg(archive).arg("-C").arg(&directory_output).arg("--include").arg("project").output().unwrap();
+    assert_success(&format!("zm extract {label} selected directory"), &directory);
+    assert_eq!(fs::read(directory_output.join("project/blob.bin")).unwrap(), expected);
+
+    let stdout = Command::new(zm_path()).arg("extract").arg(archive).arg("--include").arg("project/blob.bin").arg("--to-stdout").output().unwrap();
+    assert_success(&format!("zm extract {label} selected file to stdout"), &stdout);
+    assert_eq!(stdout.stdout, expected);
 }
 
 #[test]
@@ -2681,11 +2955,8 @@ fn zm_create_tar_zst_preserves_symlink_with_y() {
     assert!(fs::symlink_metadata(temp.path("out/project/link.txt")).unwrap().file_type().is_symlink(), "expected tar.zst symlink to extract as symlink");
 }
 
-#[cfg(unix)]
 #[test]
 fn zm_extract_tar_zst_materializes_safe_hardlink_entries() {
-    use std::os::unix::fs::MetadataExt as _;
-
     let temp = TestDir::new("zm_tar_zst_hardlink_extract");
     let archive = temp.path("hardlink.tar.zst");
     write_tar_zst_with_hardlink(&archive, "project/target.txt", "project/hard.txt", b"hardlink payload\n");
@@ -2696,14 +2967,11 @@ fn zm_extract_tar_zst_materializes_safe_hardlink_entries() {
     let target = temp.path("out/project/target.txt");
     let hardlink = temp.path("out/project/hard.txt");
     assert_eq!(fs::read(&hardlink).unwrap(), b"hardlink payload\n");
-    assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&hardlink).unwrap().ino());
+    assert_same_file_identity(&target, &hardlink);
 }
 
-#[cfg(unix)]
 #[test]
 fn zm_extract_native_tar_materializes_safe_hardlink_entries() {
-    use std::os::unix::fs::MetadataExt as _;
-
     let temp = TestDir::new("zm_tar_hardlink_extract");
     let archive = temp.path("hardlink.tar");
     write_tar_with_hardlink(&archive, "project/target.txt", "project/hard.txt", b"hardlink payload\n");
@@ -2714,7 +2982,7 @@ fn zm_extract_native_tar_materializes_safe_hardlink_entries() {
     let target = temp.path("out/project/target.txt");
     let hardlink = temp.path("out/project/hard.txt");
     assert_eq!(fs::read(&hardlink).unwrap(), b"hardlink payload\n");
-    assert_eq!(fs::metadata(&target).unwrap().ino(), fs::metadata(&hardlink).unwrap().ino());
+    assert_same_file_identity(&target, &hardlink);
 }
 
 #[cfg(unix)]
@@ -3345,7 +3613,7 @@ fn fixture_manifest() -> Vec<Fixture> {
 }
 
 fn fixture_supported_on_target(fixture: &Fixture) -> bool {
-    (fixture.format != "MTREE" || cfg!(unix)) && (fixture.format != "AAR" || cfg!(any(target_os = "macos", target_os = "ios")))
+    fixture.format != "AAR" || cfg!(any(target_os = "macos", target_os = "ios"))
 }
 
 fn sha256_hex(path: &Path) -> String {
@@ -3467,13 +3735,11 @@ fn write_ar_member(file: &mut File, name: &str, contents: &[u8]) {
     }
 }
 
-#[cfg(unix)]
 fn write_tar_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
     let file = File::create(path).unwrap();
     write_tar_hardlink_entries(file, target_path, link_path, contents);
 }
 
-#[cfg(unix)]
 fn write_tar_zst_with_hardlink(path: &Path, target_path: &str, link_path: &str, contents: &[u8]) {
     let file = File::create(path).unwrap();
     let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
@@ -3481,7 +3747,6 @@ fn write_tar_zst_with_hardlink(path: &Path, target_path: &str, link_path: &str, 
     encoder.finish().unwrap();
 }
 
-#[cfg(unix)]
 fn write_tar_hardlink_entries<W: std::io::Write>(writer: W, target_path: &str, link_path: &str, contents: &[u8]) -> W {
     let mut builder = tar::Builder::new(writer);
 

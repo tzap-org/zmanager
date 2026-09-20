@@ -42,12 +42,17 @@ basic.cpio.lzma	CPIO	true		daac8699f0cd376b26c3445f1ab8467c26880152837cd69d2e155
 basic.cpio.zst	CPIO	true		0bc87baf25e84fed6c0dbd345b66e0886e4d43e5f54aec6af866e72ade1e8cc3	CPIO fixture compressed with zstd
 basic.cab	CAB	true		42662b72c6390b071a6e5494a7bb4b5dd6b3ac73d3afc66d50e261a67147cd02	CAB fixture created by gcab
 basic.rar	RAR	true		b1b541ad0e8d2d8a52d64f73bf0526a232d2160f04b92b00c82a8eb3f9ce9d39	RAR5 fixture created by the RAR tool
+rar5-links.rar	RAR	true		da2e9400aeba6eddfacf0abe2d3accaf845622f517aeeaef27ce1b1bb3c64ee6	RAR5 fixture with external-tool-authored symlink and hardlink records
 basic.lha	LHA	true		cd4e2e35f476251831051c5ccf45a58d8ea80eae82e5317e93047e2b9c3c0fb9	LHA fixture created by jlha-utils in Docker
 basic.lzh	LHA	true		cd4e2e35f476251831051c5ccf45a58d8ea80eae82e5317e93047e2b9c3c0fb9	LHA fixture under the .lzh extension
 basic.rpm	RPM	true		29a061a5dd41ad6fb84b751df366e7725ca67ca5d79a1ee2324fe6a9b94c049c	RPM package fixture created by rpmbuild
 basic.xar	XAR	true		7c39cb58987162c5631c3db5bf2c30cf6c87831dd2da2d048baf1615385b7dfe	XAR fixture created by macOS xar
 basic.warc	WARC	true		eed0912a49d11ddee4ecfa7c313f79bc72330430090e0662f662e640f1c8fddf	WARC fixture created by bsdtar
 basic.iso	ISO	true		6f4ddd00da821d285f85300af3a80d1403ba0307f73f5d20bf87cd7089dc31d3	ISO fixture created by hdiutil makehybrid
+aaru-optical.mds	MDF	true		22e7644703dc01e10d8c560b0dd8815ad782fb56c4942decd622660c311d16ed	Alcohol MDS descriptor authored by Aaru 5.4.2 from a raw Mode 1 conversion of basic.iso; requires aaru-optical.mdf
+aaru-optical.mdf	MDF	true		b9c6ec1e6b3adb6942053fe16393d8ddad3e4dedaf0cc37ef701f5c28c40d463	Alcohol MDF data authored by Aaru 5.4.2; entered with its sibling MDS descriptor
+aaru-optical.ccd	CCD	true		1f7168786ce80b99cae2f156ac1e46d53de9cdc9f981bd6d7a86e7e8afef3cd1	CloneCD descriptor authored by Aaru 5.4.2 from a raw Mode 1 conversion of basic.iso; requires aaru-optical.img
+mkdcdisc-basic.cdi	CDI	true		caeea206042d3ee33b56cc8dcdff24dcf8f2ba5356b453266cdc08680dc6f151	DiscJuggler CDI authored by open-source mkdcdisc from an ISO9660 payload; exercises absolute multisession extents
 basic.deb	DEB	true		5264825b90cbf2783d51b22f9e44128da95b91e989e940b33ee59608dd66bc35	Debian ar package fixture
 basic.ar	AR	true		34a2c895a68d40caf751194f8d76133c51599cafbae24d99f8706bce63bf2a1e	AR fixture created by the platform ar tool
 basic.a	AR	true		34a2c895a68d40caf751194f8d76133c51599cafbae24d99f8706bce63bf2a1e	AR fixture under the .a extension

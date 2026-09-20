@@ -702,6 +702,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn records_unix_socket_as_other_without_opening_it() {
+        use std::fs;
+        use std::os::unix::net::UnixListener;
+
+        // Unix-domain socket paths are limited to roughly 104 bytes on macOS.
+        // `/tmp` is the short, stable alias for the much longer per-user temp
+        // directory returned by `std::env::temp_dir()` there.
+        let source = PathBuf::from("/tmp").join(crate::temp_names::unique_temp_name("socket"));
+        fs::create_dir_all(&source).unwrap();
+        let socket_path = source.join("service.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let manifest = plan_archive(&source, &PlanOptions::default()).unwrap();
+        let socket = manifest.entries.iter().find(|entry| entry.source_path == socket_path).unwrap();
+
+        assert_eq!(socket.file_type, ManifestFileType::Other);
+        assert_eq!(socket.size, 0);
+        assert_eq!(socket.symlink_target, None);
+
+        drop(listener);
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn follow_symlinks_skips_directory_loops() {
         use std::os::unix::fs::symlink;
 
