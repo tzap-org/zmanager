@@ -40,7 +40,7 @@ That naming lets users run `brew install tzap-org/zmanager/zmanager`.
 3. Tag the CLI repository:
 
    ```sh
-   git tag v2.1.3
+   git tag v2.1.4
    git push origin main --tags
    ```
 
@@ -57,8 +57,8 @@ That naming lets users run `brew install tzap-org/zmanager/zmanager`.
 
    ```sh
    scripts/generate-package-metadata.sh \
-     v2.1.3 \
-     https://github.com/tzap-org/zmanager/releases/download/v2.1.3 \
+     v2.1.4 \
+     https://github.com/tzap-org/zmanager/releases/download/v2.1.4 \
      dist/SHA256SUMS \
      dist/package-metadata
    ```
@@ -77,7 +77,7 @@ That naming lets users run `brew install tzap-org/zmanager/zmanager`.
 7. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.1.3
+   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.1.4
    ```
 
 8. Validate the Linux static tarballs on Ubuntu 22.04 and 24.04:
@@ -94,6 +94,6 @@ do not hand-edit release asset hashes.
 
 ## Release Notes
 
-Use [docs/release-notes/2.1.3.md](docs/release-notes/2.1.3.md) as the release
-notes source for the `v2.1.3` GitHub release. Update the versioned file first
+Use [docs/release-notes/2.1.4.md](docs/release-notes/2.1.4.md) as the release
+notes source for the `v2.1.4` GitHub release. Update the versioned file first
 when preparing a later release.

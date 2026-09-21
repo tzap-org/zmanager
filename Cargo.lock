@@ -6258,14 +6258,14 @@ checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmanager-apple-archive"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "zmanager-cli"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "ad1-core",
  "aff4",
@@ -6288,7 +6288,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-core"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "ad1-core",
  "adler2",
@@ -6342,7 +6342,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-ffi"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6357,7 +6357,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-localsend"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "localsend-rs",
  "serde",
@@ -6368,7 +6368,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-tzap-hosted"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "base64",
  "keyring",
@@ -6386,7 +6386,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "cc",
  "zeroize",
@@ -6394,7 +6394,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-wim"
-version = "2.1.3"
+version = "2.1.4"
 dependencies = [
  "hex",
  "sha1 0.10.7",

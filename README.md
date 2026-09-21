@@ -28,8 +28,8 @@ Each release ships two flavors:
   `zm auth` (default install)
 - **offline** — the same archive commands with no network features
 
-`zm --version` reports which flavor is installed (`zm 2.1.3 (full)` or
-`zm 2.1.3 (offline)`). For full installation details and checksum examples,
+`zm --version` reports which flavor is installed (`zm 2.1.4 (full)` or
+`zm 2.1.4 (offline)`). For full installation details and checksum examples,
 see [docs/INSTALL.md](docs/INSTALL.md).
 
 ### macOS
