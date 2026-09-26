@@ -34,39 +34,48 @@ mkdir -p "$OUT_DIR"
 
 # zmanager-core path-depends on the forensic-vfs-engine sibling, which in turn
 # path-depends on the udf-forensic and ntfs-forensic siblings. zmanager-ffi also
-# path-depends on the localsend-rs sibling, and the root manifest patches
-# tzap-core to the tzap sibling. From the container's /workspace checkout those
-# all resolve to the mount points below, so every one of them must be mounted --
-# a `[patch.crates-io]` path counts, which is what this was missing.
+# path-depends on the localsend-rs sibling. From the container's /workspace
+# checkout those all resolve to the mount points below, so every one of them
+# must be mounted.
 LOCALSEND_DIR="$ROOT/../localsend-rs"
 FVE_DIR="$ROOT/../forensic-vfs-engine"
 UDF_DIR="$ROOT/../udf-forensic"
 NTFS_DIR="$ROOT/../ntfs-forensic"
-TZAP_DIR="$ROOT/../tzap"
-for d in "$LOCALSEND_DIR" "$FVE_DIR" "$UDF_DIR" "$NTFS_DIR" "$TZAP_DIR"; do
+for d in "$LOCALSEND_DIR" "$FVE_DIR" "$UDF_DIR" "$NTFS_DIR"; do
   if [ ! -d "$d" ]; then
     echo "sibling directory not found at $d — clone it first" >&2
     exit 1
   fi
 done
 
-docker run --rm \
-  --platform "$PLATFORM" \
-  -v "$ROOT:/workspace" \
-  -v "$(cd "$LOCALSEND_DIR" && pwd):/localsend-rs" \
-  -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine" \
-  -v "$(cd "$UDF_DIR" && pwd):/udf-forensic" \
-  -v "$(cd "$NTFS_DIR" && pwd):/ntfs-forensic" \
-  -v "$(cd "$TZAP_DIR" && pwd):/tzap" \
-  -w /workspace \
-  -e TARGET="$TARGET" \
-  -e OUT_DIR="$OUT_DIR" \
-  -e CARGO_HOME=/workspace/target/alpine-cargo \
-  -e CARGO_TARGET_DIR=/workspace/target \
-  -e HOST_UID="$(id -u)" \
-  -e HOST_GID="$(id -g)" \
-  -e ZM_USE_SYSTEM_MUSL_TOOLCHAIN=1 \
-  "$IMAGE" \
+docker_args=(
+  run --rm
+  --platform "$PLATFORM"
+  -v "$ROOT:/workspace"
+  -v "$(cd "$LOCALSEND_DIR" && pwd):/localsend-rs"
+  -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine"
+  -v "$(cd "$UDF_DIR" && pwd):/udf-forensic"
+  -v "$(cd "$NTFS_DIR" && pwd):/ntfs-forensic"
+)
+
+# tzap-core is patched to the ../tzap sibling by default (see
+# .cargo/config.toml); only the release build resets that file to depend on
+# crates.io instead, in which case there's no sibling to mount.
+TZAP_DIR="$ROOT/../tzap"
+if [ -d "$TZAP_DIR" ]; then
+  docker_args+=(-v "$(cd "$TZAP_DIR" && pwd):/tzap")
+fi
+
+docker_args+=(
+  -w /workspace
+  -e TARGET="$TARGET"
+  -e OUT_DIR="$OUT_DIR"
+  -e CARGO_HOME=/workspace/target/alpine-cargo
+  -e CARGO_TARGET_DIR=/workspace/target
+  -e HOST_UID="$(id -u)"
+  -e HOST_GID="$(id -g)"
+  -e ZM_USE_SYSTEM_MUSL_TOOLCHAIN=1
+  "$IMAGE"
   /bin/sh -c '
     set -eu
     # git is required: the workspace .cargo/config.toml sets
@@ -107,3 +116,6 @@ docker run --rm \
 
     chown -R "$HOST_UID:$HOST_GID" "$OUT_DIR" "target/$TARGET" 2>/dev/null || true
   '
+)
+
+docker "${docker_args[@]}"

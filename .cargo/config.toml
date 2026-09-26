@@ -5,3 +5,13 @@
 # remedy in that error message.
 [net]
 git-fetch-with-cli = true
+
+# Development default: build tzap-core from the ../tzap sibling checkout
+# instead of the published crate, so in-progress tzap fixes are picked up
+# before they're released. A config-file [patch] takes precedence over any
+# patch in Cargo.toml, and unlike Cargo.toml it doesn't feed into `--locked`
+# comparisons against a *different* Cargo.lock, so release.yml overwrites
+# this file to drop this section before building, resolving tzap-core from
+# crates.io only. Every other workflow keeps this patch, same as local dev.
+[patch.crates-io]
+tzap-core = { path = "../tzap/crates/tzap-core" }

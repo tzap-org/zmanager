@@ -42,8 +42,13 @@ zmanager-wim = { path = "crates/zmanager-wim", version = "2.1.4" }
 zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.4" }
 
 # The TZAP 0.2.5 release carries `entry_metadata::projected_posix_mode`, so the
-# whole family (core plus the keywrap and signing plugins) now comes from
-# crates.io and the temporary sibling-checkout patch is gone.
+# whole family (core plus the keywrap and signing plugins) is a plain crates.io
+# dependency here. Local development and CI still track the ../tzap sibling
+# ahead of release via a [patch.crates-io] in .cargo/config.toml (a
+# config-file patch overrides one here, and doesn't force this manifest's
+# committed Cargo.lock out of sync). Only release.yml resets that file to
+# drop the patch, so the tagged release build resolves tzap-core from
+# crates.io.
 
 [profile.release]
 lto = "thin"

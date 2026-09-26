@@ -51,9 +51,9 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
-      - name: Clone tzap
+      - name: Use published tzap-core (no sibling patch for releases)
         shell: bash
-        run: git clone https://github.com/tzap-org/tzap.git ../tzap
+        run: printf '%s\n' '[net]' 'git-fetch-with-cli = true' > .cargo/config.toml
 
       - name: Clone localsend-rs
         shell: bash
