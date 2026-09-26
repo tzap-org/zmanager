@@ -1738,6 +1738,7 @@ fn rar_error(path: &std::path::Path, error: &rar_backend::RarBackendError) -> Ar
             | rar_backend::RarBackendError::MissingLinkTarget { .. }
             | rar_backend::RarBackendError::InvalidLinkTarget { .. }
             | rar_backend::RarBackendError::DictionaryTooLarge { .. } => ErrorKind::CorruptData,
+            rar_backend::RarBackendError::Cancelled => ErrorKind::Cancelled,
         }
     };
     crate::engine::adapters::adapter_error(path, kind, message)
@@ -1865,16 +1866,20 @@ impl NativeReadAdapter for SevenZListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            sevenz_backend::extract_7z_with_overwrite_resolver(
-                path,
-                &options.destination,
-                archive.options().password.as_deref(),
-                options.policy.clone(),
-                resolver,
-            )
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                sevenz_backend::extract_7z_with_context(
+                    path,
+                    &options.destination,
+                    archive.options().password.as_deref(),
+                    options.policy.clone(),
+                    resolver,
+                    Some(context),
+                )
+            })
         } else {
-            sevenz_backend::extract_7z(path, &options.destination, archive.options().password.as_deref(), options.policy.clone())
+            sevenz_backend::extract_7z_with_context(path, &options.destination, archive.options().password.as_deref(), options.policy.clone(), resolver, None)
         }
         .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
@@ -1889,15 +1894,30 @@ impl NativeReadAdapter for SevenZListAdapter {
         let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let report = sevenz_backend::extract_7z_entry_by_name_occurrence(
-            path,
-            &options.destination,
-            archive.options().password.as_deref(),
-            options.policy.clone(),
-            &selector.path,
-            selector.occurrence,
-            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
-        )
+        let selectors = [sevenz_backend::SevenZEntrySelector { path: &selector.path, occurrence: selector.occurrence }];
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                sevenz_backend::extract_7z_entries_by_name_occurrence_with_context(
+                    path,
+                    &options.destination,
+                    archive.options().password.as_deref(),
+                    options.policy.clone(),
+                    &selectors,
+                    reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                    Some(context),
+                )
+            })
+        } else {
+            sevenz_backend::extract_7z_entries_by_name_occurrence_with_context(
+                path,
+                &options.destination,
+                archive.options().password.as_deref(),
+                options.policy.clone(),
+                &selectors,
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                None,
+            )
+        }
         .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -1915,14 +1935,29 @@ impl NativeReadAdapter for SevenZListAdapter {
             let selector = archive.retained_entry(entry_id)?;
             selectors.push(sevenz_backend::SevenZEntrySelector { path: &selector.path, occurrence: selector.occurrence });
         }
-        let report = sevenz_backend::extract_7z_entries_by_name_occurrence(
-            path,
-            &options.destination,
-            archive.options().password.as_deref(),
-            options.policy.clone(),
-            &selectors,
-            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
-        )
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                sevenz_backend::extract_7z_entries_by_name_occurrence_with_context(
+                    path,
+                    &options.destination,
+                    archive.options().password.as_deref(),
+                    options.policy.clone(),
+                    &selectors,
+                    reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                    Some(context),
+                )
+            })
+        } else {
+            sevenz_backend::extract_7z_entries_by_name_occurrence_with_context(
+                path,
+                &options.destination,
+                archive.options().password.as_deref(),
+                options.policy.clone(),
+                &selectors,
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                None,
+            )
+        }
         .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2209,18 +2244,36 @@ impl NativeReadAdapter for TzapListAdapter {
         } else {
             tzap::TzapExtractKeySource::None
         };
-        let report = tzap::extract_tzap(
-            tzap::TzapExtractRequest {
-                key,
-                policy: options.policy.clone(),
-                restore_options: options.tzap_restore_options.unwrap_or_default().into(),
-                overwrite_resolver: options.overwrite_resolver.as_deref_mut(),
-                context: None,
-                fast: false,
-            },
-            path,
-            &options.destination,
-        )
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                tzap::extract_tzap_with_context(
+                    tzap::TzapExtractRequest {
+                        key,
+                        policy: options.policy.clone(),
+                        restore_options: options.tzap_restore_options.unwrap_or_default().into(),
+                        overwrite_resolver: options.overwrite_resolver.as_deref_mut(),
+                        context: None,
+                        fast: false,
+                    },
+                    context,
+                    path,
+                    &options.destination,
+                )
+            })
+        } else {
+            tzap::extract_tzap(
+                tzap::TzapExtractRequest {
+                    key,
+                    policy: options.policy.clone(),
+                    restore_options: options.tzap_restore_options.unwrap_or_default().into(),
+                    overwrite_resolver: options.overwrite_resolver.as_deref_mut(),
+                    context: None,
+                    fast: false,
+                },
+                path,
+                &options.destination,
+            )
+        }
         .map_err(|error| tzap_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2234,11 +2287,46 @@ impl NativeReadAdapter for TzapListAdapter {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
         let destination_path = options.destination.join(&selector.path);
-        // The retained selector comes from the original engine listing.  The
-        // TZAP file operation resolves that exact path inside a newly opened
-        // reader without re-listing or treating the engine ID as a fresh index.
-        if matches!(selector.kind, BrowserEntryKind::Directory) {
-            std::fs::create_dir_all(&destination_path).map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
+        let needs_context = options.cancellation.is_some() || options.event_sink.is_some();
+        let extract = |mut context: Option<&mut JobContext<'_>>| {
+            if let Some(context) = context.as_deref_mut() {
+                context.entry_started(&selector.path, None);
+            }
+            // The retained selector comes from the original engine listing.  The
+            // TZAP file operation resolves that exact path inside a newly opened
+            // reader without re-listing or treating the engine ID as a fresh index.
+            if matches!(selector.kind, BrowserEntryKind::Directory) {
+                std::fs::create_dir_all(&destination_path).map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
+                let key = if let Some(recipient_key_bytes) = archive.options().recipient_key_bytes() {
+                    tzap::TzapExtractKeySource::RecipientKeyBytesList(recipient_key_bytes)
+                } else if let Some(recipient_key) = archive.options().recipient_key_path() {
+                    tzap::TzapExtractKeySource::RecipientKeyPath(recipient_key)
+                } else {
+                    tzap::TzapExtractKeySource::Password(archive.options().password.as_deref().unwrap_or(""))
+                };
+                tzap::restore_selected_directory_metadata(
+                    path,
+                    key,
+                    &options.destination,
+                    std::slice::from_ref(&selector.path),
+                    options.tzap_restore_options.unwrap_or_default().into(),
+                )
+                .map_err(|error| tzap_error(path, &error))?;
+                if let Some(context) = context.as_deref_mut() {
+                    context.entry_finished(&selector.path, 0);
+                }
+                return Ok(ExtractReport { written_entries: 1, ..ExtractReport::default() });
+            }
+            if !matches!(selector.kind, BrowserEntryKind::File) {
+                if let Some(context) = context.as_deref_mut() {
+                    context.entry_finished(&selector.path, 0);
+                }
+                return Ok(ExtractReport {
+                    skipped_entries: 1,
+                    warnings: vec![format!("skipped unsupported TZAP entry {}", selector.path)],
+                    ..ExtractReport::default()
+                });
+            }
             let key = if let Some(recipient_key_bytes) = archive.options().recipient_key_bytes() {
                 tzap::TzapExtractKeySource::RecipientKeyBytesList(recipient_key_bytes)
             } else if let Some(recipient_key) = archive.options().recipient_key_path() {
@@ -2246,43 +2334,32 @@ impl NativeReadAdapter for TzapListAdapter {
             } else {
                 tzap::TzapExtractKeySource::Password(archive.options().password.as_deref().unwrap_or(""))
             };
-            tzap::restore_selected_directory_metadata(
+            let report = tzap::extract_tzap_file_to_destination(
                 path,
                 key,
-                &options.destination,
-                std::slice::from_ref(&selector.path),
+                &selector.path,
+                &destination_path,
+                options.policy.overwrite == crate::safety::OverwritePolicy::Replace,
                 options.tzap_restore_options.unwrap_or_default().into(),
+                context.as_deref_mut(),
             )
             .map_err(|error| tzap_error(path, &error))?;
-            return Ok(ExtractReport { written_entries: 1, ..ExtractReport::default() });
-        }
-        if !matches!(selector.kind, BrowserEntryKind::File) {
-            return Ok(ExtractReport {
-                skipped_entries: 1,
-                warnings: vec![format!("skipped unsupported TZAP entry {}", selector.path)],
-                ..ExtractReport::default()
-            });
-        }
-        let key = if let Some(recipient_key_bytes) = archive.options().recipient_key_bytes() {
-            tzap::TzapExtractKeySource::RecipientKeyBytesList(recipient_key_bytes)
-        } else if let Some(recipient_key) = archive.options().recipient_key_path() {
-            tzap::TzapExtractKeySource::RecipientKeyPath(recipient_key)
+            let Some(report) = report else {
+                if let Some(context) = context.as_deref_mut() {
+                    context.entry_finished(&selector.path, 0);
+                }
+                return Ok(ExtractReport { skipped_entries: 1, ..ExtractReport::default() });
+            };
+            if let Some(context) = context {
+                context.entry_finished(&selector.path, report.written_bytes);
+            }
+            Ok(ExtractReport { written_entries: 1, written_bytes: report.written_bytes, warnings: report.metadata_diagnostics, ..ExtractReport::default() })
+        };
+        if needs_context {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| extract(Some(context)))
         } else {
-            tzap::TzapExtractKeySource::Password(archive.options().password.as_deref().unwrap_or(""))
-        };
-        let report = tzap::extract_tzap_file_to_destination(
-            path,
-            key,
-            &selector.path,
-            &destination_path,
-            options.policy.overwrite == crate::safety::OverwritePolicy::Replace,
-            options.tzap_restore_options.unwrap_or_default().into(),
-        )
-        .map_err(|error| tzap_error(path, &error))?;
-        let Some(report) = report else {
-            return Ok(ExtractReport { skipped_entries: 1, ..ExtractReport::default() });
-        };
-        Ok(ExtractReport { written_entries: 1, written_bytes: report.written_bytes, warnings: report.metadata_diagnostics, ..ExtractReport::default() })
+            extract(None)
+        }
     }
 
     fn selected_extract_many(
@@ -2406,16 +2483,20 @@ impl NativeReadAdapter for RarListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            rar_backend::extract_rar_with_overwrite_resolver_and_password(
-                path,
-                &options.destination,
-                options.policy.clone(),
-                archive.options().password.as_deref(),
-                resolver,
-            )
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                rar_backend::extract_rar_with_context(
+                    path,
+                    &options.destination,
+                    options.policy.clone(),
+                    archive.options().password.as_deref(),
+                    resolver,
+                    Some(context),
+                )
+            })
         } else {
-            rar_backend::extract_rar_with_password(path, &options.destination, options.policy.clone(), archive.options().password.as_deref())
+            rar_backend::extract_rar_with_context(path, &options.destination, options.policy.clone(), archive.options().password.as_deref(), resolver, None)
         }
         .map_err(|error| rar_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
@@ -2430,15 +2511,30 @@ impl NativeReadAdapter for RarListAdapter {
         let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let report = rar_backend::extract_rar_entry_by_path_occurrence(
-            path,
-            &options.destination,
-            options.policy.clone(),
-            archive.options().password.as_deref(),
-            &selector.path,
-            selector.occurrence,
-            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
-        )
+        let selectors = [rar_backend::RarEntrySelector { path: &selector.path, occurrence: selector.occurrence }];
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                rar_backend::extract_rar_entries_by_path_occurrence_with_context(
+                    path,
+                    &options.destination,
+                    options.policy.clone(),
+                    archive.options().password.as_deref(),
+                    &selectors,
+                    reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                    Some(context),
+                )
+            })
+        } else {
+            rar_backend::extract_rar_entries_by_path_occurrence_with_context(
+                path,
+                &options.destination,
+                options.policy.clone(),
+                archive.options().password.as_deref(),
+                &selectors,
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                None,
+            )
+        }
         .map_err(|error| rar_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2457,14 +2553,29 @@ impl NativeReadAdapter for RarListAdapter {
         }
         let selectors =
             retained.iter().map(|selector| rar_backend::RarEntrySelector { path: &selector.path, occurrence: selector.occurrence }).collect::<Vec<_>>();
-        let report = rar_backend::extract_rar_entries_by_path_occurrence(
-            path,
-            &options.destination,
-            options.policy.clone(),
-            archive.options().password.as_deref(),
-            &selectors,
-            reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
-        )
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                rar_backend::extract_rar_entries_by_path_occurrence_with_context(
+                    path,
+                    &options.destination,
+                    options.policy.clone(),
+                    archive.options().password.as_deref(),
+                    &selectors,
+                    reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                    Some(context),
+                )
+            })
+        } else {
+            rar_backend::extract_rar_entries_by_path_occurrence_with_context(
+                path,
+                &options.destination,
+                options.policy.clone(),
+                archive.options().password.as_deref(),
+                &selectors,
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                None,
+            )
+        }
         .map_err(|error| rar_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2654,7 +2765,29 @@ impl NativeReadAdapter for AppleArchiveListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                if let Some(resolver) = resolver {
+                    apple_archive_backend::extract_apple_archive_with_context_and_overwrite_resolver(
+                        path,
+                        &options.destination,
+                        options.policy.clone(),
+                        resolver,
+                        archive.options().password.as_deref(),
+                        context,
+                    )
+                } else {
+                    apple_archive_backend::extract_apple_archive_with_context(
+                        path,
+                        &options.destination,
+                        options.policy.clone(),
+                        archive.options().password.as_deref(),
+                        context,
+                    )
+                }
+            })
+        } else if let Some(resolver) = resolver {
             apple_archive_backend::extract_apple_archive_with_overwrite_resolver(
                 path,
                 &options.destination,
@@ -2677,13 +2810,26 @@ impl NativeReadAdapter for AppleArchiveListAdapter {
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let report = apple_archive_backend::extract_apple_archive_entry(
-            path,
-            &selector.path,
-            &options.destination,
-            options.policy.clone(),
-            archive.options().password.as_deref(),
-        )
+        let report = if options.cancellation.is_some() || options.event_sink.is_some() {
+            with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+                apple_archive_backend::extract_apple_archive_entry_with_context(
+                    path,
+                    &selector.path,
+                    &options.destination,
+                    options.policy.clone(),
+                    archive.options().password.as_deref(),
+                    context,
+                )
+            })
+        } else {
+            apple_archive_backend::extract_apple_archive_entry(
+                path,
+                &selector.path,
+                &options.destination,
+                options.policy.clone(),
+                archive.options().password.as_deref(),
+            )
+        }
         .map_err(|error| apple_archive_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }

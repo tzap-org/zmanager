@@ -182,6 +182,36 @@ pub struct TzapExtractRequest<'a, 'context> {
 /// requested metadata cannot be restored, or filesystem writes fail.
 pub fn extract_tzap(request: TzapExtractRequest<'_, '_>, archive: impl AsRef<Path>, destination: impl AsRef<Path>) -> Result<TzapExtractReport, TzapError> {
     let TzapExtractRequest { key, policy, restore_options, overwrite_resolver, context, fast } = request;
+    extract_tzap_parts(key, policy, restore_options, overwrite_resolver, context, fast, archive, destination)
+}
+
+/// Extracts TZAP with a separately borrowed job context.
+///
+/// This crate-private entry point keeps the public request type's historical
+/// two-lifetime API while allowing engine adapters to reborrow an overwrite
+/// resolver and an event sink independently.
+pub(crate) fn extract_tzap_with_context(
+    request: TzapExtractRequest<'_, '_>,
+    context: &mut JobContext<'_>,
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+) -> Result<TzapExtractReport, TzapError> {
+    let TzapExtractRequest { key, policy, restore_options, overwrite_resolver, context: request_context, fast } = request;
+    debug_assert!(request_context.is_none(), "separate TZAP context must not be duplicated in the request");
+    extract_tzap_parts(key, policy, restore_options, overwrite_resolver, Some(context), fast, archive, destination)
+}
+
+#[allow(clippy::elidable_lifetime_names, clippy::too_many_arguments)]
+fn extract_tzap_parts<'key, 'resolver, 'ctx_ref, 'context>(
+    key: TzapExtractKeySource<'key>,
+    policy: ExtractionPolicy,
+    restore_options: TzapRestoreOptions,
+    overwrite_resolver: Option<&'resolver mut dyn OverwriteResolver>,
+    context: Option<&'ctx_ref mut JobContext<'context>>,
+    fast: bool,
+    archive: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+) -> Result<TzapExtractReport, TzapError> {
     if fast {
         debug_assert!(overwrite_resolver.is_none(), "fast extraction does not support an overwrite resolver");
         return extract_tzap_fast_inner(archive, destination, policy, key, restore_options, context);
@@ -338,10 +368,11 @@ pub(crate) fn extract_tzap_file_to_destination(
     destination_path: &Path,
     replace_existing: bool,
     restore_options: TzapRestoreOptions,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let (password, recipient_private_key, key_bytes_list) = key_components(key);
     let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, key_bytes_list.as_deref())?;
-    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing, restore_options)
+    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing, restore_options, context)
 }
 
 fn extract_tzap_file_from_opened_archive(
@@ -350,10 +381,31 @@ fn extract_tzap_file_from_opened_archive(
     destination_path: &Path,
     replace_existing: bool,
     restore_options: TzapRestoreOptions,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let Some(index_entry) = opened.lookup_index_entry(entry_path)? else {
         return Ok(None);
     };
+
+    if let Some(context) = context.as_deref() {
+        context.check_cancelled()?;
+    }
+
+    if let Some(context) = context {
+        let processed = stream_regular_member_to_destination(
+            opened,
+            entry_path,
+            index_entry.file_data_size,
+            restore_options,
+            destination_path,
+            replace_existing,
+            Some(context),
+        )?;
+        return Ok(
+            processed.map(|processed| TzapFileExtractReport { written_bytes: processed.written_bytes, metadata_diagnostics: processed.metadata_diagnostics })
+        );
+    }
+
     let temp_root = TemporaryTzapExtractionRoot::new(destination_path)?;
     let Some(diagnostics) = opened.extract_file_to(entry_path, temp_root.path(), restore_options.core_options(false))? else {
         return Ok(None);
@@ -669,18 +721,25 @@ fn stream_regular_member_to_destination(
     replace_existing: bool,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<StreamedTzapMember>, TzapError> {
+    let cancellation = context.as_deref().map(JobContext::cancellation_token);
     let mut output = AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     let output_file = output.file_mut().map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     let extracted = match context {
         Some(context) => {
             let mut progress = |archive_path: &str, bytes: u64| {
-                context.bytes_processed(Some(archive_path), bytes);
+                if !cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
+                    context.bytes_processed(Some(archive_path), bytes);
+                }
             };
             opened.extract_file_to_writer_with_progress(entry_path, output_file, &mut progress)
         }
         None => opened.extract_file_to_writer(entry_path, output_file),
     }
     .map_err(|source| tzap_extract_error(entry_path, source))?;
+
+    if cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
+        return Err(TzapError::Cancelled);
+    }
 
     let Some(_diagnostics) = extracted else {
         return Ok(None);

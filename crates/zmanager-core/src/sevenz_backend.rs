@@ -539,49 +539,6 @@ pub struct SevenZEntrySelector<'a> {
     pub occurrence: usize,
 }
 
-/// Extracts one retained 7z entry by its stable archive path and duplicate
-/// occurrence.  Unlike the legacy index wrapper, this does not list the
-/// archive again before opening the extraction reader.
-pub(crate) fn extract_7z_entry_by_name_occurrence(
-    archive_path: impl AsRef<Path>,
-    destination: impl AsRef<Path>,
-    password: Option<&str>,
-    policy: ExtractionPolicy,
-    entry_name: &str,
-    occurrence: usize,
-    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-) -> Result<SevenZExtractReport, SevenZError> {
-    let selectors = [SevenZEntrySelector { path: entry_name, occurrence }];
-    extract_7z_entries_by_name_occurrence(archive_path, destination, password, policy, &selectors, overwrite_resolver)
-}
-
-/// Extracts every retained 7z entry matching one of `selectors` in a single
-/// pass.
-///
-/// A 7z archive is parsed as a whole and its payload is usually stored in solid
-/// blocks, so extracting a selection one entry at a time reopens the file and
-/// re-decodes shared blocks per entry. One pass also means one safety planner,
-/// so the aggregate expansion guard covers the whole batch.
-pub(crate) fn extract_7z_entries_by_name_occurrence(
-    archive_path: impl AsRef<Path>,
-    destination: impl AsRef<Path>,
-    password: Option<&str>,
-    policy: ExtractionPolicy,
-    selectors: &[SevenZEntrySelector<'_>],
-    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-) -> Result<SevenZExtractReport, SevenZError> {
-    // Narrow planning to the selected names so the planner accounts only for
-    // what this call will write. Duplicate names collapse: they differ by
-    // occurrence, which patterns cannot express.
-    let mut include_patterns = selectors.iter().map(|selector| selector.path.to_owned()).collect::<Vec<_>>();
-    include_patterns.sort_unstable();
-    include_patterns.dedup();
-
-    let mut selected_policy = policy;
-    selected_policy.include_patterns = include_patterns;
-    extract_7z_inner(archive_path, destination, password, selected_policy, overwrite_resolver, None, Some(selectors))
-}
-
 /// Extracts a `.7z` archive with an overwrite resolver.
 ///
 /// # Errors
@@ -600,21 +557,52 @@ pub fn extract_7z_with_overwrite_resolver(
 }
 
 /// Extracts a `.7z` archive through the shared extraction safety policy with a
-/// reporting context.
+/// reporting context, and optionally an overwrite resolver.
 ///
 /// # Errors
 ///
 /// Returns [`SevenZError`] when the archive cannot be read, an entry is unsafe,
-/// password validation fails, or filesystem writes fail.
-#[cfg(test)]
-fn extract_7z_with_context(
+/// password validation fails, filesystem writes fail, or the resolver aborts
+/// extraction.
+pub(crate) fn extract_7z_with_context(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     password: Option<&str>,
     policy: ExtractionPolicy,
-    context: &mut JobContext<'_>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<SevenZExtractReport, SevenZError> {
-    extract_7z_inner(archive_path, destination, password, policy, None, Some(context), None)
+    extract_7z_inner(archive_path, destination, password, policy, overwrite_resolver, context, None)
+}
+
+/// Extracts every retained 7z entry matching one of `selectors` in a single
+/// pass, with a reporting context. A 7z archive is parsed as a whole and its
+/// payload is usually stored in solid blocks, so extracting a selection one
+/// entry at a time reopens the file and re-decodes shared blocks per entry;
+/// one pass also means one safety planner, so the aggregate expansion guard
+/// covers the whole batch.
+///
+/// # Errors
+///
+/// Returns [`SevenZError`] when the archive cannot be read, an entry is unsafe,
+/// password validation fails, filesystem writes fail, or the resolver aborts
+/// extraction.
+pub(crate) fn extract_7z_entries_by_name_occurrence_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    password: Option<&str>,
+    policy: ExtractionPolicy,
+    selectors: &[SevenZEntrySelector<'_>],
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<SevenZExtractReport, SevenZError> {
+    let mut include_patterns = selectors.iter().map(|selector| selector.path.to_owned()).collect::<Vec<_>>();
+    include_patterns.sort_unstable();
+    include_patterns.dedup();
+
+    let mut selected_policy = policy;
+    selected_policy.include_patterns = include_patterns;
+    extract_7z_inner(archive_path, destination, password, selected_policy, overwrite_resolver, context, Some(selectors))
 }
 
 fn extract_7z_inner(
@@ -639,6 +627,7 @@ fn extract_7z_inner(
     let mut callback_error = None;
     let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<std::time::SystemTime>)> = Vec::new();
     let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
+    let cancellation = context.as_deref().map(JobContext::cancellation_token);
 
     let mut entry_occurrences = std::collections::HashMap::<String, usize>::new();
     let result = reader.for_each_entries(|entry, entry_reader| {
@@ -647,14 +636,14 @@ fn extract_7z_inner(
         let is_selected = selection.is_none_or(|selectors| selectors.iter().any(|s| s.path == path && s.occurrence == *occurrence));
         *occurrence = occurrence.saturating_add(1);
         if !is_selected {
-            if let Err(error) = drain_reader(entry_reader, &path) {
+            if let Err(error) = drain_reader_with_cancellation(entry_reader, &path, &mut io_buffer, cancellation.as_ref()) {
                 return Err(callback_failed_with(&mut callback_error, error));
             }
             report.skipped_entries += 1;
             return Ok(true);
         }
         if entry.is_anti_item() {
-            if let Err(error) = drain_reader(entry_reader, &path) {
+            if let Err(error) = drain_reader_with_cancellation(entry_reader, &path, &mut io_buffer, cancellation.as_ref()) {
                 return Err(callback_failed_with(&mut callback_error, error));
             }
             crate::extract_loop::skip_entry(&mut report, context.as_deref_mut(), format!("skipped anti-item {path}"));
@@ -674,7 +663,7 @@ fn extract_7z_inner(
         match crate::extract_loop::process_planned_entry(&mut report, context.as_deref_mut(), &safety_entry, decision, &mut |action, report, context| {
             match action {
                 crate::extract_loop::EntryAction::Skip => {
-                    drain_reader(entry_reader, entry.name())?;
+                    drain_reader_with_cancellation(entry_reader, entry.name(), &mut io_buffer, cancellation.as_ref())?;
                     Ok(0)
                 }
                 crate::extract_loop::EntryAction::Write(decision) => write_sevenz_entry(
@@ -1056,6 +1045,28 @@ fn drain_reader(reader: &mut dyn Read, archive_path: &str) -> Result<(), SevenZE
     Ok(())
 }
 
+fn drain_reader_with_cancellation(
+    reader: &mut dyn Read,
+    archive_path: &str,
+    buffer: &mut [u8],
+    cancellation: Option<&CancellationToken>,
+) -> Result<(), SevenZError> {
+    if let Some(cancellation) = cancellation {
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(SevenZError::Cancelled);
+            }
+            let read = reader.read(buffer).map_err(|source| SevenZError::Io { path: PathBuf::from(archive_path), source })?;
+            if read == 0 {
+                break;
+            }
+        }
+    } else {
+        drain_reader(reader, archive_path)?;
+    }
+    Ok(())
+}
+
 /// Parks a real backend error and returns the sentinel error the callback
 /// must yield instead.
 ///
@@ -1076,10 +1087,12 @@ fn callback_failed_error() -> sevenz_rust2::Error {
 #[cfg(test)]
 mod tests {
     use super::{SevenZCreateOptions, SevenZEntryKind, SevenZError, create_7z_from_path, extract_7z, extraction_kind, list_7z, test_7z_with_password_filter};
+    use crate::jobs::CancellationToken;
     use crate::safety::{ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError};
     use crate::secrets::SecretString;
     use crate::test_support::TestDir;
     use std::fs::{self, File};
+    use std::io::{self, Read};
     use std::time::SystemTime;
 
     #[test]
@@ -1104,12 +1117,37 @@ mod tests {
             }
         };
         let mut context = JobContext::new(&token, &mut sink);
-        let report = super::extract_7z_with_context(&archive, temp.path("out"), None, policy, &mut context).unwrap();
+        let report = super::extract_7z_with_context(&archive, temp.path("out"), None, policy, None, Some(&mut context)).unwrap();
 
         assert!(report.written_entries >= 1);
         assert_eq!(report.skipped_entries, 1);
         assert!(report.warnings.iter().any(|warning| warning.contains("excluded.txt")));
         assert!(warnings.iter().any(|warning| warning.contains("excluded.txt")));
+    }
+
+    #[test]
+    fn selected_entry_draining_stops_when_cancellation_is_requested() {
+        struct CancelOnRead {
+            token: CancellationToken,
+            reads: usize,
+        }
+
+        impl Read for CancelOnRead {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.token.cancel();
+                buffer[0] = 0;
+                Ok(1)
+            }
+        }
+
+        let token = CancellationToken::new();
+        let mut reader = CancelOnRead { token: token.clone(), reads: 0 };
+        let mut buffer = [0_u8; 8];
+        let error = super::drain_reader_with_cancellation(&mut reader, "unselected.bin", &mut buffer, Some(&token)).unwrap_err();
+
+        assert!(matches!(error, SevenZError::Cancelled));
+        assert_eq!(reader.reads, 1, "draining must stop at the first cancellation check");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::jobs::JobContext;
+use crate::jobs::{CancellationToken, JobContext};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
     normalize_archive_path, remove_destination_for_replace,
@@ -104,6 +104,8 @@ pub enum RarBackendError {
     InvalidLinkTarget { path: String, target: String, reason: String },
     /// Entry requests a dictionary larger than ZM permits.
     DictionaryTooLarge { path: String, size: u64 },
+    /// Extraction was cancelled by the caller.
+    Cancelled,
 }
 
 impl fmt::Display for RarBackendError {
@@ -121,6 +123,7 @@ impl fmt::Display for RarBackendError {
             Self::DictionaryTooLarge { path, size } => {
                 write!(f, "RAR dictionary exceeds {LARGE_DICTIONARY_LIMIT_MIB} MiB limit for {path}: {} MiB", size.div_ceil(crate::MEBIBYTE_BYTES))
             }
+            Self::Cancelled => write!(f, "RAR extraction was cancelled"),
         }
     }
 }
@@ -131,7 +134,7 @@ impl std::error::Error for RarBackendError {
             Self::Unrar(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
-            Self::MissingLinkTarget { .. } | Self::InvalidLinkTarget { .. } | Self::DictionaryTooLarge { .. } => None,
+            Self::MissingLinkTarget { .. } | Self::InvalidLinkTarget { .. } | Self::DictionaryTooLarge { .. } | Self::Cancelled => None,
         }
     }
 }
@@ -221,10 +224,14 @@ pub fn test_rar_with_password_filter(
 /// Every public extract entry point is a thin wrapper that builds this struct
 /// (listing the archive when the caller did not already do so) and delegates
 /// here, so the extraction pipeline has exactly one implementation.
-pub(crate) struct RarExtractOptions<'password, 'resolver, 'context> {
+pub(crate) struct RarExtractOptions<'password, 'resolver, 'ctx_ref, 'context> {
     pub(crate) password: Option<&'password str>,
     pub(crate) overwrite_resolver: Option<&'resolver mut dyn OverwriteResolver>,
-    pub(crate) context: Option<&'resolver mut JobContext<'context>>,
+    // Given its own outer lifetime, independent of `'resolver`: callers
+    // commonly build this context from a short-lived local (a sink borrowed
+    // inside a `with_job_context`-style closure), which does not live as long
+    // as `overwrite_resolver`'s borrow from the caller's own options struct.
+    pub(crate) context: Option<&'ctx_ref mut JobContext<'context>>,
     pub(crate) entries: Vec<zmanager_unrar::RarEntry>,
 }
 
@@ -266,27 +273,23 @@ pub fn extract_rar_with_overwrite_resolver_and_password(
     )
 }
 
-/// Extracts exactly one RAR entry by its retained path and duplicate
-/// occurrence.  The occurrence is resolved against the native listing rather
-/// than treating an engine entry ID as an unchecked index.
-pub(crate) fn extract_rar_entry_by_path_occurrence(
+/// Extracts a RAR archive with a reporting context, and optionally an
+/// overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`RarBackendError`] when `UnRAR` cannot read the archive, an entry
+/// is unsafe, filesystem writes fail, or the resolver aborts extraction.
+pub(crate) fn extract_rar_with_context(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     password: Option<&str>,
-    entry_path: &str,
-    occurrence: usize,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<RarExtractReport, RarBackendError> {
-    let archive = archive.as_ref();
-    let entry = zmanager_unrar::list_archive(archive, password)?.into_iter().filter(|entry| entry.path == entry_path).nth(occurrence).ok_or_else(|| {
-        RarBackendError::Io {
-            path: archive.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::NotFound, "retained RAR entry is not present in this archive"),
-        }
-    })?;
-    reject_large_dictionary(&entry)?;
-    extract_rar_with_options(archive, destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context: None, entries: vec![entry] })
+    let entries = zmanager_unrar::list_archive(archive.as_ref(), password)?;
+    extract_rar_with_options(archive.as_ref(), destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context, entries })
 }
 
 /// Selects one retained RAR entry by path and duplicate occurrence.
@@ -296,7 +299,8 @@ pub(crate) struct RarEntrySelector<'a> {
     pub(crate) occurrence: usize,
 }
 
-/// Extracts several retained RAR entries in a single pass.
+/// Extracts several retained RAR entries in a single pass, with a reporting
+/// context.
 ///
 /// RAR archives may be solid, in which case decoding one member requires
 /// decoding every member before it. Extracting a selection one entry at a time
@@ -309,19 +313,18 @@ pub(crate) struct RarEntrySelector<'a> {
 /// Returns [`RarBackendError`] when `UnRAR` cannot read the archive, a selector
 /// names an entry the archive does not contain, an entry is unsafe, or
 /// filesystem writes fail.
-pub(crate) fn extract_rar_entries_by_path_occurrence(
+pub(crate) fn extract_rar_entries_by_path_occurrence_with_context(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     password: Option<&str>,
     selectors: &[RarEntrySelector<'_>],
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<RarExtractReport, RarBackendError> {
     let archive = archive.as_ref();
     let listing = zmanager_unrar::list_archive(archive, password)?;
 
-    // Group by path once rather than rescanning the listing per selector, so
-    // resolving a large selection stays linear in the archive size.
     let mut by_path: HashMap<&str, Vec<usize>> = HashMap::new();
     for (index, entry) in listing.iter().enumerate() {
         by_path.entry(entry.path.as_str()).or_default().push(index);
@@ -335,7 +338,6 @@ pub(crate) fn extract_rar_entries_by_path_occurrence(
         })?;
         indices.push(index);
     }
-    // Extract in archive order so a solid stream is consumed front to back.
     indices.sort_unstable();
     indices.dedup();
 
@@ -346,7 +348,7 @@ pub(crate) fn extract_rar_entries_by_path_occurrence(
         entries.push(entry);
     }
 
-    extract_rar_with_options(archive, destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context: None, entries })
+    extract_rar_with_options(archive, destination.as_ref(), policy, RarExtractOptions { password, overwrite_resolver, context, entries })
 }
 
 /// Copies exactly one regular RAR entry by its retained path and duplicate
@@ -389,36 +391,53 @@ pub(crate) fn copy_rar_entry_by_path_occurrence(
 /// reborrow of the overwrite resolver unify with the struct's field lifetime
 /// and fail to compile.
 #[allow(clippy::elidable_lifetime_names)]
-fn extract_rar_with_options<'password, 'resolver, 'context>(
+fn extract_rar_with_options<'password, 'resolver, 'ctx_ref, 'context>(
     archive: &Path,
     destination: &Path,
     policy: ExtractionPolicy,
-    options: RarExtractOptions<'password, 'resolver, 'context>,
+    options: RarExtractOptions<'password, 'resolver, 'ctx_ref, 'context>,
 ) -> Result<RarExtractReport, RarBackendError> {
     let RarExtractOptions { password, overwrite_resolver, mut context, entries } = options;
+    let cancellation = context.as_deref().map(JobContext::cancellation_token);
+    if cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
+        return Err(RarBackendError::Cancelled);
+    }
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| RarBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let PlannedRarExtraction { selections, metadata_map, deferred_links, deferred_dirs, entry_progress, mut report } =
-        plan_rar_entries(entries, &destination_root, policy, overwrite_resolver)?;
+    let PlannedRarExtraction { selections, metadata_map, deferred_links, deferred_dirs, entry_progress, skipped_progress, mut report } =
+        plan_rar_entries(entries, &destination_root, policy, overwrite_resolver, cancellation.as_ref())?;
 
+    let mut completed_files = HashMap::<String, usize>::new();
     if let Some(context) = context.as_deref_mut() {
+        for (path, bytes, warning) in &skipped_progress {
+            context.entry_started(path, Some(*bytes));
+            context.warning(warning);
+            context.entry_finished(path, 0);
+        }
         for (path, bytes) in &entry_progress {
             context.entry_started(path, Some(*bytes));
         }
     }
 
-    match context {
-        Some(context) => {
-            let mut progress = |path: String, bytes: u64| {
-                context.bytes_processed(Some(path.as_str()), bytes);
-                context.entry_finished(path, bytes);
-            };
-            zmanager_unrar::extract_selected_with_progress(archive, password, &selections, Some(&mut progress))?;
-        }
-        None => {
-            zmanager_unrar::extract_selected_with_progress(archive, password, &selections, None)?;
-        }
+    if let Some(context) = context.as_deref_mut() {
+        let mut progress = |path: String, bytes: u64| {
+            context.bytes_processed(Some(path.as_str()), bytes);
+            *completed_files.entry(path).or_default() += 1;
+        };
+        let mut cancelled = || cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled);
+        zmanager_unrar::extract_selected_with_progress_and_cancel(archive, password, &selections, Some(&mut progress), Some(&mut cancelled)).map_err(
+            |error| match error {
+                zmanager_unrar::UnrarError::Cancelled => RarBackendError::Cancelled,
+                error => RarBackendError::Unrar(error),
+            },
+        )?;
+    } else {
+        zmanager_unrar::extract_selected_with_progress(archive, password, &selections, None)?;
+    }
+
+    if cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
+        return Err(RarBackendError::Cancelled);
     }
 
     for (archive_path, dest_path) in &selections {
@@ -434,6 +453,20 @@ fn extract_rar_with_options<'password, 'resolver, 'context>(
         apply_rar_metadata(&dir_path, file_attr, mtime).map_err(|source| RarBackendError::Io { path: dir_path, source })?;
     }
 
+    if let Some(context) = context {
+        for (path, bytes) in &entry_progress {
+            let completed = completed_files.get_mut(path).is_some_and(|count| {
+                if *count == 0 {
+                    false
+                } else {
+                    *count -= 1;
+                    true
+                }
+            });
+            context.entry_finished(path, if completed { *bytes } else { 0 });
+        }
+    }
+
     Ok(report)
 }
 
@@ -443,6 +476,7 @@ struct PlannedRarExtraction {
     deferred_links: Vec<DeferredLink>,
     deferred_dirs: Vec<(PathBuf, u32, u64)>,
     entry_progress: Vec<(String, u64)>,
+    skipped_progress: Vec<(String, u64, String)>,
     report: RarExtractReport,
 }
 
@@ -467,6 +501,7 @@ fn plan_rar_entries(
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<PlannedRarExtraction, RarBackendError> {
     // The planner owns the policy; clone it exactly once instead of holding a
     // reference through the whole planning loop.
@@ -481,14 +516,20 @@ fn plan_rar_entries(
         deferred_links: Vec::new(),
         deferred_dirs: Vec::new(),
         entry_progress: Vec::new(),
+        skipped_progress: Vec::new(),
         report: RarExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() },
     };
 
     for entry in entries {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(RarBackendError::Cancelled);
+        }
         reject_large_dictionary(&entry)?;
         let Some(extraction_kind) = extraction_entry_kind(&entry, &policy)? else {
             extraction.report.skipped_entries += 1;
-            extraction.report.warnings.push(format!("skipped {}: unsupported RAR special entry", entry.path));
+            let warning = format!("skipped {}: unsupported RAR special entry", entry.path);
+            extraction.report.warnings.push(warning.clone());
+            extraction.skipped_progress.push((entry.path.clone(), entry.unpacked_size, warning));
             continue;
         };
         let safety_entry =
@@ -509,12 +550,17 @@ fn plan_rar_entries(
             }
             ExtractionDecision::Skip { reason, .. } => {
                 extraction.report.skipped_entries += 1;
-                extraction.report.warnings.push(format!("skipped {}: {reason}", entry.path));
+                let warning = format!("skipped {}: {reason}", entry.path);
+                extraction.report.warnings.push(warning.clone());
+                extraction.skipped_progress.push((entry.path.clone(), entry.unpacked_size, warning));
             }
         }
     }
 
     for plan in plans {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(RarBackendError::Cancelled);
+        }
         commit_planned_entry(plan, &mut extraction)?;
     }
 
@@ -820,9 +866,13 @@ fn relative_path(from_parent: &str, to: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeferredLink, DeferredLinkKind, RarExtractReport, extract_rar_with_password, list_rar_with_password, materialize_deferred_links};
+    use super::{
+        DeferredLink, DeferredLinkKind, RarBackendError, RarExtractReport, extract_rar_with_context, extract_rar_with_password, list_rar_with_password,
+        materialize_deferred_links,
+    };
     #[cfg(unix)]
     use super::{RAR_FILETIME_TICKS_PER_SECOND, WINDOWS_TO_UNIX_EPOCH_SECONDS, apply_rar_metadata};
+    use crate::jobs::{CancellationToken, JobContext};
     use crate::safety::{ExtractionPolicy, OverwritePolicy};
     use crate::test_support::TestDir;
     use std::collections::HashSet;
@@ -870,6 +920,33 @@ mod tests {
         assert!(list_rar_with_password(&archive, None).is_err(), "passworded RAR must not list without a password");
         assert!(list_rar_with_password(&archive, Some("wrong password")).is_err(), "passworded RAR must reject a wrong password");
         assert_complete_multipart_rar_round_trip(&archive, Some("zmanager-rar-fixture-password"), "rar5-passworded-multipart");
+    }
+
+    #[test]
+    fn cancelled_rar_does_not_replace_existing_files_during_planning() {
+        let archive = rar_fixture("basic.rar");
+        let temp = TestDir::new("rar_cancel_before_planning");
+        let destination = temp.path("out");
+        let existing = destination.join("payload/README.txt");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, b"do not remove").unwrap();
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut sink = |_| {};
+        let mut context = JobContext::new(&token, &mut sink);
+        let error = extract_rar_with_context(
+            &archive,
+            &destination,
+            ExtractionPolicy { overwrite: OverwritePolicy::Replace, ..Default::default() },
+            None,
+            None,
+            Some(&mut context),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, RarBackendError::Cancelled));
+        assert_eq!(fs::read(&existing).unwrap(), b"do not remove");
     }
 
     #[cfg(unix)]
@@ -988,14 +1065,36 @@ mod tests {
         };
 
         // A copy within the limit plans cleanly.
-        plan_rar_entries(vec![regular_file("source.txt", 60), file_copy("copy.txt", 40)], &destination, policy.clone(), None)
+        plan_rar_entries(vec![regular_file("source.txt", 60), file_copy("copy.txt", 40)], &destination, policy.clone(), None, None)
             .expect("a file copy within the limit should plan");
 
         // The copy must be charged against the limit like a regular file:
         // source (60) plus copy (60) exceeds the 100-byte limit.
-        let Err(error) = plan_rar_entries(vec![regular_file("source.txt", 60), file_copy("copy.txt", 60)], &destination, policy, None) else {
+        let Err(error) = plan_rar_entries(vec![regular_file("source.txt", 60), file_copy("copy.txt", 60)], &destination, policy, None, None) else {
             panic!("file copies over the limit should be rejected at planning time");
         };
         assert!(matches!(error, RarBackendError::Safety(ExtractionSafetyError::ExpandedSizeLimitExceeded { .. })));
+    }
+
+    #[test]
+    fn unsupported_rar_special_entries_are_recorded_for_progress() {
+        let destination = std::env::temp_dir().join(format!("zmanager-rar-special-progress-{}", std::process::id()));
+        let entry = zmanager_unrar::RarEntry {
+            path: "special.device".to_owned(),
+            unpacked_size: 17,
+            dictionary_size: 0,
+            kind: zmanager_unrar::RarEntryKind::Special,
+            link_target: None,
+            encrypted: false,
+            solid: false,
+            file_attr: 0,
+            mtime: 0,
+        };
+
+        let planned = super::plan_rar_entries(vec![entry], &destination, ExtractionPolicy::default(), None, None).unwrap();
+
+        assert_eq!(planned.report.skipped_entries, 1);
+        assert_eq!(planned.skipped_progress.len(), 1);
+        assert!(planned.skipped_progress[0].2.contains("special.device"));
     }
 }

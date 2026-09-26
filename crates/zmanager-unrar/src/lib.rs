@@ -132,6 +132,8 @@ pub enum UnrarError {
     InvalidDestination { path: PathBuf, reason: String },
     /// The extraction callback could not fit the selected destination path.
     DestinationTooLong { path: PathBuf },
+    /// Extraction was cancelled by the caller.
+    Cancelled,
 }
 
 impl fmt::Display for UnrarError {
@@ -151,6 +153,7 @@ impl fmt::Display for UnrarError {
             Self::DestinationTooLong { path } => {
                 write!(f, "RAR destination path is too long: {}", path.display())
             }
+            Self::Cancelled => write!(f, "RAR extraction was cancelled"),
         }
     }
 }
@@ -217,12 +220,30 @@ pub fn extract_selected_with_progress(
     selections: &BTreeMap<String, PathBuf>,
     progress: Option<&mut dyn FnMut(String, u64)>,
 ) -> Result<(), UnrarError> {
+    extract_selected_with_progress_and_cancel(archive, password, selections, progress, None)
+}
+
+/// Extracts selected RAR file entries with progress callbacks and a
+/// cooperative cancellation check before each selected entry.
+///
+/// # Errors
+///
+/// Returns [`UnrarError`] when `UnRAR` cannot extract the archive, a selected
+/// destination cannot be passed to the C ABI, the progress callback fails, or
+/// the cancellation callback requests cancellation.
+pub fn extract_selected_with_progress_and_cancel<'a>(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    selections: &BTreeMap<String, PathBuf>,
+    progress: Option<&'a mut dyn FnMut(String, u64)>,
+    cancel: Option<&'a mut dyn FnMut() -> bool>,
+) -> Result<(), UnrarError> {
     let _operation_guard = UNRAR_OPERATION_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let archive_path = archive.as_ref();
     validate_archive_prefix(archive_path)?;
     let archive = path_to_cstring(archive_path)?;
     let password = optional_password_to_c_buffer(password)?;
-    let mut context = ExtractContext { selections, error: None, progress };
+    let mut context = ExtractContext { selections, error: None, progress, cancel };
 
     let code = unsafe {
         zmu_unrar_extract(archive.as_ptr(), optional_c_buffer_ptr(password.as_ref()), ptr::from_mut(&mut context).cast::<c_void>(), extract_callback)
@@ -243,6 +264,7 @@ struct ExtractContext<'a, 'b> {
     selections: &'a BTreeMap<String, PathBuf>,
     error: Option<UnrarError>,
     progress: Option<&'b mut dyn FnMut(String, u64)>,
+    cancel: Option<&'b mut dyn FnMut() -> bool>,
 }
 
 extern "C" fn list_callback(
@@ -297,6 +319,10 @@ extern "C" fn extract_callback(
     destination_size: usize,
 ) -> c_int {
     let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
+    if context.cancel.as_mut().is_some_and(|cancel| cancel()) {
+        context.error = Some(UnrarError::Cancelled);
+        return -1;
+    }
     let Some(path) = c_path_to_string(path) else {
         context.error = Some(UnrarError::InvalidEntryName);
         return -1;

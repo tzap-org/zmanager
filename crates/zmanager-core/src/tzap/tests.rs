@@ -294,6 +294,10 @@ fn selected_extract_uses_seekable_core_for_numbered_volumes() {
     assert!(listing.entries.iter().any(|entry| entry.path == "nested/small.txt"));
 
     let destination = temp.path("out/selected.txt");
+    let token = CancellationToken::new();
+    let mut events = Vec::new();
+    let mut sink = |event| events.push(event);
+    let mut context = JobContext::new(&token, &mut sink);
     let written = extract_tzap_file_to_destination(
         &selected_volume_path,
         TzapExtractKeySource::Password("secret"),
@@ -301,12 +305,14 @@ fn selected_extract_uses_seekable_core_for_numbered_volumes() {
         &destination,
         false,
         TzapRestoreOptions::default(),
+        Some(&mut context),
     )
     .unwrap()
     .map(|report| report.written_bytes);
 
     assert_eq!(written, Some(12));
     assert_eq!(fs::read(&destination).unwrap(), b"small target");
+    assert!(events.iter().any(|event| matches!(event, crate::jobs::JobEvent::BytesProcessed { .. })));
 }
 
 #[test]
