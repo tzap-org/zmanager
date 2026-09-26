@@ -2288,7 +2288,8 @@ impl NativeReadAdapter for TzapListAdapter {
         let selector = archive.selected_entry_selector(entry_id)?;
         let destination_path = options.destination.join(&selector.path);
         let needs_context = options.cancellation.is_some() || options.event_sink.is_some();
-        let extract = |mut context: Option<&mut JobContext<'_>>| {
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
+        let mut extract = |mut context: Option<&mut JobContext<'_>>| {
             if let Some(context) = context.as_deref_mut() {
                 context.entry_started(&selector.path, None);
             }
@@ -2339,7 +2340,8 @@ impl NativeReadAdapter for TzapListAdapter {
                 key,
                 &selector.path,
                 &destination_path,
-                options.policy.overwrite == crate::safety::OverwritePolicy::Replace,
+                options.policy.overwrite,
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
                 options.tzap_restore_options.unwrap_or_default().into(),
                 context.as_deref_mut(),
             )
@@ -2810,17 +2812,39 @@ impl NativeReadAdapter for AppleArchiveListAdapter {
     ) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
+        let resolver = options.overwrite_resolver.as_deref_mut();
         let report = if options.cancellation.is_some() || options.event_sink.is_some() {
             with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
-                apple_archive_backend::extract_apple_archive_entry_with_context(
-                    path,
-                    &selector.path,
-                    &options.destination,
-                    options.policy.clone(),
-                    archive.options().password.as_deref(),
-                    context,
-                )
+                if let Some(resolver) = resolver {
+                    apple_archive_backend::extract_apple_archive_entry_with_context_and_overwrite_resolver(
+                        path,
+                        &selector.path,
+                        &options.destination,
+                        options.policy.clone(),
+                        resolver,
+                        archive.options().password.as_deref(),
+                        context,
+                    )
+                } else {
+                    apple_archive_backend::extract_apple_archive_entry_with_context(
+                        path,
+                        &selector.path,
+                        &options.destination,
+                        options.policy.clone(),
+                        archive.options().password.as_deref(),
+                        context,
+                    )
+                }
             })
+        } else if let Some(resolver) = resolver {
+            apple_archive_backend::extract_apple_archive_entry_with_overwrite_resolver(
+                path,
+                &selector.path,
+                &options.destination,
+                options.policy.clone(),
+                resolver,
+                archive.options().password.as_deref(),
+            )
         } else {
             apple_archive_backend::extract_apple_archive_entry(
                 path,

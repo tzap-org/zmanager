@@ -357,29 +357,41 @@ fn tzap_extract_error(path: &str, source: ExtractError) -> TzapError {
 /// Extracts one regular `.tzap` file member to an exact destination path with
 /// explicit metadata restoration options.
 ///
+/// This looks up the member directly by name instead of listing the whole
+/// archive, so a destination conflict is resolved with
+/// [`crate::safety::resolve_single_entry_overwrite`] rather than the batch
+/// [`crate::safety::ExtractionSafetyPlanner`] the full-archive extraction
+/// path uses.
+///
 /// # Errors
 ///
 /// Returns [`TzapError`] when the archive cannot be opened, the requested
-/// restoration policy cannot be satisfied, or the destination cannot be committed.
+/// restoration policy cannot be satisfied, the destination conflict cannot be
+/// resolved by `overwrite`/`overwrite_resolver`, or the destination cannot be
+/// committed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_tzap_file_to_destination(
     archive: impl AsRef<Path>,
     key: TzapExtractKeySource<'_>,
     entry_path: &str,
     destination_path: &Path,
-    replace_existing: bool,
+    overwrite: OverwritePolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     restore_options: TzapRestoreOptions,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<TzapFileExtractReport>, TzapError> {
     let (password, recipient_private_key, key_bytes_list) = key_components(key);
     let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, key_bytes_list.as_deref())?;
-    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, replace_existing, restore_options, context)
+    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, overwrite, overwrite_resolver, restore_options, context)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_tzap_file_from_opened_archive(
     opened: &OpenedArchive,
     entry_path: &str,
     destination_path: &Path,
-    replace_existing: bool,
+    overwrite: OverwritePolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     restore_options: TzapRestoreOptions,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<TzapFileExtractReport>, TzapError> {
@@ -390,6 +402,13 @@ fn extract_tzap_file_from_opened_archive(
     if let Some(context) = context.as_deref() {
         context.check_cancelled()?;
     }
+
+    let resolved = crate::safety::resolve_single_entry_overwrite(entry_path, destination_path.to_path_buf(), overwrite, overwrite_resolver)?;
+    let (destination_path, replace_existing) = match resolved {
+        crate::safety::SingleEntryOverwrite::Write { destination_path, replace_existing } => (destination_path, replace_existing),
+        crate::safety::SingleEntryOverwrite::Skip => return Ok(None),
+    };
+    let destination_path = destination_path.as_path();
 
     if let Some(context) = context {
         let processed = stream_regular_member_to_destination(

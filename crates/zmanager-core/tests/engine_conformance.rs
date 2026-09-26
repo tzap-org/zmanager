@@ -1999,3 +1999,657 @@ fn batched_selected_extract_consults_the_caller_overwrite_resolver() {
     assert_eq!(report.written_entries, 0, "the resolver skipped every entry");
     handle.close().unwrap();
 }
+
+// ---------------------------------------------------------------------
+// Native RAR/7z/TZAP/Apple Archive adapters route full and selected
+// extraction through `with_job_context` only when a cancellation token or
+// event sink is attached (see `engine/adapters/native.rs`); without either,
+// they call a plain, uninstrumented backend function instead. That branch
+// was only ever exercised through the ZIP adapter, which is a separate,
+// unrelated code path (`engine/adapters/zip.rs`). The tests below drive the
+// `with_job_context` branch directly for each native format.
+// ---------------------------------------------------------------------
+
+/// Cancelling only after the sink observes live progress for one entry
+/// proves the *adapter's own* per-entry cancellation check stops the job
+/// partway through, rather than merely the engine's upfront "already
+/// cancelled" guard (already covered by
+/// `engine_extract_cancellation_is_reported_before_adapter_work`).
+///
+/// RAR reports `EntryStarted`/`EntryFinished` for the whole archive in bulk
+/// (before and after the real `UnRAR` call, respectively), so those events
+/// cannot distinguish "about to start" from "mid-extraction". `BytesProcessed`
+/// is the one event RAR emits from inside the real per-file callback, and the
+/// progress coalescer always forwards its first call, so it fires exactly
+/// once real work has begun on the first file.
+#[test]
+fn engine_extract_rar_cancellation_is_honored_by_native_adapter() {
+    let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.rar");
+    let temp = TestDir::new("engine-conformance-rar-cancel-mid-extract");
+    let out_dir = temp.path("out");
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let total_files = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).count();
+    assert!(total_files >= 2, "fixture should contain multiple files to observe a mid-extraction cancellation");
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::BytesProcessed { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = ExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract(&mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::BytesProcessed { .. })),
+        "the adapter must report live progress for at least one file before honoring cancellation"
+    );
+    let extracted = walk_files(&out_dir).len();
+    assert!(extracted < total_files, "cancellation must stop the native RAR adapter before every entry is written");
+    assert!(extracted > 0, "the file already handed to UnRAR before cancellation was observed should still be written");
+}
+
+#[test]
+fn engine_extract_seven_z_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-conformance-seven-z-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.7z");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::SevenZ(SevenZCreateOptions { encrypt_file_names: false, ..Default::default() }));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let total_files = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).count();
+    assert_eq!(total_files, 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = ExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract(&mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    assert!(walk_files(&out_dir).len() < total_files, "cancellation must stop the native 7z adapter before every entry is written");
+}
+
+#[test]
+fn engine_extract_tzap_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-conformance-tzap-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.tzap");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(
+        &engine,
+        &source,
+        &archive_path,
+        CreateOptions::Tzap(TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            volume_count: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+            emit_bootstrap_sidecar: false,
+        }),
+    );
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let total_files = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).count();
+    assert_eq!(total_files, 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    // The default `Refuse`/`Replace` overwrite policy routes full TZAP
+    // extraction through a batched restore call that only checks
+    // cancellation while planning, before any file is written. `Rename`
+    // (harmless here since the destination starts empty) takes the
+    // per-entry path instead, so cancellation genuinely interrupts it
+    // between files.
+    let mut options = ExtractOptions {
+        destination: out_dir.clone(),
+        policy: zmanager_core::safety::ExtractionPolicy {
+            overwrite: zmanager_core::safety::OverwritePolicy::Rename,
+            ..zmanager_core::safety::ExtractionPolicy::default()
+        },
+        cancellation: Some(token),
+        event_sink: Some(&mut sink),
+        ..Default::default()
+    };
+    let error = handle.extract(&mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    assert!(walk_files(&out_dir).len() < total_files, "cancellation must stop the native TZAP adapter before every entry is written");
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn engine_extract_apple_archive_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-conformance-apple-archive-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.aar");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::AppleArchive(AppleArchiveCreateOptions::default()));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let total_files = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).count();
+    assert_eq!(total_files, 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = ExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract(&mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    assert!(walk_files(&out_dir).len() < total_files, "cancellation must stop the native Apple Archive adapter before every entry is written");
+}
+
+// ---------------------------------------------------------------------
+// Cancellation must also be honored through the *selection* entry points
+// (`extract_selected`/`extract_selected_many`), not just full-archive
+// `extract()`. RAR and 7z route a multi-entry selection through the same
+// batched, single-pass backend functions full extraction uses; TZAP and
+// Apple Archive route each selected entry through their own per-entry
+// `selected_extract`, called in a loop by `selected_extract_many`. Both
+// shapes are exercised below by selecting every file in a multi-file
+// fixture and cancelling mid-batch, mirroring the full-extract cancellation
+// tests above but through the selection API specifically.
+// ---------------------------------------------------------------------
+
+#[test]
+fn engine_selected_extract_many_rar_cancellation_is_honored_by_native_adapter() {
+    let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.rar");
+    let temp = TestDir::new("engine-selected-extract-many-rar-cancel-mid-extract");
+    let out_dir = temp.path("out");
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let file_ids: Vec<_> = listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert!(file_ids.len() >= 2, "fixture should contain multiple files to observe a mid-batch cancellation");
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::BytesProcessed { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = SelectedExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract_selected_many(&file_ids, &mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::BytesProcessed { .. })),
+        "the adapter must report live progress for at least one file before honoring cancellation"
+    );
+    let extracted = walk_files(&out_dir).len();
+    assert!(extracted < file_ids.len(), "cancellation must stop the batched RAR selection before every selected entry is written");
+    assert!(extracted > 0, "the file already handed to UnRAR before cancellation was observed should still be written");
+}
+
+#[test]
+fn engine_selected_extract_many_seven_z_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-selected-extract-many-seven-z-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.7z");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::SevenZ(SevenZCreateOptions { encrypt_file_names: false, ..Default::default() }));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let file_ids: Vec<_> = listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert_eq!(file_ids.len(), 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = SelectedExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract_selected_many(&file_ids, &mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    let extracted = walk_files(&out_dir).len();
+    assert!(extracted < file_ids.len(), "cancellation must stop the batched 7z selection before every selected entry is written");
+}
+
+#[test]
+fn engine_selected_extract_many_tzap_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-selected-extract-many-tzap-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.tzap");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(
+        &engine,
+        &source,
+        &archive_path,
+        CreateOptions::Tzap(TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            volume_count: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+            emit_bootstrap_sidecar: false,
+        }),
+    );
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let file_ids: Vec<_> = listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert_eq!(file_ids.len(), 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = SelectedExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract_selected_many(&file_ids, &mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    let extracted = walk_files(&out_dir).len();
+    assert!(extracted < file_ids.len(), "cancellation must stop the batched TZAP selection before every selected entry is written");
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn engine_selected_extract_many_apple_archive_cancellation_is_honored_by_native_adapter() {
+    let temp = TestDir::new("engine-selected-extract-many-apple-archive-cancel-mid-extract");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.aar");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::AppleArchive(AppleArchiveCreateOptions::default()));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let file_ids: Vec<_> = listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert_eq!(file_ids.len(), 3);
+
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. }) {
+            cancel_token.cancel();
+        }
+        events.push(event);
+    };
+
+    let mut options = SelectedExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+    let error = handle.extract_selected_many(&file_ids, &mut options).unwrap_err();
+
+    assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
+    assert!(
+        events.iter().any(|event| matches!(event, zmanager_core::jobs::JobEvent::EntryFinished { .. })),
+        "the adapter must report progress for at least one entry before honoring cancellation"
+    );
+    let extracted = walk_files(&out_dir).len();
+    assert!(extracted < file_ids.len(), "cancellation must stop the batched Apple Archive selection before every selected entry is written");
+}
+
+// ---------------------------------------------------------------------
+// An attached event sink must not change which entries a selected/batched
+// extraction touches, nor how overwrite conflicts are resolved: selection
+// and overwrite behavior must be identical whether or not a caller is also
+// observing progress. Each case below seeds every entry's destination with
+// a conflicting placeholder, selects a strict subset, and attaches both an
+// event sink and an overwrite resolver together.
+// ---------------------------------------------------------------------
+
+#[derive(Default)]
+struct ReplacingResolver {
+    calls: usize,
+}
+
+impl zmanager_core::safety::OverwriteResolver for ReplacingResolver {
+    fn decide(&mut self, _conflict: &zmanager_core::safety::OverwriteConflict) -> zmanager_core::safety::OverwriteDecision {
+        self.calls += 1;
+        zmanager_core::safety::OverwriteDecision::Replace
+    }
+}
+
+#[test]
+fn engine_selected_extract_covers_rar_overwrite_and_selection_with_event_sink() {
+    let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.rar");
+    let temp = TestDir::new("engine-selected-extract-rar-event-sink-overwrite");
+    let out_dir = temp.path("out");
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+
+    let readme = listing.entries.iter().find(|entry| entry.path.ends_with("README.txt")).expect("fixture has README.txt");
+    let nested = listing.entries.iter().find(|entry| entry.path.ends_with("nested/file.txt")).expect("fixture has nested/file.txt");
+    let skipped = listing
+        .entries
+        .iter()
+        .find(|entry| entry.kind == BrowserEntryKind::File && entry.id != readme.id && entry.id != nested.id)
+        .expect("fixture has a third regular file");
+    let (readme_id, nested_id) = (readme.id, nested.id);
+    let skipped_path = skipped.path.clone();
+
+    // Seed a conflicting placeholder at every file entry's destination,
+    // including the one left out of the selection.
+    for entry in listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File) {
+        let path = out_dir.join(&entry.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"placeholder").unwrap();
+    }
+
+    let mut resolver = ReplacingResolver::default();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| events.push(event);
+
+    let mut options = SelectedExtractOptions {
+        destination: out_dir.clone(),
+        policy: zmanager_core::safety::ExtractionPolicy {
+            overwrite: zmanager_core::safety::OverwritePolicy::Ask,
+            ..zmanager_core::safety::ExtractionPolicy::default()
+        },
+        overwrite_resolver: Some(&mut resolver),
+        event_sink: Some(&mut sink),
+        ..Default::default()
+    };
+    let report = handle.extract_selected_many(&[readme_id, nested_id], &mut options).unwrap();
+
+    assert_eq!(resolver.calls, 2, "the resolver must be consulted only for the two selected entries");
+    assert_eq!(report.written_entries, 2);
+    assert!(!events.is_empty(), "an attached event sink must still receive progress events during selected extraction");
+    assert_eq!(fs::read_to_string(out_dir.join("payload/README.txt")).unwrap(), "ZManager fixture payload\n");
+    assert_eq!(fs::read_to_string(out_dir.join("payload/nested/file.txt")).unwrap(), "nested fixture file\n");
+    assert_eq!(
+        fs::read(out_dir.join(&skipped_path)).unwrap(),
+        b"placeholder",
+        "an entry left out of the selection must not be touched even though a resolver and event sink are attached"
+    );
+}
+
+#[test]
+fn engine_selected_extract_covers_seven_z_overwrite_and_selection_with_event_sink() {
+    let temp = TestDir::new("engine-selected-extract-seven-z-event-sink-overwrite");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.7z");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::SevenZ(SevenZCreateOptions { encrypt_file_names: false, ..Default::default() }));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let entry_id = |suffix: &str| listing.entries.iter().find(|entry| entry.path.ends_with(suffix)).expect("entry present").id;
+    let (first_id, third_id) = (entry_id("first.txt"), entry_id("third.txt"));
+
+    for entry in listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File) {
+        let path = out_dir.join(&entry.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"placeholder").unwrap();
+    }
+
+    let mut resolver = ReplacingResolver::default();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| events.push(event);
+
+    let mut options = SelectedExtractOptions {
+        destination: out_dir.clone(),
+        policy: zmanager_core::safety::ExtractionPolicy {
+            overwrite: zmanager_core::safety::OverwritePolicy::Ask,
+            ..zmanager_core::safety::ExtractionPolicy::default()
+        },
+        overwrite_resolver: Some(&mut resolver),
+        event_sink: Some(&mut sink),
+        ..Default::default()
+    };
+    let report = handle.extract_selected_many(&[first_id, third_id], &mut options).unwrap();
+
+    assert_eq!(resolver.calls, 2, "the resolver must be consulted only for the two selected entries");
+    assert_eq!(report.written_entries, 2);
+    assert!(!events.is_empty(), "an attached event sink must still receive progress events during selected extraction");
+    assert_eq!(fs::read(out_dir.join("project/first.txt")).unwrap(), b"first");
+    assert_eq!(fs::read(out_dir.join("project/third.txt")).unwrap(), b"third");
+    assert_eq!(
+        fs::read(out_dir.join("project/second.txt")).unwrap(),
+        b"placeholder",
+        "an entry left out of the selection must not be touched even though a resolver and event sink are attached"
+    );
+}
+
+#[test]
+fn engine_selected_extract_covers_tzap_overwrite_and_selection_with_event_sink() {
+    let temp = TestDir::new("engine-selected-extract-tzap-event-sink-overwrite");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.tzap");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(
+        &engine,
+        &source,
+        &archive_path,
+        CreateOptions::Tzap(TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            volume_count: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+            emit_bootstrap_sidecar: false,
+        }),
+    );
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let entry_id = |suffix: &str| listing.entries.iter().find(|entry| entry.path.ends_with(suffix)).expect("entry present").id;
+    let (first_id, third_id) = (entry_id("first.txt"), entry_id("third.txt"));
+
+    for entry in listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File) {
+        let path = out_dir.join(&entry.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"placeholder").unwrap();
+    }
+
+    let mut resolver = ReplacingResolver::default();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| events.push(event);
+
+    let mut options = SelectedExtractOptions {
+        destination: out_dir.clone(),
+        policy: zmanager_core::safety::ExtractionPolicy {
+            overwrite: zmanager_core::safety::OverwritePolicy::Ask,
+            ..zmanager_core::safety::ExtractionPolicy::default()
+        },
+        overwrite_resolver: Some(&mut resolver),
+        event_sink: Some(&mut sink),
+        ..Default::default()
+    };
+    let report = handle.extract_selected_many(&[first_id, third_id], &mut options).unwrap();
+
+    assert_eq!(resolver.calls, 2, "the resolver must be consulted only for the two selected entries");
+    assert_eq!(report.written_entries, 2);
+    assert!(!events.is_empty(), "an attached event sink must still receive progress events during selected extraction");
+    assert_eq!(fs::read(out_dir.join("project/first.txt")).unwrap(), b"first");
+    assert_eq!(fs::read(out_dir.join("project/third.txt")).unwrap(), b"third");
+    assert_eq!(
+        fs::read(out_dir.join("project/second.txt")).unwrap(),
+        b"placeholder",
+        "an entry left out of the selection must not be touched even though a resolver and event sink are attached"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn engine_selected_extract_covers_apple_archive_overwrite_and_selection_with_event_sink() {
+    let temp = TestDir::new("engine-selected-extract-apple-archive-event-sink-overwrite");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.aar");
+    let out_dir = temp.path("out");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(&engine, &source, &archive_path, CreateOptions::AppleArchive(AppleArchiveCreateOptions::default()));
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    let entry_id = |suffix: &str| listing.entries.iter().find(|entry| entry.path.ends_with(suffix)).expect("entry present").id;
+    let (first_id, third_id) = (entry_id("first.txt"), entry_id("third.txt"));
+
+    for entry in listing.entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File) {
+        let path = out_dir.join(&entry.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"placeholder").unwrap();
+    }
+
+    let mut resolver = ReplacingResolver::default();
+    let mut events = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| events.push(event);
+
+    let mut options = SelectedExtractOptions {
+        destination: out_dir.clone(),
+        policy: zmanager_core::safety::ExtractionPolicy {
+            overwrite: zmanager_core::safety::OverwritePolicy::Ask,
+            ..zmanager_core::safety::ExtractionPolicy::default()
+        },
+        overwrite_resolver: Some(&mut resolver),
+        event_sink: Some(&mut sink),
+        ..Default::default()
+    };
+    let report = handle.extract_selected_many(&[first_id, third_id], &mut options).unwrap();
+
+    assert_eq!(resolver.calls, 2, "the resolver must be consulted only for the two selected entries");
+    assert_eq!(report.written_entries, 2);
+    assert!(!events.is_empty(), "an attached event sink must still receive progress events during selected extraction");
+    assert_eq!(fs::read(out_dir.join("project/first.txt")).unwrap(), b"first");
+    assert_eq!(fs::read(out_dir.join("project/third.txt")).unwrap(), b"third");
+    assert_eq!(
+        fs::read(out_dir.join("project/second.txt")).unwrap(),
+        b"placeholder",
+        "an entry left out of the selection must not be touched even though a resolver and event sink are attached"
+    );
+}

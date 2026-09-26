@@ -1029,6 +1029,79 @@ pub fn remove_destination_for_replace(path: &Path) -> std::io::Result<()> {
     if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
 }
 
+/// Outcome of resolving a single destination-path conflict outside the
+/// batch [`ExtractionSafetyPlanner`]: either write to `destination_path`
+/// (renamed from the caller's original candidate when the policy or resolver
+/// asked for that), replacing an existing path when `replace_existing` is
+/// set, or skip the entry entirely.
+pub(crate) enum SingleEntryOverwrite {
+    /// Write the entry, replacing the existing destination first when
+    /// `replace_existing` is set.
+    Write { destination_path: PathBuf, replace_existing: bool },
+    /// Leave the existing destination untouched and do not write the entry.
+    Skip,
+}
+
+/// Resolves one destination-path conflict for extraction paths that place a
+/// single named archive member at a single destination directly (TZAP and
+/// Apple Archive selected-entry extraction, which look up one archive member
+/// by name instead of listing the whole archive and running it through
+/// [`ExtractionSafetyPlanner`]). Mirrors the planner's per-conflict policy
+/// semantics in [`ExtractionSafetyPlanner::plan_destination_write`] so a
+/// single-entry extraction behaves identically to a batch extraction for the
+/// same policy and conflict, without the planner's per-batch bookkeeping
+/// (collision tracking, rename-index resumption, size budgets) that a
+/// standalone single-entry write does not need.
+///
+/// # Errors
+///
+/// Returns [`ExtractionSafetyError`] when the destination exists and the
+/// policy refuses to overwrite it, no resolver is available for an `Ask`
+/// conflict, the resolver aborts extraction, the deterministic rename space
+/// is exhausted, or the destination cannot be probed.
+pub(crate) fn resolve_single_entry_overwrite(
+    archive_path: &str,
+    destination_path: PathBuf,
+    overwrite: OverwritePolicy,
+    resolver: Option<&mut dyn OverwriteResolver>,
+) -> Result<SingleEntryOverwrite, ExtractionSafetyError> {
+    match std::fs::symlink_metadata(&destination_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SingleEntryOverwrite::Write { destination_path, replace_existing: false });
+        }
+        Err(error) => {
+            return Err(ExtractionSafetyError::DestinationProbe { archive_path: archive_path.to_owned(), destination_path, message: error.to_string() });
+        }
+    }
+
+    match overwrite {
+        OverwritePolicy::Refuse => Err(ExtractionSafetyError::DestinationExists { archive_path: archive_path.to_owned(), destination_path }),
+        OverwritePolicy::Replace => Ok(SingleEntryOverwrite::Write { destination_path, replace_existing: true }),
+        OverwritePolicy::Rename => {
+            let (candidate, _) = next_available_destination_path_from(&destination_path, FIRST_RENAME_INDEX, MAX_RENAME_CANDIDATES)
+                .ok_or_else(|| ExtractionSafetyError::RenameDestinationExhausted { archive_path: archive_path.to_owned(), destination_path })?;
+            Ok(SingleEntryOverwrite::Write { destination_path: candidate, replace_existing: false })
+        }
+        OverwritePolicy::Ask => {
+            let Some(resolver) = resolver else {
+                return Err(ExtractionSafetyError::OverwritePromptUnavailable { archive_path: archive_path.to_owned(), destination_path });
+            };
+            let conflict = OverwriteConflict { archive_path: archive_path.to_owned(), destination_path: destination_path.clone() };
+            match resolver.decide(&conflict) {
+                OverwriteDecision::Replace => Ok(SingleEntryOverwrite::Write { destination_path, replace_existing: true }),
+                OverwriteDecision::Skip => Ok(SingleEntryOverwrite::Skip),
+                OverwriteDecision::Rename => {
+                    let (candidate, _) = next_available_destination_path_from(&destination_path, FIRST_RENAME_INDEX, MAX_RENAME_CANDIDATES)
+                        .ok_or_else(|| ExtractionSafetyError::RenameDestinationExhausted { archive_path: archive_path.to_owned(), destination_path })?;
+                    Ok(SingleEntryOverwrite::Write { destination_path: candidate, replace_existing: false })
+                }
+                OverwriteDecision::Quit => Err(ExtractionSafetyError::OverwriteAborted { archive_path: archive_path.to_owned(), destination_path }),
+            }
+        }
+    }
+}
+
 /// Creates and canonicalizes an extraction root before safety planning.
 ///
 /// Extraction planners compare candidate output paths against this root. Using

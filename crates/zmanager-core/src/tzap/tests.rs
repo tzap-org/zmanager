@@ -303,7 +303,8 @@ fn selected_extract_uses_seekable_core_for_numbered_volumes() {
         TzapExtractKeySource::Password("secret"),
         "nested/small.txt",
         &destination,
-        false,
+        crate::safety::OverwritePolicy::Refuse,
+        None,
         TzapRestoreOptions::default(),
         Some(&mut context),
     )
