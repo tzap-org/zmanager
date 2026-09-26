@@ -15,6 +15,8 @@ const RAR_UNIX_MODE_MASK: u32 = 0o7777;
 const RAR_FILETIME_TICKS_PER_SECOND: u64 = 10_000_000;
 const RAR_FILETIME_NANOS_PER_TICK: u64 = 100;
 const WINDOWS_TO_UNIX_EPOCH_SECONDS: u64 = 11_644_473_600;
+const RAR_REPLACE_TEMP_LABEL: &str = "zmanager-rar-replace";
+const RAR_REPLACE_TEMP_ATTEMPTS: u32 = 100;
 
 /// One RAR listing entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -141,7 +143,10 @@ impl std::error::Error for RarBackendError {
 
 impl From<UnrarError> for RarBackendError {
     fn from(source: UnrarError) -> Self {
-        Self::Unrar(source)
+        match source {
+            UnrarError::Cancelled => Self::Cancelled,
+            source => Self::Unrar(source),
+        }
     }
 }
 
@@ -325,6 +330,8 @@ pub(crate) fn extract_rar_entries_by_path_occurrence_with_context(
     let archive = archive.as_ref();
     let listing = zmanager_unrar::list_archive(archive, password)?;
 
+    // Group by path once rather than rescanning the listing per selector, so
+    // resolving a large selection stays linear in the archive size.
     let mut by_path: HashMap<&str, Vec<usize>> = HashMap::new();
     for (index, entry) in listing.iter().enumerate() {
         by_path.entry(entry.path.as_str()).or_default().push(index);
@@ -338,6 +345,7 @@ pub(crate) fn extract_rar_entries_by_path_occurrence_with_context(
         })?;
         indices.push(index);
     }
+    // Extract in archive order so a solid stream is consumed front to back.
     indices.sort_unstable();
     indices.dedup();
 
@@ -405,46 +413,36 @@ fn extract_rar_with_options<'password, 'resolver, 'ctx_ref, 'context>(
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| RarBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let PlannedRarExtraction { selections, metadata_map, deferred_links, deferred_dirs, entry_progress, skipped_progress, mut report } =
+    let PlannedRarExtraction { selections, metadata_map, deferred_links, deferred_dirs, deferred_progress, skipped_progress, replacements, mut report } =
         plan_rar_entries(entries, &destination_root, policy, overwrite_resolver, cancellation.as_ref())?;
 
-    let mut completed_files = HashMap::<String, usize>::new();
     if let Some(context) = context.as_deref_mut() {
         for (path, bytes, warning) in &skipped_progress {
             context.entry_started(path, Some(*bytes));
             context.warning(warning);
             context.entry_finished(path, 0);
         }
-        for (path, bytes) in &entry_progress {
-            context.entry_started(path, Some(*bytes));
+    }
+
+    // Regular files report progress live, per decoded chunk, while UnRAR
+    // writes them; cancellation is polled at the same points.
+    match (context.as_deref_mut(), cancellation) {
+        (Some(context), Some(cancellation)) => {
+            let mut observer = RarJobObserver { context, cancellation, entry_bytes: 0 };
+            zmanager_unrar::extract_selected_with_observer(archive, password, &selections, &mut observer)?;
         }
+        _ => zmanager_unrar::extract_selected(archive, password, &selections)?,
     }
 
-    if let Some(context) = context.as_deref_mut() {
-        let mut progress = |path: String, bytes: u64| {
-            context.bytes_processed(Some(path.as_str()), bytes);
-            *completed_files.entry(path).or_default() += 1;
-        };
-        let mut cancelled = || cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled);
-        zmanager_unrar::extract_selected_with_progress_and_cancel(archive, password, &selections, Some(&mut progress), Some(&mut cancelled)).map_err(
-            |error| match error {
-                zmanager_unrar::UnrarError::Cancelled => RarBackendError::Cancelled,
-                error => RarBackendError::Unrar(error),
-            },
-        )?;
-    } else {
-        zmanager_unrar::extract_selected_with_progress(archive, password, &selections, None)?;
-    }
-
-    if cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
-        return Err(RarBackendError::Cancelled);
-    }
-
+    // Once every payload byte is on disk the extraction is finished even if
+    // cancellation arrives now: stopping here would leave replaced files,
+    // links, and directory metadata half-applied.
     for (archive_path, dest_path) in &selections {
         if let Some(&(file_attr, mtime)) = metadata_map.get(archive_path) {
             apply_rar_metadata(dest_path, file_attr, mtime).map_err(|source| RarBackendError::Io { path: dest_path.clone(), source })?;
         }
     }
+    replacements.commit()?;
 
     report.written_entries += selections.len();
     materialize_deferred_links(&deferred_links, &mut report)?;
@@ -454,20 +452,96 @@ fn extract_rar_with_options<'password, 'resolver, 'ctx_ref, 'context>(
     }
 
     if let Some(context) = context {
-        for (path, bytes) in &entry_progress {
-            let completed = completed_files.get_mut(path).is_some_and(|count| {
-                if *count == 0 {
-                    false
-                } else {
-                    *count -= 1;
-                    true
-                }
-            });
-            context.entry_finished(path, if completed { *bytes } else { 0 });
+        for (path, bytes) in &deferred_progress {
+            context.entry_started(path, Some(*bytes));
+            context.entry_finished(path, 0);
         }
     }
 
     Ok(report)
+}
+
+/// Forwards `UnRAR` extraction events to a job context.
+struct RarJobObserver<'c, 'ctx> {
+    context: &'c mut JobContext<'ctx>,
+    cancellation: CancellationToken,
+    /// Bytes written so far for the entry `UnRAR` is currently writing.
+    entry_bytes: u64,
+}
+
+impl zmanager_unrar::ExtractObserver for RarJobObserver<'_, '_> {
+    fn is_cancelled(&mut self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    fn entry_started(&mut self, path: &str, unpacked_size: u64) {
+        self.entry_bytes = 0;
+        self.context.entry_started(path, Some(unpacked_size));
+    }
+
+    fn bytes_written(&mut self, path: &str, bytes: u64) {
+        self.entry_bytes = self.entry_bytes.saturating_add(bytes);
+        self.context.bytes_processed(Some(path), bytes);
+    }
+
+    fn entry_finished(&mut self, path: &str) {
+        self.context.entry_finished(path, self.entry_bytes);
+    }
+}
+
+/// Regular files that replace an existing destination.
+///
+/// `UnRAR` writes each of them to a reserved temporary sibling, and the
+/// existing destination is removed only after the whole extraction has
+/// succeeded. A cancelled or failed extraction therefore never deletes a user
+/// file it did not also finish replacing; dropping an uncommitted set removes
+/// the temporaries.
+#[derive(Default)]
+struct PendingReplacements {
+    /// `(temporary, final)` destination pairs.
+    paths: Vec<(PathBuf, PathBuf)>,
+}
+
+impl PendingReplacements {
+    /// Reserves a temporary sibling of `final_path` for `UnRAR` to write.
+    fn reserve(&mut self, final_path: PathBuf) -> Result<PathBuf, RarBackendError> {
+        let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+        let unique = crate::temp_names::unique_temp_name(RAR_REPLACE_TEMP_LABEL);
+        for attempt in 0..RAR_REPLACE_TEMP_ATTEMPTS {
+            let temporary = parent.join(format!(".{unique}-{}-{attempt}", self.paths.len()));
+            // `create_new` claims the path so UnRAR overwrites a regular file
+            // this process created, never something already there.
+            match fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+                Ok(_) => {
+                    self.paths.push((temporary.clone(), final_path));
+                    return Ok(temporary);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(source) => return Err(RarBackendError::Io { path: temporary, source }),
+            }
+        }
+        Err(RarBackendError::Io {
+            path: final_path,
+            source: io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a temporary RAR replacement path"),
+        })
+    }
+
+    /// Moves every finished temporary over its destination.
+    fn commit(mut self) -> Result<(), RarBackendError> {
+        for (temporary, final_path) in std::mem::take(&mut self.paths) {
+            remove_destination(&final_path)?;
+            fs::rename(&temporary, &final_path).map_err(|source| RarBackendError::Io { path: final_path, source })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PendingReplacements {
+    fn drop(&mut self) {
+        for (temporary, _) in &self.paths {
+            let _ = fs::remove_file(temporary);
+        }
+    }
 }
 
 struct PlannedRarExtraction {
@@ -475,8 +549,11 @@ struct PlannedRarExtraction {
     metadata_map: BTreeMap<String, (u32, u64)>,
     deferred_links: Vec<DeferredLink>,
     deferred_dirs: Vec<(PathBuf, u32, u64)>,
-    entry_progress: Vec<(String, u64)>,
+    /// Directories and links: they are finished only after `UnRAR` returns,
+    /// so their progress is reported then.
+    deferred_progress: Vec<(String, u64)>,
     skipped_progress: Vec<(String, u64, String)>,
+    replacements: PendingReplacements,
     report: RarExtractReport,
 }
 
@@ -515,8 +592,9 @@ fn plan_rar_entries(
         metadata_map: BTreeMap::new(),
         deferred_links: Vec::new(),
         deferred_dirs: Vec::new(),
-        entry_progress: Vec::new(),
+        deferred_progress: Vec::new(),
         skipped_progress: Vec::new(),
+        replacements: PendingReplacements::default(),
         report: RarExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() },
     };
 
@@ -545,7 +623,9 @@ fn plan_rar_entries(
                 if matches!(entry.kind, RarEntryKind::FileCopy) {
                     planner.reserve_expanded_bytes(&entry.path, entry.unpacked_size)?;
                 }
-                extraction.entry_progress.push((entry.path.clone(), entry.unpacked_size));
+                if !matches!(entry.kind, RarEntryKind::File) {
+                    extraction.deferred_progress.push((entry.path.clone(), entry.unpacked_size));
+                }
                 plans.push(plan_entry(entry, destination_path, replace_existing, destination, &policy)?);
             }
             ExtractionDecision::Skip { reason, .. } => {
@@ -619,12 +699,10 @@ fn commit_planned_entry(plan: PlannedEntry, extraction: &mut PlannedRarExtractio
             extraction.report.written_entries += 1;
         }
         PlannedEntry::File { archive_path, destination_path, replace_existing, file_attr, mtime, size } => {
-            if replace_existing {
-                remove_destination(&destination_path)?;
-            }
             if let Some(parent) = destination_path.parent() {
                 fs::create_dir_all(parent).map_err(|source| RarBackendError::Io { path: parent.to_path_buf(), source })?;
             }
+            let destination_path = if replace_existing { extraction.replacements.reserve(destination_path)? } else { destination_path };
             extraction.report.written_bytes += size;
             extraction.metadata_map.insert(archive_path.clone(), (file_attr, mtime));
             extraction.selections.insert(archive_path, destination_path);
@@ -920,6 +998,148 @@ mod tests {
         assert!(list_rar_with_password(&archive, None).is_err(), "passworded RAR must not list without a password");
         assert!(list_rar_with_password(&archive, Some("wrong password")).is_err(), "passworded RAR must reject a wrong password");
         assert_complete_multipart_rar_round_trip(&archive, Some("zmanager-rar-fixture-password"), "rar5-passworded-multipart");
+    }
+
+    /// Regular files below `root`, as `/`-separated relative paths.
+    fn regular_files(root: &std::path::Path) -> Vec<String> {
+        fn walk(root: &std::path::Path, directory: &std::path::Path, files: &mut Vec<String>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, files);
+                } else {
+                    files.push(path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        if root.exists() {
+            walk(root, root, &mut files);
+        }
+        files.sort();
+        files
+    }
+
+    /// `basic.rar` regular-file paths with their unpacked sizes.
+    fn basic_rar_files() -> Vec<(String, u64)> {
+        list_rar_with_password(rar_fixture("basic.rar"), None)
+            .unwrap()
+            .entries
+            .into_iter()
+            .filter(|entry| entry.kind == super::RarListEntryKind::File)
+            .map(|entry| (entry.path.replace('\\', "/"), entry.size))
+            .collect()
+    }
+
+    fn extract_basic_rar_with_sink(
+        destination: &std::path::Path,
+        overwrite: OverwritePolicy,
+        token: &CancellationToken,
+        sink: &mut dyn crate::jobs::JobEventSink,
+    ) -> Result<RarExtractReport, RarBackendError> {
+        let mut context = JobContext::new(token, sink);
+        extract_rar_with_context(rar_fixture("basic.rar"), destination, ExtractionPolicy { overwrite, ..Default::default() }, None, None, Some(&mut context))
+    }
+
+    #[test]
+    fn cancelling_a_replace_extraction_keeps_every_existing_file() {
+        let files = basic_rar_files();
+        assert!(files.len() >= 2, "fixture must hold several files");
+        let temp = TestDir::new("rar_cancel_replace_keeps_originals");
+        let destination = temp.path("out");
+        for (path, _) in &files {
+            let existing = destination.join(path);
+            fs::create_dir_all(existing.parent().unwrap()).unwrap();
+            fs::write(&existing, b"original").unwrap();
+        }
+
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        // Cancel inside the first entry's data, after UnRAR has started
+        // writing its replacement.
+        let mut sink = |event| {
+            if matches!(event, crate::jobs::JobEvent::BytesProcessed { .. }) {
+                cancel.cancel();
+            }
+        };
+        let error = extract_basic_rar_with_sink(&destination, OverwritePolicy::Replace, &token, &mut sink).unwrap_err();
+
+        assert!(matches!(error, RarBackendError::Cancelled), "{error}");
+        let mut expected = files.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(regular_files(&destination), expected, "no temporary replacement may be left behind");
+        for (path, _) in &files {
+            assert_eq!(fs::read(destination.join(path)).unwrap(), b"original", "{path} must keep its original contents");
+        }
+    }
+
+    #[test]
+    fn replace_extraction_swaps_in_archive_contents_without_temporaries() {
+        let files = basic_rar_files();
+        let temp = TestDir::new("rar_replace_swaps_contents");
+        let destination = temp.path("out");
+        for (path, _) in &files {
+            let existing = destination.join(path);
+            fs::create_dir_all(existing.parent().unwrap()).unwrap();
+            fs::write(&existing, b"original").unwrap();
+        }
+
+        let token = CancellationToken::new();
+        let mut sink = |_| {};
+        extract_basic_rar_with_sink(&destination, OverwritePolicy::Replace, &token, &mut sink).unwrap();
+
+        let mut expected = files.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(regular_files(&destination), expected);
+        for (path, size) in &files {
+            assert_eq!(fs::metadata(destination.join(path)).unwrap().len(), *size, "{path} must hold the archive payload");
+        }
+    }
+
+    #[test]
+    fn cancelling_inside_an_entry_removes_its_partial_file() {
+        let temp = TestDir::new("rar_cancel_removes_partial");
+        let destination = temp.path("out");
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        // `EntryStarted` fires when UnRAR is handed the entry's destination,
+        // before any payload is decoded, so cancelling here interrupts that
+        // entry at its first decoded chunk.
+        let mut sink = |event| {
+            if matches!(event, crate::jobs::JobEvent::EntryStarted { .. }) {
+                cancel.cancel();
+            }
+        };
+
+        let error = extract_basic_rar_with_sink(&destination, OverwritePolicy::Refuse, &token, &mut sink).unwrap_err();
+
+        assert!(matches!(error, RarBackendError::Cancelled), "{error}");
+        assert_eq!(regular_files(&destination), Vec::<String>::new(), "the interrupted entry must not be left truncated");
+    }
+
+    #[test]
+    fn rar_progress_finishes_each_file_before_the_next_starts() {
+        let files = basic_rar_files();
+        let temp = TestDir::new("rar_live_entry_progress");
+        let token = CancellationToken::new();
+        let mut events = Vec::new();
+        let mut sink = |event| events.push(event);
+        extract_basic_rar_with_sink(&temp.path("out"), OverwritePolicy::Refuse, &token, &mut sink).unwrap();
+
+        let file_events = events
+            .iter()
+            .filter_map(|event| match event {
+                crate::jobs::JobEvent::EntryStarted { path, .. } if files.iter().any(|(file, _)| file == &path.replace('\\', "/")) => {
+                    Some((true, path.replace('\\', "/"), 0))
+                }
+                crate::jobs::JobEvent::EntryFinished { path, bytes } if files.iter().any(|(file, _)| file == &path.replace('\\', "/")) => {
+                    Some((false, path.replace('\\', "/"), *bytes))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected = files.iter().flat_map(|(path, size)| [(true, path.clone(), 0), (false, path.clone(), *size)]).collect::<Vec<_>>();
+        assert_eq!(file_events, expected, "each file must start, finish with its written size, then hand over to the next");
     }
 
     #[test]

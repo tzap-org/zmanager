@@ -3,10 +3,11 @@
 
 use super::{
     TzapCreateOptions, TzapExtractKeySource, TzapExtractRequest, TzapKeySource, TzapPublicSignatureStatus, TzapRestoreOptions, TzapRestorePolicy,
-    TzapX509SigningOptions, TzapX509TrustOptions, copy_tzap_file_to_writer, copy_tzap_files_to_writer, create_tzap_from_manifest_with_context, extract_tzap,
-    extract_tzap_file_to_destination, inspect_tzap_x509_public_no_key_signer, list_tzap_index_with_optional_password, list_tzap_with_optional_password,
-    list_tzap_with_password, list_tzap_with_recipient_key, summarize_tzap_public_display, summarize_tzap_public_metadata,
-    test_tzap_with_password_filter_and_x509_trust, test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
+    TzapSelectedEntry, TzapSelectedExtractRequest, TzapX509SigningOptions, TzapX509TrustOptions, copy_tzap_file_to_writer, copy_tzap_files_to_writer,
+    create_tzap_from_manifest_with_context, extract_tzap, extract_tzap_selected, inspect_tzap_x509_public_no_key_signer,
+    list_tzap_index_with_optional_password, list_tzap_with_optional_password, list_tzap_with_password, list_tzap_with_recipient_key,
+    summarize_tzap_public_display, summarize_tzap_public_metadata, test_tzap_with_password_filter_and_x509_trust,
+    test_tzap_with_recipient_key_filter_and_x509_trust, verify_tzap_x509_public_no_key,
 };
 use crate::jobs::{CancellationToken, JobContext};
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PermissionSnapshot};
@@ -293,27 +294,118 @@ fn selected_extract_uses_seekable_core_for_numbered_volumes() {
     let listing = list_tzap_with_password(&selected_volume_path, "secret").unwrap();
     assert!(listing.entries.iter().any(|entry| entry.path == "nested/small.txt"));
 
-    let destination = temp.path("out/selected.txt");
+    let destination = temp.path("out");
     let token = CancellationToken::new();
     let mut events = Vec::new();
     let mut sink = |event| events.push(event);
     let mut context = JobContext::new(&token, &mut sink);
-    let written = extract_tzap_file_to_destination(
+    let report = extract_tzap_selected(
+        password_request(),
+        &[TzapSelectedEntry { path: "nested/small.txt", directory: false }],
         &selected_volume_path,
-        TzapExtractKeySource::Password("secret"),
-        "nested/small.txt",
         &destination,
-        crate::safety::OverwritePolicy::Refuse,
-        None,
-        TzapRestoreOptions::default(),
         Some(&mut context),
     )
-    .unwrap()
-    .map(|report| report.written_bytes);
+    .unwrap();
 
-    assert_eq!(written, Some(12));
-    assert_eq!(fs::read(&destination).unwrap(), b"small target");
+    assert_eq!((report.written_entries, report.written_bytes), (1, 12));
+    assert_eq!(fs::read(destination.join("nested/small.txt")).unwrap(), b"small target");
+    assert!(!destination.join("large.bin").exists(), "only the selected entry is extracted");
     assert!(events.iter().any(|event| matches!(event, crate::jobs::JobEvent::BytesProcessed { .. })));
+}
+
+fn password_request() -> TzapSelectedExtractRequest<'static> {
+    TzapSelectedExtractRequest {
+        key: TzapExtractKeySource::Password("secret"),
+        policy: ExtractionPolicy::default(),
+        restore_options: TzapRestoreOptions::default(),
+        overwrite_resolver: None,
+    }
+}
+
+/// Writes `files` as a password archive (`secret`) and returns its first volume.
+fn write_test_tzap_volumes(temp: &TestDir, files: &[RegularFile<'_>]) -> PathBuf {
+    let archive = create_test_tzap_archive(files);
+    for (index, volume) in archive.volumes.iter().enumerate() {
+        fs::write(temp.path(format!("sample.vol{index:03}.tzap")), volume).unwrap();
+    }
+    temp.path("sample.vol000.tzap")
+}
+
+#[test]
+fn selected_extraction_opens_the_archive_once_for_the_whole_selection() {
+    let temp = TestDir::new("tzap_selected_single_open");
+    let archive = write_test_tzap_volumes(
+        &temp,
+        &[RegularFile::new("a.txt", b"first"), RegularFile::new("dir/b.txt", b"second"), RegularFile::new("dir/c.txt", b"third")],
+    );
+    let selected = [
+        TzapSelectedEntry { path: "a.txt", directory: false },
+        TzapSelectedEntry { path: "dir", directory: true },
+        TzapSelectedEntry { path: "dir/b.txt", directory: false },
+        TzapSelectedEntry { path: "dir/c.txt", directory: false },
+    ];
+
+    let opens_before = super::open::ARCHIVE_OPENS.with(std::cell::Cell::get);
+    let report = extract_tzap_selected(password_request(), &selected, &archive, temp.path("out"), None).unwrap();
+    let opens = super::open::ARCHIVE_OPENS.with(std::cell::Cell::get) - opens_before;
+
+    assert_eq!(opens, 1, "one open (one key derivation) must serve the whole selection");
+    assert_eq!(report.written_entries, 4);
+    assert_eq!(fs::read(temp.path("out/a.txt")).unwrap(), b"first");
+    assert_eq!(fs::read(temp.path("out/dir/b.txt")).unwrap(), b"second");
+    assert_eq!(fs::read(temp.path("out/dir/c.txt")).unwrap(), b"third");
+}
+
+#[test]
+fn selected_extraction_reports_missing_and_unsafe_paths() {
+    let temp = TestDir::new("tzap_selected_missing_and_unsafe");
+    let archive = write_test_tzap_volumes(&temp, &[RegularFile::new("a.txt", b"first")]);
+
+    let report = extract_tzap_selected(
+        password_request(),
+        &[TzapSelectedEntry { path: "a.txt", directory: false }, TzapSelectedEntry { path: "gone.txt", directory: false }],
+        &archive,
+        temp.path("out"),
+        None,
+    )
+    .unwrap();
+    assert_eq!((report.written_entries, report.skipped_entries), (1, 1));
+    assert!(report.warnings.iter().any(|warning| warning.contains("gone.txt")));
+
+    let escape = extract_tzap_selected(password_request(), &[TzapSelectedEntry { path: "../escape.txt", directory: false }], &archive, temp.path("out"), None);
+    assert!(escape.is_err(), "a path escaping the destination must be rejected");
+    assert!(!temp.path("escape.txt").exists());
+}
+
+#[test]
+fn cancelling_inside_a_large_member_stops_decoding_it() {
+    let temp = TestDir::new("tzap_cancel_mid_member");
+    let large = crate::test_support::deterministic_bytes(4 * 1024 * 1024);
+    let archive = write_test_tzap_volumes(&temp, &[RegularFile::new("large.bin", &large)]);
+    let destination = temp.path("out");
+
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let mut processed = 0_u64;
+    let mut sink = |event| {
+        if let crate::jobs::JobEvent::BytesProcessed { total_bytes_processed, .. } = event {
+            processed = total_bytes_processed;
+            cancel.cancel();
+        }
+    };
+    let mut context = JobContext::new(&token, &mut sink);
+    let error =
+        extract_tzap_selected(password_request(), &[TzapSelectedEntry { path: "large.bin", directory: false }], &archive, &destination, Some(&mut context))
+            .unwrap_err();
+    // Progress is coalesced; flushing reports every byte that was decoded,
+    // including any decoded after cancellation was requested.
+    context.flush_progress();
+    drop(context);
+
+    assert!(matches!(error, super::TzapError::Cancelled), "{error}");
+    assert!(processed < large.len() as u64, "decoding must stop inside the member, not after all {} bytes", large.len());
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0, "the uncommitted output must be removed");
 }
 
 #[test]

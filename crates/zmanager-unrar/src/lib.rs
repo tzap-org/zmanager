@@ -68,10 +68,22 @@ type ListCallback = extern "C" fn(*mut c_void, *const c_char, u64, u64, c_uint, 
 
 type ExtractCallback = extern "C" fn(*mut c_void, *const c_char, u64, c_uint, c_uint, *const c_char, u32, u64, *mut c_char, usize) -> c_int;
 
+type ExtractEventCallback = extern "C" fn(*mut c_void, c_int, u64) -> c_int;
+
+// Mirrors the `ZMU_UNRAR_EVENT_*` constants in the C++ bridge.
+const ZMU_UNRAR_EVENT_DATA: c_int = 1;
+const ZMU_UNRAR_EVENT_ENTRY_DONE: c_int = 2;
+
 unsafe extern "C" {
     fn zmu_unrar_list(archive: *const c_char, password: *const c_char, user: *mut c_void, callback: ListCallback) -> c_int;
 
-    fn zmu_unrar_extract(archive: *const c_char, password: *const c_char, user: *mut c_void, callback: ExtractCallback) -> c_int;
+    fn zmu_unrar_extract(
+        archive: *const c_char,
+        password: *const c_char,
+        user: *mut c_void,
+        callback: ExtractCallback,
+        event_callback: ExtractEventCallback,
+    ) -> c_int;
 
     #[cfg(test)]
     fn zmu_unrar_large_dictionary_allowed(dict_size_kb: u64) -> c_int;
@@ -201,11 +213,46 @@ pub fn list_archive(archive: impl AsRef<Path>, password: Option<&str>) -> Result
 /// Returns [`UnrarError`] when `UnRAR` cannot extract the archive or a selected
 /// destination cannot be passed to the C ABI.
 pub fn extract_selected(archive: impl AsRef<Path>, password: Option<&str>, selections: &BTreeMap<String, PathBuf>) -> Result<(), UnrarError> {
-    extract_selected_with_progress(archive, password, selections, None)
+    extract_selected_inner(archive.as_ref(), password, selections, None)
 }
 
-/// Extracts selected RAR file entries to exact destination paths and emits
-/// progress callbacks.
+/// Observes a selected-entry extraction.
+///
+/// Every method has a no-op default so callers implement only what they use.
+pub trait ExtractObserver {
+    /// Returns `true` to stop extraction with [`UnrarError::Cancelled`].
+    ///
+    /// Polled before every archive header and after every decoded chunk of a
+    /// selected entry, so a single large entry is interruptible too.
+    fn is_cancelled(&mut self) -> bool {
+        false
+    }
+
+    /// A selected entry is about to be written.
+    fn entry_started(&mut self, path: &str, unpacked_size: u64) {
+        let _ = (path, unpacked_size);
+    }
+
+    /// `bytes` more decoded bytes of the entry reported by the last
+    /// [`Self::entry_started`] have been written.
+    fn bytes_written(&mut self, path: &str, bytes: u64) {
+        let _ = (path, bytes);
+    }
+
+    /// The entry reported by the last [`Self::entry_started`] is completely
+    /// written.
+    fn entry_finished(&mut self, path: &str) {
+        let _ = path;
+    }
+}
+
+/// Extracts selected RAR file entries to exact destination paths, reporting
+/// progress to and polling cancellation from `observer`.
+///
+/// When the observer cancels inside an entry, `UnRAR` unwinds with a user
+/// break and deletes the partly written output file itself (its `File`
+/// destructor removes a newly created file that was never closed), so no
+/// truncated file is left behind.
 ///
 /// The caller is responsible for validating archive paths and preparing
 /// destination parent directories before calling this function.
@@ -213,40 +260,36 @@ pub fn extract_selected(archive: impl AsRef<Path>, password: Option<&str>, selec
 /// # Errors
 ///
 /// Returns [`UnrarError`] when `UnRAR` cannot extract the archive, a selected
-/// destination cannot be passed to the C ABI, or the progress callback fails.
-pub fn extract_selected_with_progress(
+/// destination cannot be passed to the C ABI, or the observer cancels.
+pub fn extract_selected_with_observer(
     archive: impl AsRef<Path>,
     password: Option<&str>,
     selections: &BTreeMap<String, PathBuf>,
-    progress: Option<&mut dyn FnMut(String, u64)>,
+    observer: &mut dyn ExtractObserver,
 ) -> Result<(), UnrarError> {
-    extract_selected_with_progress_and_cancel(archive, password, selections, progress, None)
+    extract_selected_inner(archive.as_ref(), password, selections, Some(observer))
 }
 
-/// Extracts selected RAR file entries with progress callbacks and a
-/// cooperative cancellation check before each selected entry.
-///
-/// # Errors
-///
-/// Returns [`UnrarError`] when `UnRAR` cannot extract the archive, a selected
-/// destination cannot be passed to the C ABI, the progress callback fails, or
-/// the cancellation callback requests cancellation.
-pub fn extract_selected_with_progress_and_cancel<'a>(
-    archive: impl AsRef<Path>,
+fn extract_selected_inner(
+    archive_path: &Path,
     password: Option<&str>,
     selections: &BTreeMap<String, PathBuf>,
-    progress: Option<&'a mut dyn FnMut(String, u64)>,
-    cancel: Option<&'a mut dyn FnMut() -> bool>,
+    observer: Option<&mut dyn ExtractObserver>,
 ) -> Result<(), UnrarError> {
     let _operation_guard = UNRAR_OPERATION_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let archive_path = archive.as_ref();
     validate_archive_prefix(archive_path)?;
     let archive = path_to_cstring(archive_path)?;
     let password = optional_password_to_c_buffer(password)?;
-    let mut context = ExtractContext { selections, error: None, progress, cancel };
+    let mut context = ExtractContext { selections, error: None, observer, current: None };
 
     let code = unsafe {
-        zmu_unrar_extract(archive.as_ptr(), optional_c_buffer_ptr(password.as_ref()), ptr::from_mut(&mut context).cast::<c_void>(), extract_callback)
+        zmu_unrar_extract(
+            archive.as_ptr(),
+            optional_c_buffer_ptr(password.as_ref()),
+            ptr::from_mut(&mut context).cast::<c_void>(),
+            extract_callback,
+            extract_event_callback,
+        )
     };
 
     if let Some(error) = context.error {
@@ -263,8 +306,20 @@ struct ListContext {
 struct ExtractContext<'a, 'b> {
     selections: &'a BTreeMap<String, PathBuf>,
     error: Option<UnrarError>,
-    progress: Option<&'b mut dyn FnMut(String, u64)>,
-    cancel: Option<&'b mut dyn FnMut() -> bool>,
+    observer: Option<&'b mut dyn ExtractObserver>,
+    /// Archive path of the entry `UnRAR` is writing.
+    current: Option<String>,
+}
+
+impl ExtractContext<'_, '_> {
+    /// Records cancellation and returns whether the operation must stop.
+    fn cancelled(&mut self) -> bool {
+        if self.observer.as_mut().is_some_and(|observer| observer.is_cancelled()) {
+            self.error = Some(UnrarError::Cancelled);
+            return true;
+        }
+        false
+    }
 }
 
 extern "C" fn list_callback(
@@ -319,8 +374,7 @@ extern "C" fn extract_callback(
     destination_size: usize,
 ) -> c_int {
     let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
-    if context.cancel.as_mut().is_some_and(|cancel| cancel()) {
-        context.error = Some(UnrarError::Cancelled);
+    if context.cancelled() {
         return -1;
     }
     let Some(path) = c_path_to_string(path) else {
@@ -330,10 +384,6 @@ extern "C" fn extract_callback(
     let Some(destination_path) = context.selections.get(&path) else {
         return 0;
     };
-
-    if let Some(progress) = context.progress.as_mut() {
-        progress(path.clone(), unpacked_size);
-    }
 
     let destination_string = match destination_to_cstring(destination_path) {
         Ok(destination) => destination,
@@ -351,7 +401,34 @@ extern "C" fn extract_callback(
     unsafe {
         ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), destination, bytes.len());
     }
+    if let Some(observer) = context.observer.as_mut() {
+        observer.entry_started(&path, unpacked_size);
+    }
+    context.current = Some(path);
     1
+}
+
+extern "C" fn extract_event_callback(user: *mut c_void, event: c_int, value: u64) -> c_int {
+    let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
+    match event {
+        ZMU_UNRAR_EVENT_DATA => {
+            if context.cancelled() {
+                return -1;
+            }
+            if let (Some(observer), Some(path)) = (context.observer.as_mut(), context.current.as_ref()) {
+                observer.bytes_written(path, value);
+            }
+        }
+        ZMU_UNRAR_EVENT_ENTRY_DONE => {
+            if let Some(path) = context.current.take()
+                && let Some(observer) = context.observer.as_mut()
+            {
+                observer.entry_finished(&path);
+            }
+        }
+        _ => {}
+    }
+    0
 }
 
 fn entry_kind(flags: u32, redir_type: u32) -> RarEntryKind {

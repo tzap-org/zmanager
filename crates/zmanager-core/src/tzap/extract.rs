@@ -2,13 +2,11 @@
 //! [`TzapExtractionState`] state machine shared by the fast and restore-based
 //! paths, and the streaming and deferred-metadata helpers they use.
 
-use super::{TzapError, io_error};
+use super::TzapError;
 use crate::atomic_file::AtomicOutputFile;
-use crate::jobs::JobContext;
+use crate::jobs::{CancellationToken, JobCancelled, JobContext};
 use crate::safety::{ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyPlanner, OverwritePolicy, OverwriteResolver};
 use crate::tzap::metadata::{metadata_diagnostic_labels, write_hardlink, write_symlink};
-const TZAP_TEMP_EXTRACT_PREFIX: &str = ".zmanager-tzap-extract";
-const TZAP_TEMP_EXTRACT_ATTEMPTS: u32 = 100;
 // Batch restore runs single-threaded; the jobs parameter is the plugin's
 // parallelism (minimum 1).
 const EXTRACT_SELECTED_JOBS: usize = 1;
@@ -17,8 +15,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tzap_core::reader::{ArchiveEntry, ExtractedArchiveMember};
+use tzap_core::reader::{ArchiveEntry, ArchiveIndexEntry, ExtractedArchiveMember};
 use tzap_core::{
     ArchiveTimestamp, ExtractError, FormatError, MetadataDiagnostic, OpenedArchive, RestorePolicy as CoreRestorePolicy, SafeExtractionOptions, TarEntryKind,
 };
@@ -33,14 +30,6 @@ pub struct TzapExtractReport {
     pub written_bytes: u64,
     /// Non-fatal warnings.
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct TzapFileExtractReport {
-    /// Number of payload bytes written.
-    pub written_bytes: u64,
-    /// Structured metadata restoration diagnostics rendered for application clients.
-    pub metadata_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -192,13 +181,13 @@ pub fn extract_tzap(request: TzapExtractRequest<'_, '_>, archive: impl AsRef<Pat
 /// resolver and an event sink independently.
 pub(crate) fn extract_tzap_with_context(
     request: TzapExtractRequest<'_, '_>,
-    context: &mut JobContext<'_>,
+    context: Option<&mut JobContext<'_>>,
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
 ) -> Result<TzapExtractReport, TzapError> {
     let TzapExtractRequest { key, policy, restore_options, overwrite_resolver, context: request_context, fast } = request;
     debug_assert!(request_context.is_none(), "separate TZAP context must not be duplicated in the request");
-    extract_tzap_parts(key, policy, restore_options, overwrite_resolver, Some(context), fast, archive, destination)
+    extract_tzap_parts(key, policy, restore_options, overwrite_resolver, context, fast, archive, destination)
 }
 
 #[allow(clippy::elidable_lifetime_names, clippy::too_many_arguments)]
@@ -354,84 +343,85 @@ fn tzap_extract_error(path: &str, source: ExtractError) -> TzapError {
     }
 }
 
-/// Extracts one regular `.tzap` file member to an exact destination path with
-/// explicit metadata restoration options.
+/// One retained entry requested by selected extraction.
+pub(crate) struct TzapSelectedEntry<'a> {
+    /// Archive path from the retained listing.
+    pub(crate) path: &'a str,
+    /// The listing shows this path as a directory. A directory can be implicit
+    /// (absent from the archive index); it is then only created.
+    pub(crate) directory: bool,
+}
+
+/// Key, policy, and overwrite handling for selected extraction.
+pub(crate) struct TzapSelectedExtractRequest<'a> {
+    pub(crate) key: TzapExtractKeySource<'a>,
+    pub(crate) policy: ExtractionPolicy,
+    pub(crate) restore_options: TzapRestoreOptions,
+    pub(crate) overwrite_resolver: Option<&'a mut dyn OverwriteResolver>,
+}
+
+/// Extracts retained `.tzap` entries by path with one archive open.
 ///
-/// This looks up the member directly by name instead of listing the whole
-/// archive, so a destination conflict is resolved with
-/// [`crate::safety::resolve_single_entry_overwrite`] rather than the batch
-/// [`crate::safety::ExtractionSafetyPlanner`] the full-archive extraction
-/// path uses.
+/// Opening derives the archive key (a password KDF or a recipient unwrap), so
+/// the whole selection shares a single open, and one index lookup resolves
+/// every path without decoding payloads. Each entry then goes through the same
+/// [`ExtractionSafetyPlanner`] and streaming writer as full extraction, so
+/// path safety, overwrite policy, the overwrite resolver, and the expansion
+/// budget apply across the selection exactly as they do there. Directory
+/// metadata is restored after every selected file has been written.
+///
+/// Symlinks, hardlinks, and special entries are skipped with a warning.
 ///
 /// # Errors
 ///
-/// Returns [`TzapError`] when the archive cannot be opened, the requested
-/// restoration policy cannot be satisfied, the destination conflict cannot be
-/// resolved by `overwrite`/`overwrite_resolver`, or the destination cannot be
-/// committed.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn extract_tzap_file_to_destination(
+/// Returns [`TzapError`] when the archive cannot be opened, a path is unsafe
+/// or refused by the overwrite policy, the job is cancelled, or filesystem
+/// writes fail.
+pub(crate) fn extract_tzap_selected(
+    request: TzapSelectedExtractRequest<'_>,
+    selected: &[TzapSelectedEntry<'_>],
     archive: impl AsRef<Path>,
-    key: TzapExtractKeySource<'_>,
-    entry_path: &str,
-    destination_path: &Path,
-    overwrite: OverwritePolicy,
-    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    restore_options: TzapRestoreOptions,
-    context: Option<&mut JobContext<'_>>,
-) -> Result<Option<TzapFileExtractReport>, TzapError> {
+    destination: impl AsRef<Path>,
+    mut context: Option<&mut JobContext<'_>>,
+) -> Result<TzapExtractReport, TzapError> {
+    let TzapSelectedExtractRequest { key, policy, restore_options, overwrite_resolver } = request;
+    let destination = destination.as_ref();
+    let destination_root = crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io { path: destination.to_path_buf(), source })?;
     let (password, recipient_private_key, key_bytes_list) = key_components(key);
     let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, key_bytes_list.as_deref())?;
-    extract_tzap_file_from_opened_archive(&opened, entry_path, destination_path, overwrite, overwrite_resolver, restore_options, context)
+    let paths = selected.iter().map(|entry| entry.path.to_owned()).collect::<Vec<_>>();
+    let index_entries = opened.lookup_index_entries(&paths)?;
+
+    let planner = match overwrite_resolver {
+        Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(&destination_root, policy, resolver),
+        None => ExtractionSafetyPlanner::new(&destination_root, policy),
+    };
+    let mut state = TzapExtractionState::new(&opened, planner, restore_options);
+    for (selection, (_, index_entry)) in selected.iter().zip(index_entries) {
+        state.extract_selected_entry(selection, index_entry, context.as_deref_mut())?;
+    }
+    state.finish()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn extract_tzap_file_from_opened_archive(
-    opened: &OpenedArchive,
-    entry_path: &str,
-    destination_path: &Path,
-    overwrite: OverwritePolicy,
-    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    restore_options: TzapRestoreOptions,
-    context: Option<&mut JobContext<'_>>,
-) -> Result<Option<TzapFileExtractReport>, TzapError> {
-    let Some(index_entry) = opened.lookup_index_entry(entry_path)? else {
-        return Ok(None);
-    };
-
-    if let Some(context) = context.as_deref() {
-        context.check_cancelled()?;
+/// Rebuilds the listing entry a regular file or directory needs from its
+/// index metadata, which carries every field extraction reads.
+fn archive_entry_from_index(entry: ArchiveIndexEntry) -> ArchiveEntry {
+    ArchiveEntry {
+        path: entry.path,
+        file_data_size: entry.file_data_size,
+        kind: entry.kind,
+        mode: entry.mode,
+        mtime: entry.mtime,
+        diagnostics: Vec::new(),
+        link_target: entry.link_target,
+        created: entry.created,
+        accessed: entry.accessed,
+        attributes: entry.attributes,
+        uid: entry.uid,
+        gid: entry.gid,
+        uname: entry.uname,
+        gname: entry.gname,
     }
-
-    let resolved = crate::safety::resolve_single_entry_overwrite(entry_path, destination_path.to_path_buf(), overwrite, overwrite_resolver)?;
-    let (destination_path, replace_existing) = match resolved {
-        crate::safety::SingleEntryOverwrite::Write { destination_path, replace_existing } => (destination_path, replace_existing),
-        crate::safety::SingleEntryOverwrite::Skip => return Ok(None),
-    };
-    let destination_path = destination_path.as_path();
-
-    if let Some(context) = context {
-        let processed = stream_regular_member_to_destination(
-            opened,
-            entry_path,
-            index_entry.file_data_size,
-            restore_options,
-            destination_path,
-            replace_existing,
-            Some(context),
-        )?;
-        return Ok(
-            processed.map(|processed| TzapFileExtractReport { written_bytes: processed.written_bytes, metadata_diagnostics: processed.metadata_diagnostics })
-        );
-    }
-
-    let temp_root = TemporaryTzapExtractionRoot::new(destination_path)?;
-    let Some(diagnostics) = opened.extract_file_to(entry_path, temp_root.path(), restore_options.core_options(false))? else {
-        return Ok(None);
-    };
-    let extracted_path = archive_member_path_under_root(temp_root.path(), entry_path)?;
-    commit_extracted_file(&extracted_path, destination_path, replace_existing)?;
-    Ok(Some(TzapFileExtractReport { written_bytes: index_entry.file_data_size, metadata_diagnostics: metadata_diagnostic_labels(&diagnostics) }))
 }
 
 struct ExtractTzapOptions<'a> {
@@ -582,6 +572,77 @@ impl<'archive, 'resolver> TzapExtractionState<'archive, 'resolver> {
         if let Some(context) = context {
             context.bytes_processed(Some(&entry.path), processed);
             context.entry_finished(&entry.path, processed);
+        }
+        Ok(())
+    }
+
+    /// Extracts one selected entry resolved from the archive index.
+    fn extract_selected_entry(
+        &mut self,
+        selection: &TzapSelectedEntry<'_>,
+        index_entry: Option<ArchiveIndexEntry>,
+        mut context: Option<&mut JobContext<'_>>,
+    ) -> Result<(), TzapError> {
+        let kind = match &index_entry {
+            Some(entry) => entry.kind,
+            None if selection.directory => TarEntryKind::Directory,
+            None => {
+                if let Some(context) = context.as_deref_mut() {
+                    context.check_cancelled()?;
+                    context.entry_started(selection.path, None);
+                }
+                self.record_missing_entry(selection.path, context);
+                return Ok(());
+            }
+        };
+        match (kind, index_entry) {
+            // Regular files take exactly the full-extraction path.
+            (TarEntryKind::Regular, Some(entry)) => self.extract_entry(&archive_entry_from_index(entry), context),
+            (TarEntryKind::Directory, entry) => self.create_selected_directory(selection.path, entry.as_ref(), context),
+            _ => {
+                if let Some(context) = context.as_deref_mut() {
+                    context.check_cancelled()?;
+                    context.entry_started(selection.path, None);
+                }
+                self.record_skip(selection.path, format!("skipped unsupported TZAP entry {}", selection.path), context);
+                Ok(())
+            }
+        }
+    }
+
+    /// Creates a selected directory from index metadata alone: decoding its tar
+    /// member would decrypt and decompress the whole envelope that holds it.
+    fn create_selected_directory(
+        &mut self,
+        path: &str,
+        index_entry: Option<&ArchiveIndexEntry>,
+        mut context: Option<&mut JobContext<'_>>,
+    ) -> Result<(), TzapError> {
+        if let Some(context) = context.as_deref_mut() {
+            context.check_cancelled()?;
+            context.entry_started(path, Some(0));
+        }
+        let safety_entry =
+            ExtractionEntry { archive_path: path.to_owned(), kind: ExtractionEntryKind::Directory, uncompressed_size: Some(0), compressed_size: None };
+        match self.planner.validate_entry(&safety_entry)? {
+            ExtractionDecision::Write { destination_path, replace_existing, .. } => {
+                let member = ExtractedArchiveMember {
+                    path: path.to_owned(),
+                    kind: TarEntryKind::Directory,
+                    data: Vec::new(),
+                    link_target: None,
+                    reparse_placeholder: false,
+                    diagnostics: Vec::new(),
+                };
+                materialize_non_regular_member(&member, &destination_path, replace_existing, None, &mut self.report)?;
+                if let Some(entry) = index_entry {
+                    self.deferred_directory_metadata.push((destination_path, TzapPortableEntryMetadata { mode: entry.mode, mtime: entry.mtime }));
+                }
+                if let Some(context) = context {
+                    context.entry_finished(path, 0);
+                }
+            }
+            ExtractionDecision::Skip { reason, .. } => self.record_skip(path, format!("skipped {path}: {reason}"), context),
         }
         Ok(())
     }
@@ -740,25 +801,25 @@ fn stream_regular_member_to_destination(
     replace_existing: bool,
     context: Option<&mut JobContext<'_>>,
 ) -> Result<Option<StreamedTzapMember>, TzapError> {
-    let cancellation = context.as_deref().map(JobContext::cancellation_token);
     let mut output = AtomicOutputFile::create(destination_path).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     let output_file = output.file_mut().map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     let extracted = match context {
         Some(context) => {
-            let mut progress = |archive_path: &str, bytes: u64| {
-                if !cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
-                    context.bytes_processed(Some(archive_path), bytes);
-                }
-            };
-            opened.extract_file_to_writer_with_progress(entry_path, output_file, &mut progress)
+            let cancellation = context.cancellation_token();
+            let mut writer = CancellableWriter { inner: &mut *output_file, cancellation: &cancellation };
+            let mut progress = |archive_path: &str, bytes: u64| context.bytes_processed(Some(archive_path), bytes);
+            let extracted = opened.extract_file_to_writer_with_progress(entry_path, &mut writer, &mut progress);
+            // The writer's cancellation error surfaces as an output error;
+            // report it as the cancellation it is. The uncommitted temporary
+            // output is removed when `output` drops.
+            if cancellation.is_cancelled() {
+                return Err(TzapError::Cancelled);
+            }
+            extracted
         }
         None => opened.extract_file_to_writer(entry_path, output_file),
     }
     .map_err(|source| tzap_extract_error(entry_path, source))?;
-
-    if cancellation.as_ref().is_some_and(crate::jobs::CancellationToken::is_cancelled) {
-        return Err(TzapError::Cancelled);
-    }
 
     let Some(_diagnostics) = extracted else {
         return Ok(None);
@@ -770,6 +831,26 @@ fn stream_regular_member_to_destination(
 
     output.commit_with_replace(replace_existing).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
     Ok(Some(StreamedTzapMember { written_bytes: entry_size, metadata_diagnostics: metadata_diagnostic_labels(&metadata_diagnostics) }))
+}
+
+/// Output writer that fails once the job is cancelled, so the reader stops
+/// decoding a large member at its next write instead of finishing it.
+struct CancellableWriter<'a, W> {
+    inner: &'a mut W,
+    cancellation: &'a CancellationToken,
+}
+
+impl<W: io::Write> io::Write for CancellableWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::other(JobCancelled));
+        }
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn apply_deferred_tzap_directory_metadata(directories: &[(PathBuf, TzapPortableEntryMetadata)], restore_options: TzapRestoreOptions) -> Result<(), TzapError> {
@@ -798,38 +879,6 @@ fn apply_deferred_tzap_directory_metadata(directories: &[(PathBuf, TzapPortableE
         filetime::set_file_mtime(path, mtime).map_err(|source| TzapError::Io { path: path.clone(), source })?;
     }
     Ok(())
-}
-
-/// Restores directory metadata after selected extraction has materialized all
-/// descendants. The regular full-archive path already defers this work; the
-/// engine's selected-entry path needs the same ordering when a directory
-/// selector expands to multiple entries.
-pub(crate) fn restore_selected_directory_metadata(
-    archive: impl AsRef<Path>,
-    key: TzapExtractKeySource<'_>,
-    destination: impl AsRef<Path>,
-    directory_paths: &[String],
-    restore_options: TzapRestoreOptions,
-) -> Result<(), TzapError> {
-    if directory_paths.is_empty() || !should_restore_tzap_metadata(restore_options) {
-        return Ok(());
-    }
-
-    let (password, recipient_private_key, key_bytes_list) = key_components(key);
-    let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, key_bytes_list.as_deref())?;
-    let entries = opened.list_files()?;
-    let destination = destination.as_ref();
-    let directories = directory_paths
-        .iter()
-        .filter_map(|path| {
-            entries
-                .iter()
-                .find(|entry| entry.path == *path && entry.kind == TarEntryKind::Directory)
-                .map(|entry| (destination.join(path), TzapPortableEntryMetadata::from_archive_entry(entry)))
-        })
-        .collect::<Vec<_>>();
-
-    apply_deferred_tzap_directory_metadata(&directories, restore_options)
 }
 
 fn should_restore_tzap_metadata(restore_options: TzapRestoreOptions) -> bool {
@@ -928,69 +977,6 @@ fn extraction_kind_from_tzap_entry(entry: &ArchiveEntry, member: Option<&Extract
             ExtractionEntryKind::Hardlink { target: member.and_then(|member| member.link_target.as_deref()).map(PathBuf::from).unwrap_or_default() }
         }
         TarEntryKind::CharacterDevice | TarEntryKind::BlockDevice | TarEntryKind::Fifo => ExtractionEntryKind::Special,
-    }
-}
-
-pub(crate) fn commit_extracted_file(source_path: &Path, destination_path: &Path, replace_existing: bool) -> Result<(), TzapError> {
-    if let Some(parent) = destination_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })?;
-    }
-
-    if replace_existing {
-        crate::safety::remove_destination_for_replace(destination_path).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
-        fs::rename(source_path, destination_path).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
-    } else {
-        fs::hard_link(source_path, destination_path).map_err(|source| TzapError::Io { path: destination_path.to_path_buf(), source })?;
-    }
-    Ok(())
-}
-
-pub(crate) fn archive_member_path_under_root(root: &Path, entry_path: &str) -> Result<PathBuf, TzapError> {
-    let mut path = root.to_path_buf();
-    for component in entry_path.split('/') {
-        if component.is_empty() || component == "." || component == ".." {
-            return Err(TzapError::Format(FormatError::UnsafeArchivePath));
-        }
-        path.push(component);
-    }
-    Ok(path)
-}
-
-pub(crate) struct TemporaryTzapExtractionRoot {
-    path: PathBuf,
-}
-
-impl TemporaryTzapExtractionRoot {
-    pub(crate) fn new(destination_path: &Path) -> Result<Self, TzapError> {
-        let parent = destination_path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent).map_err(|source| TzapError::Io { path: parent.to_path_buf(), source })?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-        let destination_name = destination_path.file_name().and_then(|name| name.to_str()).unwrap_or("entry");
-
-        for attempt in 0..TZAP_TEMP_EXTRACT_ATTEMPTS {
-            let path = parent.join(format!("{TZAP_TEMP_EXTRACT_PREFIX}-{destination_name}-{}-{now}-{attempt}", std::process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => {
-                    return Err(TzapError::Io { path, source });
-                }
-            }
-        }
-
-        Err(io_error(parent, io::ErrorKind::AlreadyExists, "could not allocate temporary TZAP extraction root"))
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryTzapExtractionRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 

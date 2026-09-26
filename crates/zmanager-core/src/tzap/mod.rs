@@ -21,7 +21,7 @@ pub use extract::{
     TzapExtractKeySource, TzapExtractReport, TzapExtractRequest, TzapRestoreOptions, TzapRestorePolicy, copy_tzap_file_to_writer, copy_tzap_files_to_writer,
     extract_tzap,
 };
-pub(crate) use extract::{extract_tzap_file_to_destination, extract_tzap_with_context, restore_selected_directory_metadata};
+pub(crate) use extract::{TzapSelectedEntry, TzapSelectedExtractRequest, extract_tzap_selected, extract_tzap_with_context};
 pub use listing::{
     TzapEntryKind, TzapListing, list_tzap_with_optional_password, list_tzap_with_password, list_tzap_with_recipient_key, list_tzap_with_recipient_key_bytes,
 };

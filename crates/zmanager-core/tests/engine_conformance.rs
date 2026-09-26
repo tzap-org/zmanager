@@ -2355,6 +2355,57 @@ fn engine_selected_extract_many_tzap_cancellation_is_honored_by_native_adapter()
     assert!(extracted < file_ids.len(), "cancellation must stop the batched TZAP selection before every selected entry is written");
 }
 
+#[test]
+fn engine_selected_extract_many_tzap_reports_one_monotonic_progress_stream() {
+    let temp = TestDir::new("engine-selected-extract-many-tzap-progress");
+    let source = temp.path("project");
+    let archive_path = temp.path("multi.tzap");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("second.txt"), b"second").unwrap();
+    fs::write(source.join("third.txt"), b"third").unwrap();
+
+    let engine = create_default_engine().unwrap();
+    create_engine_fixture(
+        &engine,
+        &source,
+        &archive_path,
+        CreateOptions::Tzap(TzapCreateOptions {
+            key_source: TzapKeySource::NoPassword,
+            level: 1,
+            preserve_metadata: true,
+            replace_existing: false,
+            volume_size: None,
+            volume_count: None,
+            recovery_percentage: 0,
+            volume_loss_tolerance: 0,
+            x509_signing: None,
+            emit_bootstrap_sidecar: false,
+        }),
+    );
+
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let file_ids: Vec<_> = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).map(|entry| entry.id).collect();
+    assert_eq!(file_ids.len(), 3);
+
+    let mut totals = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if let zmanager_core::jobs::JobEvent::BytesProcessed { total_bytes_processed, total_entries_processed, .. } = event {
+            totals.push((total_bytes_processed, total_entries_processed));
+        }
+    };
+    let mut options = SelectedExtractOptions { destination: temp.path("out"), event_sink: Some(&mut sink), ..Default::default() };
+    let report = handle.extract_selected_many(&file_ids, &mut options).unwrap();
+
+    assert!(totals.windows(2).all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1), "totals must never go backwards: {totals:?}");
+    assert_eq!(
+        totals.last().copied(),
+        Some((report.written_bytes, report.written_entries)),
+        "the final progress event must account for every selected byte and entry"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 fn engine_selected_extract_many_apple_archive_cancellation_is_honored_by_native_adapter() {

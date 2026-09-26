@@ -13,9 +13,19 @@ constexpr int ZMU_UNRAR_DESTINATION_TOO_LONG = -1001;
 constexpr std::uint64_t ZMU_UNRAR_MAX_LARGE_DICTIONARY_KB = 512ULL * 1024ULL;
 constexpr std::size_t ZMU_UNRAR_WIDE_BUFFER_CHARS = 32768;
 
+// Events reported through `ExtractEventCallback` while a selected entry is
+// being written. Returning a negative value from the callback aborts the
+// extraction.
+constexpr int ZMU_UNRAR_EVENT_DATA = 1;
+constexpr int ZMU_UNRAR_EVENT_ENTRY_DONE = 2;
+
+using ExtractEventCallback = int (*)(void *user, int event,
+                                     std::uint64_t value);
+
 struct BridgeContext {
   const char *password;
   void *user;
+  ExtractEventCallback event_callback;
 };
 
 using ListCallback = int (*)(void *user, const char *path, std::uint64_t size,
@@ -132,6 +142,18 @@ int CALLBACK unrar_callback(UINT msg, LPARAM user_data, LPARAM p1, LPARAM p2) {
     return large_dictionary_allowed(static_cast<std::uint64_t>(p1)) ? 1 : 0;
   }
 
+  if (msg == UCM_PROCESSDATA) {
+    // UnRAR reports every decoded chunk of an entry it is extracting (not of
+    // skipped entries). Returning -1 makes UnRAR stop with a user break, which
+    // is how cancellation interrupts a single large entry.
+    if (context != nullptr && context->event_callback != nullptr &&
+        context->event_callback(context->user, ZMU_UNRAR_EVENT_DATA,
+                                static_cast<std::uint64_t>(p2)) < 0) {
+      return -1;
+    }
+    return 1;
+  }
+
   return 1;
 }
 
@@ -160,7 +182,7 @@ extern "C" int zmu_unrar_list(const char *archive, const char *password,
     return ERAR_EOPEN;
   }
 
-  BridgeContext context{password, user};
+  BridgeContext context{password, user, nullptr};
   std::wstring archive_wide;
   RAROpenArchiveDataEx request = open_request(archive, &context, &archive_wide);
   HANDLE handle = RAROpenArchiveEx(&request);
@@ -209,12 +231,13 @@ extern "C" int zmu_unrar_list(const char *archive, const char *password,
 }
 
 extern "C" int zmu_unrar_extract(const char *archive, const char *password,
-                                 void *user, ExtractCallback callback) {
+                                 void *user, ExtractCallback callback,
+                                 ExtractEventCallback event_callback) {
   if (archive == nullptr || callback == nullptr) {
     return ERAR_EOPEN;
   }
 
-  BridgeContext context{password, user};
+  BridgeContext context{password, user, event_callback};
   std::wstring archive_wide;
   RAROpenArchiveDataEx request = open_request(archive, &context, &archive_wide);
   HANDLE handle = RAROpenArchiveEx(&request);
@@ -263,6 +286,11 @@ extern "C" int zmu_unrar_extract(const char *archive, const char *password,
     if (process_code != ERAR_SUCCESS) {
       RARCloseArchive(handle);
       return process_code;
+    }
+    if (operation == RAR_EXTRACT && event_callback != nullptr &&
+        event_callback(user, ZMU_UNRAR_EVENT_ENTRY_DONE, 0) < 0) {
+      RARCloseArchive(handle);
+      return ZMU_UNRAR_ABORTED;
     }
   }
 

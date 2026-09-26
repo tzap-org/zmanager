@@ -257,6 +257,13 @@ pub(crate) fn open_tzap_archive_with_key_options(
     open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, bytes_list.as_deref())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Archive opens on this thread. Opening derives the archive key, so
+    /// tests use this to pin how many times an operation pays that cost.
+    pub(crate) static ARCHIVE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Plural form of [`open_tzap_archive_with_key_options`] for a device holding
 /// several recipient private keys at once (design §9.4): every candidate's
 /// SPKI is tried against each keywrap record, so an archive addressed to any
@@ -267,6 +274,8 @@ pub(crate) fn open_tzap_archive_with_key_options_multi(
     recipient_private_key: Option<&Path>,
     recipient_private_key_bytes_list: Option<&[Vec<u8>]>,
 ) -> Result<OpenedArchive, TzapError> {
+    #[cfg(test)]
+    ARCHIVE_OPENS.with(|opens| opens.set(opens.get() + 1));
     let archive_path = archive.as_ref();
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
     let first_volume = volume_paths.first().ok_or_else(|| io_error(archive_path, io::ErrorKind::NotFound, "no TZAP input volumes found"))?;

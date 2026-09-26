@@ -423,17 +423,6 @@ mod imp {
             extract_apple_archive_inner(archive_path, destination, policy, None, None, Some(context), password)
         }
 
-        pub(crate) fn extract_apple_archive_with_context_and_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
-            password: Option<&str>,
-            context: &mut JobContext<'_>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            extract_apple_archive_inner(archive_path, destination, policy, None, Some(overwrite_resolver), Some(context), password)
-        }
-
         /// Extracts an `AppleArchive` with an overwrite resolver.
         ///
         /// # Errors
@@ -466,38 +455,16 @@ mod imp {
             extract_apple_archive_inner(archive_path, destination, policy, Some(entry_path), None, None, password)
         }
 
-        pub(crate) fn extract_apple_archive_entry_with_context(
+        pub(crate) fn extract_apple_archive_with_options(
             archive_path: impl AsRef<Path>,
-            entry_path: &str,
             destination: impl AsRef<Path>,
             policy: ExtractionPolicy,
-            password: Option<&str>,
-            context: &mut JobContext<'_>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            extract_apple_archive_inner(archive_path, destination, policy, Some(entry_path), None, Some(context), password)
-        }
-
-        pub(crate) fn extract_apple_archive_entry_with_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            entry_path: &str,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
+            selected_entry: Option<&str>,
+            overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+            context: Option<&mut JobContext<'_>>,
             password: Option<&str>,
         ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            extract_apple_archive_inner(archive_path, destination, policy, Some(entry_path), Some(overwrite_resolver), None, password)
-        }
-
-        pub(crate) fn extract_apple_archive_entry_with_context_and_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            entry_path: &str,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
-            password: Option<&str>,
-            context: &mut JobContext<'_>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            extract_apple_archive_inner(archive_path, destination, policy, Some(entry_path), Some(overwrite_resolver), Some(context), password)
+            extract_apple_archive_inner(archive_path, destination, policy, selected_entry, overwrite_resolver, context, password)
         }
 
         /// Copies the one selected regular file entry to a writer.
@@ -966,17 +933,6 @@ mod imp {
             Err(AppleArchiveError::Unsupported)
         }
 
-        pub(crate) fn extract_apple_archive_with_context_and_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
-            password: Option<&str>,
-            context: &mut JobContext<'_>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            Err(AppleArchiveError::Unsupported)
-        }
-
         pub(crate) fn extract_apple_archive_with_overwrite_resolver(
             archive_path: impl AsRef<Path>,
             destination: impl AsRef<Path>,
@@ -997,36 +953,14 @@ mod imp {
             Err(AppleArchiveError::Unsupported)
         }
 
-        pub(crate) fn extract_apple_archive_entry_with_context(
+        pub(crate) fn extract_apple_archive_with_options(
             archive_path: impl AsRef<Path>,
-            entry_path: &str,
             destination: impl AsRef<Path>,
             policy: ExtractionPolicy,
+            selected_entry: Option<&str>,
+            overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+            context: Option<&mut JobContext<'_>>,
             password: Option<&str>,
-            context: &mut JobContext<'_>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            Err(AppleArchiveError::Unsupported)
-        }
-
-        pub(crate) fn extract_apple_archive_entry_with_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            entry_path: &str,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
-            password: Option<&str>,
-        ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-            Err(AppleArchiveError::Unsupported)
-        }
-
-        pub(crate) fn extract_apple_archive_entry_with_context_and_overwrite_resolver(
-            archive_path: impl AsRef<Path>,
-            entry_path: &str,
-            destination: impl AsRef<Path>,
-            policy: ExtractionPolicy,
-            overwrite_resolver: &mut dyn OverwriteResolver,
-            password: Option<&str>,
-            context: &mut JobContext<'_>,
         ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
             Err(AppleArchiveError::Unsupported)
         }
@@ -1147,18 +1081,6 @@ pub fn extract_apple_archive_with_context(
     imp::extract_apple_archive_with_context(archive_path, destination, policy, password, context)
 }
 
-/// Extracts an `AppleArchive` while emitting job events and resolving overwrites.
-pub fn extract_apple_archive_with_context_and_overwrite_resolver(
-    archive_path: impl AsRef<Path>,
-    destination: impl AsRef<Path>,
-    policy: ExtractionPolicy,
-    overwrite_resolver: &mut dyn OverwriteResolver,
-    password: Option<&str>,
-    context: &mut JobContext<'_>,
-) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    imp::extract_apple_archive_with_context_and_overwrite_resolver(archive_path, destination, policy, overwrite_resolver, password, context)
-}
-
 /// Extracts an `AppleArchive` with an overwrite resolver.
 ///
 /// # Errors
@@ -1195,49 +1117,25 @@ pub fn extract_apple_archive_entry(
     imp::extract_apple_archive_entry(archive_path, entry_path, destination, policy, password)
 }
 
-/// Extracts one selected `AppleArchive` entry while emitting job events.
-pub fn extract_apple_archive_entry_with_context(
-    archive_path: impl AsRef<Path>,
-    entry_path: &str,
-    destination: impl AsRef<Path>,
-    policy: ExtractionPolicy,
-    password: Option<&str>,
-    context: &mut JobContext<'_>,
-) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    imp::extract_apple_archive_entry_with_context(archive_path, entry_path, destination, policy, password, context)
-}
-
-/// Extracts one selected `AppleArchive` entry with an overwrite resolver.
+/// Extracts an `AppleArchive`, or only `selected_entry` when given, with an
+/// optional overwrite resolver and job context.
 ///
 /// # Errors
 ///
-/// Returns [`AppleArchiveError`] when the archive cannot be read, the entry is
-/// unsafe, the selected entry is not found, filesystem writes fail, or the
-/// resolver aborts extraction. On platforms without native `AppleArchive`
-/// support this returns [`AppleArchiveError::Unsupported`].
-pub fn extract_apple_archive_entry_with_overwrite_resolver(
+/// Returns [`AppleArchiveError`] when the archive cannot be read, an entry is
+/// unsafe, the selected entry is not found, filesystem writes fail, the
+/// resolver aborts, or the job is cancelled. On platforms without native
+/// `AppleArchive` support this returns [`AppleArchiveError::Unsupported`].
+pub(crate) fn extract_apple_archive_with_options(
     archive_path: impl AsRef<Path>,
-    entry_path: &str,
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
-    overwrite_resolver: &mut dyn OverwriteResolver,
+    selected_entry: Option<&str>,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
     password: Option<&str>,
 ) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    imp::extract_apple_archive_entry_with_overwrite_resolver(archive_path, entry_path, destination, policy, overwrite_resolver, password)
-}
-
-/// Extracts one selected `AppleArchive` entry while emitting job events and
-/// resolving overwrites.
-pub fn extract_apple_archive_entry_with_context_and_overwrite_resolver(
-    archive_path: impl AsRef<Path>,
-    entry_path: &str,
-    destination: impl AsRef<Path>,
-    policy: ExtractionPolicy,
-    overwrite_resolver: &mut dyn OverwriteResolver,
-    password: Option<&str>,
-    context: &mut JobContext<'_>,
-) -> Result<AppleArchiveExtractReport, AppleArchiveError> {
-    imp::extract_apple_archive_entry_with_context_and_overwrite_resolver(archive_path, entry_path, destination, policy, overwrite_resolver, password, context)
+    imp::extract_apple_archive_with_options(archive_path, destination, policy, selected_entry, overwrite_resolver, context, password)
 }
 
 /// Copies the one selected regular file entry to a writer.

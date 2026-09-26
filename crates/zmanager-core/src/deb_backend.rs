@@ -1,5 +1,6 @@
 use crate::ar_backend;
 use crate::archive_format::{self, ArchiveFormatKind};
+use crate::jobs::{JobCancelled, JobContext};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
 };
@@ -53,6 +54,8 @@ pub enum DebError {
     Safety(ExtractionSafetyError),
     /// A required `.deb` member was missing.
     MissingMember { member: &'static str },
+    /// The caller cancelled the operation.
+    Cancelled,
 }
 
 impl fmt::Display for DebError {
@@ -65,6 +68,7 @@ impl fmt::Display for DebError {
             Self::RawStream(source) => write!(f, "deb payload decoder failed: {source}"),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::MissingMember { member } => write!(f, "deb package is missing {member}"),
+            Self::Cancelled => write!(f, "job cancelled"),
         }
     }
 }
@@ -78,8 +82,14 @@ impl std::error::Error for DebError {
             Self::Tar(source) => Some(source),
             Self::RawStream(source) => Some(source),
             Self::Safety(source) => Some(source),
-            Self::MissingMember { .. } => None,
+            Self::MissingMember { .. } | Self::Cancelled => None,
         }
+    }
+}
+
+impl From<JobCancelled> for DebError {
+    fn from(_source: JobCancelled) -> Self {
+        Self::Cancelled
     }
 }
 
@@ -124,7 +134,7 @@ impl From<ExtractionSafetyError> for DebError {
 /// Returns [`DebError`] when the package is malformed, a payload archive cannot
 /// be read, a safety policy rejects an entry, or filesystem writes fail.
 pub fn extract_deb_nested(archive_path: impl AsRef<Path>, destination: impl AsRef<Path>, policy: &ExtractionPolicy) -> Result<DebExtractReport, DebError> {
-    extract_deb_nested_inner(archive_path, destination, policy, None)
+    extract_deb_nested_inner(archive_path, destination, policy, None, None)
 }
 
 /// Extracts a `.deb` package-aware layout with an overwrite resolver.
@@ -140,7 +150,25 @@ pub fn extract_deb_nested_with_overwrite_resolver(
     policy: &ExtractionPolicy,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<DebExtractReport, DebError> {
-    extract_deb_nested_inner(archive_path, destination, policy, Some(overwrite_resolver))
+    extract_deb_nested_inner(archive_path, destination, policy, Some(overwrite_resolver), None)
+}
+
+/// Extracts a `.deb` package-aware layout with a reporting context, and
+/// optionally an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`DebError`] when the package is malformed, a payload archive cannot
+/// be read, a safety policy rejects an entry, filesystem writes fail, the
+/// resolver aborts extraction, or the job is cancelled.
+pub(crate) fn extract_deb_nested_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: &ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<DebExtractReport, DebError> {
+    extract_deb_nested_inner(archive_path, destination, policy, overwrite_resolver, context)
 }
 
 fn extract_deb_nested_inner(
@@ -148,6 +176,7 @@ fn extract_deb_nested_inner(
     destination: impl AsRef<Path>,
     policy: &ExtractionPolicy,
     mut overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<DebExtractReport, DebError> {
     let destination = destination.as_ref();
     let destination_root = crate::safety::prepare_destination_root(destination).map_err(|source| DebError::Io { path: destination.to_path_buf(), source })?;
@@ -165,21 +194,40 @@ fn extract_deb_nested_inner(
 
     match overwrite_resolver {
         Some(ref mut resolver) => {
-            copy_synthetic_file(&debian_binary, DEBIAN_BINARY_MEMBER, &destination_root, policy.clone(), Some(&mut **resolver), &mut report)?;
+            copy_synthetic_file(
+                &debian_binary,
+                DEBIAN_BINARY_MEMBER,
+                &destination_root,
+                policy.clone(),
+                Some(&mut **resolver),
+                &mut report,
+                context.as_deref_mut(),
+            )?;
         }
-        None => copy_synthetic_file(&debian_binary, DEBIAN_BINARY_MEMBER, &destination_root, policy.clone(), None, &mut report)?,
+        None => copy_synthetic_file(&debian_binary, DEBIAN_BINARY_MEMBER, &destination_root, policy.clone(), None, &mut report, context.as_deref_mut())?,
     }
 
     let control_policy = policy_with_remaining_budget(policy, &report);
     let control_report = match overwrite_resolver {
-        Some(ref mut resolver) => extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, Some(&mut **resolver))?,
-        None => extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, None)?,
+        Some(ref mut resolver) => {
+            extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, Some(&mut **resolver), context.as_deref_mut())?
+        }
+        None => extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, None, context.as_deref_mut())?,
     };
     absorb_archive_report(CONTROL_OUTPUT_DIR, control_report, &mut report);
+
+    // Cancelling right after control.tar finishes must not fall through to a
+    // full (often much larger) data.tar extraction.
+    if let Some(context) = context.as_deref_mut() {
+        context.check_cancelled()?;
+    }
+
     let data_policy = policy_with_remaining_budget(policy, &report);
     let data_report = match overwrite_resolver {
-        Some(ref mut resolver) => extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, Some(&mut **resolver))?,
-        None => extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, None)?,
+        Some(ref mut resolver) => {
+            extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, Some(&mut **resolver), context.as_deref_mut())?
+        }
+        None => extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, None, context)?,
     };
     absorb_archive_report(DATA_OUTPUT_DIR, data_report, &mut report);
 
@@ -285,7 +333,11 @@ fn copy_synthetic_file(
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     report: &mut DebExtractReport,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<(), DebError> {
+    if let Some(context) = context.as_deref_mut() {
+        context.check_cancelled()?;
+    }
     let source_metadata = source_path.symlink_metadata().map_err(|source| DebError::Io { path: source_path.to_path_buf(), source })?;
     let source_size = source_metadata.len();
     let entry = ExtractionEntry {
@@ -323,6 +375,9 @@ fn copy_synthetic_file(
 
             report.written_entries += 1;
             report.written_bytes += written_bytes;
+            if let Some(context) = context {
+                context.entry_finished(archive_path, written_bytes);
+            }
         }
         ExtractionDecision::Skip { reason, .. } => {
             report.skipped_entries += 1;
@@ -337,8 +392,9 @@ fn extract_payload_archive(
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<ArchiveReport, DebError> {
-    extract_payload_with_engine(archive_path, destination, policy, overwrite_resolver)
+    extract_payload_with_engine(archive_path, destination, policy, overwrite_resolver, context)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -354,11 +410,16 @@ fn extract_payload_with_engine(
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    mut context: Option<&mut JobContext<'_>>,
 ) -> Result<ArchiveReport, DebError> {
+    // `JobContext` already wraps the cancellation token; cloning it here lets
+    // the nested `tar_backend::extract` call observe cancellation the same
+    // way every other format's context-carrying call does.
+    let cancellation = context.as_deref().map(JobContext::cancellation_token);
     let report = match archive_format::detect_archive_format(archive_path) {
         ArchiveFormatKind::Tar => {
             let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            crate::tar_backend::extract(file, archive_path, destination, policy, overwrite_resolver, None, None, None)?
+            crate::tar_backend::extract(file, archive_path, destination, policy, overwrite_resolver, None, cancellation.as_ref(), context.as_deref_mut())?
         }
         ArchiveFormatKind::TarGz => {
             let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
@@ -369,14 +430,23 @@ fn extract_payload_with_engine(
                 policy,
                 overwrite_resolver,
                 None,
-                None,
-                None,
+                cancellation.as_ref(),
+                context.as_deref_mut(),
             )?
         }
         ArchiveFormatKind::TarZst => {
             let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
             let decoder = zstd::stream::read::Decoder::new(file).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            crate::tar_backend::extract(crate::tar_backend::Decoded(decoder), archive_path, destination, policy, overwrite_resolver, None, None, None)?
+            crate::tar_backend::extract(
+                crate::tar_backend::Decoded(decoder),
+                archive_path,
+                destination,
+                policy,
+                overwrite_resolver,
+                None,
+                cancellation.as_ref(),
+                context.as_deref_mut(),
+            )?
         }
         ArchiveFormatKind::TarBz2 | ArchiveFormatKind::TarXz | ArchiveFormatKind::TarLzma => {
             let format = match archive_format::detect_archive_format(archive_path) {
@@ -386,7 +456,16 @@ fn extract_payload_with_engine(
                 _ => unreachable!("outer match limits filtered TAR formats"),
             };
             let decoder = crate::raw_stream_backend::open_decoder(archive_path, format)?;
-            crate::tar_backend::extract(crate::tar_backend::Decoded(decoder), archive_path, destination, policy, overwrite_resolver, None, None, None)?
+            crate::tar_backend::extract(
+                crate::tar_backend::Decoded(decoder),
+                archive_path,
+                destination,
+                policy,
+                overwrite_resolver,
+                None,
+                cancellation.as_ref(),
+                context,
+            )?
         }
         format => {
             return Err(DebError::Engine(crate::engine::ArchiveError::usable(
@@ -458,6 +537,7 @@ impl From<TempDirAllocError> for DebError {
 #[allow(clippy::all, clippy::pedantic)]
 mod tests {
     use super::*;
+    use crate::jobs::CancellationToken;
     use crate::safety::ExtractionPolicy;
     use crate::test_support::TestDir;
     use flate2::Compression;
@@ -589,5 +669,72 @@ mod tests {
         let io_err = DebError::Io { path: PathBuf::from("a.deb"), source: io::Error::new(io::ErrorKind::NotFound, "err") };
         assert!(io_err.to_string().contains("I/O failed"));
         assert!(std::error::Error::source(&io_err).is_some());
+    }
+
+    fn sample_deb_bytes() -> Vec<u8> {
+        let control_bytes = build_tar_gz(&[("control", b"Package: test\nVersion: 1.0\n")]);
+        let data_bytes = build_tar_zst(&[("usr/bin/app", b"binary payload here")]);
+        build_deb(Some(b"2.0\n"), Some(&control_bytes), Some(&data_bytes))
+    }
+
+    #[test]
+    fn cancelling_when_data_tar_entry_starts_leaves_it_unwritten() {
+        let temp = TestDir::new("deb-cancel-mid-data");
+        let archive_path = temp.path("sample.deb");
+        fs::write(&archive_path, sample_deb_bytes()).unwrap();
+
+        let dest = temp.path("out");
+        let policy = ExtractionPolicy::default();
+
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        // `EntryStarted` fires before any payload bytes are copied, so
+        // cancelling here interrupts data.tar's only entry at its first
+        // decoded chunk, well after control.tar has already finished.
+        let mut sink = |event| {
+            if let crate::jobs::JobEvent::EntryStarted { path, .. } = &event
+                && path == "usr/bin/app"
+            {
+                cancel.cancel();
+            }
+        };
+        let mut context = JobContext::new(&token, &mut sink);
+
+        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context)).unwrap_err();
+
+        assert!(matches!(error, DebError::Tar(crate::tar_backend::TarError::Cancelled)), "{error}");
+        assert_eq!(
+            fs::read(dest.join("control/control")).unwrap(),
+            b"Package: test\nVersion: 1.0\n",
+            "control.tar must have completed before data.tar started"
+        );
+        assert!(!dest.join("data/usr/bin/app").exists(), "the interrupted data.tar entry must not be written");
+    }
+
+    #[test]
+    fn cancelling_right_after_control_finishes_skips_data_extraction() {
+        let temp = TestDir::new("deb-cancel-after-control");
+        let archive_path = temp.path("sample.deb");
+        fs::write(&archive_path, sample_deb_bytes()).unwrap();
+
+        let dest = temp.path("out");
+        let policy = ExtractionPolicy::default();
+
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let mut sink = |event| {
+            if let crate::jobs::JobEvent::EntryFinished { path, .. } = &event
+                && path == "control"
+            {
+                cancel.cancel();
+            }
+        };
+        let mut context = JobContext::new(&token, &mut sink);
+
+        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context)).unwrap_err();
+
+        assert!(matches!(error, DebError::Cancelled), "{error}");
+        assert_eq!(fs::read(dest.join("control/control")).unwrap(), b"Package: test\nVersion: 1.0\n");
+        assert!(!dest.join("data").exists(), "cancelling right after control.tar finishes must skip data.tar entirely");
     }
 }

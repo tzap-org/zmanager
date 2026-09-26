@@ -72,20 +72,7 @@ pub trait ReadAdapterSession: Send {
 
     /// Extracts a batch of retained physical entries in one pass when supported.
     fn selected_extract_many(&mut self, entry_ids: &[EntryId], options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
-        let mut report = ExtractReport::default();
-        for &entry_id in entry_ids {
-            // `options` is reborrowed per entry rather than copied into a
-            // per-entry value: the copy could not carry the caller's event sink
-            // or overwrite resolver (both are `&mut` and cannot be duplicated),
-            // so a batch silently lost progress reporting and answered every
-            // `OverwritePolicy::Ask` conflict with `OverwritePromptUnavailable`.
-            let item_report = self.selected_extract(entry_id, options)?;
-            report.written_entries = report.written_entries.saturating_add(item_report.written_entries);
-            report.skipped_entries = report.skipped_entries.saturating_add(item_report.skipped_entries);
-            report.written_bytes = report.written_bytes.saturating_add(item_report.written_bytes);
-            report.warnings.extend(item_report.warnings);
-        }
-        Ok(report)
+        crate::engine::adapters::selected_extract_each(entry_ids, options, |entry_id, entry_options| self.selected_extract(entry_id, entry_options))
     }
 
     /// Copies one retained regular-file entry.
