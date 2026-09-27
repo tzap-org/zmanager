@@ -1169,7 +1169,13 @@ mod tests {
         assert_cancelled_replace_keeps_originals("rar_cancel_replace_between_entries", |event| matches!(event, crate::jobs::JobEvent::BytesProcessed { .. }));
     }
 
+    // End to end, a directory entry can only land on an existing file on
+    // Windows: on Unix the safety planner's probe of that directory's
+    // children fails with ENOTDIR and rejects the extraction before anything
+    // is displaced. The displacement itself is covered on every platform by
+    // the `PendingReplacements` tests below.
     /// A `basic.rar` directory that holds at least one regular file.
+    #[cfg(windows)]
     fn basic_rar_directory_with_files() -> String {
         let listing = list_rar_with_password(rar_fixture("basic.rar"), None).unwrap().entries;
         let files = basic_rar_files();
@@ -1181,6 +1187,7 @@ mod tests {
             .expect("fixture must hold a directory with files")
     }
 
+    #[cfg(windows)]
     #[test]
     fn cancelled_replace_restores_a_file_displaced_by_a_directory() {
         let directory = basic_rar_directory_with_files();
@@ -1206,6 +1213,7 @@ mod tests {
         assert!(leftovers.is_empty(), "no displaced copy may be left behind: {leftovers:?}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn replace_extraction_turns_a_displaced_file_into_the_archive_directory() {
         let directory = basic_rar_directory_with_files();
@@ -1247,6 +1255,64 @@ mod tests {
         assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"original", "the failed entry must keep its original");
         assert_eq!(fs::read(root.join("c.txt")).unwrap(), b"original", "entries after the failure must keep their originals");
         assert_eq!(regular_files(&root), ["a.txt", "b.txt", "c.txt"], "the remaining temporaries must be cleaned up");
+    }
+
+    #[test]
+    fn dropping_uncommitted_replacements_restores_displaced_paths() {
+        let temp = TestDir::new("rar_displace_rollback");
+        let root = temp.path("out");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("blocker"), b"original").unwrap();
+        fs::write(root.join("kept.txt"), b"original").unwrap();
+
+        let mut replacements = super::PendingReplacements::default();
+        replacements.displace(root.join("blocker")).unwrap();
+        assert!(!root.join("blocker").exists(), "the original must be moved out of the way");
+        // What the extraction would have created in its place.
+        fs::create_dir_all(root.join("blocker/child")).unwrap();
+        fs::write(root.join("blocker/child/partial"), b"partial").unwrap();
+        let temporary = replacements.reserve(root.join("kept.txt")).unwrap();
+        fs::write(&temporary, b"replacement").unwrap();
+        drop(replacements);
+
+        assert_eq!(fs::read(root.join("blocker")).unwrap(), b"original", "the displaced file must be restored");
+        assert_eq!(fs::read(root.join("kept.txt")).unwrap(), b"original");
+        assert_eq!(regular_files(&root), ["blocker", "kept.txt"], "nothing else may be left behind");
+    }
+
+    #[test]
+    fn committing_replacements_deletes_displaced_paths() {
+        let temp = TestDir::new("rar_displace_commit");
+        let root = temp.path("out");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("blocker"), b"original").unwrap();
+
+        let mut replacements = super::PendingReplacements::default();
+        replacements.displace(root.join("blocker")).unwrap();
+        fs::create_dir_all(root.join("blocker")).unwrap();
+        fs::write(root.join("blocker/extracted.txt"), b"new").unwrap();
+        replacements.commit().unwrap();
+
+        assert!(root.join("blocker").is_dir());
+        assert_eq!(regular_files(&root), ["blocker/extracted.txt"], "the displaced original must be deleted on commit");
+    }
+
+    #[test]
+    fn a_failed_commit_restores_displaced_paths() {
+        let temp = TestDir::new("rar_displace_failed_commit");
+        let root = temp.path("out");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("blocker"), b"original").unwrap();
+
+        let mut replacements = super::PendingReplacements::default();
+        replacements.displace(root.join("blocker")).unwrap();
+        fs::create_dir_all(root.join("blocker")).unwrap();
+        let temporary = replacements.reserve(root.join("blocker/file.txt")).unwrap();
+        fs::remove_file(&temporary).unwrap();
+
+        assert!(replacements.commit().is_err());
+        assert_eq!(fs::read(root.join("blocker")).unwrap(), b"original", "a failed commit must restore the displaced original");
+        assert_eq!(regular_files(&root), ["blocker"]);
     }
 
     #[test]
