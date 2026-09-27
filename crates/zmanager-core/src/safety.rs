@@ -451,7 +451,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                 }
             }
         } else if let Err(error) = destination_metadata
-            && error.kind() != std::io::ErrorKind::NotFound
+            && !destination_is_absent(&error)
         {
             return Err(ExtractionSafetyError::DestinationProbe { archive_path: entry.archive_path.clone(), destination_path, message: error.to_string() });
         }
@@ -1004,6 +1004,16 @@ fn next_available_destination_path_from(path: &Path, start_index: u64, candidate
     None
 }
 
+/// Whether a failed destination probe means nothing exists at that path.
+///
+/// When an ancestor of the destination is a non-directory, Unix reports
+/// `ENOTDIR` while Windows reports the path as not found. Both mean the same
+/// thing, and the ancestor itself is planned as its own entry (a directory
+/// entry displaces it under Replace; otherwise creating the parent fails).
+fn destination_is_absent(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+}
+
 /// Removes an existing destination path before an explicit overwrite write.
 ///
 /// This uses symlink metadata so replacing a symlink removes the link itself
@@ -1243,6 +1253,27 @@ mod tests {
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
 
         assert!(matches!(decision, ExtractionDecision::Write { .. }));
+    }
+
+    #[test]
+    fn plans_entries_below_a_file_that_a_directory_entry_replaces() {
+        let temp = TestDir::new("plans_entries_below_a_file_that_a_directory_entry_replaces");
+        temp.write_file("out/dir", b"a file where the archive has a directory");
+        let policy = ExtractionPolicy { overwrite: OverwritePolicy::Replace, ..ExtractionPolicy::default() };
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), policy);
+
+        let directory = planner
+            .validate_entry(&ExtractionEntry {
+                archive_path: "dir".to_owned(),
+                kind: ExtractionEntryKind::Directory,
+                uncompressed_size: None,
+                compressed_size: None,
+            })
+            .unwrap();
+        let child = planner.validate_entry(&file_entry("dir/file.txt")).unwrap();
+
+        assert!(matches!(directory, ExtractionDecision::Write { replace_existing: true, .. }), "{directory:?}");
+        assert!(matches!(child, ExtractionDecision::Write { .. }), "a path below a file does not exist yet: {child:?}");
     }
 
     #[test]

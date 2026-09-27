@@ -1169,13 +1169,7 @@ mod tests {
         assert_cancelled_replace_keeps_originals("rar_cancel_replace_between_entries", |event| matches!(event, crate::jobs::JobEvent::BytesProcessed { .. }));
     }
 
-    // End to end, a directory entry can only land on an existing file on
-    // Windows: on Unix the safety planner's probe of that directory's
-    // children fails with ENOTDIR and rejects the extraction before anything
-    // is displaced. The displacement itself is covered on every platform by
-    // the `PendingReplacements` tests below.
     /// A `basic.rar` directory that holds at least one regular file.
-    #[cfg(windows)]
     fn basic_rar_directory_with_files() -> String {
         let listing = list_rar_with_password(rar_fixture("basic.rar"), None).unwrap().entries;
         let files = basic_rar_files();
@@ -1187,7 +1181,6 @@ mod tests {
             .expect("fixture must hold a directory with files")
     }
 
-    #[cfg(windows)]
     #[test]
     fn cancelled_replace_restores_a_file_displaced_by_a_directory() {
         let directory = basic_rar_directory_with_files();
@@ -1213,7 +1206,6 @@ mod tests {
         assert!(leftovers.is_empty(), "no displaced copy may be left behind: {leftovers:?}");
     }
 
-    #[cfg(windows)]
     #[test]
     fn replace_extraction_turns_a_displaced_file_into_the_archive_directory() {
         let directory = basic_rar_directory_with_files();
