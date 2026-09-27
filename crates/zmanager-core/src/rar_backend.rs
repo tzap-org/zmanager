@@ -3,7 +3,7 @@ use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
     normalize_archive_path, remove_destination_for_replace,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -489,48 +489,90 @@ impl zmanager_unrar::ExtractObserver for RarJobObserver<'_, '_> {
     }
 }
 
-/// Regular files that replace an existing destination.
+/// Existing destinations an extraction replaces, held reversibly until the
+/// whole extraction has succeeded.
 ///
-/// `UnRAR` writes each of them to a reserved temporary sibling, and the
-/// existing destination is removed only after the whole extraction has
-/// succeeded. A cancelled or failed extraction therefore never deletes a user
-/// file it did not also finish replacing; dropping an uncommitted set removes
-/// the temporaries.
+/// Regular files are written by `UnRAR` to a reserved temporary sibling and
+/// moved over their destination on commit. A directory entry that lands on an
+/// existing non-directory must create its directory before `UnRAR` runs, so
+/// that existing path is moved aside instead of deleted, and removed only on
+/// commit.
+///
+/// A cancelled or failed extraction therefore never deletes a user file it did
+/// not also finish replacing: dropping an uncommitted set removes the
+/// temporaries and moves every displaced original back.
 #[derive(Default)]
 struct PendingReplacements {
-    /// `(temporary, final)` destination pairs.
-    paths: Vec<(PathBuf, PathBuf)>,
+    /// `(temporary, final)` pairs for regular files still to be moved in.
+    files: VecDeque<(PathBuf, PathBuf)>,
+    /// `(aside, original)` pairs for existing paths moved out of the way.
+    displaced: Vec<(PathBuf, PathBuf)>,
+    /// Temporary names handed out so far, to keep them distinct.
+    reserved: usize,
 }
 
 impl PendingReplacements {
-    /// Reserves a temporary sibling of `final_path` for `UnRAR` to write.
-    fn reserve(&mut self, final_path: PathBuf) -> Result<PathBuf, RarBackendError> {
+    /// Returns an unused hidden sibling name of `final_path`.
+    fn sibling_name(&mut self, final_path: &Path, attempt: u32) -> PathBuf {
         let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
         let unique = crate::temp_names::unique_temp_name(RAR_REPLACE_TEMP_LABEL);
+        parent.join(format!(".{unique}-{}-{attempt}", self.reserved))
+    }
+
+    fn allocation_error(final_path: PathBuf) -> RarBackendError {
+        RarBackendError::Io { path: final_path, source: io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a temporary RAR replacement path") }
+    }
+
+    /// Reserves a temporary sibling of `final_path` for `UnRAR` to write.
+    fn reserve(&mut self, final_path: PathBuf) -> Result<PathBuf, RarBackendError> {
         for attempt in 0..RAR_REPLACE_TEMP_ATTEMPTS {
-            let temporary = parent.join(format!(".{unique}-{}-{attempt}", self.paths.len()));
+            let temporary = self.sibling_name(&final_path, attempt);
             // `create_new` claims the path so UnRAR overwrites a regular file
             // this process created, never something already there.
             match fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
                 Ok(_) => {
-                    self.paths.push((temporary.clone(), final_path));
+                    self.reserved += 1;
+                    self.files.push_back((temporary.clone(), final_path));
                     return Ok(temporary);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(source) => return Err(RarBackendError::Io { path: temporary, source }),
             }
         }
-        Err(RarBackendError::Io {
-            path: final_path,
-            source: io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a temporary RAR replacement path"),
-        })
+        Err(Self::allocation_error(final_path))
     }
 
-    /// Moves every finished temporary over its destination.
+    /// Moves the existing `original` to a hidden sibling so the extraction
+    /// can create something else there; it is restored unless committed.
+    fn displace(&mut self, original: PathBuf) -> Result<(), RarBackendError> {
+        for attempt in 0..RAR_REPLACE_TEMP_ATTEMPTS {
+            let aside = self.sibling_name(&original, attempt);
+            match fs::symlink_metadata(&aside) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Ok(_) => continue,
+                Err(source) => return Err(RarBackendError::Io { path: aside, source }),
+            }
+            fs::rename(&original, &aside).map_err(|source| RarBackendError::Io { path: original.clone(), source })?;
+            self.reserved += 1;
+            self.displaced.push((aside, original));
+            return Ok(());
+        }
+        Err(Self::allocation_error(original))
+    }
+
+    /// Moves every finished temporary over its destination, then deletes the
+    /// displaced originals.
+    ///
+    /// Each pair leaves the pending set only once it is committed, so a
+    /// failure part way still lets `Drop` remove the remaining temporaries
+    /// and restore the displaced originals.
     fn commit(mut self) -> Result<(), RarBackendError> {
-        for (temporary, final_path) in std::mem::take(&mut self.paths) {
-            remove_destination(&final_path)?;
-            fs::rename(&temporary, &final_path).map_err(|source| RarBackendError::Io { path: final_path, source })?;
+        while let Some((temporary, final_path)) = self.files.front() {
+            move_over_destination(temporary, final_path).map_err(|source| RarBackendError::Io { path: final_path.clone(), source })?;
+            self.files.pop_front();
+        }
+        while let Some((aside, _)) = self.displaced.pop() {
+            remove_destination(&aside)?;
         }
         Ok(())
     }
@@ -538,10 +580,35 @@ impl PendingReplacements {
 
 impl Drop for PendingReplacements {
     fn drop(&mut self) {
-        for (temporary, _) in &self.paths {
+        for (temporary, _) in &self.files {
             let _ = fs::remove_file(temporary);
         }
+        // Restore in reverse so a path displaced twice ends up as it started.
+        while let Some((aside, original)) = self.displaced.pop() {
+            let _ = remove_destination_for_replace(&original);
+            let _ = fs::rename(&aside, &original);
+        }
     }
+}
+
+/// Renames `temporary` over `final_path`.
+///
+/// A rename already replaces an existing regular file atomically, so the
+/// destination is removed first only when a rename cannot replace it: a real
+/// directory, or (on Windows) a read-only file.
+fn move_over_destination(temporary: &Path, final_path: &Path) -> io::Result<()> {
+    let blocks_rename = match fs::symlink_metadata(final_path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            (file_type.is_dir() && !file_type.is_symlink()) || (cfg!(windows) && !file_type.is_symlink() && metadata.permissions().readonly())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    if blocks_rename {
+        remove_destination_for_replace(final_path)?;
+    }
+    fs::rename(temporary, final_path)
 }
 
 struct PlannedRarExtraction {
@@ -637,6 +704,15 @@ fn plan_rar_entries(
         }
     }
 
+    // Archives may store a file before its directory's entry. Directories go
+    // first, parents before children, so a non-directory in a directory's way
+    // is displaced before anything needs that path as a parent. The sort is
+    // stable, so every other entry keeps its archive order; deferred
+    // directory metadata, applied in reverse, then runs children first.
+    plans.sort_by_key(|plan| match plan {
+        PlannedEntry::Directory { destination_path, .. } => (0, destination_path.components().count()),
+        _ => (1, 0),
+    });
     for plan in plans {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(RarBackendError::Cancelled);
@@ -692,7 +768,9 @@ fn commit_planned_entry(plan: PlannedEntry, extraction: &mut PlannedRarExtractio
     match plan {
         PlannedEntry::Directory { destination_path, replace_existing, file_attr, mtime } => {
             if replace_existing {
-                remove_destination(&destination_path)?;
+                // The directory must exist before UnRAR writes into it, so
+                // the non-directory in its way is moved aside, not deleted.
+                extraction.replacements.displace(destination_path.clone())?;
             }
             fs::create_dir_all(&destination_path).map_err(|source| RarBackendError::Io { path: destination_path.clone(), source })?;
             extraction.deferred_dirs.push((destination_path, file_attr, mtime));
@@ -1041,11 +1119,14 @@ mod tests {
         extract_rar_with_context(rar_fixture("basic.rar"), destination, ExtractionPolicy { overwrite, ..Default::default() }, None, None, Some(&mut context))
     }
 
-    #[test]
-    fn cancelling_a_replace_extraction_keeps_every_existing_file() {
+    /// Pre-populates every `basic.rar` file path with `original`, runs a
+    /// Replace extraction that cancels on the first event matching
+    /// `cancel_on`, and checks that every original survived untouched with no
+    /// temporary left behind.
+    fn assert_cancelled_replace_keeps_originals(label: &str, cancel_on: fn(&crate::jobs::JobEvent) -> bool) {
         let files = basic_rar_files();
         assert!(files.len() >= 2, "fixture must hold several files");
-        let temp = TestDir::new("rar_cancel_replace_keeps_originals");
+        let temp = TestDir::new(label);
         let destination = temp.path("out");
         for (path, _) in &files {
             let existing = destination.join(path);
@@ -1055,10 +1136,8 @@ mod tests {
 
         let token = CancellationToken::new();
         let cancel = token.clone();
-        // Cancel inside the first entry's data, after UnRAR has started
-        // writing its replacement.
         let mut sink = |event| {
-            if matches!(event, crate::jobs::JobEvent::BytesProcessed { .. }) {
+            if cancel_on(&event) {
                 cancel.cancel();
             }
         };
@@ -1071,6 +1150,126 @@ mod tests {
         for (path, _) in &files {
             assert_eq!(fs::read(destination.join(path)).unwrap(), b"original", "{path} must keep its original contents");
         }
+    }
+
+    #[test]
+    fn cancelling_inside_a_replacement_entry_keeps_every_existing_file() {
+        // `EntryStarted` fires once UnRAR has opened the entry's temporary,
+        // before any payload is decoded, so UnRAR unwinds out of the middle of
+        // that entry with the temporary still open. This is the path that
+        // needs UnRAR's destructors (MSVC `/EHsc`) to close and delete it.
+        assert_cancelled_replace_keeps_originals("rar_cancel_replace_inside_entry", |event| matches!(event, crate::jobs::JobEvent::EntryStarted { .. }));
+    }
+
+    #[test]
+    fn cancelling_between_replacement_entries_keeps_every_existing_file() {
+        // The fixture's files each decode in one chunk, so a cancel raised by
+        // the first progress event is observed at the next archive header:
+        // the first replacement is complete but must still not be committed.
+        assert_cancelled_replace_keeps_originals("rar_cancel_replace_between_entries", |event| matches!(event, crate::jobs::JobEvent::BytesProcessed { .. }));
+    }
+
+    /// A `basic.rar` directory that holds at least one regular file.
+    fn basic_rar_directory_with_files() -> String {
+        let listing = list_rar_with_password(rar_fixture("basic.rar"), None).unwrap().entries;
+        let files = basic_rar_files();
+        listing
+            .iter()
+            .filter(|entry| entry.kind == super::RarListEntryKind::Directory)
+            .map(|entry| entry.path.replace('\\', "/"))
+            .find(|directory| files.iter().any(|(file, _)| file.starts_with(&format!("{directory}/"))))
+            .expect("fixture must hold a directory with files")
+    }
+
+    #[test]
+    fn cancelled_replace_restores_a_file_displaced_by_a_directory() {
+        let directory = basic_rar_directory_with_files();
+        let temp = TestDir::new("rar_cancel_restores_displaced");
+        let destination = temp.path("out");
+        let blocker = destination.join(&directory);
+        fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        fs::write(&blocker, b"a file where the archive has a directory").unwrap();
+
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let mut sink = |event| {
+            if matches!(event, crate::jobs::JobEvent::EntryStarted { .. }) {
+                cancel.cancel();
+            }
+        };
+        let error = extract_basic_rar_with_sink(&destination, OverwritePolicy::Replace, &token, &mut sink).unwrap_err();
+
+        assert!(matches!(error, RarBackendError::Cancelled), "{error}");
+        assert!(fs::symlink_metadata(&blocker).unwrap().is_file(), "the displaced file must be moved back");
+        assert_eq!(fs::read(&blocker).unwrap(), b"a file where the archive has a directory");
+        let leftovers = regular_files(&destination).into_iter().filter(|path| path.contains(super::RAR_REPLACE_TEMP_LABEL)).collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "no displaced copy may be left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn replace_extraction_turns_a_displaced_file_into_the_archive_directory() {
+        let directory = basic_rar_directory_with_files();
+        let temp = TestDir::new("rar_replace_displaced_commit");
+        let destination = temp.path("out");
+        let blocker = destination.join(&directory);
+        fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        fs::write(&blocker, b"replace me").unwrap();
+
+        let token = CancellationToken::new();
+        let mut sink = |_| {};
+        extract_basic_rar_with_sink(&destination, OverwritePolicy::Replace, &token, &mut sink).unwrap();
+
+        assert!(blocker.is_dir(), "the archive directory must replace the file");
+        let mut expected = basic_rar_files().into_iter().map(|(path, _)| path).collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(regular_files(&destination), expected, "the displaced file must be deleted once the extraction commits");
+    }
+
+    #[test]
+    fn a_failed_commit_keeps_uncommitted_originals_and_leaves_no_temporaries() {
+        let temp = TestDir::new("rar_replacement_commit_failure");
+        let root = temp.path("out");
+        fs::create_dir_all(&root).unwrap();
+        let mut replacements = super::PendingReplacements::default();
+        let mut temporaries = Vec::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(root.join(name), b"original").unwrap();
+            let temporary = replacements.reserve(root.join(name)).unwrap();
+            fs::write(&temporary, b"replacement").unwrap();
+            temporaries.push(temporary);
+        }
+        // Losing b's replacement makes the commit fail in the middle.
+        fs::remove_file(&temporaries[1]).unwrap();
+
+        assert!(replacements.commit().is_err());
+
+        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"replacement", "entries before the failure stay committed");
+        assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"original", "the failed entry must keep its original");
+        assert_eq!(fs::read(root.join("c.txt")).unwrap(), b"original", "entries after the failure must keep their originals");
+        assert_eq!(regular_files(&root), ["a.txt", "b.txt", "c.txt"], "the remaining temporaries must be cleaned up");
+    }
+
+    #[test]
+    fn replacement_commit_overwrites_read_only_files_and_directories() {
+        let temp = TestDir::new("rar_replacement_commit_blockers");
+        let root = temp.path("out");
+        fs::create_dir_all(root.join("dir.txt/inner")).unwrap();
+        fs::write(root.join("dir.txt/inner/file"), b"nested").unwrap();
+        fs::write(root.join("readonly.txt"), b"original").unwrap();
+        let mut permissions = fs::metadata(root.join("readonly.txt")).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(root.join("readonly.txt"), permissions).unwrap();
+
+        let mut replacements = super::PendingReplacements::default();
+        for name in ["dir.txt", "readonly.txt"] {
+            let temporary = replacements.reserve(root.join(name)).unwrap();
+            fs::write(&temporary, b"replacement").unwrap();
+        }
+        replacements.commit().unwrap();
+
+        assert_eq!(fs::read(root.join("dir.txt")).unwrap(), b"replacement");
+        assert_eq!(fs::read(root.join("readonly.txt")).unwrap(), b"replacement");
+        assert_eq!(regular_files(&root), ["dir.txt", "readonly.txt"]);
     }
 
     #[test]

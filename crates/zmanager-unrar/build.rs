@@ -127,6 +127,12 @@ fn main() {
     if use_portable_cpu_dispatch {
         build.define("ZMANAGER_UNRAR_PORTABLE_CPU_DISPATCH", None);
     }
+    // UnRAR reports errors and user breaks by throwing, and relies on stack
+    // unwinding to run destructors (e.g. `File::~File` deletes a partly
+    // written output). MSVC only unwinds with `/EHsc`, which cc does not add.
+    if target_env() == "msvc" {
+        build.flag("/EHsc");
+    }
 
     for source in UNRAR_SOURCES {
         let build_source = copy_build_source(&unrar_dir, &build_source_dir, source, use_portable_cpu_dispatch);

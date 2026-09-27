@@ -252,7 +252,8 @@ pub trait ExtractObserver {
 /// When the observer cancels inside an entry, `UnRAR` unwinds with a user
 /// break and deletes the partly written output file itself (its `File`
 /// destructor removes a newly created file that was never closed), so no
-/// truncated file is left behind.
+/// truncated file is left behind. That relies on the C++ sources being built
+/// with stack unwinding enabled; see `build.rs`.
 ///
 /// The caller is responsible for validating archive paths and preparing
 /// destination parent directories before calling this function.

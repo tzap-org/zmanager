@@ -350,7 +350,13 @@ fn copy_synthetic_file(
         Some(resolver) => ExtractionSafetyPlanner::new_with_overwrite_resolver(destination, policy, resolver),
         None => ExtractionSafetyPlanner::new(destination, policy),
     };
-    match planner.validate_entry(&entry)? {
+    let decision = planner.validate_entry(&entry)?;
+    // Same started/finished pairing as the shared per-entry protocol in
+    // `extract_loop::process_planned_entry`.
+    if let Some(context) = context.as_deref_mut() {
+        context.entry_started(archive_path, Some(source_size));
+    }
+    match decision {
         ExtractionDecision::Write { destination_path, replace_existing, .. } => {
             let mut input = File::open(source_path).map_err(|source| DebError::Io { path: source_path.to_path_buf(), source })?;
             let mut output =
@@ -381,7 +387,12 @@ fn copy_synthetic_file(
         }
         ExtractionDecision::Skip { reason, .. } => {
             report.skipped_entries += 1;
-            report.warnings.push(format!("skipped {archive_path}: {reason}"));
+            let warning = format!("skipped {archive_path}: {reason}");
+            report.warnings.push(warning.clone());
+            if let Some(context) = context {
+                context.warning(warning);
+                context.entry_finished(archive_path, 0);
+            }
         }
     }
     Ok(())
@@ -736,5 +747,67 @@ mod tests {
         assert!(matches!(error, DebError::Cancelled), "{error}");
         assert_eq!(fs::read(dest.join("control/control")).unwrap(), b"Package: test\nVersion: 1.0\n");
         assert!(!dest.join("data").exists(), "cancelling right after control.tar finishes must skip data.tar entirely");
+    }
+
+    /// `(started, path)` for every entry event, in order.
+    fn entry_events(events: &[crate::jobs::JobEvent]) -> Vec<(bool, String)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                crate::jobs::JobEvent::EntryStarted { path, .. } => Some((true, path.clone())),
+                crate::jobs::JobEvent::EntryFinished { path, .. } => Some((false, path.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn debian_binary_reports_a_started_and_finished_pair() {
+        let temp = TestDir::new("deb-synthetic-entry-events");
+        let archive_path = temp.path("sample.deb");
+        fs::write(&archive_path, sample_deb_bytes()).unwrap();
+
+        let token = CancellationToken::new();
+        let mut events = Vec::new();
+        let mut sink = |event| events.push(event);
+        let mut context = JobContext::new(&token, &mut sink);
+        extract_deb_nested_with_context(&archive_path, temp.path("out"), &ExtractionPolicy::default(), None, Some(&mut context)).unwrap();
+
+        let entries = entry_events(&events);
+        assert_eq!(entries.first(), Some(&(true, DEBIAN_BINARY_MEMBER.to_owned())), "{entries:?}");
+        assert_eq!(entries.get(1), Some(&(false, DEBIAN_BINARY_MEMBER.to_owned())), "{entries:?}");
+    }
+
+    #[test]
+    fn skipped_debian_binary_reports_a_warning_inside_its_entry_pair() {
+        struct SkipAll;
+        impl OverwriteResolver for SkipAll {
+            fn decide(&mut self, _conflict: &crate::safety::OverwriteConflict) -> crate::safety::OverwriteDecision {
+                crate::safety::OverwriteDecision::Skip
+            }
+        }
+
+        let temp = TestDir::new("deb-synthetic-skip-events");
+        let archive_path = temp.path("sample.deb");
+        fs::write(&archive_path, sample_deb_bytes()).unwrap();
+        let dest = temp.path("out");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join(DEBIAN_BINARY_MEMBER), b"keep me").unwrap();
+
+        let token = CancellationToken::new();
+        let mut events = Vec::new();
+        let mut sink = |event| events.push(event);
+        let mut context = JobContext::new(&token, &mut sink);
+        let policy = ExtractionPolicy { overwrite: crate::safety::OverwritePolicy::Ask, ..ExtractionPolicy::default() };
+        let mut resolver = SkipAll;
+        let report = extract_deb_nested_with_context(&archive_path, &dest, &policy, Some(&mut resolver), Some(&mut context)).unwrap();
+
+        assert_eq!(report.skipped_entries, 1);
+        assert_eq!(fs::read(dest.join(DEBIAN_BINARY_MEMBER)).unwrap(), b"keep me");
+        let position = |wanted: &dyn Fn(&crate::jobs::JobEvent) -> bool| events.iter().position(|event| wanted(event)).unwrap();
+        let started = position(&|event| matches!(event, crate::jobs::JobEvent::EntryStarted { path, .. } if path == DEBIAN_BINARY_MEMBER));
+        let warning = position(&|event| matches!(event, crate::jobs::JobEvent::Warning { message } if message.contains(DEBIAN_BINARY_MEMBER)));
+        let finished = position(&|event| matches!(event, crate::jobs::JobEvent::EntryFinished { path, .. } if path == DEBIAN_BINARY_MEMBER));
+        assert!(started < warning && warning < finished, "{events:?}");
     }
 }
