@@ -10,7 +10,7 @@
 //!   see [`extraction_kind`].
 
 use crate::backend_impl::backend_report::open_member_source;
-use crate::jobs::{CancellationToken, JobContext};
+use crate::jobs::{CancellationToken, JobCancelled, JobContext};
 use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanError, PlanOptions, plan_archive};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
@@ -355,7 +355,9 @@ impl<R: Read> Read for SevenZProgressReader<'_, R> {
             if let Some(observed) = &self.cancellation_observed {
                 observed.set(true);
             }
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "job cancelled"));
+            // Not `ErrorKind::Interrupted`: `read_exact`, `read_to_end` and
+            // `io::copy` retry that kind, which would spin forever here.
+            return Err(io::Error::other(JobCancelled));
         }
 
         let read = self.inner.read(buffer)?;
@@ -473,7 +475,19 @@ pub fn list_7z(path: impl AsRef<Path>, password: Option<&str>) -> Result<SevenZL
 pub fn test_7z_with_password_filter(
     archive_path: impl AsRef<Path>,
     password: Option<&str>,
+    selected: impl FnMut(&str) -> bool,
+) -> Result<SevenZTestReport, SevenZError> {
+    test_7z_with_cancellation(archive_path, password, selected, None)
+}
+
+/// Like [`test_7z_with_password_filter`], stopping with
+/// [`SevenZError::Cancelled`] once `cancellation` is cancelled, including
+/// while decoding a large entry.
+pub(crate) fn test_7z_with_cancellation(
+    archive_path: impl AsRef<Path>,
+    password: Option<&str>,
     mut selected: impl FnMut(&str) -> bool,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<SevenZTestReport, SevenZError> {
     let archive_path = archive_path.as_ref();
     let password = archive_password(password);
@@ -481,11 +495,12 @@ pub fn test_7z_with_password_filter(
     let mut reader = ArchiveReader::new(source, password)?;
     let mut report = SevenZTestReport { tested_entries: 0, skipped_entries: 0, tested_bytes: 0 };
     let mut callback_error = None;
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     let result = reader.for_each_entries(|entry, entry_reader| {
         let path = entry.name().to_owned();
         if entry.is_anti_item() || !selected(&path) {
-            if let Err(error) = drain_reader(entry_reader, &path) {
+            if let Err(error) = drain_reader_with_cancellation(entry_reader, &path, &mut io_buffer, cancellation) {
                 return Err(callback_failed_with(&mut callback_error, error));
             }
             report.skipped_entries += 1;
@@ -495,11 +510,9 @@ pub fn test_7z_with_password_filter(
         let copied = if entry.is_directory() {
             0
         } else {
-            match io::copy(entry_reader, &mut io::sink()) {
+            match drain_reader_with_cancellation(entry_reader, &path, &mut io_buffer, cancellation) {
                 Ok(copied) => copied,
-                Err(source) => {
-                    return Err(callback_failed_with(&mut callback_error, SevenZError::Io { path: PathBuf::from(&path), source }));
-                }
+                Err(error) => return Err(callback_failed_with(&mut callback_error, error)),
             }
         };
         report.tested_entries += 1;
@@ -1045,26 +1058,27 @@ fn drain_reader(reader: &mut dyn Read, archive_path: &str) -> Result<(), SevenZE
     Ok(())
 }
 
+/// Reads `reader` to its end, discarding the data, and returns how many bytes
+/// it yielded. Cancellation is checked before every read.
 fn drain_reader_with_cancellation(
     reader: &mut dyn Read,
     archive_path: &str,
     buffer: &mut [u8],
     cancellation: Option<&CancellationToken>,
-) -> Result<(), SevenZError> {
-    if let Some(cancellation) = cancellation {
-        loop {
-            if cancellation.is_cancelled() {
-                return Err(SevenZError::Cancelled);
-            }
-            let read = reader.read(buffer).map_err(|source| SevenZError::Io { path: PathBuf::from(archive_path), source })?;
-            if read == 0 {
-                break;
-            }
+) -> Result<u64, SevenZError> {
+    let mut drained = 0_u64;
+    loop {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(SevenZError::Cancelled);
         }
-    } else {
-        drain_reader(reader, archive_path)?;
+        let read = match reader.read(buffer) {
+            Ok(0) => return Ok(drained),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => return Err(SevenZError::Io { path: PathBuf::from(archive_path), source }),
+        };
+        drained = drained.saturating_add(read as u64);
     }
-    Ok(())
 }
 
 /// Parks a real backend error and returns the sentinel error the callback
@@ -1371,5 +1385,14 @@ mod tests {
 
         assert_eq!(report.warnings.len(), 1);
         assert!(!listing.entries.iter().any(|entry| entry.name == "payload/link.txt"));
+    }
+
+    #[test]
+    fn archive_test_stops_when_cancelled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.7z");
+        let error = super::test_7z_with_cancellation(&archive, None, |_| true, Some(&token)).unwrap_err();
+        assert!(matches!(error, SevenZError::Cancelled), "{error}");
     }
 }

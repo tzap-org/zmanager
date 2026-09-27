@@ -1877,8 +1877,13 @@ impl NativeReadAdapter for SevenZListAdapter {
 
     fn test(&self, archive: &NativeReadContext, test_options: &TestOptions) -> Result<TestReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = sevenz_backend::test_7z_with_password_filter(path, archive.options().password.as_deref(), |entry_path| test_options.selects(entry_path))
-            .map_err(|error| sevenz_archive_error(error, path))?;
+        let report = sevenz_backend::test_7z_with_cancellation(
+            path,
+            archive.options().password.as_deref(),
+            |entry_path| test_options.selects(entry_path),
+            test_options.cancellation.as_ref(),
+        )
+        .map_err(|error| sevenz_archive_error(error, path))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.tested_entries).unwrap_or(u64::MAX),
             skipped_entries: u64::try_from(report.skipped_entries).unwrap_or(u64::MAX),
@@ -2197,23 +2202,22 @@ impl NativeReadAdapter for TzapListAdapter {
         let trust = test_options.tzap_x509_trust.clone().map(Into::into);
         let recipient_key_bytes = test_options.recipient_key_bytes.as_deref().or_else(|| archive.options().recipient_key_bytes());
         let recipient_key = test_options.recipient_key.as_deref().or(archive.options().recipient_key_path());
-        let report = if let Some(recipient_key_bytes) = recipient_key_bytes {
-            tzap::test_tzap_with_recipient_key_bytes_list_filter_and_x509_trust(
-                path,
-                recipient_key_bytes,
-                |entry_path| test_options.selects(entry_path),
-                trust.as_ref(),
-            )
-        } else if let Some(recipient_key) = recipient_key {
-            tzap::test_tzap_with_recipient_key_filter_and_x509_trust(path, recipient_key, |entry_path| test_options.selects(entry_path), trust.as_ref())
-        } else {
-            tzap::test_tzap_with_optional_password_filter_and_x509_trust(
-                path,
-                archive.options().password.as_deref(),
-                |entry_path| test_options.selects(entry_path),
-                trust.as_ref(),
-            )
-        }
+        // One key source, preferring in-memory recipient keys, then a key file,
+        // then the session password.
+        let (password, recipient_key, recipient_key_bytes) = match (recipient_key_bytes, recipient_key) {
+            (Some(recipient_key_bytes), _) => (None, None, Some(recipient_key_bytes)),
+            (None, Some(recipient_key)) => (None, Some(recipient_key), None),
+            (None, None) => (archive.options().password.as_deref(), None, None),
+        };
+        let report = tzap::test_tzap_cancellable(
+            path,
+            password,
+            recipient_key,
+            recipient_key_bytes,
+            |entry_path| test_options.selects(entry_path),
+            trust.as_ref(),
+            test_options.cancellation.as_ref(),
+        )
         .map_err(|error| tzap_error(path, &error))?;
         let mut warnings = Vec::new();
         if let Some(root_auth) = report.x509_root_auth {
@@ -2373,8 +2377,13 @@ impl NativeReadAdapter for RarListAdapter {
 
     fn test(&self, archive: &NativeReadContext, test_options: &TestOptions) -> Result<TestReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = rar_backend::test_rar_with_password_filter(path, archive.options().password.as_deref(), |entry_path| test_options.selects(entry_path))
-            .map_err(|error| rar_error(path, &error))?;
+        let report = rar_backend::test_rar_with_cancellation(
+            path,
+            archive.options().password.as_deref(),
+            |entry_path| test_options.selects(entry_path),
+            test_options.cancellation.as_ref(),
+        )
+        .map_err(|error| rar_error(path, &error))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.tested_entries).unwrap_or(u64::MAX),
             skipped_entries: u64::try_from(report.skipped_entries).unwrap_or(u64::MAX),
@@ -2513,7 +2522,10 @@ impl NativeReadAdapter for RawStreamListAdapter {
         if !test_options.selects(&payload_name) {
             return Ok(TestReport { tested_entries: 0, skipped_entries: 1, tested_bytes: 0, warnings: Vec::new() });
         }
-        let tested_bytes = raw_stream_backend::test_raw_stream(path, format).map_err(|error| raw_stream_error(path, &error))?;
+        let tested_bytes = with_job_context(test_options.cancellation.as_ref(), None, |context| {
+            raw_stream_backend::test_raw_stream_with_context(path, format, &payload_name, context)
+        })
+        .map_err(|error| raw_stream_error(path, &error))?;
         Ok(TestReport { tested_entries: 1, skipped_entries: 0, tested_bytes, warnings: Vec::new() })
     }
 
@@ -2624,9 +2636,13 @@ impl NativeReadAdapter for AppleArchiveListAdapter {
 
     fn test(&self, archive: &NativeReadContext, test_options: &TestOptions) -> Result<TestReport, ArchiveError> {
         let path = archive.primary_path();
-        let report =
-            apple_archive_backend::test_apple_archive_filter(path, |entry_path| test_options.selects(entry_path), archive.options().password.as_deref())
-                .map_err(|error| apple_archive_error(path, &error))?;
+        let report = apple_archive_backend::test_apple_archive_with_cancellation(
+            path,
+            |entry_path| test_options.selects(entry_path),
+            archive.options().password.as_deref(),
+            test_options.cancellation.as_ref(),
+        )
+        .map_err(|error| apple_archive_error(path, &error))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.tested_entries).unwrap_or(u64::MAX),
             skipped_entries: u64::try_from(report.skipped_entries).unwrap_or(u64::MAX),

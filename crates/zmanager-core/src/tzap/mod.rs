@@ -34,7 +34,7 @@ pub use verification::{
     TzapArchiveVerificationOutcome, verify_tzap_archive_public_no_key, verify_tzap_archive_public_no_key_with_signer_predicate,
 };
 pub use write::{TzapCreateOptions, TzapKeySource, create_tzap_from_manifest_with_context, tzap_bootstrap_sidecar_path};
-pub(crate) use x509::test_tzap_with_recipient_key_bytes_list_filter_and_x509_trust;
+pub(crate) use x509::test_tzap_cancellable;
 pub use x509::{
     TzapTestReport, TzapX509SignerInspection, TzapX509SigningOptions, TzapX509TrustAnchor, TzapX509TrustOptions, TzapX509VerificationReport,
     inspect_tzap_x509_public_no_key_signer, inspect_tzap_x509_signer, test_tzap_with_optional_password_filter_and_x509_trust, test_tzap_with_password_filter,

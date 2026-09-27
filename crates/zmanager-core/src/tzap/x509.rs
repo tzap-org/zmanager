@@ -3,10 +3,10 @@
 //! inspection, and raw authenticator parsing.
 
 use super::TzapError;
+use crate::jobs::CancellationToken;
 use crate::secrets::{SecretBytes, SecretString};
 use crate::tzap::open::{
-    open_tzap_archive, open_tzap_archive_with_key_options, open_tzap_archive_with_key_options_multi, open_tzap_archive_with_recipient_key,
-    open_tzap_input_volume_readers,
+    open_tzap_archive, open_tzap_archive_cancellable, open_tzap_archive_with_key_options, open_tzap_archive_with_recipient_key, open_tzap_input_volume_readers,
 };
 use crate::tzap::write::TzapCreateOptions;
 use crate::x509_format::x509_name_to_string;
@@ -882,21 +882,32 @@ pub fn test_tzap_with_recipient_key_bytes_filter_and_x509_trust(
     test_opened_tzap_archive(&opened, selector, x509_trust)
 }
 
-/// Plural form of [`test_tzap_with_recipient_key_bytes_filter_and_x509_trust`]
-/// for a device holding several recipient private keys at once (design §9.4).
+/// Tests a `.tzap` archive opened with any key source, stopping with
+/// [`TzapError::Cancelled`] once `cancellation` is cancelled, including inside
+/// tzap-core's whole-archive verification.
 ///
 /// # Errors
 ///
-/// Returns [`TzapError`] when the archive cannot be opened, verified, or when
-/// requested X.509 `RootAuth` verification fails.
-pub(crate) fn test_tzap_with_recipient_key_bytes_list_filter_and_x509_trust(
+/// Returns [`TzapError`] when the archive cannot be opened or verified, when
+/// requested X.509 `RootAuth` verification fails, or when the job is cancelled.
+pub(crate) fn test_tzap_cancellable(
     archive: impl AsRef<Path>,
-    recipient_private_key_bytes_list: &[Vec<u8>],
+    password: Option<&str>,
+    recipient_private_key: Option<&Path>,
+    recipient_private_key_bytes_list: Option<&[Vec<u8>]>,
     selector: impl Fn(&str) -> bool,
     x509_trust: Option<&TzapX509TrustOptions>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<TzapTestReport, TzapError> {
-    let opened = open_tzap_archive_with_key_options_multi(archive, None, None, Some(recipient_private_key_bytes_list))?;
-    test_opened_tzap_archive(&opened, selector, x509_trust)
+    let result = open_tzap_archive_cancellable(archive, password, recipient_private_key, recipient_private_key_bytes_list, cancellation)
+        .and_then(|opened| test_opened_tzap_archive(&opened, selector, x509_trust));
+    // Once cancelled, every archive read fails and tzap-core reports that as a
+    // format error, whether it happened while opening or verifying; report it
+    // as the cancellation it is.
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(TzapError::Cancelled);
+    }
+    result
 }
 
 fn test_opened_tzap_archive(

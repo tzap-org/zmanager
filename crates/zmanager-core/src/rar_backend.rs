@@ -187,7 +187,19 @@ pub fn list_rar_with_password(archive: impl AsRef<Path>, password: Option<&str>)
 pub fn test_rar_with_password_filter(
     archive: impl AsRef<Path>,
     password: Option<&str>,
+    selected: impl FnMut(&str) -> bool,
+) -> Result<RarTestReport, RarBackendError> {
+    test_rar_with_cancellation(archive, password, selected, None)
+}
+
+/// Like [`test_rar_with_password_filter`], stopping with
+/// [`RarBackendError::Cancelled`] once `cancellation` is cancelled, including
+/// while `UnRAR` decodes a large entry.
+pub(crate) fn test_rar_with_cancellation(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
     mut selected: impl FnMut(&str) -> bool,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<RarTestReport, RarBackendError> {
     let archive = archive.as_ref();
     let entries = zmanager_unrar::list_archive(archive, password)?;
@@ -220,8 +232,20 @@ pub fn test_rar_with_password_filter(
         }
     }
 
-    zmanager_unrar::extract_selected(archive, password, &selections)?;
+    match cancellation {
+        Some(cancellation) => zmanager_unrar::extract_selected_with_observer(archive, password, &selections, &mut RarCancellationObserver(cancellation))?,
+        None => zmanager_unrar::extract_selected(archive, password, &selections)?,
+    }
     Ok(report)
+}
+
+/// Stops an `UnRAR` run once the job is cancelled; reports no progress.
+struct RarCancellationObserver<'a>(&'a CancellationToken);
+
+impl zmanager_unrar::ExtractObserver for RarCancellationObserver<'_> {
+    fn is_cancelled(&mut self) -> bool {
+        self.0.is_cancelled()
+    }
 }
 
 /// Options for the single core RAR extraction implementation.
@@ -1573,5 +1597,13 @@ mod tests {
         assert_eq!(planned.report.skipped_entries, 1);
         assert_eq!(planned.skipped_progress.len(), 1);
         assert!(planned.skipped_progress[0].2.contains("special.device"));
+    }
+
+    #[test]
+    fn archive_test_stops_when_cancelled() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let error = super::test_rar_with_cancellation(rar_fixture("basic.rar"), None, |_| true, Some(&token)).unwrap_err();
+        assert!(matches!(error, RarBackendError::Cancelled), "{error}");
     }
 }

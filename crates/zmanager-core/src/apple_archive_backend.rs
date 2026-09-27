@@ -7,7 +7,7 @@
 //! [`AppleArchiveError::Unsupported`], so consumers (CLI, FFI, browser,
 //! jobs) carry no platform predicates of their own.
 
-use crate::jobs::JobContext;
+use crate::jobs::{CancellationToken, JobContext};
 use crate::manifest::{ArchiveManifest, PlanError};
 use crate::safety::{ExtractionPolicy, ExtractionSafetyError, OverwriteResolver};
 use std::fmt;
@@ -248,7 +248,7 @@ mod imp {
             AppleArchiveCompression, AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveEntryKind, AppleArchiveError, AppleArchiveExtractReport,
             AppleArchiveListEntry, AppleArchiveListing, AppleArchiveTestReport,
         };
-        use crate::jobs::JobContext;
+        use crate::jobs::{CancellationToken, JobContext};
         use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanOptions, plan_archive};
         use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyPlanner, OverwriteResolver};
         use std::fs::{self, File};
@@ -527,12 +527,17 @@ mod imp {
             archive_path: impl AsRef<Path>,
             mut selected: impl FnMut(&str) -> bool,
             password: Option<&str>,
+            cancellation: Option<&CancellationToken>,
         ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
+            let is_cancelled = || cancellation.is_some_and(CancellationToken::is_cancelled);
             let mut reader = open_apple_archive_reader(archive_path, password)?;
             let mut report = AppleArchiveTestReport { tested_entries: 0, skipped_entries: 0, tested_bytes: 0 };
             let mut sink = io::sink();
 
             while let Some(entry) = reader.next_entry()? {
+                if is_cancelled() {
+                    return Err(AppleArchiveError::Cancelled);
+                }
                 if !selected(entry.path()) {
                     reader.skip_entry_data(&entry)?;
                     report.skipped_entries += 1;
@@ -540,7 +545,8 @@ mod imp {
                 }
                 if matches!(entry.kind(), zmanager_apple_archive::EntryKind::File) {
                     ensure_file_entry_has_data(&entry)?;
-                    report.tested_bytes += reader.read_entry_data(&entry, &mut sink, |_| true)?;
+                    // Returning `false` stops the reader with `Cancelled`.
+                    report.tested_bytes += reader.read_entry_data(&entry, &mut sink, |_| !is_cancelled())?;
                 } else {
                     reader.skip_entry_data(&entry)?;
                 }
@@ -879,7 +885,7 @@ mod imp {
         use super::super::{
             AppleArchiveCreateOptions, AppleArchiveCreateReport, AppleArchiveError, AppleArchiveExtractReport, AppleArchiveListing, AppleArchiveTestReport,
         };
-        use crate::jobs::JobContext;
+        use crate::jobs::{CancellationToken, JobContext};
         use crate::manifest::ArchiveManifest;
         use crate::safety::{ExtractionPolicy, OverwriteResolver};
         use std::io::Write;
@@ -978,6 +984,7 @@ mod imp {
             archive_path: impl AsRef<Path>,
             selected: impl FnMut(&str) -> bool,
             password: Option<&str>,
+            cancellation: Option<&CancellationToken>,
         ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
             Err(AppleArchiveError::Unsupported)
         }
@@ -1167,7 +1174,19 @@ pub fn test_apple_archive_filter(
     selected: impl FnMut(&str) -> bool,
     password: Option<&str>,
 ) -> Result<AppleArchiveTestReport, AppleArchiveError> {
-    imp::test_apple_archive_filter(archive_path, selected, password)
+    imp::test_apple_archive_filter(archive_path, selected, password, None)
+}
+
+/// Like [`test_apple_archive_filter`], stopping with
+/// [`AppleArchiveError::Cancelled`] once `cancellation` is cancelled,
+/// including while reading a large entry.
+pub(crate) fn test_apple_archive_with_cancellation(
+    archive_path: impl AsRef<Path>,
+    selected: impl FnMut(&str) -> bool,
+    password: Option<&str>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<AppleArchiveTestReport, AppleArchiveError> {
+    imp::test_apple_archive_filter(archive_path, selected, password, cancellation)
 }
 
 #[cfg(test)]
@@ -1342,5 +1361,15 @@ mod tests {
     #[test]
     fn native_operations_report_supported_on_apple_targets() {
         assert!(apple_archive_supported());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[test]
+    fn archive_test_stops_when_cancelled() {
+        let token = crate::jobs::CancellationToken::new();
+        token.cancel();
+        let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.aar");
+        let error = super::test_apple_archive_with_cancellation(&archive, |_| true, None, Some(&token)).unwrap_err();
+        assert!(matches!(error, super::AppleArchiveError::Cancelled), "{error}");
     }
 }

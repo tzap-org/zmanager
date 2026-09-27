@@ -458,6 +458,21 @@ pub fn test_raw_stream(archive_path: impl AsRef<Path>, format: RawStreamFormat) 
     copy_raw_stream_to_writer(archive_path, format, &mut io::sink())
 }
 
+/// Like [`test_raw_stream`], stopping with [`RawStreamError::Cancelled`] once
+/// the job is cancelled.
+pub(crate) fn test_raw_stream_with_context(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    payload_name: &str,
+    context: &mut JobContext<'_>,
+) -> Result<u64, RawStreamError> {
+    let mut output = crate::extract_loop::JobProgressWriter::new(io::sink(), Some(context), payload_name);
+    match copy_raw_stream_to_writer(archive_path, format, &mut output) {
+        Err(RawStreamError::Io { source, .. }) if crate::extract_loop::is_job_cancelled(&source) => Err(RawStreamError::Cancelled),
+        result => result,
+    }
+}
+
 fn write_raw_stream_to_file(
     archive_path: &Path,
     format: RawStreamFormat,
@@ -711,5 +726,16 @@ mod tests {
         let estimated = estimate_raw_stream_uncompressed_size(&archive, RawStreamFormat::Gzip).expect("expected gzip uncompressed size hint");
 
         assert_eq!(estimated, payload.len() as u64);
+    }
+
+    #[test]
+    fn archive_test_stops_when_cancelled() {
+        let token = crate::jobs::CancellationToken::new();
+        token.cancel();
+        let mut sink = |_event: crate::jobs::JobEvent| {};
+        let mut context = crate::jobs::JobContext::new(&token, &mut sink);
+        let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.txt.gz");
+        let error = super::test_raw_stream_with_context(&archive, RawStreamFormat::Gzip, "basic.txt", &mut context).unwrap_err();
+        assert!(matches!(error, super::RawStreamError::Cancelled), "{error}");
     }
 }

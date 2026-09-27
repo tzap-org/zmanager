@@ -2,6 +2,7 @@
 //! header parsing used for password-free metadata summaries.
 
 use super::{TzapError, io_error};
+use crate::jobs::CancellationToken;
 use crate::tzap::write::placeholder_master_key;
 use crate::tzap::x509::{
     RecipientWrapOpenStats, load_recipient_private_key_lookup, load_recipient_private_key_lookup_from_bytes_list, recipient_wrap_candidates_for_record,
@@ -16,7 +17,7 @@ use tzap_core::volume_file::{
 };
 use tzap_core::wire::{CryptoHeader, CryptoHeaderFixed, VolumeHeader};
 use tzap_core::{
-    KdfParams, MasterKey, OpenedArchive, ReaderOptions, open_seekable_archive, open_seekable_archive_volumes,
+    ArchiveReadAt, KdfParams, MasterKey, OpenedArchive, ReaderOptions, open_seekable_archive, open_seekable_archive_volumes,
     open_seekable_archive_volumes_with_recipient_wrap_resolver_options, validate_volume_set_member_metadata,
 };
 
@@ -274,14 +275,32 @@ pub(crate) fn open_tzap_archive_with_key_options_multi(
     recipient_private_key: Option<&Path>,
     recipient_private_key_bytes_list: Option<&[Vec<u8>]>,
 ) -> Result<OpenedArchive, TzapError> {
+    open_tzap_archive_cancellable(archive, password, recipient_private_key, recipient_private_key_bytes_list, None)
+}
+
+/// [`open_tzap_archive_with_key_options_multi`] whose archive reads fail once
+/// `cancellation` is cancelled; see [`CancellableVolume`].
+pub(crate) fn open_tzap_archive_cancellable(
+    archive: impl AsRef<Path>,
+    password: Option<&str>,
+    recipient_private_key: Option<&Path>,
+    recipient_private_key_bytes_list: Option<&[Vec<u8>]>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<OpenedArchive, TzapError> {
     #[cfg(test)]
     ARCHIVE_OPENS.with(|opens| opens.set(opens.get() + 1));
     let archive_path = archive.as_ref();
     let volume_paths = discover_tzap_input_volume_paths(archive_path);
     let first_volume = volume_paths.first().ok_or_else(|| io_error(archive_path, io::ErrorKind::NotFound, "no TZAP input volumes found"))?;
     let kdf_params = read_kdf_params_from_path(first_volume)?;
-    let volume_files =
-        volume_paths.iter().map(|path| File::open(path).map_err(|source| TzapError::Io { path: path.clone(), source })).collect::<Result<Vec<_>, _>>()?;
+    let volume_files = volume_paths
+        .iter()
+        .map(|path| {
+            File::open(path)
+                .map(|file| CancellableVolume { file, cancellation: cancellation.cloned() })
+                .map_err(|source| TzapError::Io { path: path.clone(), source })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if matches!(kdf_params, KdfParams::RecipientWrap { .. }) {
         if password.is_some() {
             return Err(TzapError::Format(FormatError::KeyMaterialMismatch));
@@ -326,6 +345,30 @@ pub(crate) fn open_tzap_archive_with_key_options_multi(
     }
 
     open_seekable_archive_volumes(volume_files, &master_key).map_err(Into::into)
+}
+
+/// One archive volume whose reads fail once the job is cancelled.
+///
+/// tzap-core operations such as `OpenedArchive::verify` decode a whole archive
+/// in one call and take no cancellation of their own. They read every byte
+/// through this type, so a cancelled job stops them at their next read; the
+/// caller then reports the resulting read failure as the cancellation.
+pub(crate) struct CancellableVolume {
+    file: File,
+    cancellation: Option<CancellationToken>,
+}
+
+impl ArchiveReadAt for CancellableVolume {
+    fn len(&self) -> Result<u64, FormatError> {
+        ArchiveReadAt::len(&self.file)
+    }
+
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), FormatError> {
+        if self.cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
+            return Err(FormatError::ReaderUnsupported("job cancelled"));
+        }
+        ArchiveReadAt::read_exact_at(&self.file, offset, buf)
+    }
 }
 
 pub(crate) fn discover_tzap_input_volume_paths(archive_path: &Path) -> Vec<PathBuf> {

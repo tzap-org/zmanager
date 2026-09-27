@@ -2656,3 +2656,25 @@ fn tzap_create_sidecar_toggle_behavior() {
     assert!(sidecar_with_sidecar.exists(), "sidecar SHOULD be created when emit_bootstrap_sidecar is true");
     assert!(fs::metadata(&sidecar_with_sidecar).unwrap().len() > 0);
 }
+
+#[test]
+fn cancelling_stops_whole_archive_verification_at_its_next_read() {
+    let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.tzap");
+    let token = CancellationToken::new();
+    let opened = super::open::open_tzap_archive_cancellable(&archive, None, None, None, Some(&token)).unwrap();
+    opened.verify().expect("an uncancelled archive verifies");
+
+    // `verify` takes no cancellation of its own; the volume reader fails
+    // every read once the token is cancelled.
+    token.cancel();
+    assert!(opened.verify().is_err(), "verification must stop once the job is cancelled");
+}
+
+#[test]
+fn cancelled_archive_test_reports_cancellation() {
+    let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.tzap");
+    let token = CancellationToken::new();
+    token.cancel();
+    let error = super::test_tzap_cancellable(&archive, None, None, None, |_| true, None, Some(&token)).unwrap_err();
+    assert!(matches!(error, super::TzapError::Cancelled), "{error}");
+}
