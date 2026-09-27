@@ -1493,31 +1493,6 @@ pub fn extract_logical_container(
     extract_logical_container_inner(archive_path, destination, policy, None, None)
 }
 
-/// Streaming writer that checks cancellation and reports bytes through the
-/// job context on every write (mirrors the MSI backend's `ProgressWriter`).
-struct ProgressWriter<'a, 'b, W: io::Write> {
-    inner: W,
-    context: Option<&'a mut JobContext<'b>>,
-    archive_path: &'a str,
-}
-
-impl<W: io::Write> io::Write for ProgressWriter<'_, '_, W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(buf)?;
-        if let Some(ctx) = self.context.as_deref_mut() {
-            if ctx.check_cancelled().is_err() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "job cancelled"));
-            }
-            ctx.bytes_processed(Some(self.archive_path), written as u64);
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
 fn extract_virtual_disk_inner(
     archive_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -1592,15 +1567,10 @@ pub(crate) fn extract_container_inner(
 
                             // The engine exposes byte-range reads, not a stream;
                             // loop in fixed-size chunks through the progress
-                            // writer when a context is present.
+                            // writer, which also stops on cancellation.
                             let expected = safety_entry.uncompressed_size.unwrap_or(0);
-                            let written_bytes = if context.is_some() {
-                                let mut writer = ProgressWriter { inner: file, context: context.as_deref_mut(), archive_path: &safety_entry.archive_path };
-                                stream_file(&fs, file_id, &safety_entry.archive_path, &mut writer)?
-                            } else {
-                                let mut file = file;
-                                stream_file(&fs, file_id, &safety_entry.archive_path, &mut file)?
-                            };
+                            let mut writer = crate::extract_loop::JobProgressWriter::new(file, context.as_deref_mut(), &safety_entry.archive_path);
+                            let written_bytes = stream_file(&fs, file_id, &safety_entry.archive_path, &mut writer)?;
 
                             output
                                 .commit_with_replace(replace_existing)
@@ -1673,7 +1643,13 @@ fn stream_file<W: io::Write + ?Sized>(
         if n == 0 {
             break;
         }
-        writer.write_all(&buf[..n]).map_err(|source| VirtualDiskBackendError::Io { path: PathBuf::from(archive_path), source })?;
+        writer.write_all(&buf[..n]).map_err(|source| {
+            if crate::extract_loop::is_job_cancelled(&source) {
+                VirtualDiskBackendError::Cancelled
+            } else {
+                VirtualDiskBackendError::Io { path: PathBuf::from(archive_path), source }
+            }
+        })?;
         written += n as u64;
         offset += n as u64;
     }

@@ -104,6 +104,18 @@ pub fn extract_pkg_with_overwrite_resolver(
     extract_pkg_inner(archive_path, destination, policy, None, Some(overwrite_resolver))
 }
 
+/// Extracts a `.pkg` archive with a job context for progress and
+/// cancellation, and optionally an overwrite resolver.
+pub(crate) fn extract_pkg_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<PkgExtractReport, PkgBackendError> {
+    extract_pkg_inner(archive_path, destination, policy, context, overwrite_resolver)
+}
+
 /// Extracts a `.pkg` archive without job progress callbacks.
 pub fn extract_pkg(archive_path: impl AsRef<Path>, destination: impl AsRef<Path>, policy: ExtractionPolicy) -> Result<PkgExtractReport, PkgBackendError> {
     extract_pkg_inner(archive_path, destination, policy, None, None)

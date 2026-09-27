@@ -224,8 +224,6 @@ mod tests {
     use super::*;
     use crate::test_support::TestDir;
     use std::fs;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(name)
@@ -326,7 +324,8 @@ mod tests {
         assert_eq!(report.bytes, "ZManager fixture payload\n".len() as u64);
         assert!(report.skipped_entries > 0);
 
-        let cancelled_token = Arc::new(AtomicBool::new(true));
+        let cancelled_token = crate::jobs::CancellationToken::new();
+        cancelled_token.cancel();
         let options_cancelled = TestOptions { cancellation: Some(cancelled_token), ..TestOptions::default() };
         assert!(matches!(test(&archive, &options_cancelled), Err(WimBackendError::Cancelled)));
 

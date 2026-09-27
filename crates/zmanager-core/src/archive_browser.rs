@@ -1,5 +1,6 @@
 use crate::engine::types::ArchiveError;
 use crate::engine::{TzapRestoreOptions, TzapRestorePolicy};
+use crate::jobs::{CancellationToken, JobEventSink};
 use crate::safety::{ExtractionPolicy, ExtractionSafetyError, OverwritePolicy};
 use crate::tzap::is_tzap_archive_path;
 use std::fmt;
@@ -377,6 +378,34 @@ pub fn extract_selected_entries_from_engine_handle(
     destination: impl AsRef<Path>,
     options: BrowserExtractOptions<'_>,
 ) -> Result<Vec<(String, EntryExtractReport)>, ArchiveBrowserError> {
+    extract_selected_entries_from_engine_handle_with_job(handle, entry_paths, destination, options, BrowserExtractJob::default())
+}
+
+/// Job plumbing for a browser-driven extraction run as a cancellable job.
+#[derive(Default)]
+pub struct BrowserExtractJob<'a> {
+    /// Cancellation token checked before and during extraction.
+    pub cancellation: Option<CancellationToken>,
+    /// Receives entry and byte progress while the extraction runs.
+    pub event_sink: Option<&'a mut dyn JobEventSink>,
+}
+
+/// Like [`extract_selected_entries_from_engine_handle`], run as a job: the
+/// engine checks `job.cancellation` while it extracts, including inside large
+/// entries, and reports live progress to `job.event_sink`.
+///
+/// # Errors
+///
+/// Returns [`ArchiveBrowserError`] when a selector matches nothing, a safety
+/// check fails, extraction fails, or the job is cancelled (as an engine error
+/// of kind [`crate::engine::ErrorKind::Cancelled`]).
+pub fn extract_selected_entries_from_engine_handle_with_job(
+    handle: &mut crate::engine::ArchiveHandle,
+    entry_paths: &[String],
+    destination: impl AsRef<Path>,
+    options: BrowserExtractOptions<'_>,
+    job: BrowserExtractJob<'_>,
+) -> Result<Vec<(String, EntryExtractReport)>, ArchiveBrowserError> {
     let destination = destination.as_ref();
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| ArchiveBrowserError::Io { path: destination.to_path_buf(), source })?;
@@ -455,7 +484,9 @@ pub fn extract_selected_entries_from_engine_handle(
             allow_degraded: options.tzap_allow_degraded,
             allow_absolute_symlinks: options.tzap_allow_absolute_symlinks,
         }),
-        ..Default::default()
+        cancellation: job.cancellation,
+        event_sink: job.event_sink,
+        overwrite_resolver: None,
     };
     let batch_report =
         handle.extract_selected_many(&entry_ids, &mut selected_options).map_err(|source| ArchiveBrowserError::Engine { format: Some(format), source })?;

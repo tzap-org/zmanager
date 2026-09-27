@@ -8,7 +8,6 @@ use crate::manifest::ArchiveManifest;
 use crate::safety::{ExtractionPolicy, OverwriteResolver};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, atomic::AtomicBool};
 
 /// Session-scoped entry identifier (ARC-103).
 ///
@@ -233,8 +232,8 @@ pub struct TestOptions {
     pub recipient_key_bytes: Option<Vec<Vec<u8>>>,
     /// Optional X.509 trust policy for TZAP root-auth verification.
     pub tzap_x509_trust: Option<TzapX509TrustOptions>,
-    /// Cooperative cancellation flag checked before and during test work.
-    pub cancellation: Option<Arc<AtomicBool>>,
+    /// Optional cancellation token checked before and during test work.
+    pub cancellation: Option<CancellationToken>,
 }
 
 impl fmt::Debug for TestOptions {
@@ -259,7 +258,7 @@ impl TestOptions {
     /// Returns whether the operation was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancellation.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        self.cancellation.as_ref().is_some_and(CancellationToken::is_cancelled)
     }
 }
 

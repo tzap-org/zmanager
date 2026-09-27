@@ -1,6 +1,5 @@
-use crate::safety::{
-    ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
-};
+use crate::jobs::{JobCancelled, JobContext};
+use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver};
 use crate::temp_names::TempDirAllocError;
 use crate::{lzop_decoder::LzopReader, unix_compress_decoder::UnixCompressReader, uu_decoder::UuDecoder};
 use std::fmt;
@@ -135,6 +134,8 @@ pub enum RawStreamError {
     Safety(ExtractionSafetyError),
     /// The archive file name cannot produce a safe output file name.
     MissingOutputName { archive_path: PathBuf },
+    /// The caller cancelled the operation.
+    Cancelled,
 }
 
 impl fmt::Display for RawStreamError {
@@ -145,6 +146,7 @@ impl fmt::Display for RawStreamError {
             Self::MissingOutputName { archive_path } => {
                 write!(f, "could not derive raw stream output name from {}", archive_path.display())
             }
+            Self::Cancelled => write!(f, "job cancelled"),
         }
     }
 }
@@ -154,8 +156,14 @@ impl std::error::Error for RawStreamError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
-            Self::MissingOutputName { .. } => None,
+            Self::MissingOutputName { .. } | Self::Cancelled => None,
         }
+    }
+}
+
+impl From<JobCancelled> for RawStreamError {
+    fn from(_source: JobCancelled) -> Self {
+        Self::Cancelled
     }
 }
 
@@ -201,7 +209,7 @@ pub fn extract_raw_stream(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
-    extract_raw_stream_inner(archive_path, format, destination, policy, None, None, false)
+    extract_raw_stream_inner(archive_path, format, destination, policy, None, None)
 }
 
 /// Attempts to return the uncompressed byte size for a raw stream before
@@ -241,7 +249,26 @@ pub fn extract_raw_stream_with_overwrite_resolver(
     policy: ExtractionPolicy,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
-    extract_raw_stream_inner(archive_path, format, destination, policy, Some(overwrite_resolver), None, false)
+    extract_raw_stream_inner(archive_path, format, destination, policy, Some(overwrite_resolver), None)
+}
+
+/// Extracts a raw single-file compression stream with a job context for
+/// progress and cancellation, and optionally an overwrite resolver.
+///
+/// # Errors
+///
+/// Returns [`RawStreamError`] when the stream cannot be decoded, the output
+/// name is unsafe, filesystem writes fail, the resolver aborts extraction, or
+/// the job is cancelled.
+pub(crate) fn extract_raw_stream_with_context(
+    archive_path: impl AsRef<Path>,
+    format: RawStreamFormat,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<RawStreamExtractReport, RawStreamError> {
+    extract_raw_stream_inner(archive_path, format, destination, policy, overwrite_resolver, context)
 }
 
 /// Returns whether raw stream extraction can report input-stream byte
@@ -258,8 +285,7 @@ fn extract_raw_stream_inner(
     destination: impl AsRef<Path>,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    on_progress: ProgressCallback<'_>,
-    track_source_progress: bool,
+    context: Option<&mut JobContext<'_>>,
 ) -> Result<RawStreamExtractReport, RawStreamError> {
     let archive_path = archive_path.as_ref();
     let destination = destination.as_ref();
@@ -282,19 +308,25 @@ fn extract_raw_stream_inner(
         compressed_size: archive_path.metadata().ok().map(|metadata| metadata.len()),
     };
 
-    match planner.validate_entry(&entry)? {
-        ExtractionDecision::Write { destination_path, replace_existing, .. } => {
-            let written_bytes =
-                write_raw_stream_to_file(archive_path, format, &destination_path, replace_existing, max_expanded_bytes, on_progress, track_source_progress)?;
+    let decision = planner.validate_entry(&entry)?;
+    crate::extract_loop::process_planned_entry(&mut report, context, &entry, decision, &mut |action, report, context| match action {
+        crate::extract_loop::EntryAction::Skip => Ok::<u64, RawStreamError>(0),
+        crate::extract_loop::EntryAction::Write(decision) => {
+            let written_bytes = write_raw_stream_to_file(
+                archive_path,
+                format,
+                decision.destination_path,
+                decision.replace_existing,
+                max_expanded_bytes,
+                context,
+                &entry.archive_path,
+            )?;
             report.written_entries = 1;
             report.written_bytes = written_bytes;
-            report.output_path = Some(destination_path);
+            report.output_path = Some(decision.destination_path.to_path_buf());
+            Ok(written_bytes)
         }
-        ExtractionDecision::Skip { reason, .. } => {
-            report.skipped_entries = 1;
-            report.warnings.push(format!("skipped {}: {reason}", entry.archive_path));
-        }
-    }
+    })?;
 
     Ok(report)
 }
@@ -432,8 +464,8 @@ fn write_raw_stream_to_file(
     destination_path: &Path,
     replace_existing: bool,
     max_expanded_bytes: Option<u64>,
-    on_progress: ProgressCallback<'_>,
-    track_source_progress: bool,
+    context: Option<&mut JobContext<'_>>,
+    output_name: &str,
 ) -> Result<u64, RawStreamError> {
     let mut mtime_to_restore = None;
     if format == RawStreamFormat::Gzip
@@ -452,9 +484,12 @@ fn write_raw_stream_to_file(
         crate::atomic_file::AtomicOutputFile::create(destination_path).map_err(|source| RawStreamError::Io { path: destination_path.to_path_buf(), source })?;
     let written = {
         let file = output.file_mut().map_err(|source| RawStreamError::Io { path: destination_path.to_path_buf(), source })?;
-        let mut limited_output = SizeLimitWriter::new(file, max_expanded_bytes);
-        let written = copy_raw_stream_to_writer_with_progress(archive_path, format, &mut limited_output, on_progress, track_source_progress)?;
-        limited_output.flush().map_err(|source| RawStreamError::Io { path: destination_path.to_path_buf(), source })?;
+        let mut output = crate::extract_loop::JobProgressWriter::new(SizeLimitWriter::new(file, max_expanded_bytes), context, output_name);
+        let written = match copy_raw_stream_to_writer(archive_path, format, &mut output) {
+            Err(RawStreamError::Io { source, .. }) if crate::extract_loop::is_job_cancelled(&source) => return Err(RawStreamError::Cancelled),
+            result => result?,
+        };
+        output.flush().map_err(|source| RawStreamError::Io { path: destination_path.to_path_buf(), source })?;
         written
     };
 
@@ -626,7 +661,7 @@ mod tests {
         encoder.write_all(b"hello world").unwrap();
         encoder.finish().unwrap();
 
-        super::write_raw_stream_to_file(&archive_path, RawStreamFormat::Gzip, &extract_path, true, None, None, false).unwrap();
+        super::write_raw_stream_to_file(&archive_path, RawStreamFormat::Gzip, &extract_path, true, None, None, "extracted.txt").unwrap();
 
         let meta = fs::metadata(&extract_path).unwrap();
         let modified = meta.modified().unwrap();

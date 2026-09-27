@@ -43,6 +43,7 @@ macro_rules! extract_report_impl {
 }
 
 extract_report_impl!(crate::apple_archive_backend::AppleArchiveExtractReport);
+extract_report_impl!(crate::raw_stream_backend::RawStreamExtractReport);
 extract_report_impl!(crate::sevenz_backend::SevenZExtractReport);
 extract_report_impl!(crate::zip_backend::ZipExtractReport);
 
@@ -205,6 +206,48 @@ where
     Ok(written_bytes)
 }
 
+/// Output writer for backends whose readers push entry data into a writer
+/// rather than exposing a `Read`: reports written bytes to the job context and
+/// stops writing once the job is cancelled. Without a context it only forwards.
+///
+/// Cancellation is checked before each write, so no bytes land after it, and
+/// it surfaces as an [`io::Error`] wrapping [`JobCancelled`] (see
+/// [`is_job_cancelled`]). It must never be `ErrorKind::Interrupted`:
+/// `write_all` and `io::copy` retry that kind, writing the same buffer again
+/// for as long as the job stays cancelled.
+pub(crate) struct JobProgressWriter<'a, 'b, W> {
+    inner: W,
+    context: Option<&'a mut JobContext<'b>>,
+    archive_path: &'a str,
+}
+
+impl<'a, 'b, W> JobProgressWriter<'a, 'b, W> {
+    pub(crate) fn new(inner: W, context: Option<&'a mut JobContext<'b>>, archive_path: &'a str) -> Self {
+        Self { inner, context, archive_path }
+    }
+}
+
+impl<W: Write> Write for JobProgressWriter<'_, '_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(context) = self.context.as_deref_mut() else {
+            return self.inner.write(buffer);
+        };
+        context.check_cancelled().map_err(io::Error::other)?;
+        let written = self.inner.write(buffer)?;
+        context.bytes_processed(Some(self.archive_path), written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Whether an I/O error is the cancellation raised by [`JobProgressWriter`].
+pub(crate) fn is_job_cancelled(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(<dyn std::error::Error + Send + Sync>::is::<JobCancelled>)
+}
+
 /// Applies metadata to deferred directory entries in reverse archive order,
 /// so the deepest directories are stamped before their parents.
 ///
@@ -222,4 +265,45 @@ pub(crate) fn apply_deferred_directory_metadata<M, E>(directories: &[M], mut app
 /// extraction safety planning — an internal invariant, not a user input.
 pub(crate) fn unresolved_hardlink_target() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "hardlink target was not resolved by extraction safety planning")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JobProgressWriter, is_job_cancelled};
+    use crate::jobs::{CancellationToken, JobContext, JobEvent};
+    use std::io::Write;
+
+    #[test]
+    fn cancelled_progress_writer_fails_write_all_without_writing() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut sink = |_event: JobEvent| {};
+        let mut context = JobContext::new(&token, &mut sink);
+        let mut output = Vec::new();
+
+        // `write_all` retries `ErrorKind::Interrupted`; a cancellation of that
+        // kind would rewrite the buffer forever instead of returning.
+        let error = JobProgressWriter::new(&mut output, Some(&mut context), "entry").write_all(b"payload").unwrap_err();
+
+        assert!(is_job_cancelled(&error), "{error}");
+        assert!(output.is_empty(), "no bytes may be written once the job is cancelled");
+    }
+
+    #[test]
+    fn progress_writer_reports_written_bytes() {
+        let token = CancellationToken::new();
+        let mut processed = 0;
+        let mut sink = |event: JobEvent| {
+            if let JobEvent::BytesProcessed { total_bytes_processed, .. } = event {
+                processed = total_bytes_processed;
+            }
+        };
+        let mut context = JobContext::new(&token, &mut sink);
+        let mut output = Vec::new();
+        JobProgressWriter::new(&mut output, Some(&mut context), "entry").write_all(b"payload").unwrap();
+        context.flush_progress();
+
+        assert_eq!(output, b"payload");
+        assert_eq!(processed, 7);
+    }
 }

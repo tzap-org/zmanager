@@ -416,7 +416,8 @@ mod tests {
         fs::write(&valid_path, valid_bytes).unwrap();
 
         // Cancelled test
-        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let cancel_flag = crate::jobs::CancellationToken::new();
+        cancel_flag.cancel();
         let cancel_opts = TestOptions { cancellation: Some(cancel_flag), ..TestOptions::default() };
         assert!(matches!(test(&valid_path, &cancel_opts), Err(LhaError::Cancelled)));
 

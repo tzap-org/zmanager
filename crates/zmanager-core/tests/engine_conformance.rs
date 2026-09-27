@@ -6,10 +6,7 @@ use common::TestDir;
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::Ordering};
 
 use zmanager_core::archive_browser::BrowserEntryKind;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -1122,11 +1119,12 @@ fn engine_test_cancellation_is_reported_before_adapter_work() {
     zip.write_all(b"payload").unwrap();
     zip.finish().unwrap();
 
-    let cancellation = Arc::new(AtomicBool::new(true));
+    let cancellation = zmanager_core::jobs::CancellationToken::new();
+    cancellation.cancel();
     let mut handle = create_default_engine().unwrap().open(ArchiveSource::from_path_autodetect(&zip_path), OpenOptions::default()).unwrap();
-    let error = handle.test(&zmanager_core::engine::TestOptions { cancellation: Some(Arc::clone(&cancellation)), ..Default::default() }).unwrap_err();
+    let error = handle.test(&zmanager_core::engine::TestOptions { cancellation: Some(cancellation.clone()), ..Default::default() }).unwrap_err();
     assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled);
-    assert!(cancellation.load(Ordering::Relaxed));
+    assert!(cancellation.is_cancelled());
 }
 
 #[test]
@@ -2703,4 +2701,90 @@ fn engine_selected_extract_covers_apple_archive_overwrite_and_selection_with_eve
         b"placeholder",
         "an entry left out of the selection must not be touched even though a resolver and event sink are attached"
     );
+}
+
+/// Cancelling at the first entry must stop the raw-stream, installer, and disk
+/// image adapters with `Cancelled`. Formats that stream entry data into a
+/// writer also refuse that entry's first chunk, so nothing is left behind;
+/// PKG holds decoded payloads in memory and writes a whole entry at once, so
+/// it stops at the next entry instead.
+#[test]
+fn engine_extract_cancellation_is_honored_by_stream_installer_and_disk_image_adapters() {
+    let fixtures = [
+        ("basic.txt.gz", true),
+        ("basic.txt.xz", true),
+        ("basic.txt.zst", true),
+        ("basic.msi", true),
+        ("basic.dmg", true),
+        ("basic.iso", true),
+        ("basic.udf", true),
+        ("basic.vhd", true),
+        ("basic.vmdk", true),
+        ("basic.pkg", false),
+    ];
+    for (fixture, streams_entry_data) in fixtures {
+        let archive = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(fixture);
+        let temp = TestDir::new(&format!("engine-cancel-{fixture}"));
+        let out_dir = temp.path("out");
+
+        let mut handle = create_default_engine().unwrap().open(ArchiveSource::from_path_autodetect(&archive), OpenOptions::default()).unwrap();
+        let listed_files = handle.list().unwrap().entries.iter().filter(|entry| entry.kind == BrowserEntryKind::File).count();
+
+        let token = zmanager_core::jobs::CancellationToken::new();
+        let cancel_token = token.clone();
+        let mut sink = |event: zmanager_core::jobs::JobEvent| {
+            if matches!(event, zmanager_core::jobs::JobEvent::EntryStarted { .. }) {
+                cancel_token.cancel();
+            }
+        };
+        let mut options = ExtractOptions { destination: out_dir.clone(), cancellation: Some(token), event_sink: Some(&mut sink), ..Default::default() };
+        let error = handle.extract(&mut options).unwrap_err();
+
+        assert_eq!(error.kind, zmanager_core::engine::ErrorKind::Cancelled, "{fixture}: {error:?}");
+        let written = walk_files(&out_dir);
+        if streams_entry_data {
+            assert!(written.is_empty(), "{fixture}: the entry being written when cancelled must not be left behind: {written:?}");
+        } else {
+            assert!(written.len() < listed_files, "{fixture}: cancellation must stop before every entry is written: {written:?}");
+        }
+    }
+}
+
+#[test]
+fn browser_selected_extraction_job_reports_progress_and_honors_cancellation() {
+    let temp = TestDir::new("browser-selected-extract-job-cancel");
+    let archive_path = temp.path("selection.zip");
+    let mut zip = zip::ZipWriter::new(File::create(&archive_path).unwrap());
+    for name in ["first.txt", "second.txt", "third.txt"] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(name.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let mut handle = create_default_engine().unwrap().open(ArchiveSource::from_path_autodetect(&archive_path), OpenOptions::default()).unwrap();
+    let token = zmanager_core::jobs::CancellationToken::new();
+    let cancel_token = token.clone();
+    let mut started = Vec::new();
+    let mut sink = |event: zmanager_core::jobs::JobEvent| {
+        if let zmanager_core::jobs::JobEvent::EntryStarted { path, .. } = event {
+            started.push(path);
+            cancel_token.cancel();
+        }
+    };
+    let selection = ["first.txt".to_owned(), "second.txt".to_owned(), "third.txt".to_owned()];
+    let error = zmanager_core::archive_browser::extract_selected_entries_from_engine_handle_with_job(
+        &mut handle,
+        &selection,
+        temp.path("out"),
+        zmanager_core::archive_browser::BrowserExtractOptions::default(),
+        zmanager_core::archive_browser::BrowserExtractJob { cancellation: Some(token), event_sink: Some(&mut sink) },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(&error, zmanager_core::archive_browser::ArchiveBrowserError::Engine { source, .. } if source.kind == zmanager_core::engine::ErrorKind::Cancelled),
+        "{error:?}"
+    );
+    assert_eq!(started.len(), 1, "the engine must report live progress and stop at the first entry: {started:?}");
+    assert!(walk_files(&temp.path("out")).is_empty(), "the cancelled entry must not be left behind");
 }

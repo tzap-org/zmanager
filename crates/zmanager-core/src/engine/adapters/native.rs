@@ -747,6 +747,7 @@ fn deb_error(path: &std::path::Path, error: &crate::deb_backend::DebError) -> Ar
             crate::raw_stream_backend::RawStreamError::Safety(safety) => crate::engine::adapters::safety_error_kind(safety),
             crate::raw_stream_backend::RawStreamError::Io { .. } => ErrorKind::Io,
             crate::raw_stream_backend::RawStreamError::MissingOutputName { .. } => ErrorKind::CorruptData,
+            crate::raw_stream_backend::RawStreamError::Cancelled => ErrorKind::Cancelled,
         },
         crate::deb_backend::DebError::Io { .. } => ErrorKind::Io,
         crate::deb_backend::DebError::MissingMember { .. } => ErrorKind::CorruptData,
@@ -817,6 +818,7 @@ fn rpm_error(path: &std::path::Path, error: &crate::rpm_backend::RpmError) -> Ar
             crate::raw_stream_backend::RawStreamError::Safety(safety) => crate::engine::adapters::safety_error_kind(safety),
             crate::raw_stream_backend::RawStreamError::Io { .. } => ErrorKind::Io,
             crate::raw_stream_backend::RawStreamError::MissingOutputName { .. } => ErrorKind::CorruptData,
+            crate::raw_stream_backend::RawStreamError::Cancelled => ErrorKind::Cancelled,
         },
     };
     crate::engine::adapters::adapter_error(path, kind, error.to_string())
@@ -1769,6 +1771,7 @@ fn raw_stream_error(path: &std::path::Path, error: &raw_stream_backend::RawStrea
         raw_stream_backend::RawStreamError::Io { .. } => ErrorKind::Io,
         raw_stream_backend::RawStreamError::Safety(source) => crate::engine::adapters::safety_error_kind(source),
         raw_stream_backend::RawStreamError::MissingOutputName { .. } => ErrorKind::InvalidFormat,
+        raw_stream_backend::RawStreamError::Cancelled => ErrorKind::Cancelled,
     };
     crate::engine::adapters::adapter_error(path, kind, error.to_string())
 }
@@ -2518,11 +2521,10 @@ impl NativeReadAdapter for RawStreamListAdapter {
         let path = archive.primary_path();
         let format = raw_stream_backend::detect_raw_stream_format(path)
             .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, "Not a recognized raw compression stream").with_path(path))?;
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            raw_stream_backend::extract_raw_stream_with_overwrite_resolver(path, format, &options.destination, options.policy.clone(), resolver)
-        } else {
-            raw_stream_backend::extract_raw_stream(path, format, &options.destination, options.policy.clone())
-        }
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            raw_stream_backend::extract_raw_stream_with_context(path, format, &options.destination, options.policy.clone(), resolver, context)
+        })
         .map_err(|error| raw_stream_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2540,11 +2542,17 @@ impl NativeReadAdapter for RawStreamListAdapter {
         let path = archive.primary_path();
         let format = raw_stream_backend::detect_raw_stream_format(path)
             .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, "Not a recognized raw compression stream").with_path(path))?;
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            raw_stream_backend::extract_raw_stream_with_overwrite_resolver(path, format, &options.destination, options.policy.clone(), resolver)
-        } else {
-            raw_stream_backend::extract_raw_stream(path, format, &options.destination, options.policy.clone())
-        }
+        let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            raw_stream_backend::extract_raw_stream_with_context(
+                path,
+                format,
+                &options.destination,
+                options.policy.clone(),
+                reborrowed_resolver.as_mut().map(|resolver| resolver as &mut dyn crate::safety::OverwriteResolver),
+                context,
+            )
+        })
         .map_err(|error| raw_stream_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2743,11 +2751,10 @@ impl NativeReadAdapter for DmgListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            apple_dmg_backend::extract_dmg_with_overwrite_resolver(path, &options.destination, options.policy.clone(), resolver)
-        } else {
-            apple_dmg_backend::extract_dmg(path, &options.destination, options.policy.clone())
-        }
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            apple_dmg_backend::extract_dmg_with_context(path, &options.destination, options.policy.clone(), resolver, context)
+        })
         .map_err(|error| dmg_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2804,11 +2811,10 @@ impl NativeReadAdapter for PkgListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            apple_pkg_backend::extract_pkg_with_overwrite_resolver(path, &options.destination, options.policy.clone(), resolver)
-        } else {
-            apple_pkg_backend::extract_pkg(path, &options.destination, options.policy.clone())
-        }
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            apple_pkg_backend::extract_pkg_with_context(path, &options.destination, options.policy.clone(), resolver, context)
+        })
         .map_err(|error| pkg_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -2861,11 +2867,10 @@ impl NativeReadAdapter for MsiListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let report = if let Some(resolver) = options.overwrite_resolver.as_deref_mut() {
-            msi_backend::extract_msi_with_overwrite_resolver(path, &options.destination, options.policy.clone(), resolver)
-        } else {
-            msi_backend::extract_msi(path, &options.destination, options.policy.clone())
-        }
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            msi_backend::extract_msi_with_context(path, &options.destination, options.policy.clone(), resolver, context)
+        })
         .map_err(|error| msi_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }
@@ -3336,14 +3341,10 @@ impl NativeReadAdapter for VirtualDiskListAdapter {
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
         let allow_logical = self.mount_class("format")?;
-        let report = virtual_disk_backend::extract_container_inner(
-            path,
-            &options.destination,
-            options.policy.clone(),
-            None,
-            options.overwrite_resolver.as_deref_mut(),
-            allow_logical,
-        )
+        let resolver = options.overwrite_resolver.as_deref_mut();
+        let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
+            virtual_disk_backend::extract_container_inner(path, &options.destination, options.policy.clone(), context, resolver, allow_logical)
+        })
         .map_err(|error| virtual_disk_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))
     }

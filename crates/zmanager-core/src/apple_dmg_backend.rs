@@ -91,29 +91,6 @@ impl std::error::Error for DmgBackendError {
     }
 }
 
-struct ProgressWriter<'a, 'b, W: io::Write> {
-    inner: W,
-    context: Option<&'a mut JobContext<'b>>,
-    archive_path: &'a str,
-}
-
-impl<W: io::Write> io::Write for ProgressWriter<'_, '_, W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(buf)?;
-        if let Some(ctx) = self.context.as_deref_mut() {
-            if ctx.check_cancelled().is_err() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "job cancelled"));
-            }
-            ctx.bytes_processed(Some(self.archive_path), written as u64);
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
 /// HFS+ volumes carry a reserved `\0\0\0\0HFS+ Private Data` directory
 /// (Finder metadata) that cannot exist as a real path; skip it and any other
 /// entry whose raw name contains NUL bytes.
@@ -159,6 +136,18 @@ pub fn extract_dmg_with_overwrite_resolver(
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<DmgExtractReport, DmgBackendError> {
     extract_dmg_inner(archive_path, destination, policy, None, Some(overwrite_resolver))
+}
+
+/// Extracts a `.dmg` archive with a job context for progress and
+/// cancellation, and optionally an overwrite resolver.
+pub(crate) fn extract_dmg_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<DmgExtractReport, DmgBackendError> {
+    extract_dmg_inner(archive_path, destination, policy, context, overwrite_resolver)
 }
 
 /// Extracts a `.dmg` archive without job progress callbacks.
@@ -230,13 +219,17 @@ fn extract_dmg_inner(
                         ExtractionEntryKind::File => {
                             let mut output = crate::atomic_file::AtomicOutputFile::create(destination_path)
                                 .map_err(|source| DmgBackendError::Io { path: destination_path.to_path_buf(), source })?;
-                            let mut file = output.file_mut().map_err(|source| DmgBackendError::Io { path: destination_path.to_path_buf(), source })?;
+                            let file = output.file_mut().map_err(|source| DmgBackendError::Io { path: destination_path.to_path_buf(), source })?;
 
-                            let written_bytes = if context.is_some() {
-                                let mut writer = ProgressWriter { inner: &mut file, context: context.as_deref_mut(), archive_path: &safety_entry.archive_path };
-                                fs.read_file_to(&walk_entry.path, &mut writer).map_err(|e| DmgBackendError::Dpp(e.to_string()))?
-                            } else {
-                                fs.read_file_to(&walk_entry.path, &mut file).map_err(|e| DmgBackendError::Dpp(e.to_string()))?
+                            let mut writer = crate::extract_loop::JobProgressWriter::new(file, context.as_deref_mut(), &safety_entry.archive_path);
+                            let written_bytes = match fs.read_file_to(&walk_entry.path, &mut writer) {
+                                Ok(written_bytes) => written_bytes,
+                                // DPP reports the writer's error only as text, so
+                                // ask the job whether this was its cancellation.
+                                Err(_) if context.as_deref().is_some_and(|context| context.check_cancelled().is_err()) => {
+                                    return Err(DmgBackendError::Cancelled);
+                                }
+                                Err(error) => return Err(DmgBackendError::Dpp(error.to_string())),
                             };
 
                             output

@@ -97,29 +97,6 @@ impl std::error::Error for MsiBackendError {
     }
 }
 
-struct ProgressWriter<'a, 'b, W: io::Write> {
-    inner: W,
-    context: Option<&'a mut JobContext<'b>>,
-    archive_path: &'a str,
-}
-
-impl<W: io::Write> io::Write for ProgressWriter<'_, '_, W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.inner.write(buf)?;
-        if let Some(ctx) = self.context.as_deref_mut() {
-            if ctx.check_cancelled().is_err() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "job cancelled"));
-            }
-            ctx.bytes_processed(Some(self.archive_path), written as u64);
-        }
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
 /// One `File`-table row resolved into an extractable entry.
 #[derive(Debug, Clone)]
 struct MsiFileEntry {
@@ -303,6 +280,18 @@ pub fn extract_msi_with_overwrite_resolver(
     extract_msi_inner(archive_path, destination, policy, None, Some(overwrite_resolver))
 }
 
+/// Extracts an `.msi` archive with a job context for progress and
+/// cancellation, and optionally an overwrite resolver.
+pub(crate) fn extract_msi_with_context(
+    archive_path: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
+    context: Option<&mut JobContext<'_>>,
+) -> Result<MsiExtractReport, MsiBackendError> {
+    extract_msi_inner(archive_path, destination, policy, context, overwrite_resolver)
+}
+
 /// Extracts an `.msi` archive without job progress callbacks.
 pub fn extract_msi(archive_path: impl AsRef<Path>, destination: impl AsRef<Path>, policy: ExtractionPolicy) -> Result<MsiExtractReport, MsiBackendError> {
     extract_msi_inner(archive_path, destination, policy, None, None)
@@ -325,6 +314,7 @@ fn extract_msi_inner(
     let mut package = open_package(archive_path)?;
 
     let mut planner = ExtractionSafetyPlanner::with_overwrite_resolver(&destination_root, policy, overwrite_resolver);
+    let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
     let mut report = MsiExtractReport { written_entries: 0, skipped_entries: manifest_skips, written_bytes: 0, warnings };
 
     // Files sharing an embedded cabinet share one cabinet reader; group in
@@ -397,18 +387,17 @@ fn extract_msi_inner(
                             .read_file(&entry.file_key)
                             .map_err(|error| MsiBackendError::Cab(format!("read {} from cabinet {stream_name}: {error}", entry.file_key)))?;
 
-                        let mut output = crate::atomic_file::AtomicOutputFile::create(destination_path)
-                            .map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })?;
-                        let file = output.file_mut().map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })?;
-
-                        let written_bytes = if context.is_some() {
-                            let mut writer = ProgressWriter { inner: file, context: context.as_deref_mut(), archive_path: &safety_entry.archive_path };
-                            io::copy(&mut file_reader, &mut writer).map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })?
-                        } else {
-                            io::copy(&mut file_reader, file).map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })?
-                        };
-
-                        output.commit_with_replace(replace_existing).map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })?;
+                        let written_bytes = crate::extract_loop::copy_file_entry(
+                            destination_path,
+                            replace_existing,
+                            Some(&safety_entry.archive_path),
+                            context.as_deref_mut(),
+                            &mut io_buffer,
+                            |buffer| {
+                                io::Read::read(&mut file_reader, buffer).map_err(|source| MsiBackendError::Io { path: destination_path.to_path_buf(), source })
+                            },
+                            |source, path| MsiBackendError::Io { path: path.to_path_buf(), source },
+                        )?;
 
                         report.written_entries += 1;
                         report.written_bytes += written_bytes;

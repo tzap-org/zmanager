@@ -793,7 +793,9 @@ mod tests {
         assert_eq!(report.bytes, "ZManager fixture payload\n".len() as u64);
         assert!(report.skipped_entries > 0);
 
-        let cancelled = TestOptions { cancellation: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))), ..TestOptions::default() };
+        let token = crate::jobs::CancellationToken::new();
+        token.cancel();
+        let cancelled = TestOptions { cancellation: Some(token), ..TestOptions::default() };
         assert!(matches!(test(&archive, &cancelled), Err(SquashfsBackendError::Cancelled)));
     }
 }
