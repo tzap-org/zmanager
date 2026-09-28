@@ -1032,7 +1032,13 @@ fn ntfs_file_time(ticks: u64) -> Option<FileTime> {
 /// Reads a DOS timestamp as local wall-clock time, using the zone offset in
 /// effect on that date so daylight saving is honoured.
 fn dos_local_file_time(dt: zip::DateTime) -> Option<FileTime> {
-    use chrono::TimeZone;
+    dos_file_time_in(dt, &chrono::Local)
+}
+
+/// Reads a DOS timestamp as wall-clock time in `zone`. Split from
+/// [`dos_local_file_time`] so tests can pin the zone instead of depending on the host's.
+fn dos_file_time_in<Tz: chrono::TimeZone>(dt: zip::DateTime, zone: &Tz) -> Option<FileTime> {
+    use chrono::Offset;
 
     let month = if (1..=12).contains(&dt.month()) { dt.month() } else { 1 };
     let naive = chrono::NaiveDate::from_ymd_opt(i32::from(dt.year()), u32::from(month), u32::from(dt.day().max(1)))?.and_hms_opt(
@@ -1040,11 +1046,11 @@ fn dos_local_file_time(dt: zip::DateTime) -> Option<FileTime> {
         u32::from(dt.minute()),
         u32::from(dt.second()),
     )?;
-    let seconds = match chrono::Local.from_local_datetime(&naive) {
+    let seconds = match zone.from_local_datetime(&naive) {
         chrono::LocalResult::Single(local) | chrono::LocalResult::Ambiguous(local, _) => local.timestamp(),
         // A wall-clock time skipped by a daylight-saving jump: apply the offset
         // in effect at that instant rather than dropping the timestamp.
-        chrono::LocalResult::None => naive.and_utc().timestamp() - i64::from(chrono::Local.offset_from_utc_datetime(&naive).local_minus_utc()),
+        chrono::LocalResult::None => naive.and_utc().timestamp() - i64::from(zone.offset_from_utc_datetime(&naive).fix().local_minus_utc()),
     };
     Some(FileTime::from_unix_time(seconds, 0))
 }
@@ -1055,19 +1061,7 @@ fn dos_local_file_time(dt: zip::DateTime) -> Option<FileTime> {
 /// 1901-12-13..=2038-01-19 rather than written as a value readers would
 /// interpret as a different date; the DOS field still covers 1980..=2107.
 fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemTime) -> FullFileOptions<'_> {
-    use chrono::{Datelike, Timelike};
-
-    let local = chrono::DateTime::<chrono::Local>::from(modified);
-    if let Ok(year) = u16::try_from(local.year())
-        && let Ok(dt) = zip::DateTime::from_date_and_time(
-            year,
-            u8::try_from(local.month()).unwrap_or(1),
-            u8::try_from(local.day()).unwrap_or(1),
-            u8::try_from(local.hour()).unwrap_or(0),
-            u8::try_from(local.minute()).unwrap_or(0),
-            u8::try_from(local.second()).unwrap_or(0),
-        )
-    {
+    if let Some(dt) = dos_date_time_in(modified, &chrono::Local) {
         options = options.last_modified_time(dt);
     }
     // `FileTime` floors pre-epoch times to whole seconds, matching Unix time.
@@ -1080,6 +1074,23 @@ fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemT
         let _ = options.add_extra_data(EXTENDED_TIMESTAMP_FIELD_ID, field, false);
     }
     options
+}
+
+/// Renders `modified` as a DOS timestamp in `zone`'s wall-clock time, or `None`
+/// outside the 1980..=2107 range the DOS field can hold.
+fn dos_date_time_in<Tz: chrono::TimeZone>(modified: std::time::SystemTime, zone: &Tz) -> Option<zip::DateTime> {
+    use chrono::{Datelike, Timelike};
+
+    let local = chrono::DateTime::<chrono::Utc>::from(modified).with_timezone(zone);
+    zip::DateTime::from_date_and_time(
+        u16::try_from(local.year()).ok()?,
+        u8::try_from(local.month()).ok()?,
+        u8::try_from(local.day()).ok()?,
+        u8::try_from(local.hour()).ok()?,
+        u8::try_from(local.minute()).ok()?,
+        u8::try_from(local.second()).ok()?,
+    )
+    .ok()
 }
 
 fn apply_zip_metadata(path: &Path, unix_mode: Option<u32>, modified_time: Option<FileTime>) -> Result<(), ZipBackendError> {
@@ -1280,6 +1291,131 @@ mod tests {
 
         let expected = chrono::Local.with_ymd_and_hms(2023, 11, 14, 22, 13, 20).single().unwrap().timestamp();
         assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(expected, 0));
+    }
+
+    // The tests above go through the host zone, which proves nothing on a UTC
+    // runner. These pin the zone so the local-time conversion is checked everywhere.
+
+    /// US Eastern time with 2023's daylight-saving rules: EDT (UTC-4) from
+    /// 2023-03-12T07:00Z until 2023-11-05T06:00Z, EST (UTC-5) otherwise.
+    #[derive(Clone, Copy, Debug)]
+    struct Eastern2023;
+
+    impl Eastern2023 {
+        fn edt() -> chrono::FixedOffset {
+            chrono::FixedOffset::west_opt(4 * 3600).unwrap()
+        }
+
+        fn est() -> chrono::FixedOffset {
+            chrono::FixedOffset::west_opt(5 * 3600).unwrap()
+        }
+    }
+
+    impl chrono::TimeZone for Eastern2023 {
+        type Offset = chrono::FixedOffset;
+
+        fn from_offset(_offset: &chrono::FixedOffset) -> Self {
+            Self
+        }
+
+        fn offset_from_local_date(&self, local: &chrono::NaiveDate) -> chrono::LocalResult<chrono::FixedOffset> {
+            self.offset_from_local_datetime(&local.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> chrono::LocalResult<chrono::FixedOffset> {
+            let fits = |offset: chrono::FixedOffset| self.offset_from_utc_datetime(&(*local - offset)) == offset;
+            match (fits(Self::edt()), fits(Self::est())) {
+                // Fall-back hour: the EDT reading is the earlier instant.
+                (true, true) => chrono::LocalResult::Ambiguous(Self::edt(), Self::est()),
+                (true, false) => chrono::LocalResult::Single(Self::edt()),
+                (false, true) => chrono::LocalResult::Single(Self::est()),
+                (false, false) => chrono::LocalResult::None,
+            }
+        }
+
+        fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> chrono::FixedOffset {
+            self.offset_from_utc_datetime(&utc.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+            let start = chrono::NaiveDate::from_ymd_opt(2023, 3, 12).unwrap().and_hms_opt(7, 0, 0).unwrap();
+            let end = chrono::NaiveDate::from_ymd_opt(2023, 11, 5).unwrap().and_hms_opt(6, 0, 0).unwrap();
+            if (start..end).contains(utc) { Self::edt() } else { Self::est() }
+        }
+    }
+
+    fn utc_seconds(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+        use chrono::TimeZone;
+        chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second).unwrap().timestamp()
+    }
+
+    fn dos(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> zip::DateTime {
+        zip::DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap()
+    }
+
+    fn read_dos_in<Tz: chrono::TimeZone>(dt: zip::DateTime, zone: &Tz) -> i64 {
+        super::dos_file_time_in(dt, zone).unwrap().unix_seconds()
+    }
+
+    fn dos_fields(dt: zip::DateTime) -> (u16, u8, u8, u8, u8, u8) {
+        (dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second())
+    }
+
+    #[test]
+    fn dos_timestamp_is_read_in_the_given_fixed_zone() {
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        let bogota = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        // 22:13:20 on the wall clock is 13:13:20Z in Tokyo and 03:13:20Z next day in Bogota.
+        assert_eq!(read_dos_in(dos_stamp(), &tokyo), utc_seconds(2023, 11, 14, 13, 13, 20));
+        assert_eq!(read_dos_in(dos_stamp(), &bogota), utc_seconds(2023, 11, 15, 3, 13, 20));
+    }
+
+    #[test]
+    fn dos_timestamp_honours_daylight_saving_on_its_own_date() {
+        // Summer uses EDT and winter EST, whatever the offset is today.
+        assert_eq!(read_dos_in(dos(2023, 7, 1, 12, 0, 0), &Eastern2023), utc_seconds(2023, 7, 1, 16, 0, 0));
+        assert_eq!(read_dos_in(dos(2023, 1, 15, 12, 0, 0), &Eastern2023), utc_seconds(2023, 1, 15, 17, 0, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_in_spring_forward_gap_is_kept_not_dropped() {
+        // 02:30 never happened on 2023-03-12; the pre-jump EST offset maps it to 07:30Z (03:30 EDT).
+        assert_eq!(read_dos_in(dos(2023, 3, 12, 2, 30, 0), &Eastern2023), utc_seconds(2023, 3, 12, 7, 30, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_in_fall_back_overlap_takes_the_earlier_instant() {
+        // 01:30 happened twice on 2023-11-05; the EDT reading (05:30Z) comes first.
+        assert_eq!(read_dos_in(dos(2023, 11, 5, 1, 30, 0), &Eastern2023), utc_seconds(2023, 11, 5, 5, 30, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_is_written_as_wall_clock_in_the_given_zone() {
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        let written = super::dos_date_time_in(unix_time(utc_seconds(2023, 11, 14, 22, 13, 20)), &tokyo).unwrap();
+        assert_eq!(dos_fields(written), (2023, 11, 15, 7, 13, 20));
+
+        // Daylight saving follows the instant being written; odd seconds floor to the 2-second grid.
+        let summer = super::dos_date_time_in(unix_time(utc_seconds(2023, 7, 1, 16, 0, 1)), &Eastern2023).unwrap();
+        assert_eq!(dos_fields(summer), (2023, 7, 1, 12, 0, 0));
+        let winter = super::dos_date_time_in(unix_time(utc_seconds(2023, 1, 15, 17, 0, 0)), &Eastern2023).unwrap();
+        assert_eq!(dos_fields(winter), (2023, 1, 15, 12, 0, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_round_trips_through_the_same_zone() {
+        for seconds in [utc_seconds(2023, 1, 15, 17, 0, 0), utc_seconds(2023, 7, 1, 16, 0, 0), utc_seconds(2023, 11, 5, 5, 30, 0)] {
+            let written = super::dos_date_time_in(unix_time(seconds), &Eastern2023).unwrap();
+            assert_eq!(read_dos_in(written, &Eastern2023), seconds, "round trip of {seconds}");
+        }
+    }
+
+    #[test]
+    fn dos_timestamp_is_not_written_outside_its_range() {
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        assert!(super::dos_date_time_in(unix_time(utc_seconds(1979, 12, 31, 23, 59, 58)), &utc).is_none());
+        assert!(super::dos_date_time_in(unix_time(utc_seconds(2108, 1, 1, 0, 0, 0)), &utc).is_none());
+        assert!(super::dos_date_time_in(unix_time(utc_seconds(1980, 1, 1, 0, 0, 0)), &utc).is_some());
     }
 
     #[test]
