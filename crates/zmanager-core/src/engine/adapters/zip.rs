@@ -94,6 +94,7 @@ impl ReadAdapterSession for ZipReadSession {
                     method: Some(entry.method),
                     crc: Some(entry.crc),
                     comment: entry.comment,
+                    modified: entry.modified,
                     ..EngineEntry::default()
                 });
             }

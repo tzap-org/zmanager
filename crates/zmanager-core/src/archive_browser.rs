@@ -1035,6 +1035,24 @@ mod tests {
         assert!(entry.crc.is_some());
     }
 
+    #[test]
+    fn zip_listing_reports_modified_time_as_unix_seconds() {
+        let temp = TestDir::new("browser_zip_mtime");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        // A UTC extended timestamp field keeps the expected value independent of the local zone.
+        let mut options = zip::write::FullFileOptions::default().compression_method(CompressionMethod::Stored);
+        let mut field = vec![0b0000_0001_u8];
+        field.extend_from_slice(&1_700_000_000_u32.to_le_bytes());
+        options.add_extra_data(0x5455, field, false).unwrap();
+        writer.start_file("hello.txt", options).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        let listing = list_entries(&archive).unwrap();
+        assert_eq!(listing.entries[0].modified.as_deref(), Some("1700000000"));
+    }
+
     fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let mut writer = ZipWriter::new(file);

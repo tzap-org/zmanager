@@ -16,12 +16,15 @@ use crate::manifest::{ArchiveManifest, ManifestEntry, ManifestFileType, PlanErro
 use crate::safety::{ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver};
 use crate::secrets::SecretString;
 use crate::zip_split::{MIN_ZIP_VOLUME_SIZE_BYTES, open_zip_reader, split_zip_temp_archive};
+use filetime::FileTime;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use zip::write::{FileOptions, SimpleFileOptions};
+use zip::extra_fields::ExtraField;
+use zip::read::ZipFile;
+use zip::write::FullFileOptions;
 use zip::{AesMode, CompressionMethod, ZipArchive, ZipReadOptions, ZipWriter};
 
 /// ZIP compression methods exposed in v1.
@@ -95,6 +98,8 @@ pub struct ZipListEntry {
     pub crc: u32,
     /// Entry comment, when present.
     pub comment: Option<String>,
+    /// Modification time as Unix seconds, resolved as described on `zip_entry_mtime`.
+    pub modified: Option<String>,
 }
 
 /// ZIP entry type.
@@ -362,6 +367,7 @@ pub(crate) fn list_zip_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> R
             method: format!("{:?}", file.compression()),
             crc: file.crc32(),
             comment: (!file.comment().is_empty()).then(|| file.comment().to_owned()),
+            modified: zip_entry_mtime(&file).map(|mtime| mtime.unix_seconds().to_string()),
         });
     }
 
@@ -546,7 +552,7 @@ pub(crate) fn extract_zip_archive<R: Read + Seek>(
     }
     let mut planner = ExtractionSafetyPlanner::with_overwrite_resolver(&destination_root, policy, overwrite_resolver);
     let mut report = ZipExtractReport { written_entries: 0, skipped_entries: 0, written_bytes: 0, warnings: Vec::new() };
-    let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)> = Vec::new();
+    let mut deferred_directories: Vec<(PathBuf, Option<u32>, Option<FileTime>)> = Vec::new();
     let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];
 
     let all_indices: Vec<usize>;
@@ -564,7 +570,7 @@ pub(crate) fn extract_zip_archive<R: Read + Seek>(
         let mut file = archive.by_index_with_options(index, ZipReadOptions::new().password(password)).map_err(map_zip_error)?;
         let entry_size = file.size();
         let unix_mode = file.unix_mode();
-        let modified_time = file.last_modified();
+        let modified_time = zip_entry_mtime(&file);
         let kind = extraction_entry_kind(&mut file)?;
         let entry =
             ExtractionEntry { archive_path: file.name().to_owned(), kind, uncompressed_size: Some(entry_size), compressed_size: Some(file.compressed_size()) };
@@ -680,34 +686,27 @@ fn write_manifest_to_zip<W: Write + Seek>(
     Ok(report)
 }
 
-fn zip_options<'a>(entry: &ManifestEntry, create_options: &'a ZipCreateOptions) -> FileOptions<'a, ()> {
+fn zip_options<'a>(entry: &ManifestEntry, create_options: &'a ZipCreateOptions) -> FullFileOptions<'a> {
     let compression_method = match create_options.compression {
         ZipCompression::Store => CompressionMethod::Stored,
         ZipCompression::Deflate => CompressionMethod::Deflated,
     };
-    let mut options = SimpleFileOptions::default()
+    let mut options = FullFileOptions::default()
         .compression_method(compression_method)
         .compression_level(zip_compression_level(create_options))
         .large_file(needs_zip64(entry.size));
 
-    if create_options.preserve_metadata {
-        if let Some(mode) = entry.permissions.unix_mode {
-            options = options.unix_permissions(mode);
-        }
-        if let Some(modified) = entry.modified
-            && let offset = time::OffsetDateTime::from(modified)
-            && let Ok(dt) = zip::DateTime::from_date_and_time(
-                u16::try_from(offset.year()).unwrap_or(1980),
-                u8::from(offset.month()),
-                offset.day(),
-                offset.hour(),
-                offset.minute(),
-                offset.second(),
-            )
-        {
-            options = options.last_modified_time(dt);
-        }
+    if create_options.preserve_metadata
+        && let Some(mode) = entry.permissions.unix_mode
+    {
+        options = options.unix_permissions(mode);
     }
+    // Without preserved metadata, or when the source time could not be read,
+    // the entry is stamped with the creation time. It is always encoded here so
+    // `zip` never falls back to its own default, which writes UTC into the
+    // local-time DOS field.
+    let modified = create_options.preserve_metadata.then_some(entry.modified).flatten().unwrap_or_else(std::time::SystemTime::now);
+    options = with_zip_mtime(options, modified);
 
     if let Some(password) = zip_password(create_options) {
         options = options.with_aes_encryption(AesMode::Aes256, password);
@@ -909,8 +908,8 @@ struct ZipEntryWriteContext<'a, 'context> {
     report: &'a mut ZipExtractReport,
     job_context: Option<&'a mut JobContext<'context>>,
     unix_mode: Option<u32>,
-    modified_time: Option<zip::DateTime>,
-    deferred_directories: &'a mut Vec<(PathBuf, Option<u32>, Option<zip::DateTime>)>,
+    modified_time: Option<FileTime>,
+    deferred_directories: &'a mut Vec<(PathBuf, Option<u32>, Option<FileTime>)>,
     io_buffer: &'a mut [u8],
 }
 
@@ -993,35 +992,111 @@ fn write_zip_entry<R: Read>(
     }
 }
 
-fn apply_zip_metadata(path: &Path, unix_mode: Option<u32>, modified_time: Option<zip::DateTime>) -> Result<(), ZipBackendError> {
-    let file_time = modified_time.and_then(|dt| {
-        let date =
-            time::Date::from_calendar_date(i32::from(dt.year()), time::Month::try_from(dt.month()).unwrap_or(time::Month::January), dt.day().max(1)).ok()?;
-        let time_cmp = time::Time::from_hms(dt.hour(), dt.minute(), dt.second()).ok()?;
-        let primitive = time::PrimitiveDateTime::new(date, time_cmp);
-        Some(filetime::FileTime::from_system_time(std::time::SystemTime::from(primitive.assume_utc())))
-    });
-    crate::extract_materialize::apply_metadata(path, unix_mode, file_time).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })
+/// Header ID of the Info-ZIP extended timestamp extra field.
+const EXTENDED_TIMESTAMP_FIELD_ID: u16 = 0x5455;
+/// Extended timestamp flag bit marking the modification time as present.
+const EXTENDED_TIMESTAMP_MODIFIED: u8 = 0b0000_0001;
+/// Seconds from the NTFS epoch (1601-01-01) to the Unix epoch.
+const NTFS_TO_UNIX_EPOCH_SECONDS: i64 = 11_644_473_600;
+/// NTFS file times count 100 ns ticks.
+const NTFS_TICKS_PER_SECOND: u64 = 10_000_000;
+
+/// Resolves an entry's modification time. The NTFS and Info-ZIP extended
+/// timestamp extra fields hold UTC and win when present; the DOS timestamp is
+/// the creator's local wall-clock time, so it is read in the local zone.
+/// Listing and extraction both use this so they cannot disagree.
+fn zip_entry_mtime<R: Read>(file: &ZipFile<'_, R>) -> Option<FileTime> {
+    let mut ntfs = None;
+    let mut extended = None;
+    for field in file.extra_data_fields() {
+        match field {
+            ExtraField::Ntfs(ntfs_field) if ntfs_field.mtime() != 0 => ntfs = Some(ntfs_field.mtime()),
+            // `zip` exposes the field as unsigned, but Info-ZIP defines it as a
+            // signed 32-bit Unix time, so pre-1970 values are negative.
+            ExtraField::ExtendedTimestamp(timestamp) => extended = extended.or(timestamp.mod_time().map(|raw| i32::from_le_bytes(raw.to_le_bytes()))),
+            ExtraField::Ntfs(_) => {}
+        }
+    }
+    // NTFS keeps sub-second precision, so it is preferred over the extended timestamp.
+    ntfs.and_then(ntfs_file_time)
+        .or_else(|| extended.map(|seconds| FileTime::from_unix_time(i64::from(seconds), 0)))
+        .or_else(|| file.last_modified().and_then(dos_local_file_time))
+}
+
+fn ntfs_file_time(ticks: u64) -> Option<FileTime> {
+    let seconds = i64::try_from(ticks / NTFS_TICKS_PER_SECOND).ok()? - NTFS_TO_UNIX_EPOCH_SECONDS;
+    let nanoseconds = u32::try_from(ticks % NTFS_TICKS_PER_SECOND * 100).ok()?;
+    Some(FileTime::from_unix_time(seconds, nanoseconds))
+}
+
+/// Reads a DOS timestamp as local wall-clock time, using the zone offset in
+/// effect on that date so daylight saving is honoured.
+fn dos_local_file_time(dt: zip::DateTime) -> Option<FileTime> {
+    use chrono::TimeZone;
+
+    let month = if (1..=12).contains(&dt.month()) { dt.month() } else { 1 };
+    let naive = chrono::NaiveDate::from_ymd_opt(i32::from(dt.year()), u32::from(month), u32::from(dt.day().max(1)))?.and_hms_opt(
+        u32::from(dt.hour()),
+        u32::from(dt.minute()),
+        u32::from(dt.second()),
+    )?;
+    let seconds = match chrono::Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(local) | chrono::LocalResult::Ambiguous(local, _) => local.timestamp(),
+        // A wall-clock time skipped by a daylight-saving jump: apply the offset
+        // in effect at that instant rather than dropping the timestamp.
+        chrono::LocalResult::None => naive.and_utc().timestamp() - i64::from(chrono::Local.offset_from_utc_datetime(&naive).local_minus_utc()),
+    };
+    Some(FileTime::from_unix_time(seconds, 0))
+}
+
+/// Stamps `modified` as the DOS local wall-clock time other ZIP tools expect,
+/// plus an extended timestamp extra field carrying the exact UTC seconds.
+/// The field is a signed 32-bit Unix time, so it is omitted outside
+/// 1901-12-13..=2038-01-19 rather than written as a value readers would
+/// interpret as a different date; the DOS field still covers 1980..=2107.
+fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemTime) -> FullFileOptions<'_> {
+    use chrono::{Datelike, Timelike};
+
+    let local = chrono::DateTime::<chrono::Local>::from(modified);
+    if let Ok(year) = u16::try_from(local.year())
+        && let Ok(dt) = zip::DateTime::from_date_and_time(
+            year,
+            u8::try_from(local.month()).unwrap_or(1),
+            u8::try_from(local.day()).unwrap_or(1),
+            u8::try_from(local.hour()).unwrap_or(0),
+            u8::try_from(local.minute()).unwrap_or(0),
+            u8::try_from(local.second()).unwrap_or(0),
+        )
+    {
+        options = options.last_modified_time(dt);
+    }
+    // `FileTime` floors pre-epoch times to whole seconds, matching Unix time.
+    if let Ok(seconds) = i32::try_from(FileTime::from_system_time(modified).unix_seconds()) {
+        let mut field = [0_u8; 5];
+        field[0] = EXTENDED_TIMESTAMP_MODIFIED;
+        field[1..].copy_from_slice(&seconds.to_le_bytes());
+        // This is the only extra data on the options, so the one failure mode
+        // (exceeding the 64 KiB extra-data limit) cannot occur.
+        let _ = options.add_extra_data(EXTENDED_TIMESTAMP_FIELD_ID, field, false);
+    }
+    options
+}
+
+fn apply_zip_metadata(path: &Path, unix_mode: Option<u32>, modified_time: Option<FileTime>) -> Result<(), ZipBackendError> {
+    crate::extract_materialize::apply_metadata(path, unix_mode, modified_time).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })
 }
 
 /// Uses `set_symlink_file_times` to avoid following the link. Errors are
 /// reported so extraction cannot claim metadata was restored when it was not.
-fn apply_symlink_mtime(path: &Path, modified_time: Option<zip::DateTime>) -> Result<(), ZipBackendError> {
-    if let Some(dt) = modified_time
-        && let Ok(date) =
-            time::Date::from_calendar_date(i32::from(dt.year()), time::Month::try_from(dt.month()).unwrap_or(time::Month::January), dt.day().max(1))
-        && let Ok(time_cmp) = time::Time::from_hms(dt.hour(), dt.minute(), dt.second())
-    {
-        let primitive = time::PrimitiveDateTime::new(date, time_cmp);
-        let sys_time = std::time::SystemTime::from(primitive.assume_utc());
-        let ft = filetime::FileTime::from_system_time(sys_time);
+fn apply_symlink_mtime(path: &Path, modified_time: Option<FileTime>) -> Result<(), ZipBackendError> {
+    if let Some(ft) = modified_time {
         filetime::set_symlink_file_times(path, ft, ft).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })?;
     }
     Ok(())
 }
 
-fn apply_deferred_zip_directory_metadata(directories: &[(PathBuf, Option<u32>, Option<zip::DateTime>)]) -> Result<(), ZipBackendError> {
-    crate::extract_loop::apply_deferred_directory_metadata(directories, |(path, unix_mode, modified_time): &(PathBuf, Option<u32>, Option<zip::DateTime>)| {
+fn apply_deferred_zip_directory_metadata(directories: &[(PathBuf, Option<u32>, Option<FileTime>)]) -> Result<(), ZipBackendError> {
+    crate::extract_loop::apply_deferred_directory_metadata(directories, |(path, unix_mode, modified_time): &(PathBuf, Option<u32>, Option<FileTime>)| {
         apply_zip_metadata(path, *unix_mode, *modified_time)
     })
 }
@@ -1072,10 +1147,11 @@ mod tests {
     use crate::secrets::SecretString;
     use crate::test_support::TestDir;
     use crate::test_support::create_zip_fixture;
+    use chrono::{Datelike, Timelike};
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::path::Path;
-    use zip::write::SimpleFileOptions;
+    use zip::write::{FullFileOptions, SimpleFileOptions};
     use zip::{CompressionMethod, ZipWriter};
 
     fn extract_zip_fixture(
@@ -1152,10 +1228,278 @@ mod tests {
             assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         }
 
-        // ZIP only has 2-second resolution (MS-DOS time), so we check with a delta
+        // The extended timestamp field carries whole seconds, so the round trip is exact.
         let mtime_extracted = filetime::FileTime::from_last_modification_time(&metadata);
-        let diff = (mtime_extracted.unix_seconds() - mtime.unix_seconds()).abs();
-        assert!(diff <= 2, "extracted mtime diff {diff} is greater than 2 seconds");
+        assert_eq!(mtime_extracted.unix_seconds(), mtime.unix_seconds());
+
+        let listed = list_zip(&archive).unwrap().entries.into_iter().find(|entry| entry.name == "project/script.sh").unwrap();
+        assert_eq!(listed.modified, Some(mtime.unix_seconds().to_string()));
+
+        // The DOS field holds local wall-clock time (2-second resolution) for other tools.
+        let mut zip = zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();
+        let dos = zip.by_name("project/script.sh").unwrap().last_modified().unwrap();
+        let local =
+            chrono::DateTime::<chrono::Local>::from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(mtime.unix_seconds()).unwrap()));
+        assert_eq!(
+            (u32::from(dos.year()), u32::from(dos.month()), u32::from(dos.day()), u32::from(dos.hour()), u32::from(dos.minute()), u32::from(dos.second())),
+            (u32::try_from(local.year()).unwrap(), local.month(), local.day(), local.hour(), local.minute(), local.second() & !1)
+        );
+    }
+
+    /// DOS stamp 2023-11-14 22:13:20 wall-clock, used where no UTC extra field exists.
+    fn dos_stamp() -> zip::DateTime {
+        zip::DateTime::from_date_and_time(2023, 11, 14, 22, 13, 20).unwrap()
+    }
+
+    fn write_single_entry_zip(path: &Path, options: FullFileOptions<'_>) {
+        let mut writer = ZipWriter::new(File::create(path).unwrap());
+        writer.start_file("hello.txt", options.compression_method(CompressionMethod::Stored).last_modified_time(dos_stamp())).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+    }
+
+    /// Asserts the listing and the extracted file both report `expected`.
+    fn assert_listed_and_extracted_mtime(temp: &TestDir, archive: &Path, expected: filetime::FileTime) {
+        let listing = list_zip(archive).unwrap();
+        assert_eq!(listing.entries[0].modified, Some(expected.unix_seconds().to_string()));
+
+        extract_zip_fixture(archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        let extracted = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/hello.txt")).unwrap());
+        assert_eq!(extracted.unix_seconds(), expected.unix_seconds());
+        // Windows and most Unix filesystems keep sub-second precision; compare to 100 ns.
+        assert_eq!(extracted.nanoseconds() / 100, expected.nanoseconds() / 100);
+    }
+
+    #[test]
+    fn dos_only_timestamp_is_read_as_local_wall_clock() {
+        use chrono::TimeZone;
+
+        let temp = TestDir::new("zip_mtime_dos_local");
+        let archive = temp.path("archive.zip");
+        write_single_entry_zip(&archive, FullFileOptions::default());
+
+        let expected = chrono::Local.with_ymd_and_hms(2023, 11, 14, 22, 13, 20).single().unwrap().timestamp();
+        assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(expected, 0));
+    }
+
+    #[test]
+    fn extended_timestamp_field_overrides_dos_time() {
+        let temp = TestDir::new("zip_mtime_extended");
+        let archive = temp.path("archive.zip");
+        let mut options = FullFileOptions::default();
+        let mut field = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
+        field.extend_from_slice(&1_600_000_000_u32.to_le_bytes());
+        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
+        write_single_entry_zip(&archive, options);
+
+        assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 0));
+    }
+
+    #[test]
+    fn ntfs_field_overrides_dos_time_with_subsecond_precision() {
+        let temp = TestDir::new("zip_mtime_ntfs");
+        let archive = temp.path("archive.zip");
+        // 2020-09-13T12:26:40.1234567Z as NTFS ticks.
+        let mtime_ticks: u64 = (1_600_000_000 + 11_644_473_600) * 10_000_000 + 1_234_567;
+        let mut field = Vec::new();
+        field.extend_from_slice(&0_u32.to_le_bytes()); // reserved
+        field.extend_from_slice(&1_u16.to_le_bytes()); // attribute tag 1: file times
+        field.extend_from_slice(&24_u16.to_le_bytes());
+        for ticks in [mtime_ticks, mtime_ticks, mtime_ticks] {
+            field.extend_from_slice(&ticks.to_le_bytes());
+        }
+        let mut options = FullFileOptions::default();
+        options.add_extra_data(0x000a, field, false).unwrap();
+        write_single_entry_zip(&archive, options);
+
+        assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 123_456_700));
+    }
+
+    #[test]
+    fn created_archive_carries_extended_timestamp_field() {
+        let temp = TestDir::new("zip_mtime_created_field");
+        temp.write_file("project/file.txt", b"data");
+        filetime::set_file_mtime(temp.path("project/file.txt"), filetime::FileTime::from_unix_time(1_700_000_001, 0)).unwrap();
+        let archive = temp.path("archive.zip");
+        create_zip_fixture(temp.path("project"), &archive, &ZipCreateOptions { preserve_metadata: true, ..ZipCreateOptions::default() }).unwrap();
+
+        let mut zip = zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();
+        let entry = zip.by_name("project/file.txt").unwrap();
+        let extended = entry
+            .extra_data_fields()
+            .find_map(|field| match field {
+                zip::ExtraField::ExtendedTimestamp(timestamp) => timestamp.mod_time(),
+                zip::ExtraField::Ntfs(_) => None,
+            })
+            .expect("extended timestamp field present");
+        // Odd second survives exactly, unlike the 2-second DOS field.
+        assert_eq!(extended, 1_700_000_001);
+    }
+
+    #[test]
+    fn archive_without_preserved_metadata_lists_creation_time() {
+        let temp = TestDir::new("zip_mtime_not_preserved");
+        temp.write_file("project/file.txt", b"data");
+        filetime::set_file_mtime(temp.path("project/file.txt"), filetime::FileTime::from_unix_time(1_000_000_000, 0)).unwrap();
+        let archive = temp.path("archive.zip");
+        let before = filetime::FileTime::now().unix_seconds();
+        create_zip_fixture(temp.path("project"), &archive, &ZipCreateOptions { preserve_metadata: false, ..ZipCreateOptions::default() }).unwrap();
+        let after = filetime::FileTime::now().unix_seconds();
+
+        let listed = list_zip(&archive).unwrap().entries.into_iter().find(|entry| entry.name == "project/file.txt").unwrap();
+        let seconds: i64 = listed.modified.unwrap().parse().unwrap();
+        assert!((before..=after).contains(&seconds), "listed {seconds} outside creation window {before}..={after}");
+    }
+
+    fn unix_time(seconds: i64) -> std::time::SystemTime {
+        let magnitude = std::time::Duration::from_secs(seconds.unsigned_abs());
+        if seconds < 0 { std::time::UNIX_EPOCH - magnitude } else { std::time::UNIX_EPOCH + magnitude }
+    }
+
+    /// Returns the raw extended timestamp modification field of `name`, as a signed value.
+    fn extended_mod_time(archive: &Path, name: &str) -> Option<i32> {
+        let mut zip = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
+        let entry = zip.by_name(name).unwrap();
+        entry.extra_data_fields().find_map(|field| match field {
+            zip::ExtraField::ExtendedTimestamp(timestamp) => timestamp.mod_time().map(|raw| i32::from_le_bytes(raw.to_le_bytes())),
+            zip::ExtraField::Ntfs(_) => None,
+        })
+    }
+
+    fn listed_modified(archive: &Path, name: &str) -> Option<String> {
+        list_zip(archive).unwrap().entries.into_iter().find(|entry| entry.name == name).unwrap().modified
+    }
+
+    #[test]
+    fn extended_timestamp_field_is_read_as_signed() {
+        let temp = TestDir::new("zip_mtime_extended_signed");
+        let archive = temp.path("archive.zip");
+        let mut options = FullFileOptions::default();
+        let mut field = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
+        field.extend_from_slice(&(-86_400_i32).to_le_bytes());
+        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
+        write_single_entry_zip(&archive, options);
+
+        // Read unsigned, these bytes would be 2106-02-06.
+        assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(-86_400, 0));
+    }
+
+    #[test]
+    fn pre_epoch_time_is_written_as_negative_extended_timestamp() {
+        let temp = TestDir::new("zip_mtime_pre_epoch_write");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        // Fractional pre-epoch times floor, as Unix time does: -86_400.5s is -86_401.
+        let modified = unix_time(-86_400) - std::time::Duration::from_millis(500);
+        writer.start_file("hello.txt", super::with_zip_mtime(FullFileOptions::default(), modified)).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(extended_mod_time(&archive, "hello.txt"), Some(-86_401));
+        assert_eq!(listed_modified(&archive, "hello.txt"), Some("-86401".to_owned()));
+    }
+
+    #[test]
+    fn time_past_signed_32_bit_range_omits_extended_field_and_keeps_dos_time() {
+        let temp = TestDir::new("zip_mtime_post_2038");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        // 2038-01-19T03:14:08Z: one past i32::MAX, an even second so the DOS field holds it exactly.
+        let seconds = i64::from(i32::MAX) + 1;
+        writer.start_file("hello.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(seconds))).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(extended_mod_time(&archive, "hello.txt"), None);
+        assert_eq!(listed_modified(&archive, "hello.txt"), Some(seconds.to_string()));
+    }
+
+    #[test]
+    fn preserved_metadata_without_source_time_is_stamped_with_creation_time() {
+        let temp = TestDir::new("zip_mtime_missing_source_time");
+        let archive = temp.path("archive.zip");
+        let entry = crate::manifest::ManifestEntry {
+            archive_path: "hello.txt".to_owned(),
+            source_path: temp.path("hello.txt"),
+            file_type: crate::manifest::ManifestFileType::File,
+            size: 5,
+            modified: None,
+            permissions: crate::manifest::PermissionSnapshot { readonly: false, unix_mode: None },
+            symlink_target: None,
+        };
+        let create_options = ZipCreateOptions { preserve_metadata: true, ..ZipCreateOptions::default() };
+        let before = filetime::FileTime::now().unix_seconds();
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.start_file("hello.txt", super::zip_options(&entry, &create_options)).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+        let after = filetime::FileTime::now().unix_seconds();
+
+        // Only our own stamping writes the extended field; `zip`'s fallback would not.
+        let stamped = i64::from(extended_mod_time(&archive, "hello.txt").expect("extended timestamp field present"));
+        assert!((before..=after).contains(&stamped), "stamped {stamped} outside creation window {before}..={after}");
+        assert_eq!(listed_modified(&archive, "hello.txt"), Some(stamped.to_string()));
+    }
+
+    #[test]
+    fn ntfs_field_takes_precedence_over_extended_timestamp() {
+        let temp = TestDir::new("zip_mtime_ntfs_over_extended");
+        let archive = temp.path("archive.zip");
+        let mut options = FullFileOptions::default();
+        let mut extended = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
+        extended.extend_from_slice(&1_500_000_000_u32.to_le_bytes());
+        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, extended, false).unwrap();
+        let mtime_ticks: u64 = (1_600_000_000 + 11_644_473_600) * 10_000_000 + 5_000_000;
+        let mut ntfs = Vec::new();
+        ntfs.extend_from_slice(&0_u32.to_le_bytes()); // reserved
+        ntfs.extend_from_slice(&1_u16.to_le_bytes()); // attribute tag 1: file times
+        ntfs.extend_from_slice(&24_u16.to_le_bytes());
+        for ticks in [mtime_ticks, mtime_ticks, mtime_ticks] {
+            ntfs.extend_from_slice(&ticks.to_le_bytes());
+        }
+        options.add_extra_data(0x000a, ntfs, false).unwrap();
+        write_single_entry_zip(&archive, options);
+
+        assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 500_000_000));
+    }
+
+    #[test]
+    fn extracted_directories_keep_their_own_mtime() {
+        let temp = TestDir::new("zip_mtime_directory");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.add_directory("dir/", super::with_zip_mtime(FullFileOptions::default(), unix_time(1_500_000_001))).unwrap();
+        writer.start_file("dir/file.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(1_600_000_001))).unwrap();
+        writer.write_all(b"data").unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(listed_modified(&archive, "dir/"), Some("1500000001".to_owned()));
+        extract_zip_fixture(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        // The directory time is applied after its child is written, so the write does not clobber it.
+        let directory = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/dir")).unwrap());
+        assert_eq!(directory.unix_seconds(), 1_500_000_001);
+        let file = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/dir/file.txt")).unwrap());
+        assert_eq!(file.unix_seconds(), 1_600_000_001);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracted_symlinks_keep_their_own_mtime() {
+        let temp = TestDir::new("zip_mtime_symlink");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.start_file("target.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(1_500_000_001))).unwrap();
+        writer.write_all(b"target").unwrap();
+        writer.add_symlink("link.txt", "target.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(1_600_000_001))).unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(listed_modified(&archive, "link.txt"), Some("1600000001".to_owned()));
+        extract_zip_fixture(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        let link = filetime::FileTime::from_last_modification_time(&fs::symlink_metadata(temp.path("out/link.txt")).unwrap());
+        assert_eq!(link.unix_seconds(), 1_600_000_001);
+        // Stamping the link must not follow it onto the target.
+        let target = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/target.txt")).unwrap());
+        assert_eq!(target.unix_seconds(), 1_500_000_001);
     }
 
     #[test]
