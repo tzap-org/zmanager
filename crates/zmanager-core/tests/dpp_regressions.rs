@@ -1,4 +1,4 @@
-//! Regression coverage for the patched DPP dependency.
+//! Regression coverage for the DPP dependency.
 //!
 //! These tests intentionally exercise the public DPP contracts through
 //! synthetic on-disk structures. They stay small and platform-independent
@@ -77,7 +77,22 @@ fn apfs_catalog_leaf(records: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     block[info + 20..info + 24].copy_from_slice(&u32::try_from(records.iter().map(|(_, value)| value.len()).max().unwrap_or(0)).unwrap().to_le_bytes());
     block[info + 24..info + 32].copy_from_slice(&u64::try_from(records.len()).unwrap().to_le_bytes());
     block[info + 32..info + 40].copy_from_slice(&1_u64.to_le_bytes());
+    let checksum = apfs_fletcher64(&block[8..]);
+    block[..8].copy_from_slice(&checksum.to_le_bytes());
     block
+}
+
+fn apfs_fletcher64(data: &[u8]) -> u64 {
+    const MODULUS: u64 = 0xffff_ffff;
+    let (sum1, sum2) = data.as_chunks::<4>().0.iter().fold((0_u64, 0_u64), |(sum1, sum2), word| {
+        let word = u64::from(u32::from_le_bytes(*word));
+        let sum1 = (sum1 + word) % MODULUS;
+        let sum2 = (sum2 + sum1) % MODULUS;
+        (sum1, sum2)
+    });
+    let check1 = MODULUS - ((sum1 + sum2) % MODULUS);
+    let check2 = MODULUS - ((sum1 + check1) % MODULUS);
+    (check2 << 32) | check1
 }
 
 fn lookup_apfs_xattr(records: &[(Vec<u8>, Vec<u8>)], oid: u64, name: &str) -> dpp::apfs::Result<Option<Vec<u8>>> {
@@ -114,14 +129,6 @@ fn pr4_apfs_xattr_lookup_uses_numeric_catalog_order() {
             ],
             b"name-order".as_slice(),
         ),
-        (
-            25,
-            vec![
-                (b"short".to_vec(), embedded_xattr_value(b"wrong-malformed-key")),
-                (apfs_xattr_key(25, symlink_name), embedded_xattr_value(b"after-malformed")),
-            ],
-            b"after-malformed".as_slice(),
-        ),
     ];
 
     for (oid, records, expected) in cases {
@@ -130,10 +137,22 @@ fn pr4_apfs_xattr_lookup_uses_numeric_catalog_order() {
 }
 
 #[test]
+fn pr4_apfs_malformed_catalog_key_fails_closed() {
+    let name = dpp::apfs::catalog::SYMLINK_XATTR_NAME;
+    let error =
+        lookup_apfs_xattr(&[(b"short".to_vec(), embedded_xattr_value(b"malformed")), (apfs_xattr_key(25, name), embedded_xattr_value(b"target"))], 25, name)
+            .unwrap_err();
+
+    assert!(matches!(error, dpp::apfs::ApfsError::InvalidBTree(_)), "{error:?}");
+}
+
+#[test]
 fn pr4_apfs_stream_backed_xattr_is_reported_as_unsupported() {
     let name = dpp::apfs::catalog::SYMLINK_XATTR_NAME;
-    let mut stream_value = embedded_xattr_value(&[0xaa, 0xbb, 0xcc, 0xdd]);
-    stream_value[0..2].copy_from_slice(&1_u16.to_le_bytes());
+    let mut stream_value = vec![1_u8, 0, 0, 0];
+    stream_value.extend_from_slice(&42_u64.to_le_bytes());
+    stream_value.extend_from_slice(&4_u64.to_le_bytes());
+    stream_value.extend_from_slice(&[0_u8; 32]);
     let error = lookup_apfs_xattr(&[(apfs_xattr_key(42, name), stream_value)], 42, name).unwrap_err();
 
     assert!(matches!(error, dpp::apfs::ApfsError::Unsupported(_)));

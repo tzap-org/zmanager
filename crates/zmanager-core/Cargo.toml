@@ -62,10 +62,9 @@ zstd = { version = "0.13.3", features = ["zstdmt"] }
 # `rust-lzo` (GPL-2.0). XZ, LZMA, and LZO are instead supplied under Apache-2.0 / MIT
 # by `squashfs_backend::XzCapableCompressor`, backed by `lzma-rust2` and `lzo`.
 backhand = { version = "0.25", default-features = false, features = ["gzip", "zstd", "lz4", "parallel"] }
-# Upstream `dev` now contains the APFS symlink fix and XAR PR #5. The fork's
-# `zmanager-integration` branch adds the focused XAR <name enctype="base64">
-# filename fix from `xar-name-base64-enctype` until that change is upstreamed.
-dpp = { git = "https://github.com/frankmanzhu/dpp", branch = "zmanager-integration" }
+# DPP 0.6.0 carries the APFS/XAR fixes and the focused XAR
+# `<name enctype="base64">` filename fix previously supplied by the fork.
+dpp = "0.6.0"
 delharc = { version = "0.8.0", default-features = false, features = ["std", "lh1", "lz", "lhx"] }
 # Forensic disk-image stack: VHD/VMDK containers, MBR/GPT volume systems, and
 # NTFS/FAT/ext4/UDF filesystems (SecurityRonin family, Apache-2.0/MIT, read-only).
