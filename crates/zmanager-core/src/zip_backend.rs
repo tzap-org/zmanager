@@ -1000,6 +1000,14 @@ const EXTENDED_TIMESTAMP_MODIFIED: u8 = 0b0000_0001;
 const NTFS_TO_UNIX_EPOCH_SECONDS: i64 = 11_644_473_600;
 /// NTFS file times count 100 ns ticks.
 const NTFS_TICKS_PER_SECOND: u64 = 10_000_000;
+/// Header ID of the NTFS extra field.
+const NTFS_FIELD_ID: u16 = 0x000a;
+/// NTFS extra field attribute tag holding the modification, access, and creation times.
+const NTFS_FILE_TIMES_TAG: u16 = 0x0001;
+/// Size of the file-times attribute: three 8-byte tick counts.
+const NTFS_FILE_TIMES_LEN: u16 = 24;
+/// NTFS extra field body: 4 reserved bytes, the attribute tag and size, then the attribute.
+const NTFS_FIELD_LEN: usize = 8 + NTFS_FILE_TIMES_LEN as usize;
 
 /// Resolves an entry's modification time. The NTFS and Info-ZIP extended
 /// timestamp extra fields hold UTC and win when present; the DOS timestamp is
@@ -1049,48 +1057,91 @@ fn dos_file_time_in<Tz: chrono::TimeZone>(dt: zip::DateTime, zone: &Tz) -> Optio
     let seconds = match zone.from_local_datetime(&naive) {
         chrono::LocalResult::Single(local) | chrono::LocalResult::Ambiguous(local, _) => local.timestamp(),
         // A wall-clock time skipped by a daylight-saving jump: apply the offset
-        // in effect at that instant rather than dropping the timestamp.
-        chrono::LocalResult::None => naive.and_utc().timestamp() - i64::from(zone.offset_from_utc_datetime(&naive).fix().local_minus_utc()),
+        // in effect before the jump, moving it forward past the gap, rather than
+        // dropping the timestamp. The offset is sampled a day earlier because
+        // looking it up at `naive` read as UTC lands on either side of the jump
+        // depending on the zone's distance from UTC.
+        chrono::LocalResult::None => {
+            let before_jump = naive.checked_sub_signed(chrono::TimeDelta::days(1))?;
+            naive.and_utc().timestamp() - i64::from(zone.offset_from_utc_datetime(&before_jump).fix().local_minus_utc())
+        }
     };
     Some(FileTime::from_unix_time(seconds, 0))
 }
 
 /// Stamps `modified` as the DOS local wall-clock time other ZIP tools expect,
-/// plus an extended timestamp extra field carrying the exact UTC seconds.
-/// The field is a signed 32-bit Unix time, so it is omitted outside
-/// 1901-12-13..=2038-01-19 rather than written as a value readers would
-/// interpret as a different date; the DOS field still covers 1980..=2107.
+/// plus two extra fields carrying the exact UTC time, as 7-Zip and Info-ZIP do:
+/// the NTFS field (100 ns ticks since 1601, read by Windows tools and 7-Zip)
+/// and the Info-ZIP extended timestamp (Unix seconds, read by Unix tools).
+/// The extended timestamp is a signed 32-bit Unix time, so it is omitted
+/// outside 1901-12-13..=2038-01-19 rather than written as a value readers would
+/// interpret as a different date; the NTFS field still covers those times. The
+/// DOS field covers 1980..=2107 and is clamped to that range.
 fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemTime) -> FullFileOptions<'_> {
-    if let Some(dt) = dos_date_time_in(modified, &chrono::Local) {
-        options = options.last_modified_time(dt);
+    options = options.last_modified_time(dos_date_time_in(modified, &chrono::Local));
+    // `FileTime` floors pre-epoch times to whole seconds, matching Unix time,
+    // and keeps the fraction as forward-counting nanoseconds.
+    let file_time = FileTime::from_system_time(modified);
+    // These two fields (41 bytes with headers) are the only extra data on the
+    // options, so the one failure mode (exceeding the 64 KiB limit) cannot occur.
+    // Zero ticks (exactly 1601-01-01) would read back as "no time", so it is not written.
+    if let Some(ticks) = unix_to_ntfs_ticks(file_time).filter(|&ticks| ticks != 0) {
+        let mut field = [0_u8; NTFS_FIELD_LEN];
+        field[4..6].copy_from_slice(&NTFS_FILE_TIMES_TAG.to_le_bytes());
+        field[6..8].copy_from_slice(&NTFS_FILE_TIMES_LEN.to_le_bytes());
+        // Access and creation times stay zero, which readers treat as unset, as 7-Zip writes them.
+        field[8..16].copy_from_slice(&ticks.to_le_bytes());
+        let _ = options.add_extra_data(NTFS_FIELD_ID, field, false);
     }
-    // `FileTime` floors pre-epoch times to whole seconds, matching Unix time.
-    if let Ok(seconds) = i32::try_from(FileTime::from_system_time(modified).unix_seconds()) {
+    if let Ok(seconds) = i32::try_from(file_time.unix_seconds()) {
         let mut field = [0_u8; 5];
         field[0] = EXTENDED_TIMESTAMP_MODIFIED;
         field[1..].copy_from_slice(&seconds.to_le_bytes());
-        // This is the only extra data on the options, so the one failure mode
-        // (exceeding the 64 KiB extra-data limit) cannot occur.
         let _ = options.add_extra_data(EXTENDED_TIMESTAMP_FIELD_ID, field, false);
     }
     options
 }
 
-/// Renders `modified` as a DOS timestamp in `zone`'s wall-clock time, or `None`
-/// outside the 1980..=2107 range the DOS field can hold.
-fn dos_date_time_in<Tz: chrono::TimeZone>(modified: std::time::SystemTime, zone: &Tz) -> Option<zip::DateTime> {
+/// Converts to NTFS ticks, or `None` before 1601 or past the 64-bit tick range.
+fn unix_to_ntfs_ticks(time: FileTime) -> Option<u64> {
+    let seconds = u64::try_from(time.unix_seconds().checked_add(NTFS_TO_UNIX_EPOCH_SECONDS)?).ok()?;
+    seconds.checked_mul(NTFS_TICKS_PER_SECOND)?.checked_add(u64::from(time.nanoseconds() / 100))
+}
+
+/// Renders `modified` as a DOS timestamp in `zone`'s wall-clock time, clamped
+/// to the 1980-01-01 00:00:00..=2107-12-31 23:59:58 range the field can hold,
+/// as Info-ZIP does. Leaving it unset would let `zip` write the current UTC
+/// time instead.
+fn dos_date_time_in<Tz: chrono::TimeZone>(modified: std::time::SystemTime, zone: &Tz) -> zip::DateTime {
     use chrono::{Datelike, Timelike};
 
-    let local = chrono::DateTime::<chrono::Utc>::from(modified).with_timezone(zone);
+    let earliest = zip::DateTime::default();
+    let latest = zip::DateTime::from_date_and_time(2107, 12, 31, 23, 59, 58).unwrap_or_default();
+    // Far-out times are settled from UTC alone: a `SystemTime` can lie outside
+    // chrono's range (converting it with `From` panics), and no zone offset
+    // moves a date by more than a day, so a year of slack is enough.
+    let seconds = FileTime::from_system_time(modified).unix_seconds();
+    let utc = match chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0) {
+        Some(utc) if (1979..=2108).contains(&utc.year()) => utc,
+        Some(utc) => return if utc.year() < 1979 { earliest } else { latest },
+        None => return if seconds < 0 { earliest } else { latest },
+    };
+    let local = utc.with_timezone(zone);
+    if local.year() < 1980 {
+        return earliest;
+    }
+    if local.year() > 2107 {
+        return latest;
+    }
     zip::DateTime::from_date_and_time(
-        u16::try_from(local.year()).ok()?,
-        u8::try_from(local.month()).ok()?,
-        u8::try_from(local.day()).ok()?,
-        u8::try_from(local.hour()).ok()?,
-        u8::try_from(local.minute()).ok()?,
-        u8::try_from(local.second()).ok()?,
+        u16::try_from(local.year()).unwrap_or(1980),
+        u8::try_from(local.month()).unwrap_or(1),
+        u8::try_from(local.day()).unwrap_or(1),
+        u8::try_from(local.hour()).unwrap_or(0),
+        u8::try_from(local.minute()).unwrap_or(0),
+        u8::try_from(local.second()).unwrap_or(0),
     )
-    .ok()
+    .unwrap_or(earliest)
 }
 
 fn apply_zip_metadata(path: &Path, unix_mode: Option<u32>, modified_time: Option<FileTime>) -> Result<(), ZipBackendError> {
@@ -1344,6 +1395,56 @@ mod tests {
         }
     }
 
+    /// Sydney time with 2023's daylight-saving rules: AEST (UTC+10) from
+    /// 2023-04-01T16:00Z until 2023-09-30T16:00Z, AEDT (UTC+11) otherwise.
+    /// East of UTC, reading a wall-clock time as UTC lands after the instant
+    /// it names, which `Eastern2023` alone cannot catch.
+    #[derive(Clone, Copy, Debug)]
+    struct Sydney2023;
+
+    impl Sydney2023 {
+        fn aest() -> chrono::FixedOffset {
+            chrono::FixedOffset::east_opt(10 * 3600).unwrap()
+        }
+
+        fn aedt() -> chrono::FixedOffset {
+            chrono::FixedOffset::east_opt(11 * 3600).unwrap()
+        }
+    }
+
+    impl chrono::TimeZone for Sydney2023 {
+        type Offset = chrono::FixedOffset;
+
+        fn from_offset(_offset: &chrono::FixedOffset) -> Self {
+            Self
+        }
+
+        fn offset_from_local_date(&self, local: &chrono::NaiveDate) -> chrono::LocalResult<chrono::FixedOffset> {
+            self.offset_from_local_datetime(&local.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> chrono::LocalResult<chrono::FixedOffset> {
+            let fits = |offset: chrono::FixedOffset| self.offset_from_utc_datetime(&(*local - offset)) == offset;
+            match (fits(Self::aedt()), fits(Self::aest())) {
+                // Fall-back hour: the AEDT reading is the earlier instant.
+                (true, true) => chrono::LocalResult::Ambiguous(Self::aedt(), Self::aest()),
+                (true, false) => chrono::LocalResult::Single(Self::aedt()),
+                (false, true) => chrono::LocalResult::Single(Self::aest()),
+                (false, false) => chrono::LocalResult::None,
+            }
+        }
+
+        fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> chrono::FixedOffset {
+            self.offset_from_utc_datetime(&utc.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+            let end = chrono::NaiveDate::from_ymd_opt(2023, 4, 1).unwrap().and_hms_opt(16, 0, 0).unwrap();
+            let start = chrono::NaiveDate::from_ymd_opt(2023, 9, 30).unwrap().and_hms_opt(16, 0, 0).unwrap();
+            if (end..start).contains(utc) { Self::aest() } else { Self::aedt() }
+        }
+    }
+
     fn utc_seconds(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
         use chrono::TimeZone;
         chrono::Utc.with_ymd_and_hms(year, month, day, hour, minute, second).unwrap().timestamp()
@@ -1390,32 +1491,92 @@ mod tests {
     }
 
     #[test]
+    fn dos_timestamp_in_spring_forward_gap_moves_forward_east_of_utc() {
+        // 02:30 never happened on 2023-10-01; the pre-jump AEST offset maps it to 16:30Z (03:30 AEDT), not back to 01:30 AEST.
+        assert_eq!(read_dos_in(dos(2023, 10, 1, 2, 30, 0), &Sydney2023), utc_seconds(2023, 9, 30, 16, 30, 0));
+        // Edges of the gap: 02:00 is skipped too, and 03:00 is the first real AEDT reading.
+        assert_eq!(read_dos_in(dos(2023, 10, 1, 2, 0, 0), &Sydney2023), utc_seconds(2023, 9, 30, 16, 0, 0));
+        assert_eq!(read_dos_in(dos(2023, 10, 1, 3, 0, 0), &Sydney2023), utc_seconds(2023, 9, 30, 16, 0, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_in_spring_forward_gap_moves_forward_west_of_utc_at_the_edges() {
+        assert_eq!(read_dos_in(dos(2023, 3, 12, 2, 0, 0), &Eastern2023), utc_seconds(2023, 3, 12, 7, 0, 0));
+        assert_eq!(read_dos_in(dos(2023, 3, 12, 2, 58, 0), &Eastern2023), utc_seconds(2023, 3, 12, 7, 58, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_in_fall_back_overlap_takes_the_earlier_instant_east_of_utc() {
+        // 02:30 happened twice on 2023-04-02; the AEDT reading (15:30Z) comes first.
+        assert_eq!(read_dos_in(dos(2023, 4, 2, 2, 30, 0), &Sydney2023), utc_seconds(2023, 4, 1, 15, 30, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_round_trips_east_of_utc() {
+        for seconds in
+            [utc_seconds(2023, 1, 15, 1, 0, 0), utc_seconds(2023, 7, 1, 2, 0, 0), utc_seconds(2023, 4, 1, 15, 30, 0), utc_seconds(2023, 9, 30, 16, 0, 0)]
+        {
+            let written = super::dos_date_time_in(unix_time(seconds), &Sydney2023);
+            assert_eq!(read_dos_in(written, &Sydney2023), seconds, "round trip of {seconds}");
+        }
+    }
+
+    #[test]
     fn dos_timestamp_is_written_as_wall_clock_in_the_given_zone() {
         let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
-        let written = super::dos_date_time_in(unix_time(utc_seconds(2023, 11, 14, 22, 13, 20)), &tokyo).unwrap();
+        let written = super::dos_date_time_in(unix_time(utc_seconds(2023, 11, 14, 22, 13, 20)), &tokyo);
         assert_eq!(dos_fields(written), (2023, 11, 15, 7, 13, 20));
 
         // Daylight saving follows the instant being written; odd seconds floor to the 2-second grid.
-        let summer = super::dos_date_time_in(unix_time(utc_seconds(2023, 7, 1, 16, 0, 1)), &Eastern2023).unwrap();
+        let summer = super::dos_date_time_in(unix_time(utc_seconds(2023, 7, 1, 16, 0, 1)), &Eastern2023);
         assert_eq!(dos_fields(summer), (2023, 7, 1, 12, 0, 0));
-        let winter = super::dos_date_time_in(unix_time(utc_seconds(2023, 1, 15, 17, 0, 0)), &Eastern2023).unwrap();
+        let winter = super::dos_date_time_in(unix_time(utc_seconds(2023, 1, 15, 17, 0, 0)), &Eastern2023);
         assert_eq!(dos_fields(winter), (2023, 1, 15, 12, 0, 0));
     }
 
     #[test]
     fn dos_timestamp_round_trips_through_the_same_zone() {
         for seconds in [utc_seconds(2023, 1, 15, 17, 0, 0), utc_seconds(2023, 7, 1, 16, 0, 0), utc_seconds(2023, 11, 5, 5, 30, 0)] {
-            let written = super::dos_date_time_in(unix_time(seconds), &Eastern2023).unwrap();
+            let written = super::dos_date_time_in(unix_time(seconds), &Eastern2023);
             assert_eq!(read_dos_in(written, &Eastern2023), seconds, "round trip of {seconds}");
         }
     }
 
     #[test]
-    fn dos_timestamp_is_not_written_outside_its_range() {
+    fn dos_timestamp_is_clamped_to_its_range() {
         let utc = chrono::FixedOffset::east_opt(0).unwrap();
-        assert!(super::dos_date_time_in(unix_time(utc_seconds(1979, 12, 31, 23, 59, 58)), &utc).is_none());
-        assert!(super::dos_date_time_in(unix_time(utc_seconds(2108, 1, 1, 0, 0, 0)), &utc).is_none());
-        assert!(super::dos_date_time_in(unix_time(utc_seconds(1980, 1, 1, 0, 0, 0)), &utc).is_some());
+        let written = |seconds: i64| dos_fields(super::dos_date_time_in(unix_time(seconds), &utc));
+        assert_eq!(written(utc_seconds(1979, 12, 31, 23, 59, 58)), (1980, 1, 1, 0, 0, 0));
+        assert_eq!(written(-86_400), (1980, 1, 1, 0, 0, 0));
+        assert_eq!(written(utc_seconds(1980, 1, 1, 0, 0, 0)), (1980, 1, 1, 0, 0, 0));
+        assert_eq!(written(utc_seconds(2107, 12, 31, 23, 59, 58)), (2107, 12, 31, 23, 59, 58));
+        assert_eq!(written(utc_seconds(2108, 1, 1, 0, 0, 0)), (2107, 12, 31, 23, 59, 58));
+        assert_eq!(written(utc_seconds(2500, 6, 1, 0, 0, 0)), (2107, 12, 31, 23, 59, 58));
+    }
+
+    #[test]
+    fn dos_timestamp_clamps_by_wall_clock_date_not_utc_date() {
+        // 1980-01-01T02:00+09:00 is still 1979 in UTC, and 2107-12-31T20:00-05:00 is already 2108.
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(1979, 12, 31, 17, 0, 0)), &tokyo)), (1980, 1, 1, 2, 0, 0));
+        let bogota = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(2108, 1, 1, 1, 0, 0)), &bogota)), (2107, 12, 31, 20, 0, 0));
+        // A wall-clock date just outside the range clamps even though UTC is inside it.
+        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(1980, 1, 1, 3, 0, 0)), &bogota)), (1980, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn dos_timestamp_beyond_chrono_range_clamps_instead_of_panicking() {
+        // Unix filesystems such as btrfs accept these; Windows `SystemTime` cannot represent them.
+        let far = std::time::Duration::from_secs(10_000_000_000_000);
+        let utc = chrono::FixedOffset::east_opt(0).unwrap();
+        if let Some(future) = std::time::UNIX_EPOCH.checked_add(far) {
+            assert_eq!(dos_fields(super::dos_date_time_in(future, &utc)), (2107, 12, 31, 23, 59, 58));
+            assert_eq!(dos_fields(super::dos_date_time_in(future, &chrono::Local)), (2107, 12, 31, 23, 59, 58));
+        }
+        if let Some(past) = std::time::UNIX_EPOCH.checked_sub(far) {
+            assert_eq!(dos_fields(super::dos_date_time_in(past, &utc)), (1980, 1, 1, 0, 0, 0));
+        }
     }
 
     #[test]
@@ -1473,6 +1634,22 @@ mod tests {
     }
 
     #[test]
+    fn created_archive_keeps_subsecond_mtime_in_ntfs_field() {
+        let temp = TestDir::new("zip_mtime_created_ntfs");
+        temp.write_file("project/file.txt", b"data");
+        let mtime = filetime::FileTime::from_unix_time(1_700_000_001, 123_456_700);
+        filetime::set_file_mtime(temp.path("project/file.txt"), mtime).unwrap();
+        let archive = temp.path("archive.zip");
+        create_zip_fixture(temp.path("project"), &archive, &ZipCreateOptions { preserve_metadata: true, ..ZipCreateOptions::default() }).unwrap();
+
+        assert_eq!(ntfs_mod_time(&archive, "project/file.txt"), Some((1_700_000_001 + 11_644_473_600) * 10_000_000 + 1_234_567));
+        assert_eq!(listed_modified(&archive, "project/file.txt"), Some("1700000001".to_owned()));
+        extract_zip_fixture(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap();
+        let extracted = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/project/file.txt")).unwrap());
+        assert_eq!((extracted.unix_seconds(), extracted.nanoseconds()), (1_700_000_001, 123_456_700));
+    }
+
+    #[test]
     fn archive_without_preserved_metadata_lists_creation_time() {
         let temp = TestDir::new("zip_mtime_not_preserved");
         temp.write_file("project/file.txt", b"data");
@@ -1492,14 +1669,34 @@ mod tests {
         if seconds < 0 { std::time::UNIX_EPOCH - magnitude } else { std::time::UNIX_EPOCH + magnitude }
     }
 
+    /// Opens `name` without decrypting it, as the listing does, so encrypted entries can be inspected.
+    fn raw_entry<'a, R: Read + std::io::Seek>(zip: &'a mut zip::ZipArchive<R>, name: &str) -> zip::read::ZipFile<'a, R> {
+        let index = zip.index_for_name(name).unwrap();
+        zip.by_index_raw(index).unwrap()
+    }
+
     /// Returns the raw extended timestamp modification field of `name`, as a signed value.
     fn extended_mod_time(archive: &Path, name: &str) -> Option<i32> {
         let mut zip = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
-        let entry = zip.by_name(name).unwrap();
+        let entry = raw_entry(&mut zip, name);
         entry.extra_data_fields().find_map(|field| match field {
             zip::ExtraField::ExtendedTimestamp(timestamp) => timestamp.mod_time().map(|raw| i32::from_le_bytes(raw.to_le_bytes())),
             zip::ExtraField::Ntfs(_) => None,
         })
+    }
+
+    fn ntfs_mod_time(archive: &Path, name: &str) -> Option<u64> {
+        let mut zip = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
+        let entry = raw_entry(&mut zip, name);
+        entry.extra_data_fields().find_map(|field| match field {
+            zip::ExtraField::Ntfs(ntfs) => Some(ntfs.mtime()),
+            zip::ExtraField::ExtendedTimestamp(_) => None,
+        })
+    }
+
+    fn dos_mod_time(archive: &Path, name: &str) -> zip::DateTime {
+        let mut zip = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
+        raw_entry(&mut zip, name).last_modified().unwrap()
     }
 
     fn listed_modified(archive: &Path, name: &str) -> Option<String> {
@@ -1533,21 +1730,72 @@ mod tests {
 
         assert_eq!(extended_mod_time(&archive, "hello.txt"), Some(-86_401));
         assert_eq!(listed_modified(&archive, "hello.txt"), Some("-86401".to_owned()));
+        // The DOS field clamps to its earliest value rather than taking `zip`'s current-time default.
+        assert_eq!(dos_fields(dos_mod_time(&archive, "hello.txt")), (1980, 1, 1, 0, 0, 0));
     }
 
     #[test]
-    fn time_past_signed_32_bit_range_omits_extended_field_and_keeps_dos_time() {
+    fn time_past_dos_range_clamps_dos_field_and_omits_extended_field() {
+        let temp = TestDir::new("zip_mtime_post_2107");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.start_file("hello.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(utc_seconds(2200, 1, 1, 0, 0, 0)))).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(extended_mod_time(&archive, "hello.txt"), None);
+        assert_eq!(dos_fields(dos_mod_time(&archive, "hello.txt")), (2107, 12, 31, 23, 59, 58));
+        // The NTFS field still carries the exact time, so listing is not stuck at the clamp.
+        assert_eq!(listed_modified(&archive, "hello.txt"), Some(utc_seconds(2200, 1, 1, 0, 0, 0).to_string()));
+    }
+
+    #[test]
+    fn time_past_signed_32_bit_range_omits_extended_field_and_keeps_ntfs_time() {
         let temp = TestDir::new("zip_mtime_post_2038");
         let archive = temp.path("archive.zip");
         let mut writer = ZipWriter::new(File::create(&archive).unwrap());
-        // 2038-01-19T03:14:08Z: one past i32::MAX, an even second so the DOS field holds it exactly.
-        let seconds = i64::from(i32::MAX) + 1;
+        // 2038-01-19T03:14:09Z: past i32::MAX, and an odd second the 2-second DOS field could not hold.
+        let seconds = i64::from(i32::MAX) + 2;
         writer.start_file("hello.txt", super::with_zip_mtime(FullFileOptions::default(), unix_time(seconds))).unwrap();
         writer.write_all(b"hello").unwrap();
         writer.finish().unwrap();
 
         assert_eq!(extended_mod_time(&archive, "hello.txt"), None);
+        assert!(ntfs_mod_time(&archive, "hello.txt").is_some());
         assert_eq!(listed_modified(&archive, "hello.txt"), Some(seconds.to_string()));
+    }
+
+    #[test]
+    fn time_before_1601_omits_ntfs_field() {
+        let temp = TestDir::new("zip_mtime_pre_1601");
+        let archive = temp.path("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        let before_1601 = std::time::UNIX_EPOCH.checked_sub(std::time::Duration::from_secs(11_644_473_601));
+        // Windows `SystemTime` cannot represent it; there is nothing to check there.
+        let Some(modified) = before_1601 else { return };
+        writer.start_file("hello.txt", super::with_zip_mtime(FullFileOptions::default(), modified)).unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(ntfs_mod_time(&archive, "hello.txt"), None);
+        assert_eq!(extended_mod_time(&archive, "hello.txt"), None);
+        assert_eq!(dos_fields(dos_mod_time(&archive, "hello.txt")), (1980, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn ntfs_ticks_cover_pre_epoch_fractions_and_reject_out_of_range() {
+        assert_eq!(super::unix_to_ntfs_ticks(filetime::FileTime::from_unix_time(0, 0)), Some(11_644_473_600 * 10_000_000));
+        // -86_400.5s is (-86_401 s, +500 ms).
+        assert_eq!(
+            super::unix_to_ntfs_ticks(filetime::FileTime::from_unix_time(-86_401, 500_000_000)),
+            Some((11_644_473_600 - 86_401) * 10_000_000 + 5_000_000)
+        );
+        assert_eq!(super::unix_to_ntfs_ticks(filetime::FileTime::from_unix_time(-11_644_473_600, 0)), Some(0));
+        assert_eq!(super::unix_to_ntfs_ticks(filetime::FileTime::from_unix_time(-11_644_473_601, 0)), None);
+        assert_eq!(super::unix_to_ntfs_ticks(filetime::FileTime::from_unix_time(i64::MAX / 2, 0)), None);
+        // Round-trips through the reader, fraction included.
+        let time = filetime::FileTime::from_unix_time(-86_401, 500_000_000);
+        assert_eq!(super::ntfs_file_time(super::unix_to_ntfs_ticks(time).unwrap()), Some(time));
     }
 
     #[test]
@@ -1773,6 +2021,26 @@ mod tests {
 
         extract_zip_fixture_with_password(&archive, temp.path("out"), ExtractionPolicy::default(), Some("correct horse")).unwrap();
         assert_eq!(fs::read_to_string(temp.path("out/project/file.txt")).unwrap(), "secret");
+    }
+
+    #[test]
+    fn aes_zip_entry_keeps_its_mtime() {
+        let temp = TestDir::new("aes_zip_keeps_mtime");
+        temp.write_file("project/file.txt", b"secret");
+        filetime::set_file_mtime(temp.path("project/file.txt"), filetime::FileTime::from_unix_time(1_700_000_001, 0)).unwrap();
+        let archive = temp.path("archive.zip");
+        let create_options = ZipCreateOptions { password: Some(SecretString::from("correct horse")), preserve_metadata: true, ..ZipCreateOptions::default() };
+        create_zip_fixture(temp.path("project"), &archive, &create_options).unwrap();
+
+        // The timestamp field sits beside the AES extra field and must still be found.
+        assert_eq!(extended_mod_time(&archive, "project/file.txt"), Some(1_700_000_001));
+        let listed = list_zip(&archive).unwrap().entries.into_iter().find(|entry| entry.name == "project/file.txt").unwrap();
+        assert!(listed.encrypted);
+        assert_eq!(listed.modified, Some("1700000001".to_owned()));
+
+        extract_zip_fixture_with_password(&archive, temp.path("out"), ExtractionPolicy::default(), Some("correct horse")).unwrap();
+        let extracted = filetime::FileTime::from_last_modification_time(&fs::metadata(temp.path("out/project/file.txt")).unwrap());
+        assert_eq!(extracted.unix_seconds(), 1_700_000_001);
     }
 
     #[test]

@@ -918,6 +918,27 @@ fn engine_lists_native_zip_fixture() {
 }
 
 #[test]
+fn engine_lists_native_zip_entry_mtime() {
+    let temp = TestDir::new("engine-conformance-zip-mtime");
+    let zip_path = temp.path("test.zip");
+    let mut zip = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+    // A UTC extended timestamp field keeps the expected value independent of the local zone.
+    let mut options = zip::write::FullFileOptions::default();
+    let mut field = vec![0b0000_0001_u8];
+    field.extend_from_slice(&1_700_000_001_u32.to_le_bytes());
+    options.add_extra_data(0x5455, field, false).unwrap();
+    zip.start_file("hello.txt", options).unwrap();
+    zip.write_all(b"Hello world!").unwrap();
+    zip.finish().unwrap();
+
+    let engine = create_default_engine().unwrap();
+    let mut handle = engine.open(ArchiveSource::from_path_autodetect(&zip_path), OpenOptions::default()).unwrap();
+    let listing = handle.list().unwrap();
+    assert_eq!(listing.entries[0].modified.as_deref(), Some("1700000001"));
+    handle.close().unwrap();
+}
+
+#[test]
 fn engine_tests_native_zip_payload_and_honors_selection() {
     let temp = TestDir::new("engine-conformance-test-zip");
     let zip_path = temp.path("test.zip");

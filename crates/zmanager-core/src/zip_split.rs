@@ -668,6 +668,38 @@ mod tests {
         assert_eq!(fs::read(native_out.join("project/blob.bin")).unwrap(), payload);
     }
 
+    #[test]
+    fn split_zip_round_trip_keeps_entry_mtime() {
+        let temp = TestDir::new("split_zip_keeps_mtime");
+        temp.write_file("project/blob.bin", &deterministic_bytes(200_000));
+        filetime::set_file_mtime(temp.path("project/blob.bin"), filetime::FileTime::from_unix_time(1_700_000_001, 0)).unwrap();
+        let archive = temp.path("archive.zip");
+        create_zip_fixture(
+            temp.path("project"),
+            &archive,
+            &ZipCreateOptions {
+                compression: ZipCompression::Store,
+                volume_size: Some(MIN_ZIP_VOLUME_SIZE_BYTES),
+                preserve_metadata: true,
+                ..ZipCreateOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(temp.path("archive.z01").is_file());
+
+        let listing = crate::zip_backend::list_zip(&archive).unwrap();
+        let listed = listing.entries.iter().find(|entry| entry.name == "project/blob.bin").unwrap();
+        assert_eq!(listed.modified.as_deref(), Some("1700000001"));
+
+        let native_out = temp.path("native-out");
+        let token = crate::jobs::CancellationToken::new();
+        let mut sink = |_event: crate::jobs::JobEvent| {};
+        let mut context = crate::jobs::JobContext::new(&token, &mut sink);
+        crate::zip_backend::extract_zip_with_context_and_password(&archive, &native_out, ExtractionPolicy::default(), None, &mut context).unwrap();
+        let extracted = filetime::FileTime::from_last_modification_time(&fs::metadata(native_out.join("project/blob.bin")).unwrap());
+        assert_eq!(extracted.unix_seconds(), 1_700_000_001);
+    }
+
     /// Split ZIP round-trip through the native reader across the compression range.
     ///
     #[test]
