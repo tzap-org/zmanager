@@ -53,7 +53,9 @@ jobs:
 
       - name: Use published tzap-core (no sibling patch for releases)
         shell: bash
-        run: printf '%s\n' '[net]' 'git-fetch-with-cli = true' > .cargo/config.toml
+        run: |
+          printf '%s\n' '[net]' 'git-fetch-with-cli = true' > .cargo/config.toml
+          cargo fetch
 
       - name: Clone localsend-rs
         shell: bash
