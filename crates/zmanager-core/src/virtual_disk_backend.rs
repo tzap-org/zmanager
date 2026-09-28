@@ -23,8 +23,7 @@
 //!
 //! - Only the default data stream is extracted (no NTFS ADS / resource forks).
 //! - Symlinks are supported on NTFS (reparse-point buffers and the ntfs-3g
-//!   `IntxLNK` form, patched in the ntfs-core fork) and UDF (`PATH_COMPONENT`
-//!   decode, patched in the udf-forensic fork); FAT has no symlinks.
+//!   `IntxLNK` form) and UDF (`PATH_COMPONENT` decode); FAT has no symlinks.
 //! - NTFS system metadata files (`$MFT`, `$Bitmap`, …) are filtered from the
 //!   volume root by exact name.
 //! - Deleted/recovered entries (`Allocation::Deleted`/`Orphan`) are skipped with

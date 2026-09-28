@@ -69,12 +69,6 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
-          UDF_REV=$(cat udf-forensic-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/udf-forensic.git ../udf-forensic
-          git -C ../udf-forensic checkout "$UDF_REV" || git -C ../udf-forensic checkout main
-          NTFS_REV=$(cat ntfs-forensic-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/ntfs-forensic.git ../ntfs-forensic
-          git -C ../ntfs-forensic checkout "$NTFS_REV" || git -C ../ntfs-forensic checkout main
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'

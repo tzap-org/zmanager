@@ -11,9 +11,9 @@ Both musl targets are packaged inside an Alpine container using
 - `scripts/package-release-alpine.sh <target>` runs the container wrapper.
 - `scripts/package-release.sh` performs the common packaging steps.
 
-The build mounts the sibling `tzap`, `forensic-vfs-engine`, `udf-forensic`,
-and `ntfs-forensic` repositories because the workspace uses those pinned local
-path dependencies during release builds.
+The build mounts the sibling `tzap` and `forensic-vfs-engine` repositories
+because the workspace uses those local path dependencies during release
+builds. NTFS and UDF are resolved from their published crates.
 
 ## Dependencies
 

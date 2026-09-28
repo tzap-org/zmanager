@@ -397,9 +397,8 @@ WXS
 # inside an inner filesystem. The extraction backend (forensic-vfs-engine)
 # resolves container -> partition table -> filesystem in one call. The symlink
 # is stripped from the FAT payload (FAT has no symlinks) but kept for NTFS
-# and UDF: the patched ntfs-core adapter decodes reparse-point/'IntxLNK'
-# symlinks and the patched udf-forensic adapter decodes PATH_COMPONENT links
-# (frankmanzhu forks).
+# and UDF: the ntfs-core adapter decodes reparse-point/'IntxLNK' symlinks
+# and the udf-forensic adapter decodes PATH_COMPONENT links.
 DISK_SRC="$WORK/disk-src"
 mkdir -p "$DISK_SRC"
 cp -PR "$SRC" "$DISK_SRC/"

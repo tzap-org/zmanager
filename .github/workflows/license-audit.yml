@@ -30,18 +30,9 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
-          UDF_REV=$(cat udf-forensic-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/udf-forensic.git ../udf-forensic
-          git -C ../udf-forensic checkout "$UDF_REV" || git -C ../udf-forensic checkout main
-          NTFS_REV=$(cat ntfs-forensic-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/ntfs-forensic.git ../ntfs-forensic
-          git -C ../ntfs-forensic checkout "$NTFS_REV" || git -C ../ntfs-forensic checkout main
 
-      # cargo-deny-action runs in a container that mounts only the repo at
-      # /github/workspace, so the fork siblings cloned to ../ on the runner
-      # are invisible to it and the path dependencies fail to resolve. Run
-      # cargo-deny directly on the runner instead, where the siblings sit at
-      # the paths the path deps expect.
+      # Run cargo-deny directly on the runner so it sees the sibling
+      # forensic-vfs-engine checkout used by the path dependency.
       # The prebuilt release asset is downloaded via gh CLI using the GitHub
       # token to avoid unauthenticated API rate limits on shared runners.
       - name: Install cargo-deny

@@ -3191,7 +3191,9 @@ dependencies = [
 
 [[package]]
 name = "ntfs-core"
-version = "0.9.6"
+version = "0.9.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24c385f5cec3100cd1ea2f6f7996af4f8ce7a53ee5d76ee6d3ca2356c2b60c44"
 dependencies = [
  "bitflags",
  "chrono",
@@ -5053,7 +5055,9 @@ dependencies = [
 
 [[package]]
 name = "udf-forensic"
-version = "0.2.7"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6de0d3d7e6997d8b280b82a5220ba0781acd9f58b01b37efd002250ae7fe42da"
 dependencies = [
  "forensic-vfs",
  "forensicnomicon",

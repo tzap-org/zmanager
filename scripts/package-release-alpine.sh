@@ -32,16 +32,12 @@ fi
 cd "$ROOT"
 mkdir -p "$OUT_DIR"
 
-# zmanager-core path-depends on the forensic-vfs-engine sibling, which in turn
-# path-depends on the udf-forensic and ntfs-forensic siblings. zmanager-ffi also
-# path-depends on the localsend-rs sibling. From the container's /workspace
-# checkout those all resolve to the mount points below, so every one of them
-# must be mounted.
+# zmanager-core path-depends on the forensic-vfs-engine sibling, and
+# zmanager-ffi path-depends on the localsend-rs sibling. From the container's
+# /workspace checkout those resolve to the mount points below.
 LOCALSEND_DIR="$ROOT/../localsend-rs"
 FVE_DIR="$ROOT/../forensic-vfs-engine"
-UDF_DIR="$ROOT/../udf-forensic"
-NTFS_DIR="$ROOT/../ntfs-forensic"
-for d in "$LOCALSEND_DIR" "$FVE_DIR" "$UDF_DIR" "$NTFS_DIR"; do
+for d in "$LOCALSEND_DIR" "$FVE_DIR"; do
   if [ ! -d "$d" ]; then
     echo "sibling directory not found at $d — clone it first" >&2
     exit 1
@@ -54,8 +50,6 @@ docker_args=(
   -v "$ROOT:/workspace"
   -v "$(cd "$LOCALSEND_DIR" && pwd):/localsend-rs"
   -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine"
-  -v "$(cd "$UDF_DIR" && pwd):/udf-forensic"
-  -v "$(cd "$NTFS_DIR" && pwd):/ntfs-forensic"
 )
 
 # tzap-core is patched to the ../tzap sibling by default (see
@@ -80,7 +74,7 @@ docker_args+=(
     set -eu
     # git is required: the workspace .cargo/config.toml sets
     # net.git-fetch-with-cli, so cargo shells out to the git CLI for the
-    # dpp/forensic-vfs-engine git dependencies.
+    # forensic-vfs-engine git dependency.
     #
     # xz-dev/xz-static provide the system liblzma used by the native LZMA
     # decoder in the static link.
