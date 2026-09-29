@@ -427,7 +427,8 @@ fn extract_payload_with_engine(
     // the nested `tar_backend::extract` call observe cancellation the same
     // way every other format's context-carrying call does.
     let cancellation = context.as_deref().map(JobContext::cancellation_token);
-    let report = match archive_format::detect_archive_format(archive_path) {
+    let format = archive_format::detect_archive_format(archive_path);
+    let report = match format {
         ArchiveFormatKind::Tar => {
             let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
             crate::tar_backend::extract(file, archive_path, destination, policy, overwrite_resolver, None, cancellation.as_ref(), context.as_deref_mut())?
@@ -460,7 +461,7 @@ fn extract_payload_with_engine(
             )?
         }
         ArchiveFormatKind::TarBz2 | ArchiveFormatKind::TarXz | ArchiveFormatKind::TarLzma => {
-            let format = match archive_format::detect_archive_format(archive_path) {
+            let format = match format {
                 ArchiveFormatKind::TarBz2 => crate::raw_stream_backend::RawStreamFormat::Bzip2,
                 ArchiveFormatKind::TarXz => crate::raw_stream_backend::RawStreamFormat::Xz,
                 ArchiveFormatKind::TarLzma => crate::raw_stream_backend::RawStreamFormat::Lzma,

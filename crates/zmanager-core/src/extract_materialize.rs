@@ -60,14 +60,20 @@ pub(crate) fn apply_metadata(path: &Path, mode: Option<u32>, mtime: Option<FileT
     // Windows uses the Read-only attribute for the POSIX write-bit projection.
     // Apply the timestamp while the path is writable: setting Read-only first
     // makes `filetime` reopen the file with insufficient access rights.
+    // The stat below is reused for the final readonly application further
+    // down instead of re-stating the same path a second time.
+    #[cfg(not(unix))]
+    let mut fs_metadata_for_mode = None;
     #[cfg(not(unix))]
     if mode.is_some()
         && let Ok(fs_metadata) = fs::metadata(path)
-        && fs_metadata.permissions().readonly()
     {
-        let mut perms = fs_metadata.permissions();
-        perms.set_readonly(false);
-        fs::set_permissions(path, perms)?;
+        if fs_metadata.permissions().readonly() {
+            let mut perms = fs_metadata.permissions();
+            perms.set_readonly(false);
+            fs::set_permissions(path, perms)?;
+        }
+        fs_metadata_for_mode = Some(fs_metadata);
     }
 
     if let Some(mtime) = mtime {
@@ -83,7 +89,10 @@ pub(crate) fn apply_metadata(path: &Path, mode: Option<u32>, mtime: Option<FileT
 
     #[cfg(not(unix))]
     if let Some(mode) = mode {
-        let fs_metadata = fs::metadata(path)?;
+        let fs_metadata = match fs_metadata_for_mode {
+            Some(fs_metadata) => fs_metadata,
+            None => fs::metadata(path)?,
+        };
         let mut perms = fs_metadata.permissions();
         perms.set_readonly(mode & 0o222 == 0);
         fs::set_permissions(path, perms)?;

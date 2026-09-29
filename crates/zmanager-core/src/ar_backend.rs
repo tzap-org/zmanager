@@ -107,9 +107,23 @@ pub fn extract(
     cancellation: Option<&crate::jobs::CancellationToken>,
 ) -> Result<ArReport, ArError> {
     let path = path.as_ref();
+    let entries = parse(path)?;
+    extract_parsed(path, entries, destination, policy, resolver, selected_index, cancellation)
+}
+
+/// Same as [`extract`], but reuses an already-parsed entry list instead of
+/// re-parsing the archive — the occurrence-selector callers already have one.
+fn extract_parsed(
+    path: &Path,
+    entries: Vec<ArEntry>,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    resolver: Option<&mut dyn OverwriteResolver>,
+    selected_index: Option<usize>,
+    cancellation: Option<&crate::jobs::CancellationToken>,
+) -> Result<ArReport, ArError> {
     let destination = destination.as_ref();
     let root = crate::safety::prepare_destination_root(destination).map_err(|source| io_error(destination, source))?;
-    let entries = parse(path)?;
     let mut file = open(path)?;
     let mut planner = crate::safety::ExtractionSafetyPlanner::with_overwrite_resolver(&root, policy, resolver);
     let mut report = ArReport::default();
@@ -155,8 +169,9 @@ pub fn extract_by_path_occurrence(
     cancellation: Option<&crate::jobs::CancellationToken>,
 ) -> Result<ArReport, ArError> {
     let path = path.as_ref();
-    let selected_index = find_path_occurrence(path, selected_path, selected_occurrence)?;
-    extract(path, destination, policy, resolver, Some(selected_index), cancellation)
+    let entries = parse(path)?;
+    let selected_index = find_path_occurrence(&entries, path, selected_path, selected_occurrence)?;
+    extract_parsed(path, entries, destination, policy, resolver, Some(selected_index), cancellation)
 }
 
 /// Copies one retained AR member to a caller-owned writer.
@@ -166,22 +181,32 @@ pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn Write) 
         .into_iter()
         .find(|entry| entry.index == entry_index)
         .ok_or_else(|| ArError::Io { path: path.to_path_buf(), source: io::Error::new(io::ErrorKind::NotFound, "retained AR entry ID is not present") })?;
-    let mut file = open(path)?;
-    file.seek(SeekFrom::Start(entry.data_offset)).map_err(|source| io_error(path, source))?;
-    io::copy(&mut (&mut file).take(entry.size), writer).map_err(|source| io_error(path, source))
+    copy_entry(path, &entry, writer)
 }
 
 /// Copies one retained member by path and duplicate occurrence.
 pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn Write) -> Result<u64, ArError> {
     let path = path.as_ref();
-    let selected_index = find_path_occurrence(path, selected_path, selected_occurrence)?;
-    copy(path, selected_index, writer)
+    let mut entries = parse(path)?;
+    // `find_path_occurrence` returns a position in `entries`, which `parse`
+    // assigns as each entry's `index` in the same left-to-right order, so
+    // `swap_remove` at that position takes the matched entry directly
+    // without a second, index-based search over the list.
+    let position = find_path_occurrence(&entries, path, selected_path, selected_occurrence)?;
+    let entry = entries.swap_remove(position);
+    copy_entry(path, &entry, writer)
 }
 
-fn find_path_occurrence(path: &Path, selected_path: &str, selected_occurrence: usize) -> Result<usize, ArError> {
+fn copy_entry(path: &Path, entry: &ArEntry, writer: &mut dyn Write) -> Result<u64, ArError> {
+    let mut file = open(path)?;
+    file.seek(SeekFrom::Start(entry.data_offset)).map_err(|source| io_error(path, source))?;
+    io::copy(&mut (&mut file).take(entry.size), writer).map_err(|source| io_error(path, source))
+}
+
+fn find_path_occurrence(entries: &[ArEntry], path: &Path, selected_path: &str, selected_occurrence: usize) -> Result<usize, ArError> {
     let mut occurrence = 0_usize;
-    parse(path)?
-        .into_iter()
+    entries
+        .iter()
         .find_map(|entry| {
             if entry.path != selected_path {
                 return None;

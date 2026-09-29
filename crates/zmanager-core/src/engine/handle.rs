@@ -243,17 +243,11 @@ impl ArchiveHandle {
         if self.disposition == SessionDisposition::Unusable {
             return Err(ArchiveError::unusable(ErrorKind::CorruptData, "Archive handle session is unusable; close and reopen the archive"));
         }
-        if self.engine_registry.resolve(self.detected.format, operation).is_none() {
-            return Err(ArchiveError::usable(
-                ErrorKind::UnsupportedOperation,
-                format!("No {operation:?} adapter registered for format '{}'", self.detected.format),
-            ));
-        }
+        let factory = self.engine_registry.resolve(self.detected.format, operation).ok_or_else(|| {
+            ArchiveError::usable(ErrorKind::UnsupportedOperation, format!("No {operation:?} adapter registered for format '{}'", self.detected.format))
+        })?;
         if self.session.is_none() {
             self.validate_source()?;
-            let factory = self.engine_registry.resolve(self.detected.format, operation).ok_or_else(|| {
-                ArchiveError::usable(ErrorKind::UnsupportedOperation, format!("No {operation:?} adapter registered for format '{}'", self.detected.format))
-            })?;
             match factory.open(self.detected.clone(), self.options.clone()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => {

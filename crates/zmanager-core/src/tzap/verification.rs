@@ -9,14 +9,17 @@
 //! - [`TzapArchiveTimeCheck`]: `valid_at_signing`, `expired_since_signing`, `expired_at_signing`
 //! - [`TzapArchiveStatusCheck`]: `fresh_valid`, `before_revocation`, revoked, suspended, unavailable
 
-use super::{TzapError, TzapPublicSignatureStatus, TzapX509TrustAnchor, TzapX509TrustOptions, summarize_tzap_public_display, summarize_tzap_public_metadata};
+use super::{TzapError, TzapPublicSignatureStatus, TzapX509TrustAnchor, TzapX509TrustOptions};
 use crate::trust::{canonical_serial_hex, format_certificate_sha256};
-use crate::tzap::open::open_tzap_input_volume_readers;
+use crate::tzap::display::inspect_tzap_public_footer_signature_from;
+use crate::tzap::open::{discover_tzap_input_volume_paths, open_tzap_input_volume_readers, summarize_tzap_public_metadata_from};
 use crate::tzap::x509::{claimed_signing_time, classify_x509_trust_anchor, load_x509_trusted_roots};
 use crate::x509_format::x509_name_to_string;
 use openssl::nid::Nid;
 use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use tzap_core::format::FormatError;
 use tzap_core::{ArchiveReadAt, public_no_key_verify_readers_with};
@@ -365,7 +368,22 @@ pub fn verify_tzap_archive_public_no_key_with_signer_predicate(
     is_own_signer: impl Fn(&[u8; 32]) -> bool,
 ) -> Result<TzapArchiveVerification, TzapError> {
     let archive_path = archive.as_ref();
-    let metadata_summary = match summarize_tzap_public_metadata(archive_path) {
+    // The metadata (volume-completeness) and footer-signature passes share
+    // one volume discovery and one open of the first volume, the way
+    // `summarize_tzap_public_display` does internally, instead of running
+    // two independent full metadata passes (one here, one hidden inside a
+    // second call to `summarize_tzap_public_display`) that re-discover and
+    // re-open every volume for the same archive.
+    let volume_paths = discover_tzap_input_volume_paths(archive_path);
+    let Some(first_volume_path) = volume_paths.iter().find(|path| path.exists()) else {
+        return Ok(TzapArchiveVerification::invalid_signature());
+    };
+    let mut first_volume_file = match File::open(first_volume_path) {
+        Ok(file) => file,
+        Err(source) => return Err(TzapError::Io { path: first_volume_path.clone(), source }),
+    };
+
+    let metadata_summary = match summarize_tzap_public_metadata_from(archive_path, &volume_paths, &mut first_volume_file) {
         Ok(summary) => summary,
         Err(TzapError::Io { path, source }) => return Err(TzapError::Io { path, source }),
         Err(_) => return Ok(TzapArchiveVerification::invalid_signature()),
@@ -375,13 +393,17 @@ pub fn verify_tzap_archive_public_no_key_with_signer_predicate(
         return Ok(TzapArchiveVerification::incomplete_volumes());
     }
 
-    let display_summary = match summarize_tzap_public_display(archive_path) {
-        Ok(summary) => summary,
-        Err(TzapError::Io { path, source }) => return Err(TzapError::Io { path, source }),
-        Err(_) => return Ok(TzapArchiveVerification::invalid_signature()),
+    // The metadata pass read the first volume's headers through this handle
+    // with seek-based reads, so rewind it before the footer pass reuses it.
+    if let Err(source) = first_volume_file.seek(SeekFrom::Start(0)) {
+        return Err(TzapError::Io { path: first_volume_path.clone(), source });
+    }
+    let signature = match inspect_tzap_public_footer_signature_from(archive_path, &volume_paths, &mut first_volume_file) {
+        Ok(status) => status,
+        Err(error) => TzapPublicSignatureStatus::Unavailable { reason: error.to_string() },
     };
 
-    match &display_summary.signature {
+    match &signature {
         TzapPublicSignatureStatus::Unsigned => return Ok(TzapArchiveVerification::unsigned()),
         TzapPublicSignatureStatus::Unavailable { reason } => {
             if reason.contains("missing volume") {

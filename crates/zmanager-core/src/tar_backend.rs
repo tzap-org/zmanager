@@ -482,12 +482,11 @@ fn copy_with_selector<R: TarInput>(
             }
         };
         if selected {
-            entry = Some(candidate);
+            entry = Some((path, candidate));
             break;
         }
     }
-    let mut entry = entry.ok_or_else(|| io_error(archive_path, io::Error::new(io::ErrorKind::NotFound, "retained TAR entry is not present")))?;
-    let path = entry_path(&mut entry, archive_path)?;
+    let (path, mut entry) = entry.ok_or_else(|| io_error(archive_path, io::Error::new(io::ErrorKind::NotFound, "retained TAR entry is not present")))?;
     if !entry.header().entry_type().is_file() {
         return Err(io_error(Path::new(&path), io::Error::new(io::ErrorKind::InvalidInput, "retained TAR entry is not a regular file")));
     }

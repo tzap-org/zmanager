@@ -145,26 +145,32 @@ pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn io::Wri
     let mut cabinet = open(path)?;
     let entries = collect_entries(&cabinet, path)?;
     let entry = entries.get(entry_index).ok_or_else(|| invalid(path, "retained CAB entry ID is not present"))?;
-    let mut reader = cabinet.read_file(&entry.source_name).map_err(|source| io_error(path, source))?;
-    io::copy(&mut reader, writer).map_err(|source| io_error(path, source))
+    copy_entry(&mut cabinet, path, entry, writer)
 }
 
 /// Copies one retained CAB file by path and duplicate occurrence.
 pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn io::Write) -> Result<u64, CabError> {
     let path = path.as_ref();
+    let mut cabinet = open(path)?;
+    let entries = collect_entries(&cabinet, path)?;
     let mut occurrence = 0_usize;
-    let entry_index = list(path)?
-        .into_iter()
-        .find_map(|entry| {
+    let entry = entries
+        .iter()
+        .find(|entry| {
             if entry.path != selected_path {
-                return None;
+                return false;
             }
             let matches = occurrence == selected_occurrence;
             occurrence = occurrence.saturating_add(1);
-            matches.then_some(entry.index)
+            matches
         })
         .ok_or_else(|| invalid(path, "retained CAB entry is not present"))?;
-    copy(path, entry_index, writer)
+    copy_entry(&mut cabinet, path, entry, writer)
+}
+
+fn copy_entry<R: io::Read + io::Seek>(cabinet: &mut cab::Cabinet<R>, path: &Path, entry: &CabEntry, writer: &mut dyn io::Write) -> Result<u64, CabError> {
+    let mut reader = cabinet.read_file(&entry.source_name).map_err(|source| io_error(path, source))?;
+    io::copy(&mut reader, writer).map_err(|source| io_error(path, source))
 }
 
 fn open(path: &Path) -> Result<cab::Cabinet<File>, CabError> {

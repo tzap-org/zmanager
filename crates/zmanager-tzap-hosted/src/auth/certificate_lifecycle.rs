@@ -14,8 +14,8 @@ use crate::http_client::{require_success, send_json_request};
 use crate::jcs;
 use crate::json_util::{json_object, optional_string};
 use crate::local_identity_store::{
-    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-    TzapOrganizationDeviceRetirement,
+    TzapDeviceSigningKeyRecord, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore,
+    TzapLocalIdentityStoreError, TzapOrganizationDeviceRetirement,
 };
 use crate::trust;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -223,7 +223,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         previous_signing_key: &TzapDeviceSigningKeyRecord,
         csr_der: &[u8],
     ) -> Result<TzapEnrolledCertificateRecord, TzapCertificateLifecycleError> {
-        Self::precheck_renewal(store, request)?;
+        let mut inventory = Self::precheck_renewal(store, request)?;
         session.require_audience(SESSION_AUDIENCE_SIGN_TZAP)?;
         let challenge = self.request_renewal_challenge(session, request, new_signing_key, csr_der)?;
         validate_renewal_challenge(self.wire_profile, challenge.canonicalization.as_deref(), request, &challenge.payload)?;
@@ -244,7 +244,6 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         };
         let new_record =
             payload.into_store_record(&enrollment_request, &new_signing_key.key_id, public_metadata).map_err(TzapCertificateLifecycleError::Enrollment)?;
-        let mut inventory = store.load_inventory(&request.account_key)?;
         let predecessor = inventory
             .enrolled_certificates
             .iter_mut()
@@ -500,10 +499,14 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         self.send(TzapAuthHttpMethod::Post, &self.sign_base_url, &path, Some(session.access_token.clone()), Some(body))
     }
 
+    /// Validates the predecessor certificate against the local inventory and
+    /// returns that inventory so the caller can reuse it for the eventual
+    /// commit instead of loading it from disk and the OS keychain a second
+    /// time for the same account.
     fn precheck_renewal(
         store: &impl TzapLocalIdentityStore,
         request: &TzapRenewalRequest,
-    ) -> Result<TzapEnrolledCertificateRecord, TzapCertificateLifecycleError> {
+    ) -> Result<TzapLocalIdentityInventory, TzapCertificateLifecycleError> {
         let inventory = store.load_inventory(&request.account_key)?;
         let certificate = inventory
             .enrolled_certificates
@@ -523,7 +526,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         if request.now_unix_seconds > certificate.not_after_unix_seconds.saturating_add(grace) {
             return Err(TzapCertificateLifecycleError::CertificateNotRenewable);
         }
-        Ok(certificate.clone())
+        Ok(inventory)
     }
 
     fn lookup_organization_device(

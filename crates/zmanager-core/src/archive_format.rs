@@ -319,7 +319,9 @@ pub fn detect_archive_format(path: impl AsRef<Path>) -> ArchiveFormatKind {
         return ArchiveFormatKind::RawStream;
     }
     if ends_with_any(path, ZIP_FAMILY_EXTENSIONS) {
-        return if crate::engine::source::is_split_zip_archive_path(path) { ArchiveFormatKind::SplitZip } else { ArchiveFormatKind::Zip };
+        // The `is_split_zip_archive_path` check above already returned for a
+        // split archive, so anything reaching here is a plain ZIP.
+        return ArchiveFormatKind::Zip;
     }
     if ends_with_any(path, SEVEN_Z_EXTENSIONS) || crate::sevenz_backend::is_7z_volume_path(path) {
         return ArchiveFormatKind::SevenZ;

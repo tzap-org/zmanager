@@ -490,22 +490,13 @@ fn read_manifest(path: &Path) -> Result<Vec<u8>, MtreeError> {
     if bytes.len() as u64 > MAX_MTREE_BYTES {
         return Err(invalid(path, format!("manifest exceeds {MAX_MTREE_BYTES} byte limit")));
     }
-    validate_type_parameters(path, &bytes)?;
+    // `type=` values are validated by `manifest::parse` itself (in
+    // `apply_keyword`), which already rejects the same invalid values with a
+    // more precise, line-numbered error; a separate raw-byte prescan here
+    // duplicated that work and, unlike the real parser, did not skip `#`
+    // comment lines, so a comment merely mentioning `type=` would have been
+    // misread as a directive and rejected the whole manifest.
     Ok(bytes)
-}
-
-fn validate_type_parameters(path: &Path, bytes: &[u8]) -> Result<(), MtreeError> {
-    for line in bytes.split(|byte| *byte == b'\n') {
-        for token in line.split(|byte| *byte == b' ').filter(|token| !token.is_empty()) {
-            let Some(value) = token.strip_prefix(b"type=") else {
-                continue;
-            };
-            if !matches!(value, b"block" | b"char" | b"dir" | b"fifo" | b"file" | b"link" | b"socket") {
-                return Err(invalid(path, format!("invalid MTREE file type {:?}", String::from_utf8_lossy(value))));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn map_kind(file_type: manifest::FileType) -> BrowserEntryKind {
@@ -578,9 +569,12 @@ mod tests {
         ("trailing_whitespace_and_extra_spaces", "./a   type=file    size=5\n", "[0] a file Some(5) None"),
         ("no_trailing_newline", "./a type=file size=9", "[0] a file Some(9) None"),
         ("duplicate_path_rejected", "./a type=file size=1\n./a type=file size=2\n", "ERR invalid MTREE <manifest>: duplicate path a"),
-        ("invalid_type_rejected", "./a type=wormhole\n", "ERR invalid MTREE <manifest>: invalid MTREE file type \"wormhole\""),
+        ("invalid_type_rejected", "./a type=wormhole\n", "ERR invalid MTREE <manifest>: line 1: invalid MTREE file type \"wormhole\""),
         ("empty_manifest", "", ""),
         ("only_comments", "#mtree\n#nothing else\n", ""),
+        // A comment that merely mentions `type=` must not be misread as a
+        // directive: `manifest::parse` skips `#`-prefixed lines outright.
+        ("comment_mentioning_type_is_not_a_directive", "# type=wormhole is not a real type\n./a type=file size=1\n", "[0] a file Some(1) None"),
         ("relative_single_name", "onlyname type=file size=4\n", "[0] onlyname file Some(4) None"),
         // --- Deliberate improvements over the previous implementation. ---
         // Was: ERR "the selected MTREE parser does not support /unset directives".

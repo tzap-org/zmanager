@@ -161,7 +161,7 @@ pub fn validate_tzap_document_envelope_value(value: &Value) -> Result<TzapDocume
     validate_document_payload(document_payload)?;
     let document_payload_value = Value::Object(document_payload.clone());
     let canonical_document_payload = jcs::canonicalize_json_bytes(&document_payload_value)?;
-    let expected_payload_hash = jcs::canonical_sha256_digest(&document_payload_value)?;
+    let expected_payload_hash = jcs::sha256_digest_of_canonical_bytes(&canonical_document_payload);
 
     let signed_payload_object = required_object_field(envelope, "$", FIELD_SIGNED_PAYLOAD)?;
     let signed_payload = validate_signed_payload(signed_payload_object, &expected_payload_hash)?;

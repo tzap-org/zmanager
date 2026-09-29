@@ -694,7 +694,14 @@ fn plan_rar_entries(
             return Err(RarBackendError::Cancelled);
         }
         reject_large_dictionary(&entry)?;
-        let Some(extraction_kind) = extraction_entry_kind(&entry, &policy)? else {
+        // Computed once up front so the Hardlink/FileCopy arms of
+        // `extraction_entry_kind` (safety validation) and `plan_entry`
+        // (materialization) don't each strip the same link target again.
+        let stripped_link_target = match entry.kind {
+            RarEntryKind::Hardlink | RarEntryKind::FileCopy => Some(stripped_archive_path(link_target(&entry)?, policy.strip_components)?),
+            _ => None,
+        };
+        let Some(extraction_kind) = extraction_entry_kind(&entry, &policy, stripped_link_target.as_deref())? else {
             extraction.report.skipped_entries += 1;
             let warning = format!("skipped {}: unsupported RAR special entry", entry.path);
             extraction.report.warnings.push(warning.clone());
@@ -717,7 +724,7 @@ fn plan_rar_entries(
                 if !matches!(entry.kind, RarEntryKind::File) {
                     extraction.deferred_progress.push((entry.path.clone(), entry.unpacked_size));
                 }
-                plans.push(plan_entry(entry, destination_path, replace_existing, destination, &policy)?);
+                plans.push(plan_entry(entry, destination_path, replace_existing, destination, &policy, stripped_link_target.as_deref())?);
             }
             ExtractionDecision::Skip { reason, .. } => {
                 extraction.report.skipped_entries += 1;
@@ -753,6 +760,7 @@ fn plan_entry(
     replace_existing: bool,
     destination: &Path,
     policy: &ExtractionPolicy,
+    stripped_link_target: Option<&str>,
 ) -> Result<PlannedEntry, RarBackendError> {
     match entry.kind {
         RarEntryKind::Directory => Ok(PlannedEntry::Directory { destination_path, replace_existing, file_attr: entry.file_attr, mtime: entry.mtime }),
@@ -770,7 +778,7 @@ fn plan_entry(
         }
         RarEntryKind::Hardlink | RarEntryKind::FileCopy => {
             let target = link_target(&entry)?;
-            let source_path = archive_target_destination(destination, target, policy)?;
+            let source_path = archive_target_destination(destination, target, policy, stripped_link_target)?;
             if entry.kind == RarEntryKind::Hardlink {
                 Ok(PlannedEntry::Hardlink { destination_path, replace_existing, source_path, file_attr: entry.file_attr, mtime: entry.mtime })
             } else {
@@ -852,14 +860,18 @@ fn list_entry_kind(kind: RarEntryKind) -> RarListEntryKind {
     }
 }
 
-fn extraction_entry_kind(entry: &zmanager_unrar::RarEntry, policy: &ExtractionPolicy) -> Result<Option<ExtractionEntryKind>, RarBackendError> {
+fn extraction_entry_kind(
+    entry: &zmanager_unrar::RarEntry,
+    policy: &ExtractionPolicy,
+    stripped_link_target: Option<&str>,
+) -> Result<Option<ExtractionEntryKind>, RarBackendError> {
     match entry.kind {
         RarEntryKind::File => Ok(Some(ExtractionEntryKind::File)),
         RarEntryKind::Directory => Ok(Some(ExtractionEntryKind::Directory)),
         RarEntryKind::Symlink => Ok(Some(ExtractionEntryKind::Symlink { target: PathBuf::from(link_target(entry)?) })),
         RarEntryKind::Hardlink | RarEntryKind::FileCopy => {
             let target = link_target(entry)?;
-            let relative_target = relative_archive_target_for_link(&entry.path, target, policy.strip_components)?;
+            let relative_target = relative_archive_target_for_link(&entry.path, target, policy.strip_components, stripped_link_target)?;
             Ok(Some(ExtractionEntryKind::Hardlink { target: relative_target }))
         }
         RarEntryKind::Special => Ok(None),
@@ -996,16 +1008,31 @@ fn link_target(entry: &zmanager_unrar::RarEntry) -> Result<&str, RarBackendError
     entry.link_target.as_deref().ok_or_else(|| RarBackendError::MissingLinkTarget { path: entry.path.clone() })
 }
 
-fn archive_target_destination(destination: &Path, target: &str, policy: &ExtractionPolicy) -> Result<PathBuf, RarBackendError> {
-    let target = stripped_archive_path(target, policy.strip_components)?;
+fn archive_target_destination(destination: &Path, target: &str, policy: &ExtractionPolicy, stripped_target: Option<&str>) -> Result<PathBuf, RarBackendError> {
+    let owned;
+    let target = if let Some(stripped) = stripped_target {
+        stripped
+    } else {
+        owned = stripped_archive_path(target, policy.strip_components)?;
+        &owned
+    };
     Ok(destination.join(target))
 }
 
-fn relative_archive_target_for_link(link_path: &str, target: &str, strip_components: usize) -> Result<PathBuf, RarBackendError> {
+/// `stripped_target` lets a caller that already stripped the link's target
+/// (e.g. to build the safety-layer's relative target) pass that value
+/// through instead of having it recomputed here.
+fn relative_archive_target_for_link(link_path: &str, target: &str, strip_components: usize, stripped_target: Option<&str>) -> Result<PathBuf, RarBackendError> {
     let stripped_link = stripped_archive_path(link_path, strip_components)?;
-    let stripped_target = stripped_archive_path(target, strip_components)?;
+    let owned;
+    let stripped_target = if let Some(stripped) = stripped_target {
+        stripped
+    } else {
+        owned = stripped_archive_path(target, strip_components)?;
+        &owned
+    };
     let link_parent = stripped_link.rsplit_once('/').map_or("", |(parent, _)| parent);
-    Ok(relative_path(link_parent, &stripped_target))
+    Ok(relative_path(link_parent, stripped_target))
 }
 
 fn stripped_archive_path(path: &str, strip_components: usize) -> Result<String, RarBackendError> {

@@ -189,11 +189,49 @@ pub fn extract(
 
 /// Copies one retained regular LHA file to a caller-owned writer.
 pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn io::Write) -> Result<u64, LhaError> {
-    let path = path.as_ref();
+    copy_selected(path.as_ref(), &LhaSelection::Index(entry_index), "retained LHA entry ID is not present", writer)
+}
+
+/// Copies one retained LHA file by path and duplicate occurrence.
+pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn io::Write) -> Result<u64, LhaError> {
+    copy_selected(
+        path.as_ref(),
+        &LhaSelection::PathOccurrence { path: selected_path, occurrence: selected_occurrence },
+        "retained LHA entry is not present",
+        writer,
+    )
+}
+
+enum LhaSelection<'a> {
+    Index(usize),
+    PathOccurrence { path: &'a str, occurrence: usize },
+}
+
+/// Walks the sequential LHA header stream once, header-to-header, instead of
+/// resolving a `(path, occurrence)` selector to an index in one pass (`list`)
+/// and then re-walking from the start to that index in a second pass.
+fn copy_selected(path: &Path, selection: &LhaSelection<'_>, not_found_message: &str, writer: &mut dyn io::Write) -> Result<u64, LhaError> {
     let mut reader = open(path)?;
-    for index in 0..=entry_index {
-        if index != 0 && !reader.next_file().map_err(|error| invalid(path, error))? {
-            return Err(invalid(path, "retained LHA entry ID is not present"));
+    let mut index = 0_usize;
+    let mut path_occurrence = 0_usize;
+    loop {
+        let selected = match *selection {
+            LhaSelection::Index(selected) => selected == index,
+            LhaSelection::PathOccurrence { path: selected_path, occurrence } => {
+                let entry_path = normalize_path(&reader.header().parse_pathname_to_str())?;
+                let matches = entry_path == selected_path && path_occurrence == occurrence;
+                if entry_path == selected_path {
+                    path_occurrence = path_occurrence.saturating_add(1);
+                }
+                matches
+            }
+        };
+        if selected {
+            break;
+        }
+        index = index.saturating_add(1);
+        if !reader.next_file().map_err(|error| invalid(path, error))? {
+            return Err(invalid(path, not_found_message));
         }
     }
     if reader.header().is_directory() {
@@ -207,24 +245,6 @@ pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn io::Wri
         return Err(invalid(path, format!("decoded to {bytes} bytes, expected {expected}")));
     }
     Ok(bytes)
-}
-
-/// Copies one retained LHA file by path and duplicate occurrence.
-pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn io::Write) -> Result<u64, LhaError> {
-    let path = path.as_ref();
-    let mut occurrence = 0_usize;
-    let entry_index = list(path)?
-        .into_iter()
-        .find_map(|entry| {
-            if entry.path != selected_path {
-                return None;
-            }
-            let matches = occurrence == selected_occurrence;
-            occurrence = occurrence.saturating_add(1);
-            matches.then_some(entry.index)
-        })
-        .ok_or_else(|| invalid(path, "retained LHA entry is not present"))?;
-    copy(path, entry_index, writer)
 }
 
 fn open(path: &Path) -> Result<delharc::LhaDecodeReader<File>, LhaError> {

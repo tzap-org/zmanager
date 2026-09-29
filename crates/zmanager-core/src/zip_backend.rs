@@ -1078,10 +1078,10 @@ fn dos_file_time_in<Tz: chrono::TimeZone>(dt: zip::DateTime, zone: &Tz) -> Optio
 /// interpret as a different date; the NTFS field still covers those times. The
 /// DOS field covers 1980..=2107 and is clamped to that range.
 fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemTime) -> FullFileOptions<'_> {
-    options = options.last_modified_time(dos_date_time_in(modified, &chrono::Local));
     // `FileTime` floors pre-epoch times to whole seconds, matching Unix time,
     // and keeps the fraction as forward-counting nanoseconds.
     let file_time = FileTime::from_system_time(modified);
+    options = options.last_modified_time(dos_date_time_in(file_time, &chrono::Local));
     // These two fields (41 bytes with headers) are the only extra data on the
     // options, so the one failure mode (exceeding the 64 KiB limit) cannot occur.
     // Zero ticks (exactly 1601-01-01) would read back as "no time", so it is not written.
@@ -1112,7 +1112,7 @@ fn unix_to_ntfs_ticks(time: FileTime) -> Option<u64> {
 /// to the 1980-01-01 00:00:00..=2107-12-31 23:59:58 range the field can hold,
 /// as Info-ZIP does. Leaving it unset would let `zip` write the current UTC
 /// time instead.
-fn dos_date_time_in<Tz: chrono::TimeZone>(modified: std::time::SystemTime, zone: &Tz) -> zip::DateTime {
+fn dos_date_time_in<Tz: chrono::TimeZone>(modified: FileTime, zone: &Tz) -> zip::DateTime {
     use chrono::{Datelike, Timelike};
 
     let earliest = zip::DateTime::default();
@@ -1120,7 +1120,7 @@ fn dos_date_time_in<Tz: chrono::TimeZone>(modified: std::time::SystemTime, zone:
     // Far-out times are settled from UTC alone: a `SystemTime` can lie outside
     // chrono's range (converting it with `From` panics), and no zone offset
     // moves a date by more than a day, so a year of slack is enough.
-    let seconds = FileTime::from_system_time(modified).unix_seconds();
+    let seconds = modified.unix_seconds();
     let utc = match chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0) {
         Some(utc) if (1979..=2108).contains(&utc.year()) => utc,
         Some(utc) => return if utc.year() < 1979 { earliest } else { latest },
@@ -1516,7 +1516,7 @@ mod tests {
         for seconds in
             [utc_seconds(2023, 1, 15, 1, 0, 0), utc_seconds(2023, 7, 1, 2, 0, 0), utc_seconds(2023, 4, 1, 15, 30, 0), utc_seconds(2023, 9, 30, 16, 0, 0)]
         {
-            let written = super::dos_date_time_in(unix_time(seconds), &Sydney2023);
+            let written = super::dos_date_time_in(filetime::FileTime::from_unix_time(seconds, 0), &Sydney2023);
             assert_eq!(read_dos_in(written, &Sydney2023), seconds, "round trip of {seconds}");
         }
     }
@@ -1524,20 +1524,20 @@ mod tests {
     #[test]
     fn dos_timestamp_is_written_as_wall_clock_in_the_given_zone() {
         let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
-        let written = super::dos_date_time_in(unix_time(utc_seconds(2023, 11, 14, 22, 13, 20)), &tokyo);
+        let written = super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(2023, 11, 14, 22, 13, 20), 0), &tokyo);
         assert_eq!(dos_fields(written), (2023, 11, 15, 7, 13, 20));
 
         // Daylight saving follows the instant being written; odd seconds floor to the 2-second grid.
-        let summer = super::dos_date_time_in(unix_time(utc_seconds(2023, 7, 1, 16, 0, 1)), &Eastern2023);
+        let summer = super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(2023, 7, 1, 16, 0, 1), 0), &Eastern2023);
         assert_eq!(dos_fields(summer), (2023, 7, 1, 12, 0, 0));
-        let winter = super::dos_date_time_in(unix_time(utc_seconds(2023, 1, 15, 17, 0, 0)), &Eastern2023);
+        let winter = super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(2023, 1, 15, 17, 0, 0), 0), &Eastern2023);
         assert_eq!(dos_fields(winter), (2023, 1, 15, 12, 0, 0));
     }
 
     #[test]
     fn dos_timestamp_round_trips_through_the_same_zone() {
         for seconds in [utc_seconds(2023, 1, 15, 17, 0, 0), utc_seconds(2023, 7, 1, 16, 0, 0), utc_seconds(2023, 11, 5, 5, 30, 0)] {
-            let written = super::dos_date_time_in(unix_time(seconds), &Eastern2023);
+            let written = super::dos_date_time_in(filetime::FileTime::from_unix_time(seconds, 0), &Eastern2023);
             assert_eq!(read_dos_in(written, &Eastern2023), seconds, "round trip of {seconds}");
         }
     }
@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn dos_timestamp_is_clamped_to_its_range() {
         let utc = chrono::FixedOffset::east_opt(0).unwrap();
-        let written = |seconds: i64| dos_fields(super::dos_date_time_in(unix_time(seconds), &utc));
+        let written = |seconds: i64| dos_fields(super::dos_date_time_in(filetime::FileTime::from_unix_time(seconds, 0), &utc));
         assert_eq!(written(utc_seconds(1979, 12, 31, 23, 59, 58)), (1980, 1, 1, 0, 0, 0));
         assert_eq!(written(-86_400), (1980, 1, 1, 0, 0, 0));
         assert_eq!(written(utc_seconds(1980, 1, 1, 0, 0, 0)), (1980, 1, 1, 0, 0, 0));
@@ -1558,11 +1558,20 @@ mod tests {
     fn dos_timestamp_clamps_by_wall_clock_date_not_utc_date() {
         // 1980-01-01T02:00+09:00 is still 1979 in UTC, and 2107-12-31T20:00-05:00 is already 2108.
         let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
-        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(1979, 12, 31, 17, 0, 0)), &tokyo)), (1980, 1, 1, 2, 0, 0));
+        assert_eq!(
+            dos_fields(super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(1979, 12, 31, 17, 0, 0), 0), &tokyo)),
+            (1980, 1, 1, 2, 0, 0)
+        );
         let bogota = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
-        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(2108, 1, 1, 1, 0, 0)), &bogota)), (2107, 12, 31, 20, 0, 0));
+        assert_eq!(
+            dos_fields(super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(2108, 1, 1, 1, 0, 0), 0), &bogota)),
+            (2107, 12, 31, 20, 0, 0)
+        );
         // A wall-clock date just outside the range clamps even though UTC is inside it.
-        assert_eq!(dos_fields(super::dos_date_time_in(unix_time(utc_seconds(1980, 1, 1, 3, 0, 0)), &bogota)), (1980, 1, 1, 0, 0, 0));
+        assert_eq!(
+            dos_fields(super::dos_date_time_in(filetime::FileTime::from_unix_time(utc_seconds(1980, 1, 1, 3, 0, 0), 0), &bogota)),
+            (1980, 1, 1, 0, 0, 0)
+        );
     }
 
     #[test]
@@ -1571,10 +1580,12 @@ mod tests {
         let far = std::time::Duration::from_secs(10_000_000_000_000);
         let utc = chrono::FixedOffset::east_opt(0).unwrap();
         if let Some(future) = std::time::UNIX_EPOCH.checked_add(far) {
+            let future = filetime::FileTime::from_system_time(future);
             assert_eq!(dos_fields(super::dos_date_time_in(future, &utc)), (2107, 12, 31, 23, 59, 58));
             assert_eq!(dos_fields(super::dos_date_time_in(future, &chrono::Local)), (2107, 12, 31, 23, 59, 58));
         }
         if let Some(past) = std::time::UNIX_EPOCH.checked_sub(far) {
+            let past = filetime::FileTime::from_system_time(past);
             assert_eq!(dos_fields(super::dos_date_time_in(past, &utc)), (1980, 1, 1, 0, 0, 0));
         }
     }

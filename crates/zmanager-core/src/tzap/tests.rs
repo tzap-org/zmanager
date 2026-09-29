@@ -1648,6 +1648,28 @@ fn public_display_summary_reports_unavailable_for_missing_volume() {
     assert!(reason.contains("missing volume 2"), "unexpected reason: {reason}");
 }
 
+/// Z7's unified verification model shares one volume discovery and one open
+/// of the first volume between its metadata and footer-signature passes
+/// (mirroring `summarize_tzap_public_display`) instead of resolving volume
+/// completeness once and then re-discovering the same volume set inside a
+/// second, independent metadata pass. A missing volume must still surface as
+/// `VolumesIncomplete` through that shared pass, without ever reaching the
+/// footer-signature or X.509 trust steps.
+#[test]
+fn archive_verification_reports_volumes_incomplete_for_missing_volume() {
+    let temp = TestDir::new("tzap_verification_missing_volume");
+    let signer = test_x509_root_auth_signer("ZManager Verification Missing Volume Signer");
+    let written = write_signed_test_archive(&[RegularFile::new("payload.txt", b"stripe payload")], 4, &signer);
+    for index in [0usize, 1, 3] {
+        fs::write(temp.path(format!("sample.vol{index:03}.tzap")), &written.volumes[index]).unwrap();
+    }
+
+    let trust = TzapX509TrustOptions { trusted_ca_certificates: Vec::new(), trusted_system_roots: false, include_official_tzap_root: false };
+    let now = i64::try_from(std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
+    let verification = super::verify_tzap_archive_public_no_key(temp.path("sample.vol000.tzap"), &trust, now).unwrap();
+    assert_eq!(verification.signature, super::TzapArchiveSignatureCheck::VolumesIncomplete);
+}
+
 #[test]
 fn public_display_summary_reports_signed_for_complete_multi_volume_set() {
     let temp = TestDir::new("tzap_display_multi_volume");

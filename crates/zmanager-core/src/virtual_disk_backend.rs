@@ -908,7 +908,11 @@ fn open_optical_source(archive_path: &Path) -> Result<std::sync::Arc<dyn forensi
 /// archive tree (zip/7z/tar) is rejected either way — that is the resolver's
 /// loose-archive fallback, not a container this backend owns.
 #[allow(clippy::cast_possible_truncation)]
-fn mount_entry(archive_path: &Path, allow_logical: bool) -> Result<(forensic_vfs::DynFs, forensic_vfs::Locator), VirtualDiskBackendError> {
+#[allow(clippy::type_complexity)]
+fn mount_entry(
+    archive_path: &Path,
+    allow_logical: bool,
+) -> Result<(forensic_vfs::DynFs, forensic_vfs::Locator, Option<std::sync::Arc<dyn forensic_vfs::ImageSource>>), VirtualDiskBackendError> {
     if is_vdi_image(archive_path) {
         let mut file = std::fs::File::open(archive_path).map_err(|e| VirtualDiskBackendError::Io { path: archive_path.to_path_buf(), source: e })?;
         let mut header_buf = vec![0_u8; VDI_HEADER_BYTES];
@@ -938,14 +942,17 @@ fn mount_entry(archive_path: &Path, allow_logical: bool) -> Result<(forensic_vfs
             return Err(VirtualDiskBackendError::NotDiskImage(format!("{}: no supported filesystem found in the VDI image", archive_path.display())));
         };
 
-        return Ok((fs, forensic_vfs::Locator::file(archive_path)));
+        return Ok((fs, forensic_vfs::Locator::file(archive_path), None));
     }
 
     if (is_isz_image(archive_path) || is_optical_image(archive_path))
         && let Ok(src) = open_optical_source(archive_path)
-        && let Ok(Some(fs)) = Vfs::new().open_source(src)
+        && let Ok(Some(fs)) = Vfs::new().open_source(std::sync::Arc::clone(&src))
     {
-        return Ok((fs, forensic_vfs::Locator::file(archive_path)));
+        // The already-opened optical source is handed back so an ISO9660
+        // path map (built by callers via `path_map_for_filesystem`) can reuse
+        // it instead of re-opening and re-parsing the same ISZ/CDI image.
+        return Ok((fs, forensic_vfs::Locator::file(archive_path), Some(src)));
     }
 
     let evidence: Evidence = Vfs::new().open(archive_path).map_err(|error| VirtualDiskBackendError::Vfs(error.to_string()))?;
@@ -972,7 +979,7 @@ fn mount_entry(archive_path: &Path, allow_logical: bool) -> Result<(forensic_vfs
         return Err(VirtualDiskBackendError::NotDiskImage(format!("{}: resolved to a {} tree, not a disk image", archive_path.display(), fs.kind().as_str())));
     }
 
-    Ok((std::sync::Arc::clone(fs), evidence.root))
+    Ok((std::sync::Arc::clone(fs), evidence.root, None))
 }
 
 /// Maps one walked engine entry to the safety layer's entry kind.
@@ -1052,12 +1059,25 @@ fn collect_entries_with_path_map(
     Ok(entries)
 }
 
-fn iso_path_map(archive_path: &Path) -> HashMap<u32, String> {
-    if (is_isz_image(archive_path) || is_optical_image(archive_path))
-        && let Ok(src) = open_optical_source(archive_path)
-    {
-        let len = src.len();
-        let cursor = forensic_vfs::adapters::SourceCursor::new(src, 0, len);
+/// Builds the LBA-to-path map for an ISO9660 filesystem. `optical_source`
+/// reuses the `ImageSource` `mount_entry` already opened for an ISZ/CDI image
+/// instead of opening and re-parsing the same image a second time; it is
+/// `None` for a plain `.iso` (which `mount_entry` opens through the generic
+/// engine path, not `open_optical_source`), so this function falls back to
+/// opening one itself in that case.
+fn iso_path_map(archive_path: &Path, optical_source: Option<&std::sync::Arc<dyn forensic_vfs::ImageSource>>) -> HashMap<u32, String> {
+    let opened_source;
+    let source = match optical_source {
+        Some(source) => Some(source),
+        None if is_isz_image(archive_path) || is_optical_image(archive_path) => {
+            opened_source = open_optical_source(archive_path).ok();
+            opened_source.as_ref()
+        }
+        None => None,
+    };
+    if let Some(source) = source {
+        let len = source.len();
+        let cursor = forensic_vfs::adapters::SourceCursor::new(std::sync::Arc::clone(source), 0, len);
         let mut reader = SendReadSeek(Box::new(cursor));
         if let Ok(mut r) = iso::IsoReader::open(&mut reader)
             && let Ok(walked) = r.walk()
@@ -1074,8 +1094,12 @@ fn iso_path_map(archive_path: &Path) -> HashMap<u32, String> {
     HashMap::new()
 }
 
-fn path_map_for_filesystem(fs: &forensic_vfs::DynFs, archive_path: &Path) -> Option<HashMap<u32, String>> {
-    if fs.kind().as_str() == "iso9660" { Some(iso_path_map(archive_path)) } else { None }
+fn path_map_for_filesystem(
+    fs: &forensic_vfs::DynFs,
+    archive_path: &Path,
+    optical_source: Option<&std::sync::Arc<dyn forensic_vfs::ImageSource>>,
+) -> Option<HashMap<u32, String>> {
+    if fs.kind().as_str() == "iso9660" { Some(iso_path_map(archive_path, optical_source)) } else { None }
 }
 
 /// Lists the entries of a `.vhd` archive without extracting them.
@@ -1186,8 +1210,8 @@ pub(crate) fn test_container_payloads(
     allow_logical: bool,
 ) -> Result<TestReport, VirtualDiskBackendError> {
     let archive_path = archive_path.as_ref();
-    let (fs, _) = mount_entry(archive_path, allow_logical)?;
-    let path_map = path_map_for_filesystem(&fs, archive_path);
+    let (fs, _, optical_source) = mount_entry(archive_path, allow_logical)?;
+    let path_map = path_map_for_filesystem(&fs, archive_path, optical_source.as_ref());
     let mut no_warning = None;
     let entries = collect_entries_with_path_map(&fs, &mut no_warning, path_map.as_ref())?;
     let mut report = TestReport::default();
@@ -1232,8 +1256,8 @@ pub(crate) fn copy_container_by_path_occurrence(
     allow_logical: bool,
     label: &str,
 ) -> Result<u64, VirtualDiskBackendError> {
-    let (fs, _) = mount_entry(archive_path, allow_logical)?;
-    let path_map = path_map_for_filesystem(&fs, archive_path);
+    let (fs, _, optical_source) = mount_entry(archive_path, allow_logical)?;
+    let path_map = path_map_for_filesystem(&fs, archive_path, optical_source.as_ref());
     let mut no_warning = None;
     let entries = collect_entries_with_path_map(&fs, &mut no_warning, path_map.as_ref())?;
 
@@ -1290,8 +1314,8 @@ pub fn copy_logical_container_by_path_occurrence(
 
 pub(crate) fn list_container_inner(archive_path: impl AsRef<Path>, allow_logical: bool) -> Result<Vec<VirtualDiskListEntry>, VirtualDiskBackendError> {
     let archive_path = archive_path.as_ref();
-    let (fs, _) = mount_entry(archive_path, allow_logical)?;
-    let path_map = path_map_for_filesystem(&fs, archive_path);
+    let (fs, _, optical_source) = mount_entry(archive_path, allow_logical)?;
+    let path_map = path_map_for_filesystem(&fs, archive_path, optical_source.as_ref());
     let mut no_warning = None;
     let entries = collect_entries_with_path_map(&fs, &mut no_warning, path_map.as_ref())?;
     Ok(entries
@@ -1525,10 +1549,10 @@ pub(crate) fn extract_container_inner(
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| VirtualDiskBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let (fs, _) = mount_entry(archive_path, allow_logical)?;
+    let (fs, _, optical_source) = mount_entry(archive_path, allow_logical)?;
 
     let mut warnings = Vec::new();
-    let path_map = path_map_for_filesystem(&fs, archive_path);
+    let path_map = path_map_for_filesystem(&fs, archive_path, optical_source.as_ref());
     let mut warning_sink = |warning| warnings.push(warning);
     let mut warning_callback: Option<&mut dyn FnMut(String)> = Some(&mut warning_sink);
     let entries = collect_entries_with_path_map(&fs, &mut warning_callback, path_map.as_ref())?;

@@ -25,10 +25,18 @@ pub fn canonicalize_json_bytes(value: &Value) -> Result<Vec<u8>, JcsError> {
 /// Computes `sha256:<64 lower-case hex>` over RFC 8785 canonical JSON bytes.
 pub fn canonical_sha256_digest(value: &Value) -> Result<String, JcsError> {
     let bytes = canonicalize_json_bytes(value)?;
-    let digest = Sha256::digest(bytes);
+    Ok(sha256_digest_of_canonical_bytes(&bytes))
+}
+
+/// Computes `sha256:<64 lower-case hex>` over bytes a caller already
+/// canonicalized with [`canonicalize_json_bytes`], instead of the caller
+/// re-canonicalizing the same value to call [`canonical_sha256_digest`].
+#[must_use]
+pub fn sha256_digest_of_canonical_bytes(canonical: &[u8]) -> String {
+    let digest = Sha256::digest(canonical);
     let mut digest_array = [0_u8; 32];
     digest_array.copy_from_slice(&digest);
-    Ok(trust::format_sha256_identifier(&digest_array))
+    trust::format_sha256_identifier(&digest_array)
 }
 
 #[cfg(test)]

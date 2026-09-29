@@ -158,19 +158,20 @@ pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn io::Wri
 /// Copies one retained WARC record by path and duplicate occurrence.
 pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn io::Write) -> Result<u64, WarcError> {
     let path = path.as_ref();
+    let records = parse_records(path)?;
     let mut occurrence = 0_usize;
-    let entry_index = list(path)?
-        .into_iter()
-        .find_map(|entry| {
-            if entry.path != selected_path {
-                return None;
+    let record = records
+        .iter()
+        .find(|record| {
+            if record.entry.path != selected_path {
+                return false;
             }
             let matches = occurrence == selected_occurrence;
             occurrence = occurrence.saturating_add(1);
-            matches.then_some(entry.index)
+            matches
         })
         .ok_or_else(|| invalid(path, "retained WARC entry is not present"))?;
-    copy(path, entry_index, writer)
+    copy_body(path, record, writer)
 }
 
 fn record_path(target: Option<&str>, index: usize, record_type: &str, used: &mut Vec<String>) -> Result<String, WarcError> {

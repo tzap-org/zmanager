@@ -188,10 +188,10 @@ fn open_package(archive_path: &Path) -> Result<msi::Package<std::fs::File>, MsiB
 /// Reads the `File`, `Directory`, and `Media` tables and resolves every file
 /// to a target-relative path. Returns the entries plus the number of rows
 /// skipped in the manifest (empty file names, sequences no cabinet covers);
-/// skipped rows carry a warning.
-fn read_manifest(archive_path: &Path, warnings: &mut Vec<String>) -> Result<(Vec<MsiFileEntry>, usize), MsiBackendError> {
-    let mut package = open_package(archive_path)?;
-
+/// skipped rows carry a warning. Takes an already-open `package` so callers
+/// that also need it for cabinet extraction don't open the compound-file
+/// document a second time.
+fn read_manifest(package: &mut msi::Package<std::fs::File>, warnings: &mut Vec<String>) -> Result<(Vec<MsiFileEntry>, usize), MsiBackendError> {
     let directory_rows = package
         .select_rows(msi::Select::table("Directory").columns(&["Directory", "Directory_Parent", "DefaultDir"]))
         .map_err(|error| MsiBackendError::Msi(format!("Directory table: {error}")))?
@@ -265,8 +265,9 @@ fn read_manifest(archive_path: &Path, warnings: &mut Vec<String>) -> Result<(Vec
 
 /// Lists the files of an `.msi` package without extracting them.
 pub fn list_msi(archive_path: impl AsRef<Path>) -> Result<Vec<MsiListEntry>, MsiBackendError> {
+    let mut package = open_package(archive_path.as_ref())?;
     let mut warnings = Vec::new();
-    let (entries, _) = read_manifest(archive_path.as_ref(), &mut warnings)?;
+    let (entries, _) = read_manifest(&mut package, &mut warnings)?;
     Ok(entries.into_iter().map(|entry| MsiListEntry { path: entry.path, size: entry.size }).collect())
 }
 
@@ -309,9 +310,9 @@ fn extract_msi_inner(
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| MsiBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let mut warnings = Vec::new();
-    let (entries, manifest_skips) = read_manifest(archive_path, &mut warnings)?;
     let mut package = open_package(archive_path)?;
+    let mut warnings = Vec::new();
+    let (entries, manifest_skips) = read_manifest(&mut package, &mut warnings)?;
 
     let mut planner = ExtractionSafetyPlanner::with_overwrite_resolver(&destination_root, policy, overwrite_resolver);
     let mut io_buffer = vec![0_u8; crate::DEFAULT_IO_BUFFER_BYTES];

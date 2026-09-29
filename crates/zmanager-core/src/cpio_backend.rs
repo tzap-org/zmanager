@@ -128,9 +128,23 @@ pub fn extract(
     cancellation: Option<&crate::jobs::CancellationToken>,
 ) -> Result<CpioReport, CpioError> {
     let path = path.as_ref();
+    let parsed = parse(path)?;
+    extract_parsed(path, parsed, destination, policy, resolver, selected_index, cancellation)
+}
+
+/// Same as [`extract`], but reuses an already-parsed archive instead of
+/// re-parsing it — the occurrence-selector callers already have one.
+fn extract_parsed(
+    path: &Path,
+    parsed: ParsedArchive,
+    destination: impl AsRef<Path>,
+    policy: ExtractionPolicy,
+    resolver: Option<&mut dyn OverwriteResolver>,
+    selected_index: Option<usize>,
+    cancellation: Option<&crate::jobs::CancellationToken>,
+) -> Result<CpioReport, CpioError> {
     let destination = destination.as_ref();
     let root = crate::safety::prepare_destination_root(destination).map_err(|source| io_error(destination, source))?;
-    let parsed = parse(path)?;
     let mut file = open(path)?;
     let mut planner = crate::safety::ExtractionSafetyPlanner::with_overwrite_resolver(&root, policy, resolver);
     let mut report = CpioReport::default();
@@ -234,8 +248,9 @@ pub fn extract_by_path_occurrence(
     cancellation: Option<&crate::jobs::CancellationToken>,
 ) -> Result<CpioReport, CpioError> {
     let path = path.as_ref();
-    let selected_index = find_path_occurrence(path, selected_path, selected_occurrence)?;
-    extract(path, destination, policy, resolver, Some(selected_index), cancellation)
+    let parsed = parse(path)?;
+    let selected_index = find_path_occurrence(&parsed, path, selected_path, selected_occurrence)?;
+    extract_parsed(path, parsed, destination, policy, resolver, Some(selected_index), cancellation)
 }
 
 /// Copies one retained regular-file entry to a caller-owned writer.
@@ -246,25 +261,37 @@ pub fn copy(path: impl AsRef<Path>, entry_index: usize, writer: &mut dyn Write) 
         .into_iter()
         .find(|entry| entry.public.index == entry_index)
         .ok_or_else(|| io_error(path, io::Error::new(io::ErrorKind::NotFound, "retained CPIO entry ID is not present")))?;
-    if !matches!(entry.public.kind, BrowserEntryKind::File) {
-        return Err(io_error(Path::new(&entry.public.path), io::Error::new(io::ErrorKind::InvalidInput, "retained CPIO entry is not a regular file")));
-    }
-    let mut file = open(path)?;
-    copy_payload(&mut file, path, &entry, writer)
+    copy_entry(path, &entry, writer)
 }
 
 /// Copies one retained regular-file entry by path and duplicate occurrence.
 pub fn copy_by_path_occurrence(path: impl AsRef<Path>, selected_path: &str, selected_occurrence: usize, writer: &mut dyn Write) -> Result<u64, CpioError> {
     let path = path.as_ref();
-    let entry_index = find_path_occurrence(path, selected_path, selected_occurrence)?;
-    copy(path, entry_index, writer)
+    let mut parsed = parse(path)?;
+    // `find_path_occurrence` returns a position in `parsed.entries`, which
+    // `parse` assigns as each entry's `public.index` in the same
+    // left-to-right order (`assign_hardlinks` only mutates entries in
+    // place, it never reorders them), so `swap_remove` at that position
+    // takes the matched entry directly without a second, index-based
+    // search over the list.
+    let position = find_path_occurrence(&parsed, path, selected_path, selected_occurrence)?;
+    let entry = parsed.entries.swap_remove(position);
+    copy_entry(path, &entry, writer)
 }
 
-fn find_path_occurrence(path: &Path, selected_path: &str, selected_occurrence: usize) -> Result<usize, CpioError> {
+fn copy_entry(path: &Path, entry: &ParsedEntry, writer: &mut dyn Write) -> Result<u64, CpioError> {
+    if !matches!(entry.public.kind, BrowserEntryKind::File) {
+        return Err(io_error(Path::new(&entry.public.path), io::Error::new(io::ErrorKind::InvalidInput, "retained CPIO entry is not a regular file")));
+    }
+    let mut file = open(path)?;
+    copy_payload(&mut file, path, entry, writer)
+}
+
+fn find_path_occurrence(parsed: &ParsedArchive, path: &Path, selected_path: &str, selected_occurrence: usize) -> Result<usize, CpioError> {
     let mut occurrence = 0_usize;
-    parse(path)?
+    parsed
         .entries
-        .into_iter()
+        .iter()
         .find_map(|entry| {
             if entry.public.path != selected_path {
                 return None;
