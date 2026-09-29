@@ -51,12 +51,6 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
-      - name: Use published tzap-core (no sibling patch for releases)
-        shell: bash
-        run: |
-          printf '%s\n' '[net]' 'git-fetch-with-cli = true' > .cargo/config.toml
-          cargo fetch
-
       - name: Clone localsend-rs
         shell: bash
         run: |
@@ -70,6 +64,12 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+
+      - name: Use published tzap-core (no sibling patch for releases)
+        shell: bash
+        run: |
+          printf '%s\n' '[net]' 'git-fetch-with-cli = true' > .cargo/config.toml
+          cargo fetch
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
