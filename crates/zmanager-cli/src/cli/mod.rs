@@ -7,3 +7,5 @@ pub mod options;
 pub mod planning;
 pub mod tzap;
 pub mod usage;
+#[cfg(windows)]
+mod windows_elevation;

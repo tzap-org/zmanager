@@ -19,6 +19,10 @@ _zm()
     local cert_commands="enroll renew revoke"
     local device_commands="retire revoke"
     local contact_commands="keygen export import list remove"
+    if [[ "$(command zm --version 2>/dev/null)" != *"(full"* ]]; then
+        commands="create extract list test plan formats tzap doctor completions help"
+        help_topics="create extract list test plan formats tzap sign verify contact share certs doctor completions"
+    fi
     local global_opts="-h --help -V --version -q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt -c --create -x --extract -t --list -T --test -f --file"
     local create_opts="-h --help -r --recursive -C --directory -@ --files-from --null --clean --no-ignore --hidden --no-hidden -i --include --exclude --exclude-from --format --method --level -0 -1 -2 -3 -4 -5 -6 -7 -8 -9 --store --solid --no-solid --volume-size --recipient-cert --signing-cert --signing-private-key --signing-chain --signing-identity -j --junk-paths -y --preserve-symlinks --follow-symlinks --preserve-metadata -X --no-metadata -f --file --force --dry-run -T --test-after --encrypt --password-stdin"
     local extract_opts="-h --help -C -d --directory --here --overwrite -i --include --exclude --strip-components --to-stdout --extract-nested --password-stdin --recipient-key --restore --allow-degraded"
@@ -40,6 +44,12 @@ _zm()
     local overwrite_values="never always ask rename"
     local volume_size_values="64k 100m 500m 1g 2g 4g"
     local shell_values="bash zsh fish powershell"
+    local common_opts="-q --quiet -v --verbose --json --color --no-color --progress --no-progress --no-password-prompt"
+    create_opts="$create_opts --sidecar --no-sidecar $common_opts"
+    extract_opts="$extract_opts $common_opts"
+    list_opts="$list_opts $common_opts"
+    test_opts="$test_opts $common_opts"
+    plan_opts="$plan_opts $common_opts"
 
     command=""
     subcommand=""
@@ -71,6 +81,18 @@ _zm()
                     break
                     ;;
             esac
+        done
+    fi
+    if [[ -z "$command" ]]; then
+        for word in "${words[@]:1:cword-1}"; do
+            if [[ "$word" =~ ^-[cxtTfrjyX0-9]+$ ]]; then
+                case "$word" in
+                    *c*) command=create; break ;;
+                    *x*) command=extract; break ;;
+                    *t*) command=list; break ;;
+                    *T*) command=test; break ;;
+                esac
+            fi
         done
     fi
 
@@ -146,7 +168,13 @@ _zm()
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
             ;;
         help)
-            COMPREPLY=($(compgen -W "$help_topics" -- "$cur"))
+            if [[ "${words[2]}" == tzap && $cword -eq 3 ]]; then
+                COMPREPLY=($(compgen -W "$tzap_commands" -- "$cur"))
+            elif [[ "${words[2]}" == tzap && "${words[3]}" == contact && $cword -eq 4 ]]; then
+                COMPREPLY=($(compgen -W "$contact_commands" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "$help_topics" -- "$cur"))
+            fi
             ;;
         completions)
             COMPREPLY=($(compgen -W "$shell_values" -- "$cur"))

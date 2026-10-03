@@ -25,6 +25,13 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
     $certCommands = @("enroll", "renew", "revoke")
     $deviceCommands = @("retire", "revoke")
     $contactCommands = @("keygen", "export", "import", "list", "remove")
+    # Match the installed build rather than suggesting unavailable online commands.
+    $fullBuild = $false
+    try { $fullBuild = [bool]((& zm --version 2>$null) -match '\(full[,)]') } catch {}
+    if (-not $fullBuild) {
+        $commands = @($commands | Where-Object { $_ -ne "auth" })
+        $helpTopics = @($helpTopics | Where-Object { $_ -notin @("auth", "me", "cert", "device") })
+    }
 
     $globalOptions = @(
         "-h", "--help", "-V", "--version", "-q", "--quiet", "-v", "--verbose",
@@ -42,7 +49,7 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         "-j", "--junk-paths", "-y", "--preserve-symlinks",
         "--follow-symlinks", "--preserve-metadata", "-X", "--no-metadata",
         "-f", "--file", "--force", "--dry-run", "-T", "--test-after", "--encrypt",
-        "--password-stdin"
+        "--password-stdin", "--sidecar", "--no-sidecar"
     )
     $extractOptions = @(
         "-h", "--help", "-C", "-d", "--directory", "--here", "--overwrite",
@@ -87,6 +94,10 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         formats = @("-h", "--help", "--json")
         doctor = @("-h", "--help", "--json")
         completions = @("-h", "--help")
+    }
+    $commonOptions = @("-q", "--quiet", "-v", "--verbose", "--json", "--color", "--no-color", "--progress", "--no-progress", "--no-password-prompt")
+    foreach ($optionCommand in @($commandOptions.Keys)) {
+        $commandOptions[$optionCommand] = @($commandOptions[$optionCommand] + $commonOptions | Select-Object -Unique)
     }
 
     function New-ZmCompletionResult {
@@ -209,8 +220,22 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
         }
     }
     $effectiveCommand = if ($subcommand -ne "") { $subcommand } else { $command }
+    if ($command -eq "") {
+        foreach ($word in $completedWords) {
+            if ($word -match '^-[cxtTfrjyX0-9]+$') {
+                if ($word.Contains('c')) { $effectiveCommand = "create"; break }
+                if ($word.Contains('x')) { $effectiveCommand = "extract"; break }
+                if ($word.Contains('t')) { $effectiveCommand = "list"; break }
+                if ($word.Contains('T')) { $effectiveCommand = "test"; break }
+            }
+        }
+    }
 
     switch ($previousWord) {
+        { $_ -in @("--state-dir", "--output", "--relay-body", "--trusted-root-cert", "--custom-trust-root-cert", "--status-response") } {
+            Complete-ZmFiles -Prefix $wordToComplete
+            return
+        }
         "--color" {
             Complete-ZmValues -Values $colorValues -Prefix $wordToComplete
             return
@@ -309,7 +334,15 @@ Register-ArgumentCompleter -Native -CommandName zm -ScriptBlock {
             Complete-ZmValues -Values $commands -Prefix $wordToComplete
         }
         "help" {
-            Complete-ZmValues -Values $helpTopics -Prefix $wordToComplete
+            if ($completedWords.Count -ge 2 -and $completedWords[1] -eq "tzap") {
+                if ($completedWords.Count -eq 2) {
+                    Complete-ZmValues -Values $tzapCommands -Prefix $wordToComplete
+                } elseif ($completedWords.Count -eq 3 -and $completedWords[2] -eq "contact") {
+                    Complete-ZmValues -Values $contactCommands -Prefix $wordToComplete
+                }
+            } else {
+                Complete-ZmValues -Values $helpTopics -Prefix $wordToComplete
+            }
         }
         "completions" {
             Complete-ZmValues -Values $shellValues -Prefix $wordToComplete

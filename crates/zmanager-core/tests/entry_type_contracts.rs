@@ -184,7 +184,7 @@ fn tzap_covers_every_manifest_entry_type() {
     assert_entry_type_lifecycle(&archive, &fixture, true, true, false);
 
     let full_output = fixture.temp.path("out-tzap-full");
-    let _full_report = extract_tzap(
+    let full_report = extract_tzap(
         TzapExtractRequest {
             key: TzapExtractKeySource::None,
             policy: ExtractionPolicy { overwrite: OverwritePolicy::Replace, ..Default::default() },
@@ -195,8 +195,25 @@ fn tzap_covers_every_manifest_entry_type() {
         },
         &archive,
         &full_output,
-    )
-    .unwrap();
+    );
+    // Windows hosts without symlink privilege cannot satisfy this final
+    // restoration assertion. Still test the explicit extraction failure;
+    // do not confuse this host limitation with a format regression.
+    #[cfg(windows)]
+    {
+        let probe = fixture.temp.path("symlink-privilege-probe");
+        if let Err(error) = std::os::windows::fs::symlink_file("file.txt", &probe) {
+            if error.raw_os_error() == Some(1314) {
+                let error = full_report.expect_err("Windows without symlink privilege must reject symlink restoration");
+                assert!(error.to_string().contains("failed to create symlink"), "unexpected extraction failure: {error}");
+                eprintln!("Windows symlink restoration requires Developer Mode or symlink privilege; failure path verified");
+                return;
+            }
+            panic!("unexpected symlink probe failure: {error}");
+        }
+        fs::remove_file(probe).unwrap();
+    }
+    full_report.unwrap();
     let link = full_output.join("types/link.txt");
     let metadata = fs::symlink_metadata(&link).unwrap_or_else(|error| panic!("full TZAP extraction did not restore {link:?}: {error}"));
     assert!(metadata.file_type().is_symlink(), "full TZAP extraction restored {link:?} as {metadata:?}, not a symlink");

@@ -142,7 +142,7 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             return usage_failure(global, format_args!("extract failed: --extract-nested is currently supported only for .deb packages"));
         }
         let destination = request.destination.unwrap_or_else(|| default_extract_destination(&request.archive));
-        return run_engine_extract(request.archive, destination, policy, None, None, zmanager_core::engine::TzapRestoreOptions::default(), global);
+        return run_engine_extract(request.archive, destination, policy, None, None, zmanager_core::engine::TzapRestoreOptions::default(), false, global);
     }
     if zmanager_core::engine::is_raw_stream_path(&request.archive) && request.password_stdin {
         return usage_failure(global, format_args!("extract failed: raw streams are not encrypted; remove --password-stdin"));
@@ -169,11 +169,12 @@ fn run_extract_request(request: ExtractRequest, global: &GlobalOptions) -> ExitC
             allow_degraded: request.tzap_allow_degraded,
             allow_absolute_symlinks: false,
         },
+        !request.password_stdin,
         global,
     )
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn run_engine_extract(
     archive: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -181,11 +182,19 @@ fn run_engine_extract(
     password: Option<&str>,
     recipient_key: Option<&Path>,
     tzap_restore_options: zmanager_core::engine::TzapRestoreOptions,
+    allow_elevation: bool,
     global: &GlobalOptions,
 ) -> ExitCode {
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let format_kind = detect_archive_format(&archive_path);
+    #[cfg(windows)]
+    if allow_elevation
+        && format_kind == ArchiveFormatKind::Tzap
+        && let Some(code) = super::windows_elevation::offer_for_symlinks(&archive_path, password, recipient_key, &policy, global)
+    {
+        return code;
+    }
     let format_label = match format_kind {
         ArchiveFormatKind::Zip | ArchiveFormatKind::SplitZip => "zip",
         ArchiveFormatKind::SevenZ => "7z",
@@ -285,7 +294,16 @@ fn run_engine_extract(
             Some("Archive password: "),
             |message| eprintln!("{message}"),
             |password| {
-                run_engine_extract(&archive_path, &destination_path, policy, Some(password.expose_secret()), recipient_key, tzap_restore_options, global)
+                run_engine_extract(
+                    &archive_path,
+                    &destination_path,
+                    policy,
+                    Some(password.expose_secret()),
+                    recipient_key,
+                    tzap_restore_options,
+                    allow_elevation,
+                    global,
+                )
             },
         ),
         Err(error) => {

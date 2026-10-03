@@ -46,6 +46,8 @@ pub(crate) fn certs_command(args: &[String], mut global: GlobalOptions) -> ExitC
         println!("{{\"certificates\":{}}}", serde_json::to_string(&certificates).unwrap_or_else(|_| "[]".to_owned()));
     } else if inventory.enrolled_certificates.is_empty() {
         println!("no local certificates");
+        println!("Document signing and contact export require an enrolled identity from the Full build or desktop/mobile app.");
+        println!("To sign an archive with your own certificate files, see 'zm create --help'.");
     } else {
         for certificate in &inventory.enrolled_certificates {
             println!("{} {} {}", certificate.certificate_id, certificate.state.as_str(), certificate.certificate_sha256);

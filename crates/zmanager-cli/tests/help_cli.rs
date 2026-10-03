@@ -342,6 +342,166 @@ fn every_public_command_has_targeted_help() {
     }
 }
 
+#[test]
+fn offline_tzap_help_reaches_the_requested_command() {
+    for (command, required) in [
+        ("sign", "zm tzap sign <input.json>"),
+        ("verify", "zm tzap verify <envelope.json>"),
+        ("contact", "zm tzap contact keygen"),
+        ("share", "zm tzap share <archive.tzap>"),
+        ("certs", "zm tzap certs [options]"),
+    ] {
+        let direct = Command::new(zm_path()).args(["tzap", command, "--help"]).output().unwrap();
+        assert_success("targeted TZAP help", &direct);
+        assert_contains(&String::from_utf8_lossy(&direct.stdout), required);
+        let nested = Command::new(zm_path()).args(["help", "tzap", command]).output().unwrap();
+        assert_success("nested TZAP help topic", &nested);
+        assert_eq!(direct.stdout, nested.stdout);
+    }
+    let unknown = Command::new(zm_path()).args(["tzap", "unknown", "--help"]).output().unwrap();
+    assert_failure("unknown TZAP subcommand", &unknown);
+}
+
+#[test]
+fn tzap_errors_point_to_help_that_actually_works() {
+    for command in ["sign", "verify", "share", "contact", "certs"] {
+        let invalid = Command::new(zm_path()).args(["tzap", command, "--unknown-option"]).output().unwrap();
+        assert_failure("invalid TZAP option", &invalid);
+        let stderr = String::from_utf8_lossy(&invalid.stderr);
+        assert_contains(&stderr, &format!("zm tzap {command} --help"));
+        assert_not_contains(&stderr, &format!("zm {command} --help"));
+        let help = Command::new(zm_path()).args(["tzap", command, "--help"]).output().unwrap();
+        assert_success("suggested TZAP help", &help);
+    }
+}
+
+#[cfg(all(windows, not(feature = "tzap-online")))]
+#[test]
+fn powershell_tab_completion_matches_the_offline_user_journey() {
+    let shell = find_on_path("pwsh.exe").or_else(|| find_on_path("powershell.exe")).expect("Windows PowerShell is available");
+    let temp = TestDir::new("powershell-completion-journey");
+    fs::write(temp.path("space archive.zip"), b"fixture").unwrap();
+    let script = temp.path("completion-check.ps1");
+    fs::write(
+        &script,
+        r#"
+param($binaryDirectory, $completionScript)
+$ErrorActionPreference = 'Stop'
+$env:PATH = $binaryDirectory + ';' + $env:PATH
+. $completionScript
+function Matches($line) {
+    @([System.Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null).CompletionMatches.CompletionText)
+}
+
+function Require($line, $value) {
+    $values = Matches $line
+    if ($values -notcontains $value) { throw "Missing $value for $line : $values" }
+}
+function Reject($line, $value) {
+    if ((Matches $line) -contains $value) { throw "Unexpected $value for $line" }
+}
+Require 'zm ' 'tzap'
+Reject 'zm ' 'auth'
+Reject 'zm help ' 'auth'
+Reject 'zm help ' 'me'
+Require 'zm tzap ' 'sign'
+Require 'zm tzap ' 'verify'
+Require 'zm help tzap ' 'sign'
+Reject 'zm help tzap ' 'create'
+Require 'zm help tzap contact ' 'import'
+Require 'zm tzap contact ' 'keygen'
+Require 'zm tzap contact ' 'export'
+Require 'zm create --s' '--sidecar'
+Require 'zm create --s' '--signing-cert'
+Require 'zm -cf sample.zip --s' '--sidecar'
+Require 'zm -xf sample.zip --o' '--overwrite'
+Require 'zm create --n' '--no-sidecar'
+Require 'zm create --j' '--json'
+Require 'zm create --c' '--color'
+Require 'zm list --t' '--tree'
+Require 'zm create --format ' 'tzap'
+Require 'zm extract --overwrite ' 'rename'
+Require 'zm extract --restore ' 'content'
+Require 'zm tzap sign --output sp' "'space archive.zip'"
+Require 'zm tzap verify --custom-trust-root-cert sp' "'space archive.zip'"
+# A Full binary still exposes the online command and help topics.
+function global:zm { 'zm 2.1.7 (full, test)' }
+Require 'zm ' 'auth'
+Require 'zm help ' 'auth'
+Require 'zm auth ' 'login'
+Write-Output 'completion journey passed'
+"#,
+    )
+    .unwrap();
+    let output = Command::new(shell)
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .arg(zm_path().parent().unwrap())
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../completions/zm.ps1"))
+        .current_dir(temp.root())
+        .output()
+        .unwrap();
+    assert_success("PowerShell Tab completion user journey", &output);
+}
+
+#[cfg(not(feature = "tzap-online"))]
+#[test]
+fn bash_tab_completion_matches_the_offline_user_journey() {
+    let shell = find_on_path(if cfg!(windows) { "bash.exe" } else { "bash" }).or_else(|| {
+        let candidate = PathBuf::from("C:/Program Files/Git/bin/bash.exe");
+        candidate.is_file().then_some(candidate)
+    });
+    let Some(shell) = shell else { return };
+    let temp = TestDir::new("bash-completion-journey");
+    let script = temp.path("completion-check.sh");
+    fs::write(
+        &script,
+        r#"
+completion=$1
+binary=$2
+if command -v cygpath >/dev/null; then
+  completion=$(cygpath -u "$completion")
+  binary=$(cygpath -u "$binary")
+fi
+export PATH="$(dirname "$binary"):$PATH"
+source "$completion"
+check() {
+  expected=$1
+  shift
+  COMP_WORDS=("$@")
+  COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+  COMPREPLY=()
+  _zm
+  [[ " ${COMPREPLY[*]} " == *" $expected "* ]] || { printf 'Missing %s for %s\n' "$expected" "${COMP_WORDS[*]}"; exit 1; }
+}
+check tzap zm ""
+[[ " ${COMPREPLY[*]} " != *" auth "* ]] || exit 1
+check sign zm help ""
+[[ " ${COMPREPLY[*]} " != *" auth "* ]] || exit 1
+check sign zm help tzap ""
+[[ " ${COMPREPLY[*]} " != *" create "* ]] || exit 1
+check import zm help tzap contact ""
+check --sidecar zm create --s
+check --signing-cert zm create --s
+check --json zm create --j
+check --sidecar zm -cf archive.zip --s
+check --overwrite zm -xf archive.zip --o
+check tzap zm create --format ""
+check rename zm extract --overwrite ""
+printf 'bash completion journey passed\n'
+"#,
+    )
+    .unwrap();
+    let output = Command::new(shell)
+        .args(["--noprofile", "--norc"])
+        .arg(script)
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../completions/zm.bash"))
+        .arg(zm_path())
+        .output()
+        .unwrap();
+    assert_success("Bash Tab completion user journey", &output);
+}
+
 // The auth subcommand surface only exists in the full build; the offline
 // binary has no `zm auth` command at all.
 #[cfg(feature = "tzap-online")]
@@ -514,10 +674,9 @@ run_case list_files zm list ""
     assert_success("bash completion contract", &output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_contains(&stdout, "top: help\n");
-    assert_contains(
-        &stdout,
-        "help_topics: create extract list test plan formats tzap sign verify contact share certs auth me cert device doctor completions\n",
-    );
+    // Without a Full executable on PATH, the static script defaults to the
+    // offline command surface. Explicitly typed auth paths remain recognizable.
+    assert_contains(&stdout, "help_topics: create extract list test plan formats tzap sign verify contact share certs doctor completions\n");
     assert_contains(&stdout, "list_options: --help");
     assert_contains(&stdout, "--tree");
     assert_contains(&stdout, "create_options: --help");
@@ -544,6 +703,14 @@ fn completions_command_prints_packaged_completion_scripts() {
         assert!(output.stderr.is_empty(), "completion output should not use stderr");
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
+}
+
+#[test]
+fn completion_setup_accepts_consecutive_global_flags() {
+    let plain = Command::new(zm_path()).args(["completions", "powershell"]).output().unwrap();
+    let options = Command::new(zm_path()).args(["completions", "--quiet", "--json", "--color", "never", "powershell"]).output().unwrap();
+    assert_success("completion setup with global flags", &options);
+    assert_eq!(plain.stdout, options.stdout);
 }
 
 #[test]

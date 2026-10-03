@@ -8,6 +8,10 @@ set -l zm_cert_commands enroll renew revoke
 set -l zm_device_commands retire revoke
 set -l zm_contact_commands keygen export import list remove
 set -l zm_completion_shells bash zsh fish powershell
+if not string match -q '*(full*' -- (command zm --version 2>/dev/null)
+    set zm_commands create extract list test plan formats tzap doctor completions help
+    set zm_help_topics create extract list test plan formats tzap sign verify contact share certs doctor completions
+end
 
 complete -c zm -f
 
@@ -34,7 +38,7 @@ complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a test -d "Tes
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a plan -d "Show planned archive entries"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a formats -d "Show supported formats"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a tzap -d "Sign, verify, and share TZAP documents"
-complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a auth -d "Online identity and certificate enrollment"
+complete -c zm -n "not __fish_seen_subcommand_from $zm_commands; and string match -q '*(full*' -- (command zm --version 2>/dev/null)" -a auth -d "Online identity and certificate enrollment"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a doctor -d "Verify the archive engine"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a completions -d "Print shell completion scripts"
 complete -c zm -n "not __fish_seen_subcommand_from $zm_commands" -a help -d "Show help for a command"
@@ -73,6 +77,8 @@ complete -c zm -n "__fish_seen_subcommand_from create" -l recipient-cert -r -d "
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-cert -r -d "Sign TZAP RootAuth with an X.509 cert or PEM bundle"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-private-key -r -d "Private key for --signing-cert"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-chain -r -d "Extra intermediate certificate chain for --signing-cert"
+complete -c zm -n "__fish_seen_subcommand_from create" -l sidecar -d "Write TZAP bootstrap recovery sidecar"
+complete -c zm -n "__fish_seen_subcommand_from create" -l no-sidecar -d "Disable TZAP bootstrap recovery sidecar"
 complete -c zm -n "__fish_seen_subcommand_from create" -l signing-identity -d "Sign TZAP RootAuth with a local enrolled certificate"
 complete -c zm -n "__fish_seen_subcommand_from create" -s j -l junk-paths -d "Store basenames only"
 complete -c zm -n "__fish_seen_subcommand_from create" -s y -l preserve-symlinks -d "Store symlink entries where supported"
@@ -175,4 +181,14 @@ complete -c zm -n "__fish_seen_subcommand_from formats doctor" -s h -l help -d "
 complete -c zm -n "__fish_seen_subcommand_from formats doctor" -l json -d "Emit JSON"
 complete -c zm -n "__fish_seen_subcommand_from completions" -s h -l help -d "Show help"
 complete -c zm -n "__fish_seen_subcommand_from completions" -a "$zm_completion_shells" -d "Completion shell"
-complete -c zm -n "__fish_seen_subcommand_from help" -a "$zm_help_topics"
+complete -c zm -n "__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from tzap" -a "$zm_help_topics"
+
+# Global flags also work after archive and identity leaf commands.
+set -l zm_leaf_commands create extract list test plan sign verify contact share certs formats doctor completions
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -s q -l quiet -d "Reduce output"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -s v -l verbose -d "Increase diagnostics"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -l color -xa "auto always never" -d "Control color output"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -l no-color -d "Disable color output"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -l progress -xa "auto always never" -d "Control progress output"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -l no-progress -d "Disable progress output"
+complete -c zm -n "__fish_seen_subcommand_from $zm_leaf_commands" -l no-password-prompt -d "Fail instead of prompting interactively"

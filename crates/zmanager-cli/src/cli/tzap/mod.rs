@@ -132,8 +132,8 @@ pub(crate) fn auth_command(args: &[String], global: crate::cli::options::GlobalO
 /// certificate catalogue need no network — see the CLI command-structure
 /// plan's command tree.
 pub(crate) fn tzap_command(args: &[String], global: crate::cli::options::GlobalOptions) -> std::process::ExitCode {
-    use crate::cli::usage::{TZAP_MENU_HELP, command_usage_error, print_help_stdout, wants_help};
-    if wants_help(args) || args.is_empty() {
+    use crate::cli::usage::{TZAP_MENU_HELP, command_usage_error, print_help_stdout};
+    if args.is_empty() || args.first().is_some_and(|arg| matches!(arg.as_str(), "-h" | "--help")) {
         print_help_stdout(TZAP_MENU_HELP, &global);
         return if args.is_empty() { std::process::ExitCode::from(2) } else { std::process::ExitCode::SUCCESS };
     }

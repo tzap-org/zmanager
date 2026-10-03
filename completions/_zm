@@ -39,6 +39,14 @@ help_topics=(
   'completions:Print shell completion scripts'
 )
 
+if [[ "$(command zm --version 2>/dev/null)" != *"(full"* ]]; then
+  commands=( ${commands:#auth:*} )
+  help_topics=( ${help_topics:#auth:*} )
+  help_topics=( ${help_topics:#me:*} )
+  help_topics=( ${help_topics:#cert:*} )
+  help_topics=( ${help_topics:#device:*} )
+fi
+
 tzap_commands=(
   'sign:Sign a TZAP document JSON payload'
   'verify:Verify a TZAP document envelope'
@@ -127,6 +135,8 @@ create_options=(
   '(-T --test-after)'{-T,--test-after}'[Test archive after writing]'
   '--encrypt[Prompt for an archive password where supported]'
   '--password-stdin[Read one password line from stdin]'
+  '--sidecar[Write TZAP bootstrap recovery sidecar]'
+  '--no-sidecar[Disable TZAP bootstrap recovery sidecar]'
 )
 
 extract_options=(
@@ -263,6 +273,23 @@ certs_options=(
   $identity_options
 )
 
+local -a common_options
+common_options=(
+  '(-q --quiet)'{-q,--quiet}'[Reduce output]'
+  '(-v --verbose)'{-v,--verbose}'[Increase diagnostics]'
+  '--json[Emit machine-readable JSON]'
+  '--color[Control color output]:mode:(auto always never)'
+  '--no-color[Disable color output]'
+  '--progress[Control progress output]:mode:(auto always never)'
+  '--no-progress[Disable progress output]'
+  '--no-password-prompt[Fail instead of prompting interactively]'
+)
+create_options+=( $common_options )
+extract_options+=( $common_options )
+list_options+=( $common_options )
+test_options+=( $common_options )
+plan_options+=( $common_options )
+
 _zm_command() {
   local context state line
   _arguments -C $global_options '1:command:->command' '*::argument:->argument'
@@ -299,7 +326,15 @@ _zm_command() {
           ;;
         formats|doctor) _arguments '(-h --help)'{-h,--help}'[Show help]' '--json[Emit JSON]' ;;
         completions) _arguments '(-h --help)'{-h,--help}'[Show help]' '1:shell:(bash zsh fish powershell)' ;;
-        help) _describe -t commands 'zm command' help_topics ;;
+        help)
+          if [[ $words[2] == tzap && $CURRENT -eq 3 ]]; then
+            _describe -t commands 'zm tzap command' tzap_commands
+          elif [[ $words[2] == tzap && $words[3] == contact && $CURRENT -eq 4 ]]; then
+            _values 'contact command' keygen export import list remove
+          else
+            _describe -t commands 'zm command' help_topics
+          fi
+          ;;
       esac
       ;;
   esac

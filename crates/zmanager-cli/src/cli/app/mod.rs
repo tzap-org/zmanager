@@ -31,7 +31,15 @@ const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
 const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or quit";
 #[must_use]
 pub fn run_from_env() -> ExitCode {
-    let mut raw_args = env::args().skip(1).collect::<Vec<_>>();
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    #[cfg(windows)]
+    if raw_args.first().is_some_and(|arg| arg == crate::cli::windows_elevation::RETRY_COMMAND) {
+        return crate::cli::windows_elevation::run_elevated_retry(|| run_with_args(raw_args.into_iter().skip(1).collect()));
+    }
+    run_with_args(raw_args)
+}
+
+fn run_with_args(mut raw_args: Vec<String>) -> ExitCode {
     let mut global = GlobalOptions::default();
     if let Err(error) = peel_leading_global_options(&mut raw_args, &mut global) {
         return usage_error(&error, &global);
@@ -780,8 +788,10 @@ fn completions_command(args: &[String], mut global: GlobalOptions) -> ExitCode {
     let mut index = 0usize;
     let mut shell = None;
     while index < expanded.len() {
-        if let Err(error) = parse_global_option(&expanded, &mut index, &mut global) {
-            return command_usage_error("completions", &error, &global);
+        match parse_global_option(&expanded, &mut index, &mut global) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => return command_usage_error("completions", &error, &global),
         }
         if index >= expanded.len() {
             break;

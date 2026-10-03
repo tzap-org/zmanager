@@ -100,6 +100,15 @@ Examples:
   printf '%s\\n' \"$ZM_PASSWORD\" | zm create signed.tzap private/ --format tzap \\
       --password-stdin --signing-cert signer.pem --signing-private-key signer.key
   zm create sealed.tzap private/ --format tzap --recipient-cert recipient.pem
+  zm create secret.zip private/ --encrypt
+
+Offline self-signed archive example (requires OpenSSL for certificate setup):
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout signer.key -out signer.pem -days 30 -subj '/CN=MySigner' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,digitalSignature,keyCertSign'
+  zm create signed.tzap project/ --signing-cert signer.pem --signing-private-key signer.key
+  zm test signed.tzap --public-no-key --trusted-ca-cert signer.pem
+  zm extract signed.tzap -C out/
+  Keep signer.key private. Trust signer.pem explicitly only if you trust its source.
+  Add --encrypt or --password-stdin to create when confidentiality is required.
 
 Input:
   <paths...>                     Files and folders to archive
@@ -124,6 +133,7 @@ Selection:
 Archive format and compression:
       --format <zip|tar.zst|tzap|aar|7z|tgz>
                                   Override format inference from extension
+                                  Apple Archive (aar) creation requires macOS/iOS
       --method <method>          Select method: zip store/deflate, tar.zst/tzap zstd,
                                   aar lzfse/lz4/zlib/lzma/raw, 7z lzma2
       --level <level>            Compression level; use 0..9 where supported
@@ -203,6 +213,12 @@ Selection and output:
 Safety:
   Extraction rejects traversal paths, absolute paths, unsafe links, duplicate
   normalized paths, and unsafe overwrites.
+  On Windows, restoring symlinks requires Developer Mode or symlink privilege.
+  Interactive TZAP extraction offers an administrator retry through UAC before
+  writing files when symlink privilege is missing. The default answer is No.
+  Redirected input/output, --json, --quiet, and --password-stdin never prompt
+  for elevation. Administrator retries retain the original options and may
+  ask again for the archive password.
 ";
 
 pub(crate) const LIST_HELP: &str = "\
@@ -267,6 +283,14 @@ Options:
 
 ZIP receives a real integrity test. Other readable formats are validated through
 their backend when full checksum verification is unavailable.
+
+Self-signed TZAP archive verification:
+  zm test signed.tzap --public-no-key --trusted-ca-cert signer.pem
+  --public-no-key verifies the signed commitment without decrypting entries;
+  it does not establish complete physical data or recovery-margin integrity.
+  To test decrypted contents too, omit --public-no-key and supply the archive
+  password with --password-stdin if encrypted. Trust the certificate only if
+  you trust its source. See `zm create --help` for offline certificate setup.
 ";
 
 pub(crate) const PLAN_HELP: &str = "\
@@ -368,6 +392,14 @@ Options:
 `zm tzap` works entirely offline, against certificates and signing keys
 already in the local identity catalogue. Use `zm auth cert enroll` (full
 build only) or the desktop/mobile app to obtain one.
+
+Start with `zm tzap certs` to find an active certificate id. A fresh offline
+installation cannot enroll a signing identity; contact keygen creates an
+encryption key, not a signing certificate.
+
+Run `zm tzap sign --help` or `zm tzap verify --help` for document examples.
+To sign an archive instead, see `zm create --help` (--signing-identity or
+--signing-cert). `zm tzap sign` signs JSON documents, not .tzap archives.
 ";
 
 #[cfg(feature = "tzap-online")]
@@ -465,6 +497,20 @@ Sign a TZAP document JSON payload
 Usage:
   zm tzap sign <input.json> --certificate-id <id> --output <envelope.json> [options]
 
+Examples:
+  zm tzap certs
+  zm tzap sign payload.json --certificate-id <id> --output envelope.json
+  zm tzap verify envelope.json
+
+Input is a JSON object containing \"tzap_payload_version\":1. For example,
+save {\"tzap_payload_version\":1,\"title\":\"Hello\"} as payload.json.
+The certificate and its private key must already be in the
+local identity catalogue; a fresh offline install cannot enroll them.
+Find an active id with `zm tzap certs`, or add --state-dir <dir> and
+--account-key <key> to both certs and sign to select another catalogue.
+This command signs JSON documents. To sign an archive, use `zm create`
+with --signing-identity or --signing-cert instead.
+
 Options:
       --state-dir <dir>          Store local identity state in dir
       --account-key <key>        Local account inventory key; default is default
@@ -481,6 +527,14 @@ Verify a TZAP document envelope
 Usage:
   zm tzap verify <envelope.json> [options]
 
+Examples:
+  zm tzap verify envelope.json
+  zm tzap verify envelope.json --custom-trust-root-cert root.pem --json
+
+No local signing identity is required to verify. For a custom certificate
+chain, obtain the trusted root from a source you trust and pass it explicitly.
+For .tzap archive integrity and RootAuth verification, use `zm test --help`.
+
 Options:
       --custom-trust-root <sha256:id>
                                   Trust a custom root fingerprint explicitly
@@ -496,6 +550,8 @@ valid-now status. `--status-response` enables explicit online-status
 verification — fetching the status needs the network, using it does not, so
 this works in the offline build too. Custom trust is reported as custom
 trust, never official TZAP.
+Invalid documents return a nonzero exit code. Offline integrity does not
+establish current revocation status.
 ";
 
 pub(crate) const CONTACT_HELP: &str = "\
@@ -507,6 +563,19 @@ Usage:
   zm tzap contact import <card.json> --accept [options]
   zm tzap contact list [options]
   zm tzap contact remove <contact-id> [options]
+
+Example workflow (requires an existing local signing certificate):
+  zm tzap certs
+  zm tzap contact keygen --label MyDevice
+  zm tzap contact export --recipient-key-id <generated-id> --certificate-id <cert-id> --display-name Alice --output alice.json
+  zm tzap contact import bob.json --accept
+  zm tzap contact list
+
+keygen prints the recipient key id; certs lists signing certificate ids.
+Export creates a signed public contact card; it does not export a private key.
+Import verifies the card before accepting it. For a custom certificate chain,
+add --custom-trust-root-cert root.pem only when you trust that root.
+Run `zm tzap share --help` to archive files for accepted contacts.
 
 Options:
       --state-dir <dir>          Store local identity state in dir
@@ -530,6 +599,19 @@ Create a TZAP archive for accepted contacts
 
 Usage:
   zm tzap share <archive.tzap> <paths...> --contact <id> --certificate-id <id> [options]
+
+Examples:
+  zm tzap certs
+  zm tzap contact list
+  zm tzap share shared.tzap project/ --contact <contact-id> --certificate-id <cert-id>
+
+Use an active signing certificate and contacts imported with --accept.
+Repeat --contact <id> to include more recipients. Each recipient can decrypt
+using their own private key; the contact card contains only the public key.
+With a recipient private-key file, open the archive using:
+  zm extract shared.tzap -C out/ --recipient-key recipient.key
+Keys generated by contact keygen are stored in the local OS keyring; this
+CLI currently has no command to export them as a private-key file.
 
 Options:
       --state-dir <dir>          Store local identity state in dir
@@ -589,6 +671,11 @@ pub(crate) fn help_command(args: &[String], global: &GlobalOptions) -> ExitCode 
         return ExitCode::SUCCESS;
     }
     if args.len() > 1 {
+        if args[0] == "tzap" {
+            let mut command_args = args[1..].to_vec();
+            command_args.push("--help".to_owned());
+            return crate::cli::tzap::tzap_command(&command_args, global.clone());
+        }
         print_error_line(global, format_args!("error: too many help topics"));
         output::stderr_line(global.color, format_args!("Try 'zm help <command>'."));
         return ExitCode::from(2);
@@ -640,7 +727,21 @@ pub(crate) fn print_help_stderr(help: &str, global: &GlobalOptions) {
 }
 
 pub(crate) fn print_error_line(global: &GlobalOptions, message: std::fmt::Arguments<'_>) {
-    output::stderr_line(global.color, format_args!("{}", output::styled(StyleRole::Error, message)));
+    let message = message.to_string();
+    let friendly = message.replace("HMAC verification failed for CryptoHeader", "could not unlock TZAP: incorrect password or damaged encrypted header");
+    output::stderr_line(global.color, format_args!("{}", output::styled(StyleRole::Error, format_args!("{friendly}"))));
+    #[cfg(windows)]
+    if message.contains("failed to create symlink") {
+        output::stderr_line(
+            global.color,
+            format_args!(
+                "Windows symlink restoration requires Developer Mode or symlink privilege. Enable Developer Mode or open your terminal with 'Run as administrator', then retry extraction into a fresh output directory."
+            ),
+        );
+    }
+    if friendly != message && global.verbose > 0 {
+        output::stderr_line(global.color, format_args!("diagnostic: {message}"));
+    }
 }
 
 pub(crate) fn print_optional_error_line(global: Option<&GlobalOptions>, message: std::fmt::Arguments<'_>) {
@@ -890,6 +991,7 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 pub(crate) fn command_usage_error(command: &str, message: &str, global: &GlobalOptions) -> ExitCode {
+    let path = command_path(command);
     let (formatted, unknown_option) = format_command_error(command, message);
     print_error_line(global, format_args!("error: {formatted}"));
     if let Some(option) = unknown_option
@@ -902,19 +1004,27 @@ pub(crate) fn command_usage_error(command: &str, message: &str, global: &GlobalO
     output::stderr_write(global.color, format_args!("{}", output::render_help(command_usage_snippet(command))));
     output::stderr_line(global.color, format_args!(""));
     if unknown_option.is_some() {
-        output::stderr_line(global.color, format_args!("Try '{}' for usage.", output::styled(StyleRole::Command, format_args!("zm {command} --help"))));
+        output::stderr_line(global.color, format_args!("Try '{}' for usage.", output::styled(StyleRole::Command, format_args!("zm {path} --help"))));
     } else {
-        output::stderr_line(global.color, format_args!("Try '{}' for examples.", output::styled(StyleRole::Command, format_args!("zm {command} --help"))));
+        output::stderr_line(global.color, format_args!("Try '{}' for examples.", output::styled(StyleRole::Command, format_args!("zm {path} --help"))));
     }
     ExitCode::from(2)
+}
+
+fn command_path(command: &str) -> String {
+    match command {
+        "sign" | "verify" | "contact" | "share" | "certs" => format!("tzap {command}"),
+        "me" | "cert" | "device" => format!("auth {command}"),
+        _ => command.to_owned(),
+    }
 }
 
 fn format_command_error<'a>(command: &str, message: &'a str) -> (String, Option<&'a str>) {
     let prefix = format!("unknown {command} option: ");
     if let Some(option) = message.strip_prefix(&prefix) {
-        (format!("unknown option '{option}' for 'zm {command}'"), Some(option))
+        (format!("unknown option '{option}' for 'zm {}'", command_path(command)), Some(option))
     } else if let Some(argument) = message.strip_prefix("unexpected argument: ") {
-        (format!("unexpected argument '{argument}' for 'zm {command}'"), None)
+        (format!("unexpected argument '{argument}' for 'zm {}'", command_path(command)), None)
     } else {
         (message.to_owned(), None)
     }
@@ -922,6 +1032,11 @@ fn format_command_error<'a>(command: &str, message: &'a str) -> (String, Option<
 
 fn command_usage_snippet(command: &str) -> &'static str {
     match command {
+        "sign" => "Usage:\n  zm tzap sign <input.json> --certificate-id <id> --output <envelope.json>\n",
+        "verify" => "Usage:\n  zm tzap verify <envelope.json> [options]\n",
+        "contact" => "Usage:\n  zm tzap contact <keygen|export|import|list|remove> [options]\n",
+        "share" => "Usage:\n  zm tzap share <archive.tzap> <paths...> --contact <id> --certificate-id <id>\n",
+        "certs" => "Usage:\n  zm tzap certs [options]\n",
         "create" => {
             "\
 Usage:
