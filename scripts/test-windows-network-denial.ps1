@@ -21,7 +21,15 @@ if ($disabledProfiles.Count -gt 0 -and
     -not ($env:GITHUB_ACTIONS -eq "true" -and $env:RUNNER_ENVIRONMENT -eq "github-hosted")) {
     throw "Refusing to enable disabled firewall profiles outside a disposable GitHub-hosted runner."
 }
-$binaryPaths = @($Binaries | ForEach-Object { (Resolve-Path $_).Path } | Select-Object -Unique)
+$binaryPaths = @(
+    $Binaries | ForEach-Object {
+        $fullPath = [IO.Path]::GetFullPath($_)
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            throw "Audit executable does not exist: $fullPath"
+        }
+        $fullPath
+    } | Select-Object -Unique
+)
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ("zm-network-denial-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $backups = @{}
