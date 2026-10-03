@@ -101,8 +101,15 @@ def interrupted(binary, root):
     source.write_bytes(b"previous archive payload")
     run([binary, "create", destination, source, "--no-progress"])
     previous = destination.read_bytes()
+    # Keep the writer active long enough to observe and terminate it on fast
+    # runners. A sparse zero-filled input can compress to a tiny ZIP and finish
+    # between the in-progress check and process.kill().
     with source.open("wb") as output:
-        output.truncate(256 * 1024 * 1024)
+        remaining = 64 * 1024 * 1024
+        while remaining:
+            block = os.urandom(min(1024 * 1024, remaining))
+            output.write(block)
+            remaining -= len(block)
     diagnostics = (root / "interrupted-stderr.log").open("wb")
     process = subprocess.Popen([str(binary), "create", str(destination), str(source), "--force", "--no-progress"],
                                stdout=subprocess.DEVNULL, stderr=diagnostics)
