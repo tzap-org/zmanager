@@ -50,7 +50,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Positive-control TCP connection failed for $binary." }
         $ruleName = "ZManagerOfflineFixture-" + [Guid]::NewGuid()
         $rule = New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block `
-            -Profile Any -Program $binary -Enabled True -PolicyStore PersistentStore
+            -Profile Any -Program $binary -Enabled True
         $rules += $rule
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 42) { throw "The firewall did not reject TCP with WSAEACCES for $binary." }
@@ -79,14 +79,14 @@ try {
         try {
             $instanceId = [string]$rule.InstanceID
             $remainingRules = @(
-                Get-NetFirewallRule -PolicyStore PersistentStore |
+                Get-NetFirewallRule |
                     Where-Object { [string]$_.InstanceID -eq $instanceId }
             )
             if ($remainingRules.Count -gt 0) {
                 Remove-NetFirewallRule -InputObject $remainingRules -ErrorAction Stop
             }
             $remainingRules = @(
-                Get-NetFirewallRule -PolicyStore PersistentStore |
+                Get-NetFirewallRule |
                     Where-Object { [string]$_.InstanceID -eq $instanceId }
             )
             if ($remainingRules.Count -gt 0) {
