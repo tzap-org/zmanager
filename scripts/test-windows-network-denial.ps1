@@ -49,9 +49,9 @@ try {
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 0) { throw "Positive-control TCP connection failed for $binary." }
         $ruleName = "ZManagerOfflineFixture-" + [Guid]::NewGuid()
-        $rules += $ruleName
-        New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block `
-            -Profile Any -Program $binary -Enabled True | Out-Null
+        $rule = New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block `
+            -Profile Any -Program $binary -Enabled True -PolicyStore PersistentStore
+        $rules += $rule
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 42) { throw "The firewall did not reject TCP with WSAEACCES for $binary." }
         Copy-Item $backup $binary -Force
@@ -77,9 +77,20 @@ try {
     }
     foreach ($rule in $rules) {
         try {
-            Remove-NetFirewallRule -Name $rule
-            if (Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue) {
-                throw "Fixture firewall rule was not removed: $rule"
+            $instanceId = [string]$rule.InstanceID
+            $remainingRules = @(
+                Get-NetFirewallRule -PolicyStore PersistentStore |
+                    Where-Object { [string]$_.InstanceID -eq $instanceId }
+            )
+            if ($remainingRules.Count -gt 0) {
+                Remove-NetFirewallRule -InputObject $remainingRules -ErrorAction Stop
+            }
+            $remainingRules = @(
+                Get-NetFirewallRule -PolicyStore PersistentStore |
+                    Where-Object { [string]$_.InstanceID -eq $instanceId }
+            )
+            if ($remainingRules.Count -gt 0) {
+                throw "Fixture firewall rule was not removed: $($rule.Name)"
             }
         } catch { $cleanupErrors += $_.Exception.Message }
     }
