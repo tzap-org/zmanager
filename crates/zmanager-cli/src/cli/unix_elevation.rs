@@ -31,12 +31,10 @@ pub(super) fn offer_for_destination(destination: &Path, global: &GlobalOptions, 
     let answer = ask_to_elevate(&mut io::stdin().lock(), &mut io::stderr().lock());
     match answer {
         Ok(true) => Some(match sudo_command().and_then(|mut command| command.status()) {
-            Ok(status) => {
-                if !status.success() {
-                    print_error_line(global, format_args!("Sudo extraction failed or was cancelled."));
-                }
-                ExitCode::from(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1))
-            }
+            // The child inherits stderr and prints the precise extraction or
+            // sudo authentication error. Preserve its status without adding an
+            // ambiguous failure/cancellation message over that diagnostic.
+            Ok(status) => ExitCode::from(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)),
             Err(error) => {
                 print_error_line(global, format_args!("Could not start sudo extraction: {error}"));
                 ExitCode::FAILURE

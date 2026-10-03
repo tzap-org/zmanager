@@ -42,18 +42,9 @@ impl Drop for TestDir {
     }
 }
 
-/// Absolute path to the built `zm` binary (set by cargo for integration tests).
+/// Cargo's binary for the current target/profile, or an explicit artifact audit.
 pub fn zm_path() -> PathBuf {
-    if let Ok(path) = env::var("CARGO_BIN_EXE_zm") {
-        return PathBuf::from(path);
-    }
-    let mut path = env::current_exe().unwrap();
-    while path.file_name().is_some_and(|name| name != "target") {
-        path.pop();
-    }
-    path.push("debug");
-    path.push(if cfg!(windows) { "zm.exe" } else { "zm" });
-    path
+    env::var_os("ZMANAGER_AUDIT_BINARY").map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_zm")), PathBuf::from)
 }
 
 /// Asserts that a command invocation succeeded, dumping stdout/stderr on failure.

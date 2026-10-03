@@ -167,6 +167,18 @@ jobs:
           fi
           cargo test -p zmanager-cli --test external_fixture_cli -- --nocapture
 
+      - name: Test isolated offline profiles and release CLI
+        run: |
+          cargo test --locked -p zmanager-core --no-default-features
+          cargo test --locked -p zmanager-ffi --no-default-features
+          cargo test --locked --release -p zmanager-cli --no-default-features
+
+      - name: Sudo password authentication (${{ matrix.name }})
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          python3 scripts/ci-unix-elevation.py target/release/zm
+
   uniffi-bindings-check:
     name: UniFFI bindings are up to date
     runs-on: ubuntu-22.04

@@ -72,7 +72,7 @@ fn offline_document_sign_verify_contacts_and_share() {
     let payload = temp.path("payload with spaces 雪.json");
     let envelope = temp.path("envelope.json");
     fs::write(&payload, br#"{"tzap_payload_version":1,"title":"Offline audit","amount":42}"#).unwrap();
-    let binary = std::env::var_os("ZMANAGER_AUDIT_BINARY").map_or_else(zm_path, std::path::PathBuf::from);
+    let binary = zm_path();
     let list = Command::new(&binary).args(["tzap", "certs", "--state-dir", state.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("offline certs", &list);
     assert!(String::from_utf8_lossy(&list.stdout).contains(&certificate.certificate_id));

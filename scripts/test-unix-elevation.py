@@ -2,7 +2,7 @@
 """Exercise the real Unix CLI/sudo terminal flow using disposable fixtures.
 
 Run as an unprivileged user. By default test cancellation and unattended modes.
-Set ZMANAGER_TEST_SUDO_PASSWORD only in an isolated Linux test container to also
+Set ZMANAGER_TEST_SUDO_PASSWORD only for an isolated disposable test account to
 exercise sudo authentication and extraction. Never supply a real user password.
 """
 import os
@@ -95,6 +95,7 @@ def main():
                 assert not destination.exists()
             password = os.environ.get("ZMANAGER_TEST_SUDO_PASSWORD")
             if password is not None:
+                assert password, "fixture sudo password must not be empty"
                 def fixture_sudo(command):
                     subprocess.run(["/usr/bin/sudo", "-k"], check=True)
                     code, output = terminal_command(
@@ -105,6 +106,13 @@ def main():
                     assert password.encode() not in output, "sudo echoed the fixture password"
 
                 subprocess.run(["/usr/bin/sudo", "-k"], check=True)
+                unattended = subprocess.run(["/usr/bin/sudo", "-n", "true"], capture_output=True)
+                assert unattended.returncode != 0, "fixture account must require a sudo password"
+                code, cancelled = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", b"\x03")])
+                assert code != 0, "interrupting sudo authentication must fail"
+                assert not destination.exists(), "cancelled authentication wrote files"
+                assert b"Sudo extraction failed or was cancelled" not in cancelled
+                subprocess.run(["/usr/bin/sudo", "-k"], check=True)
                 code, transcript = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n")])
                 assert code == 0, "sudo extraction failed"
                 assert b"sudo password" in transcript
@@ -114,9 +122,11 @@ def main():
                 fixture_sudo(["/bin/chmod", "666", str(destination / source.name)])
                 (destination / source.name).write_bytes(b"keep existing contents")
                 subprocess.run(["/usr/bin/sudo", "-k"], check=True)
-                code, _ = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n")])
-                assert code != 0, "sudo retry ignored --overwrite never"
+                code, rejected = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n")])
+                assert code != 0 and b"would overwrite" in rejected, "sudo retry must reject the existing file under --overwrite never"
+                assert b"Sudo extraction failed or was cancelled" not in rejected, "a generic sudo failure must not obscure the extraction error"
                 assert (destination / source.name).read_bytes() == b"keep existing contents"
+                print("PASS: expected overwrite rejection; existing contents preserved")
                 archive_password = b"fixture-only-archive-password"
                 encrypted_archive = temp / "encrypted archive.zip"
                 subprocess.run(

@@ -238,6 +238,20 @@ function Invoke-CargoTest {
         -LogName "cargo-test-windows-$TargetTriple.log" `
         -FilePath "cargo" `
         -Arguments @("test", "--workspace", "--target", $TargetTriple)
+
+    # Run each reduced artifact independently so workspace feature unification
+    # cannot hide an offline-only failure. Exercise the shipped CLI profile too.
+    foreach ($package in @("zmanager-core", "zmanager-ffi", "zmanager-cli")) {
+        $arguments = @("test", "--locked", "--target", $TargetTriple, "-p", $package, "--no-default-features")
+        if ($package -eq "zmanager-cli") {
+            $arguments += "--release"
+        }
+        Invoke-NativeLogged `
+            -Title "offline $package tests failed on $TargetTriple" `
+            -LogName "cargo-test-offline-$package-$TargetTriple.log" `
+            -FilePath "cargo" `
+            -Arguments $arguments
+    }
 }
 
 function Invoke-CargoBuildRelease {
