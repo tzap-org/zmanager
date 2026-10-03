@@ -639,3 +639,23 @@ Unavailable. A native-error regression failed with the old generic Unavailable
 mapping and passed after the fix. The fixture now requires the specific locked
 diagnostic, unchanged catalogue and successful unlock/retry. Native runtime
 verification of the updated executable remains required.
+
+## Windows signed-export interruption checkpoint
+
+The document/contact export harness now includes Windows. Native CDB stops the
+CLI at the public `KERNELBASE!FlushFileBuffers` export and terminates it before
+publication. The test requires the executed checkpoint marker, a nonempty staged
+file, unchanged previous output and identity catalogue, successful retry, and
+the existing cryptographic verification/import checks after retry. Missing CDB
+is reported as an optional local skip and is a failure in the required CI run.
+
+CI provisions Microsoft's SDK 10.0.26100.9457 debugger-only layout, validates
+Microsoft signatures, and administratively extracts the tools into runner
+temporary storage. It selects native ARM64 or x64 CDB and disables network
+symbols; SDK installation and debugger registration are not needed.
+
+The exact Rust interruption helper passed in the native Windows 11 ARM64 VM
+against a standalone Rust staged writer, including a Unicode path with spaces,
+real file-flush termination, old-output preservation and retry. This validates
+the debugger checkpoint and helper, not the signed CLI workflow. Actual document
+and contact runs on both Windows architectures remain required in CI.

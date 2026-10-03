@@ -35,7 +35,7 @@ fn assert_export_disk_full(command: &Command, trust_root: &std::path::Path) {
     eprintln!("{}", String::from_utf8_lossy(&output.stdout));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn assert_export_survives_interruption(command: &mut Command, destination: &std::path::Path, state: &std::path::Path) {
     let previous = fs::read(destination).unwrap();
     let catalogue = state.join("default.identity-catalog.json");
@@ -80,6 +80,35 @@ fn assert_export_survives_interruption(command: &mut Command, destination: &std:
         let trace = String::from_utf8_lossy(&output.stdout);
         assert!(trace.contains("stop reason = breakpoint") && trace.contains("fcntl"), "export did not stop at full sync: {trace}");
     }
+    #[cfg(windows)]
+    {
+        let Some(cdb) = std::env::var_os("ZMANAGER_TEST_CDB") else {
+            assert!(std::env::var_os("ZMANAGER_TEST_EXPORT_INTERRUPTION").is_none(), "CI requires the native export debugger");
+            record_optional_skip("Windows signed-export interruption requires ZMANAGER_TEST_CDB");
+            return;
+        };
+        // Resolve the public OS export locally; no private keys, writes or
+        // downloaded symbols are inspected. The marker must be an executed
+        // output line, not merely text echoed in the debugger command.
+        let script = destination.parent().unwrap().join("export-interruption.cdb");
+        fs::write(&script, b"bu KERNELBASE!FlushFileBuffers \".echo ZMANAGER_FLUSH_CHECKPOINT; .kill; q\"; g\n").unwrap();
+        let output = Command::new(cdb)
+            .args(["-sins", "-netsyms:no", "-G", "-y"])
+            .arg(destination.parent().unwrap())
+            .arg("-cf")
+            .arg(&script)
+            .arg(command.get_program())
+            .args(command.get_args())
+            .output()
+            .unwrap();
+        fs::remove_file(script).unwrap();
+        assert_success("CDB export interruption", &output);
+        let trace = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            trace.lines().any(|line| line.trim() == "ZMANAGER_FLUSH_CHECKPOINT") && trace.contains("Terminated."),
+            "export did not terminate at file flush: {trace}"
+        );
+    }
     assert_eq!(fs::read(destination).unwrap(), previous, "killed export replaced the existing output");
     assert_eq!(fs::read(&catalogue).unwrap(), previous_catalogue, "killed export changed the identity catalogue");
     let prefix = format!("{}.tmp-", destination.file_name().unwrap().to_str().unwrap());
@@ -90,9 +119,9 @@ fn assert_export_survives_interruption(command: &mut Command, destination: &std:
         .collect();
     assert_eq!(staged.len(), 1, "the interrupted CLI did not leave exactly one real staged export");
     assert!(staged[0].metadata().unwrap().len() > 0, "interruption happened before any output was written");
-    assert_success("signed export retry after SIGKILL", &command.output().unwrap());
+    assert_success("signed export retry after process termination", &command.output().unwrap());
     assert_eq!(fs::read(catalogue).unwrap(), previous_catalogue, "export retry changed the identity catalogue");
-    // SIGKILL cannot run cleanup; remove only this fixture's observed orphan.
+    // Abrupt termination cannot run cleanup; remove only the observed orphan.
     fs::remove_file(staged[0].path()).unwrap();
     eprintln!("PASS: killed signed export preserves output and retries: {}", destination.display());
 }
@@ -181,7 +210,7 @@ fn offline_document_sign_verify_contacts_and_share() {
         assert_success("document export recovers after write failure", &sign_command.output().unwrap());
     }
     assert_export_disk_full(&sign_command, &root);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert_export_survives_interruption(&mut sign_command, &envelope, &state);
     let verify = || {
         Command::new(&binary)
@@ -246,7 +275,7 @@ fn offline_document_sign_verify_contacts_and_share() {
         }
         if number == 0 {
             assert_export_disk_full(&export_command, &root);
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             assert_export_survives_interruption(&mut export_command, &card, &state);
         }
         let import = || {

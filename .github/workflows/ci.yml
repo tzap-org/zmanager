@@ -367,6 +367,11 @@ jobs:
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
 
+      - name: Prepare native export debugger
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./scripts/prepare-windows-export-debugger.ps1 -Target "${{ matrix.target }}"
+
       - name: Test
         shell: pwsh
         run: >
