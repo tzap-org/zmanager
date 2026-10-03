@@ -89,7 +89,31 @@ pub fn strip_ansi(input: &str) -> String {
 /// Searches `PATH` for an executable with the given name.
 pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
-    env::split_paths(&path).map(|dir| dir.join(binary)).find(|candidate| candidate.is_file())
+    #[cfg(windows)]
+    let path_extensions = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+    #[cfg(windows)]
+    let extensions: Vec<_> = path_extensions.split(';').filter(|extension| extension.starts_with('.')).collect();
+    #[cfg(not(windows))]
+    let extensions = Vec::new();
+    find_tool_in_path(binary, &path, &extensions)
+}
+
+pub fn find_tool_in_path(binary: &str, path: &std::ffi::OsStr, extensions: &[&str]) -> Option<PathBuf> {
+    for directory in env::split_paths(path) {
+        let candidate = directory.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if Path::new(binary).extension().is_none() {
+            for extension in extensions {
+                let candidate = directory.join(format!("{binary}{extension}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Records an actual skipped check even when Cargo captures successful-test output.

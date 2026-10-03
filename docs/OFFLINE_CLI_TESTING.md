@@ -1,5 +1,28 @@
 # Offline CLI parity validation
 
+## Current coverage audit — 4 October 2026
+
+The sections below preserve the sequence of fixes and verification. Their older
+pending statements describe the state at that revision; this table records the
+current evidence and outstanding checks.
+
+| Goal requirement | Evidence | Outstanding verification |
+| --- | --- | --- |
+| Native secret-store failure and recovery | Linux ARM64 packaged executable passed unavailable service, locked collection, native cancellation, authentication/retry, ENOSPC and killed-keygen recovery, including an outbound-denied run | macOS disposable-account Keychain CI; macOS GUI consent/denial remains an explicitly tracked interactive check |
+| Installed packages and first launch | Preview 37129928428 at `6ba7bc6` passed all six package architectures; actual macOS/Linux ARM64 packages passed their full identity workflows | New macOS ARM64/Intel producer identity gates in Preview 37132262938; Windows/Intel Linux package smoke does not establish full packaged identity coverage |
+| Optional compatibility omissions | CI emits a skip inventory and uploads its JSONL evidence; successful Linux ARM64/x86_64 and Windows x64 jobs in run 37129928507 include reporting | Inspect inventories from the remaining jobs; skipped checks are never counted as verified |
+| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and Windows x64 CI establish their required recovery checks; Linux packaged native-key crash recovery also passed | Windows ARM64 VHD runtime; corrected macOS Intel interruption checkpoint; Windows signed-export process-kill coverage remains unestablished |
+| Offline network enforcement | Actual macOS/Linux ARM64 package workflows passed with enforced denial; Linux native GUI recovery also passed in a private network namespace; Windows x64 CI confirmed both firewall paths | Finish the matching corrected six-architecture CI matrix |
+| Required Rust gates and fixes | `8ebb644` passed formatting, workspace Clippy/check and workspace tests without warnings; `c7bf9a9` passed workflow lint and affected CLI tests with workspace Clippy/check | Native CI results remain required before claiming parity complete |
+| Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; no signing/notarization scope was added | Browser quarantine and Gatekeeper consent remain a tracked manual distribution check |
+
+Run 37131968021 at `8ebb644` tests the same Rust code and main CI workflow as
+`c7bf9a9`; their diff contains only package workflows and this document. The
+duplicate main CI run at `c7bf9a9` was cancelled to free runners, while its
+changed package workflow remains required and running. The goal is not complete.
+
+## Initial parity baseline
+
 Validated on 3 October 2026 against the workspace based on `7dec715`, with
 Rust 1.95.0. Windows' existing offline workflow is now exercised on Unix too.
 These results cover macOS ARM64 and Linux ARM64 in Docker; they do not constitute
@@ -560,3 +583,23 @@ The archive fixture log confirms real ZIP, 7z and tar.zst disk-full preservation
 and recovery, plus killed archive-writer preservation and successful restart.
 Both executable paths passed the firewall positive control and enforced TCP
 denial. Windows ARM64 runtime results remain pending.
+
+The checksum-verified Linux ARM64 static musl package at `6ba7bc6` also passed
+`test-linux-secret-store.py` in Docker with both catalogue disk-full and
+key-generation interruption checks enabled. Its private D-Bus/X server fixture
+confirmed unavailable-service preservation, a genuinely locked collection,
+native unlock cancellation, password authentication and retry, real ENOSPC with
+no orphaned key, and deletion of an unpublished secret after killing keygen.
+The complete native GUI fixture then passed again inside a private network
+namespace whose probe confirmed outbound TCP denial. D-Bus, the native keyring
+and the X server all started inside that namespace; local IPC remained usable.
+
+## Windows optional-tool discovery
+
+Review of the Windows skip inventory exposed exact-filename lookup in the shared
+test helper. A native Windows 11 ARM64 Rust regression found `cmd.exe` on PATH
+but failed to find `cmd`. The corrected helper searches Windows PATHEXT in each
+PATH directory, retaining directory precedence and explicit-extension behavior.
+Unix lookup retains exact filenames. The same helper source and both regression
+tests then passed with native MSVC in that VM. This verifies tool discovery;
+the newly enabled Windows compatibility tests still require their CI results.
