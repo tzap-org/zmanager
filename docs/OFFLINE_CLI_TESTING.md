@@ -544,3 +544,19 @@ private filesystem D-Bus and a network namespace denying outbound TCP. That run
 also required actual signed-export disk-full preservation/recovery and killed
 document/contact writer recovery. This evidence does not establish packaged
 identity workflow coverage for the other four architectures.
+
+Preview and release package jobs now compile the reduced macOS identity test
+harness before entering the network sandbox, then run both first-launch smoke
+and the full identity workflow against the unpacked archive. The sandbox denies
+all network access and the outbound probe must confirm enforcement. Both
+architectures use the explicit Cargo target matching their packaged binary.
+These new producer gates require successful native CI execution before they
+establish Intel package identity coverage.
+
+Windows x64 CI job 111222843531 in run 37129928507 at `6ba7bc6` passed
+the complete workspace, reduced-profile and network-denied release suites.
+The reduced CLI identity workflow ran with export disk-full checks required.
+The archive fixture log confirms real ZIP, 7z and tar.zst disk-full preservation
+and recovery, plus killed archive-writer preservation and successful restart.
+Both executable paths passed the firewall positive control and enforced TCP
+denial. Windows ARM64 runtime results remain pending.

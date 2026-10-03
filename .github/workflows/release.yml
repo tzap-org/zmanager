@@ -130,7 +130,14 @@ jobs:
 
       - name: Test installed offline package (macOS)
         if: runner.os == 'macOS'
-        run: python3 scripts/test-offline-package.py "dist/zm-${{ matrix.target }}.tar.gz"
+        run: |
+          cargo test --locked --release --target "${{ matrix.target }}" \
+            -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run
+          sandbox-exec -p '(version 1)(allow default)(deny network*)' \
+            python3 scripts/require-network-denial.py \
+            python3 scripts/test-offline-package.py "dist/zm-${{ matrix.target }}.tar.gz" \
+            --workflow cargo test --offline --locked --release --target "${{ matrix.target }}" \
+            -p zmanager-cli --no-default-features --test offline_tzap_cli -- --nocapture
 
       - name: Test Unix installer and failed-update recovery
         if: runner.os != 'Windows'
