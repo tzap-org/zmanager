@@ -16,6 +16,14 @@ current evidence and outstanding checks.
 | Required Rust gates and fixes | `178bb4f` passed local formatting, workspace Clippy/check and workspace tests; `f7df16c` passed affected CLI tests and workspace Clippy/check; inherited-descriptor lock regression failed before its fix and passed on macOS/Linux afterward | Follow-up finish gates and native CI results remain required before claiming parity complete |
 | Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; no signing/notarization scope was added | Browser quarantine and Gatekeeper consent remain a tracked manual distribution check |
 
+Both Windows jobs in CI 37133100682 at `4b296bb` completed successfully. Their
+native `cmd` discovery test passed in debug, reduced release and outbound-denied
+release runs. Their uploaded skip inventories still list missing external
+producers such as `7zz`, `bsdtar`, `zip`, `rar` and `qemu-img`, plus macOS-only
+tools; these interoperability omissions are not counted as verified. Signed
+ENOSPC checks ran in the required reduced release suite; the four reported
+ENOSPC omissions are the document/contact checks in the other two suite runs.
+
 CI 37134929597 at `178bb4f` exposed an inherited-file-descriptor lock conflict in
 Linux x86_64 identity setup. A targeted Linux stress probe and deterministic
 regression reproduced the problem; the follow-up explicitly unlocks the journal
