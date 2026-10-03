@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 
+USER_KEYCHAIN_DOMAIN = 0  # kSecPreferencesDomainUser from SecKeychain.h
+
 
 def security(*arguments, password=None):
     if password is None:
@@ -43,6 +45,29 @@ def is_unlocked(path):
         core.CFRelease(keychain)
 
 
+def assert_native_default(path):
+    framework = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+    core = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    framework.SecKeychainCopyDomainDefault.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    framework.SecKeychainCopyDomainDefault.restype = ctypes.c_int32
+    framework.SecKeychainGetPath.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+    framework.SecKeychainGetPath.restype = ctypes.c_int32
+    core.CFRelease.argtypes = [ctypes.c_void_p]
+    core.CFRelease.restype = None
+    keychain = ctypes.c_void_p()
+    result = framework.SecKeychainCopyDomainDefault(USER_KEYCHAIN_DOMAIN, ctypes.byref(keychain))
+    assert result == 0, f"native user-domain default Keychain lookup failed: OSStatus {result}"
+    try:
+        buffer = ctypes.create_string_buffer(4096)
+        length = ctypes.c_uint32(len(buffer))
+        result = framework.SecKeychainGetPath(keychain, ctypes.byref(length), buffer)
+        assert result == 0, f"native default Keychain path lookup failed: OSStatus {result}"
+        assert pathlib.Path(os.fsdecode(buffer.value)).resolve() == path.resolve(), "native backend selected a different Keychain"
+        print("PASS: native user-domain default Keychain matches the private fixture", flush=True)
+    finally:
+        core.CFRelease(keychain)
+
+
 def main():
     assert sys.platform == "darwin" and os.geteuid() != 0
     assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
@@ -53,9 +78,9 @@ def main():
     binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
     password = os.environ["ZMANAGER_TEST_KEYCHAIN_PASSWORD"]
     state = home / "identity"
-    command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state), "--json"]
 
-    def keygen(success):
+    def keygen(success, state_directory=state):
+        command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state_directory), "--json"]
         result = subprocess.run(command, capture_output=True, timeout=20)
         assert password.encode() not in result.stdout + result.stderr, "fixture password was echoed"
         response = json.loads(result.stdout)
@@ -82,6 +107,9 @@ def main():
         security("default-keychain", "-d", "user", "-s", keychain)
         security("unlock-keychain", "-p", password, keychain, password=password)
         assert is_unlocked(keychain), "fixture Keychain did not unlock"
+        assert_native_default(keychain)
+        keygen(True, home / "fresh-identity")
+        print("PASS: fresh native key generation after Keychain configuration", flush=True)
         keygen(True)
         original = catalogue.read_bytes()
         assert len(json.loads(original)["recipient_keys"]) == 1
