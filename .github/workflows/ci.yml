@@ -219,6 +219,11 @@ jobs:
           ZMANAGER_TEST_IDENTITY_INTERRUPT: "1"
         run: python3 scripts/test-linux-secret-store.py target/release/zm
 
+      - name: Native Keychain unavailable and locked recovery
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: python3 scripts/ci-unix-elevation.py --keychain target/release/zm
+
       - name: Report skipped optional checks
         if: always()
         run: python3 scripts/report-test-skips.py "$ZMANAGER_TEST_SKIP_REPORT"

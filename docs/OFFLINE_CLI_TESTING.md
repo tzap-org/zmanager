@@ -451,3 +451,24 @@ executable directly. The corrected harness passed against the published
 `89b6a50` ARM64 Windows package in the native Windows 11 VM and against its
 macOS ARM64 package. Current six-target package preview results remain required;
 the VM result does not establish native x86_64 Windows package coverage.
+
+## Disposable macOS Keychain CI fixture
+
+Both macOS CI jobs now require `ci-unix-elevation.py --keychain`, reusing the
+hosted-runner-only disposable account provisioner. This mode installs no sudo
+rule for that account. `test-macos-keychain.py` refuses to run as root, outside
+GitHub-hosted CI, or for an account other than the provisioner's random `zmci`
+user. Default/search-list changes apply only to that disposable user's private
+Keychain, which is deleted before the account and home are removed. Fixture
+passwords enter `security -i` over stdin rather than process arguments.
+
+The harness requires absent-Keychain failure without catalogue publication,
+successful creation after configuring the private Keychain, a lock verified
+with `SecKeychainGetStatus`, public discovery while locked, failed private
+access with byte-exact catalogue preservation, and successful unlock/retry with
+exactly two recipient keys. Commands have bounded timeouts; an unexpected GUI
+wait fails the job. This checks failure/recovery through the native store rather
+than a mock. It does not click a GUI consent/denial prompt. The new CI runtime
+results must be inspected before claiming macOS coverage; local validation so
+far covers Python syntax, Apple's interactive command protocol and workflow
+lint, without modifying the developer's login Keychain.

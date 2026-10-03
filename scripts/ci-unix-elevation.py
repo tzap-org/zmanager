@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run real sudo authentication with a disposable account on hosted CI runners.
+"""Run sudo or native Keychain checks with a disposable account on hosted CI.
 
 Invoke with the built zm path. The runner retains its passwordless sudo policy;
 only a new standard account receives the temporary password-required rule.
+The --keychain mode does not install a sudo rule for the fixture account.
 """
 import os
 import pathlib
@@ -23,13 +24,14 @@ def hosted_runner_only():
         raise SystemExit("This account-provisioning script is restricted to GitHub-hosted runners.")
 
 
-def provision_and_test(binary, harness):
+def provision_and_test(binary, harness, keychain=False):
     assert os.geteuid() == 0, "account provisioning requires root"
     username = "zmci" + secrets.token_hex(4)
     password = secrets.token_urlsafe(24)
     sudoers = pathlib.Path("/etc/sudoers.d") / username
     system = sys.platform
     assert system in ("darwin", "linux"), "macOS or Linux required"
+    assert not keychain or system == "darwin", "native Keychain fixture requires macOS"
     assert sudoers.parent.is_dir(), "sudoers include directory is missing"
     account_created = False
     # macOS runner TMPDIR can have private ancestors owned by the runner.
@@ -59,20 +61,19 @@ def provision_and_test(binary, harness):
                 account_created = True
                 run("/usr/sbin/chpasswd", input=f"{username}:{password}\n", text=True)
             account = pwd.getpwnam(username)
-            candidate = work / "sudoers"
-            candidate.write_text(f"{username} ALL=(root) PASSWD: ALL\n")
-            candidate.chmod(0o440)
-            run("/usr/sbin/visudo", "-cf", str(candidate), stdout=subprocess.DEVNULL)
-            shutil.copyfile(candidate, sudoers)
-            sudoers.chmod(0o440)
-            # Validate the installed fixture rule, rather than auditing unrelated
-            # runner-managed sudoers files (some hosted images ship those 0644).
-            # The harness's sudo -n rejection and authenticated retry then prove
-            # that the active policy includes this password-required account.
-            run("/usr/sbin/visudo", "-cf", str(sudoers), stdout=subprocess.DEVNULL)
+            if not keychain:
+                candidate = work / "sudoers"
+                candidate.write_text(f"{username} ALL=(root) PASSWD: ALL\n")
+                candidate.chmod(0o440)
+                run("/usr/sbin/visudo", "-cf", str(candidate), stdout=subprocess.DEVNULL)
+                shutil.copyfile(candidate, sudoers)
+                sudoers.chmod(0o440)
+                # Validate only this fixture rule; runner-managed rules can
+                # have different permissions. The harness proves active policy.
+                run("/usr/sbin/visudo", "-cf", str(sudoers), stdout=subprocess.DEVNULL)
             # Copy into an accessible fixture directory: runner home directories
             # and build caches need not be readable by the disposable account.
-            for source, name in [(binary, "zm"), (harness, "test-unix-elevation.py")]:
+            for source, name in [(binary, "zm"), (harness, harness.name)]:
                 destination = work / name
                 shutil.copyfile(source, destination)
                 destination.chmod(0o755)
@@ -82,10 +83,11 @@ def provision_and_test(binary, harness):
             environment = {
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
                 "LANG": "en_US.UTF-8" if system == "darwin" else "C.UTF-8",
-                "ZMANAGER_TEST_SUDO_PASSWORD": password,
+                "ZMANAGER_TEST_KEYCHAIN_PASSWORD" if keychain else "ZMANAGER_TEST_SUDO_PASSWORD": password,
+                "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
             }
-            print(f"Testing sudo authentication on {system}/{os.uname().machine}", flush=True)
-            run(sys.executable, str(work / "test-unix-elevation.py"), str(work / "zm"),
+            print(f"Testing {'native Keychain recovery' if keychain else 'sudo authentication'} on {system}/{os.uname().machine}", flush=True)
+            run(sys.executable, str(work / harness.name), str(work / "zm"),
                 user=account.pw_uid, group=account.pw_gid, extra_groups=[], env=environment, cwd=home)
         finally:
             sudoers.unlink(missing_ok=True)
@@ -98,15 +100,16 @@ def provision_and_test(binary, harness):
 
 def main():
     hosted_runner_only()
-    if len(sys.argv) == 4 and sys.argv[1] == "--provision":
-        provision_and_test(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
-    elif len(sys.argv) == 2:
-        binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
-        harness = pathlib.Path(__file__).with_name("test-unix-elevation.py").resolve(strict=True)
+    if len(sys.argv) == 4 and sys.argv[1] in ("--provision", "--provision-keychain"):
+        provision_and_test(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), keychain=sys.argv[1] == "--provision-keychain")
+    elif len(sys.argv) == 2 or (len(sys.argv) == 3 and sys.argv[1] == "--keychain"):
+        keychain = len(sys.argv) == 3
+        binary = pathlib.Path(sys.argv[-1]).resolve(strict=True)
+        harness = pathlib.Path(__file__).with_name("test-macos-keychain.py" if keychain else "test-unix-elevation.py").resolve(strict=True)
         run("/usr/bin/sudo", "-n", "--", "/usr/bin/env", "GITHUB_ACTIONS=true", "RUNNER_ENVIRONMENT=github-hosted",
-            sys.executable, str(pathlib.Path(__file__).resolve()), "--provision", str(binary), str(harness))
+            sys.executable, str(pathlib.Path(__file__).resolve()), "--provision-keychain" if keychain else "--provision", str(binary), str(harness))
     else:
-        raise SystemExit("Usage: ci-unix-elevation.py <built-zm>")
+        raise SystemExit("Usage: ci-unix-elevation.py [--keychain] <built-zm>")
 
 
 if __name__ == "__main__":
