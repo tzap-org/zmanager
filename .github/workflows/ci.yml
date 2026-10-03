@@ -68,7 +68,9 @@ jobs:
         # compatibility fixtures in the CLI compat tests; they are test
         # oracles only — the shipped binaries decode lzop/compress streams
         # natively and reject lrzip with an explicit unsupported error.
-        run: brew install cmake libb2 lz4 xz zstd lzop lrzip ncompress lhasa sevenzip gcab dpkg cdrtools
+        run: |
+          brew install cmake libb2 lz4 xz zstd lzop lrzip ncompress lhasa sevenzip gcab dpkg cdrtools
+          command -v lldb
 
       - name: Force Clang on macOS
         if: runner.os == 'macOS'
@@ -105,6 +107,7 @@ jobs:
             ncompress \
             python3 \
             rpm \
+            strace \
             unzip \
             xdotool \
             xvfb \
@@ -114,6 +117,7 @@ jobs:
             zstd
           sudo apt-get install -y 7zip || sudo apt-get install -y p7zip-full
           sudo apt-get install -y lha || sudo apt-get install -y lhasa || true
+          command -v strace
 
       - name: Start D-Bus and GNOME Keyring
         if: runner.os == 'Linux'
@@ -183,6 +187,8 @@ jobs:
           cargo test -p zmanager-cli --test external_fixture_cli -- --nocapture
 
       - name: Test isolated offline profiles and release CLI
+        env:
+          ZMANAGER_TEST_EXPORT_DISK_FULL: "1"
         run: |
           cargo test --locked -p zmanager-core --no-default-features
           cargo test --locked -p zmanager-ffi --no-default-features

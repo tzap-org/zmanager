@@ -2,6 +2,7 @@
 """Exercise actual ENOSPC and killed-process recovery on disposable filesystems."""
 import contextlib
 import errno
+import json
 import os
 import pathlib
 import subprocess
@@ -128,7 +129,62 @@ def interrupted(binary, root):
     print("PASS: killed archive writer preserves original and restart succeeds", flush=True)
 
 
+def disk_full_export(binary, arguments, trust_root, root, volume):
+    output_index = arguments.index("--output") + 1
+    previous = pathlib.Path(arguments[output_index]).read_bytes()
+    destination = volume / "existing signed export with spaces 雪.json"
+    destination.write_bytes(previous)
+    arguments[output_index] = str(destination)
+    state = pathlib.Path(arguments[arguments.index("--state-dir") + 1])
+    catalogue = state / "default.identity-catalog.json"
+    original_catalogue = catalogue.read_bytes()
+    command = [binary, *arguments]
+    filler = exhaust(volume)
+    reserves = []
+    try:
+        # HFS+ can reject the large filler's next allocation clump while still
+        # admitting a small new file. Consume that real remaining capacity too.
+        for number in range(16384):
+            reserved = volume / f"small allocation filler {number}"
+            reserves.append(reserved)
+            try:
+                with reserved.open("wb", buffering=0) as output:
+                    output.write(bytes(4096))
+            except OSError as error:
+                assert error.errno == errno.ENOSPC, f"unexpected reserve fill error: {error}"
+                break
+        else:
+            raise AssertionError("bounded volume still accepts small allocations after 64 MiB")
+        failed = run(command, success=False)
+        assert b"space" in (failed.stdout + failed.stderr).lower(), "export did not report actual disk-full failure"
+        assert destination.read_bytes() == previous, "disk-full export replaced the original"
+        assert catalogue.read_bytes() == original_catalogue, "failed export changed the identity catalogue"
+    finally:
+        for reserved in reserves:
+            reserved.unlink(missing_ok=True)
+        filler.unlink()
+    run(command)
+    assert catalogue.read_bytes() == original_catalogue, "export retry changed the identity catalogue"
+    assert not list(volume.glob("*.tmp-*")), "failed export left a temporary output"
+    if arguments[:2] == ["tzap", "sign"]:
+        verified = run([binary, "tzap", "verify", destination, "--custom-trust-root-cert", trust_root, "--json"])
+        assert json.loads(verified.stdout)["state"] == "cryptographically_intact_offline"
+    else:
+        assert arguments[:3] == ["tzap", "contact", "export"], "unsupported export fixture"
+        run([binary, "tzap", "contact", "import", destination, "--custom-trust-root-cert", trust_root,
+             "--accept", "--state-dir", root / "verification state", "--json"])
+    print("PASS: actual disk-full signed export preserves output/catalogue; retry verifies", flush=True)
+
+
 def main():
+    if sys.argv[1] == "--export":
+        trust_root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+        binary = pathlib.Path(sys.argv[3]).resolve(strict=True)
+        with tempfile.TemporaryDirectory(prefix="zm-export-disk-full-") as directory:
+            root = pathlib.Path(directory)
+            with bounded_volume(root) as volume:
+                disk_full_export(binary, sys.argv[4:], trust_root, root, volume)
+        return
     binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="zm-write-failures-") as directory:
         root = pathlib.Path(directory)

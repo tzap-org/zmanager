@@ -16,6 +16,82 @@ use zmanager_tzap_hosted::trust::TzapIdentityAssurance;
 
 struct TestIdentity(FileTzapLocalIdentityStore, std::path::PathBuf);
 
+#[cfg(unix)]
+fn assert_export_disk_full(command: &Command, trust_root: &std::path::Path) {
+    if std::env::var_os("ZMANAGER_TEST_EXPORT_DISK_FULL").is_none() {
+        record_optional_skip("bounded-filesystem export checks require ZMANAGER_TEST_EXPORT_DISK_FULL=1");
+        return;
+    }
+    let harness = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-write-failures.py");
+    let output = Command::new(find_on_path("python3").expect("Python is required for disk-full export coverage"))
+        .arg(harness)
+        .arg("--export")
+        .arg(trust_root)
+        .arg(command.get_program())
+        .args(command.get_args())
+        .output()
+        .unwrap();
+    assert_success("actual disk-full export and verified recovery", &output);
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn assert_export_survives_interruption(command: &mut Command, destination: &std::path::Path, state: &std::path::Path) {
+    let previous = fs::read(destination).unwrap();
+    let catalogue = state.join("default.identity-catalog.json");
+    let previous_catalogue = fs::read(&catalogue).unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        let Some(strace) = find_on_path("strace") else {
+            record_optional_skip("strace is required to kill the export at its staged-file fsync");
+            return;
+        };
+        // Trace only metadata syscalls: never log key material or document writes.
+        // The first fsync must belong to this export, which the fd annotation proves.
+        let output = Command::new(strace)
+            .args(["-yy", "-e", "trace=fsync", "-e", "inject=fsync:signal=SIGKILL:when=1", "--"])
+            .arg(command.get_program())
+            .args(command.get_args())
+            .output()
+            .unwrap();
+        let trace = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.signal() == Some(9) || output.status.code() == Some(137), "export did not die from SIGKILL: {trace}");
+        assert!(trace.contains("SIGKILL") && trace.contains(&format!("{}.tmp-", destination.display())), "wrong interruption point: {trace}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(lldb) = find_on_path("lldb") else {
+            record_optional_skip("LLDB is required to kill the export at its staged-file fsync");
+            return;
+        };
+        let output = Command::new(lldb)
+            .args(["--batch", "-o", "breakpoint set -n fsync", "-o", "run", "-o", "process kill", "--"])
+            .arg(command.get_program())
+            .args(command.get_args())
+            .output()
+            .unwrap();
+        assert_success("LLDB export interruption", &output);
+        let trace = String::from_utf8_lossy(&output.stdout);
+        assert!(trace.contains("stop reason = breakpoint") && trace.contains("fsync"), "export did not stop at fsync: {trace}");
+    }
+    assert_eq!(fs::read(destination).unwrap(), previous, "killed export replaced the existing output");
+    assert_eq!(fs::read(&catalogue).unwrap(), previous_catalogue, "killed export changed the identity catalogue");
+    let prefix = format!("{}.tmp-", destination.file_name().unwrap().to_str().unwrap());
+    let staged: Vec<_> = fs::read_dir(destination.parent().unwrap())
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .collect();
+    assert_eq!(staged.len(), 1, "the interrupted CLI did not leave exactly one real staged export");
+    assert!(staged[0].metadata().unwrap().len() > 0, "interruption happened before any output was written");
+    assert_success("signed export retry after SIGKILL", &command.output().unwrap());
+    assert_eq!(fs::read(catalogue).unwrap(), previous_catalogue, "export retry changed the identity catalogue");
+    // SIGKILL cannot run cleanup; remove only this fixture's observed orphan.
+    fs::remove_file(staged[0].path()).unwrap();
+    eprintln!("PASS: killed signed export preserves output and retries: {}", destination.display());
+}
+
 impl Drop for TestIdentity {
     fn drop(&mut self) {
         // Delete only this fixture's random references, without resolving keys
@@ -113,6 +189,9 @@ fn offline_document_sign_verify_contacts_and_share() {
         assert!(String::from_utf8_lossy(&failed.stderr).contains("sign failed:"));
         assert_eq!(fs::read(&envelope).unwrap(), previous, "failed document write must preserve the previous envelope");
         assert_success("document export recovers after write failure", &command.output().unwrap());
+        assert_export_disk_full(&command, &root);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert_export_survives_interruption(&mut command, &envelope, &state);
     }
     let verify = || {
         Command::new(&binary)
@@ -193,6 +272,11 @@ fn offline_document_sign_verify_contacts_and_share() {
             assert_failure("contact output exceeds OS file limit", &output_with_file_size_limit(&command, 1024));
             assert_eq!(fs::read(&card).unwrap(), previous, "failed contact write must preserve the previous card");
             assert_success("contact export recovers after write failure", &command.output().unwrap());
+            if number == 0 {
+                assert_export_disk_full(&command, &root);
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                assert_export_survives_interruption(&mut command, &card, &state);
+            }
         }
         let import = || {
             Command::new(&binary)

@@ -472,3 +472,30 @@ than a mock. It does not click a GUI consent/denial prompt. The new CI runtime
 results must be inspected before claiming macOS coverage; local validation so
 far covers Python syntax, Apple's interactive command protocol and workflow
 lint, without modifying the developer's login Keychain.
+
+## Signed-export disk-full and process-interruption checks
+
+The offline sign/contact workflow now tests both document envelopes and contact
+cards against actual ENOSPC on a bounded disposable filesystem. The initial
+macOS attempt exposed an HFS+ fixture limitation: failure to extend a large
+allocation clump did not prove a small export could not fit. The export harness
+also consumes the remaining small allocations, requires the CLI's real
+disk-full diagnostic, and asserts the old signed output and identity catalogue
+remain byte-exact. Once capacity is released, the document retry must pass
+cryptographic verification and the contact retry must pass verified import
+into a separate fresh state directory. No production service is involved.
+
+Interruption checks stop the real CLI at its staged-file fsync: strace injects
+SIGKILL on Linux and LLDB stops at fsync then kills its own launched process on
+macOS. Linux tracing includes only fsync metadata and checks the annotated file
+descriptor identifies the intended output. Both require a nonempty staged
+export, preservation of the original output and catalogue, and successful
+retry followed by the workflow's cryptographic checks. Only the observed
+disposable orphan is removed after retry; SIGKILL cannot execute Rust cleanup.
+
+Both export types passed these checks on macOS ARM64 and Linux ARM64 Docker,
+including all 11 reduced-profile offline identity tests on Linux. CI installs
+and requires the corresponding debugger/tracer and enables actual disk-full
+export tests in the isolated release CLI step on all four Unix jobs. Optional
+local omissions are recorded in the skip inventory. Native x86_64 results and
+Windows-specific export/disk-full checks remain unverified by this addition.
