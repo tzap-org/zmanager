@@ -49,10 +49,9 @@ try {
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 0) { throw "Positive-control TCP connection failed for $binary." }
         $ruleName = "ZManagerOfflineFixture-" + [Guid]::NewGuid()
-        # New-NetFirewallRule returned ERROR_INVALID_PARAMETER for this
-        # program-scoped rule on both native Windows CI targets. Use netsh's
-        # firewall interface and keep the rule limited to this executable.
-        $programArgument = 'program="' + $binary + '"'
+        # Use netsh to create a program-scoped rule and keep the block limited
+        # to this exact executable path.
+        $programArgument = "program=$binary"
         & netsh.exe advfirewall firewall add rule "name=$ruleName" dir=out action=block profile=any $programArgument enable=yes
         if ($LASTEXITCODE -ne 0) { throw "Could not create the outbound firewall rule for $binary (netsh exit $LASTEXITCODE)." }
         $rules += [pscustomobject]@{ Name = $ruleName; Program = $binary }

@@ -94,9 +94,15 @@ def main():
     checksum = archive.with_name(archive.name + ".sha256")
     expected = checksum.read_text().split()[0]
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected, "package checksum mismatch"
-    with tempfile.TemporaryDirectory(prefix="zm-package-") as directory:
+    # GitHub's Windows TEMP can resolve through an 8.3 short user path. The
+    # firewall program filter requires the full executable path; use the
+    # runner-owned temp root so the installed package path stays canonical.
+    temporary_root = os.environ.get("RUNNER_TEMP") if sys.platform == "win32" else None
+    if temporary_root and not os.path.isdir(temporary_root):
+        temporary_root = None
+    with tempfile.TemporaryDirectory(prefix="zm-package-", dir=temporary_root) as directory:
         root = pathlib.Path(directory)
-        installed = root / "installed package"
+        installed = root / "installed"
         installed.mkdir()
         unpack(archive, installed)
         for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "completions/zm.bash", "completions/_zm", "completions/zm.fish", "completions/zm.ps1", "man/man1/zm.1"):
