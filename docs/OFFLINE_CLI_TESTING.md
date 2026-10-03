@@ -363,12 +363,10 @@ passed without warnings and 24 focused identity-related core tests passed. The
 macOS workspace run passed after the rollback change; final checks after the
 plain-language diagnostic update also cover the affected core and CLI crates.
 
-Rollback after a reported error is separate from abrupt process death. A kill
-between native secret creation and catalogue publication can still leave an
-unreferenced secret; durable recovery for that interval remains open. If the
-catalogue cannot be re-read or the secret store refuses deletion, the rollback
-retains keys rather than risking deletion of a published identity. These limits
-must not be presented as fully covered interruption/cleanup guarantees.
+Rollback after a reported error is separate from abrupt process death. The
+file-backed facades now add durable recovery for new secret writes, as described
+below. If the catalogue cannot be re-read or the secret store refuses deletion,
+keys are retained rather than risking deletion of a published identity.
 
 ## Unix installer update preservation
 
@@ -397,3 +395,36 @@ including both Unix network-denial and real sudo-authentication architectures.
 This is baseline evidence, not verification of subsequent commits: the newer
 native-keyring, Windows network-denial and identity rollback changes still need
 their current CI results inspected.
+
+## Durable recovery after native key-generation interruption
+
+A real Linux regression observed Secret Service's CreateItem request using
+`dbus-monitor --profile` (headers only, no secret arguments), stopped the CLI
+while the native service completed its write, then killed the CLI before
+catalogue publication. The previous binary preserved the catalogue but left an
+orphan after retry. This establishes the crash interval independently of mocked
+stores or a product-only test hook.
+
+File-backed inventory writes now durably record new secret purposes/references
+before calling the secret store. The journal contains no private material. A
+separate OS file lock protects the transaction through publication and journal
+cleanup; recovery cannot steal the lock from an active or stopped process.
+After process death releases that lock, the next inventory read/write deletes
+only pending references absent from the current catalogue. Published keys and
+other catalogues' secrets are retained. Unreadable catalogues, malformed
+references and unavailable cleanup fail closed and retain the recovery record.
+Public certificate discovery still uses the public catalogue directly.
+
+The real kill/retry test now passes on Linux ARM64 Docker, including rejection
+of a competing writer without deleting the active key. Three fresh runs as an
+unprivileged user also passed. Both Linux CI jobs require the interruption check
+through `ZMANAGER_TEST_IDENTITY_INTERRUPT=1`, together with disk-full, native
+unlock/cancellation and unavailable-service checks. Core regressions cover
+recovery before/after publication, active-lock protection and malformed paths;
+they passed on macOS ARM64 and Linux ARM64. macOS workspace tests and both
+platforms' workspace Clippy/check passed without warnings.
+
+Windows journal/lock runtime coverage and native macOS Keychain consent/denial
+still require their matching CI or interactive checks. This journal covers new
+keys written through file-backed inventory facades; it does not establish every
+identity deletion, export interruption, installer SIGKILL or power-loss case.

@@ -216,6 +216,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           ZMANAGER_TEST_CATALOG_DISK_FULL: "1"
+          ZMANAGER_TEST_IDENTITY_INTERRUPT: "1"
         run: python3 scripts/test-linux-secret-store.py target/release/zm
 
       - name: Report skipped optional checks

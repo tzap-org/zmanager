@@ -78,6 +78,8 @@ pub mod document_verification;
 pub mod identity_catalog;
 #[path = "auth/identity_migration.rs"]
 pub mod identity_migration;
+#[path = "auth/identity_write_journal.rs"]
+pub mod identity_write_journal;
 #[path = "auth/jcs.rs"]
 pub mod jcs;
 #[path = "auth/json_util.rs"]

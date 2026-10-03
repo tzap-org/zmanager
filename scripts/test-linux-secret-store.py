@@ -6,6 +6,7 @@ import os
 import pathlib
 import secrets
 import re
+import selectors
 import signal
 import subprocess
 import sys
@@ -88,6 +89,66 @@ def disk_full_keygen(binary, properties):
         print("PASS: real disk-full identity commit preserves catalogue and native secrets; retry succeeds", flush=True)
 
 
+def interrupted_keygen(binary, properties, template):
+    state = pathlib.Path(os.environ["HOME"]) / "interrupted identity"
+    state.mkdir()
+    catalogue = state / "default.identity-catalog.json"
+    empty = json.loads(template.read_bytes())
+    empty["recipient_keys"] = []
+    catalogue.write_text(json.dumps(empty))
+    original = catalogue.read_bytes()
+    items = native_items(properties)
+    command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state), "--json"]
+    # Profile mode reports message headers only, never secret-service arguments.
+    monitor = subprocess.Popen(["dbus-monitor", "--session", "--profile",
+                                "type='method_call',interface='org.freedesktop.Secret.Collection',member='CreateItem'"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = None
+    try:
+        time.sleep(0.2)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with selectors.DefaultSelector() as observer:
+            observer.register(monitor.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + 15
+            pending = b""
+            while time.monotonic() < deadline:
+                assert process.poll() is None, "keygen completed before the native-store interruption point"
+                for event, _ in observer.select(timeout=0.05):
+                    pending += os.read(event.fileobj.fileno(), 8192)
+                if b"CreateItem" in pending:
+                    process.send_signal(signal.SIGSTOP)
+                    break
+            else:
+                raise AssertionError("native CreateItem request was not observed")
+        deadline = time.monotonic() + 10
+        while native_items(properties) == items:
+            assert time.monotonic() < deadline, "the native service did not finish its pending key write"
+            time.sleep(0.01)
+        assert catalogue.read_bytes() == original, "the CLI was not stopped before catalogue publication"
+        active_items = native_items(properties)
+        concurrent = subprocess.run(command, capture_output=True, timeout=15)
+        assert concurrent.returncode != 0 and "already being updated" in json.loads(concurrent.stdout)["error"]
+        assert native_items(properties) == active_items, "another writer cleaned up the still-active native write"
+        process.kill()
+        process.communicate(timeout=10)
+        assert process.returncode != 0
+        assert catalogue.read_bytes() == original, "killed keygen changed the existing catalogue"
+        assert json.loads(run(command))["generated"] is True
+        assert len(json.loads(catalogue.read_bytes())["recipient_keys"]) == 1
+        assert len(native_items(properties)) == len(items) + 1, "restart left an orphan from the killed native key write"
+        print("PASS: killed native keygen preserves catalogue and restart removes its uncommitted secret", flush=True)
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+            process.stdout.close()
+            process.stderr.close()
+        monitor.terminate()
+        monitor.wait(timeout=10)
+        monitor.stdout.close()
+
+
 def exercise(binary, password):
     state = pathlib.Path(os.environ["HOME"]) / "identity"
     command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state), "--json"]
@@ -119,6 +180,8 @@ def exercise(binary, password):
     print("PASS: native unlock authentication and key-generation recovery", flush=True)
     if os.environ.get("ZMANAGER_TEST_CATALOG_DISK_FULL") == "1":
         disk_full_keygen(binary, properties)
+    if os.environ.get("ZMANAGER_TEST_IDENTITY_INTERRUPT") == "1":
+        interrupted_keygen(binary, properties, catalog)
 
 
 def isolated(binary):

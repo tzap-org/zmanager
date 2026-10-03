@@ -378,7 +378,7 @@ impl FileTzapIdentityCatalogStore {
         Self { root: root.into() }
     }
 
-    fn catalog_path(&self, account_key: &str) -> Result<PathBuf, TzapIdentityCatalogError> {
+    pub(crate) fn catalog_path(&self, account_key: &str) -> Result<PathBuf, TzapIdentityCatalogError> {
         if !validate_account_key(account_key) {
             return Err(TzapIdentityCatalogError::InvalidAccountKey);
         }

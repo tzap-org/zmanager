@@ -357,10 +357,12 @@ impl FileTzapLocalIdentityStore {
 
 impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
     fn load_inventory(&self, account_key: &str) -> Result<TzapLocalIdentityInventory, TzapLocalIdentityStoreError> {
-        use crate::identity_catalog::{FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, load_inventory_from_catalog, store_inventory_as_catalog};
+        use crate::identity_catalog::{FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, load_inventory_from_catalog};
+        use crate::identity_write_journal::{recover_file_inventory_writes, store_file_inventory_as_catalog};
 
         let catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
-        let secret_store = FileTzapSecretMaterialStore::new(&self.root, account_key);
+        let mut secret_store = FileTzapSecretMaterialStore::new(&self.root, account_key);
+        recover_file_inventory_writes(&catalog_store, &mut secret_store, account_key)?;
         if let Some(inventory) = load_inventory_from_catalog(&catalog_store, &secret_store, account_key)? {
             return Ok(inventory);
         }
@@ -375,7 +377,7 @@ impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
         let value: Value = serde_json::from_slice(&bytes)?;
         let inventory = inventory_from_json(&value)?;
         inventory.validate()?;
-        store_inventory_as_catalog(
+        store_file_inventory_as_catalog(
             &mut FileTzapIdentityCatalogStore::new(&self.root),
             &mut FileTzapSecretMaterialStore::new(&self.root, account_key),
             account_key,
@@ -387,10 +389,11 @@ impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
     }
 
     fn save_inventory(&mut self, account_key: &str, inventory: TzapLocalIdentityInventory) -> Result<(), TzapLocalIdentityStoreError> {
-        use crate::identity_catalog::{FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, store_inventory_as_catalog};
+        use crate::identity_catalog::{FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore};
+        use crate::identity_write_journal::store_file_inventory_as_catalog;
 
         inventory.validate()?;
-        store_inventory_as_catalog(
+        store_file_inventory_as_catalog(
             &mut FileTzapIdentityCatalogStore::new(&self.root),
             &mut FileTzapSecretMaterialStore::new(&self.root, account_key),
             account_key,

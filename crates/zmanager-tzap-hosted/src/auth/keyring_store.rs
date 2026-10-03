@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use zmanager_core::identity_catalog::{
     FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, TzapIdentityCatalogStore, TzapSecretMaterialStore, TzapSecretPurpose, TzapSecretRef,
-    TzapSecretStoreError, load_inventory_from_catalog, store_inventory_as_catalog,
+    TzapSecretStoreError, load_inventory_from_catalog,
 };
+use zmanager_core::identity_write_journal::{recover_file_inventory_writes, store_file_inventory_as_catalog};
 use zmanager_core::local_identity_store::{
     FileTzapLocalIdentityStore, IDENTITY_INVENTORY_FILE_SUFFIX, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
 };
@@ -143,7 +144,8 @@ impl TzapLocalIdentityStore for NativeTzapLocalIdentityStore {
     fn load_inventory(&self, account_key: &str) -> Result<TzapLocalIdentityInventory, TzapLocalIdentityStoreError> {
         self.check_account_key(account_key)?;
         let catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
-        let secret_store = self.secret_store()?;
+        let mut secret_store = self.secret_store()?;
+        recover_file_inventory_writes(&catalog_store, &mut secret_store, account_key)?;
         Ok(load_inventory_from_catalog(&catalog_store, &secret_store, account_key)?.unwrap_or_else(TzapLocalIdentityInventory::empty))
     }
 
@@ -152,7 +154,7 @@ impl TzapLocalIdentityStore for NativeTzapLocalIdentityStore {
         inventory.validate()?;
         let mut catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
         let mut secret_store = self.secret_store()?;
-        store_inventory_as_catalog(&mut catalog_store, &mut secret_store, account_key, &inventory, current_unix_seconds())?;
+        store_file_inventory_as_catalog(&mut catalog_store, &mut secret_store, account_key, &inventory, current_unix_seconds())?;
         Ok(())
     }
 
