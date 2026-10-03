@@ -143,6 +143,8 @@ jobs:
 
       - name: Test installed offline package (macOS)
         if: runner.os == 'macOS'
+        env:
+          ZMANAGER_TEST_EXPORT_DISK_FULL: "1"
         run: |
           cargo test --locked --release --target "${{ matrix.target }}" \
             -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run

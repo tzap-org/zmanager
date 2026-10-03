@@ -53,7 +53,7 @@ jobs:
           # Build the audit harness with the released tzap-core dependency.
           python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
           sudo apt-get update
-          sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev liblzma-dev libbz2-dev liblz4-dev libzstd-dev libexpat1-dev nettle-dev zlib1g-dev dbus gnome-keyring strace
+          sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev liblzma-dev libbz2-dev liblz4-dev libzstd-dev libexpat1-dev nettle-dev zlib1g-dev dbus dbus-x11 gnome-keyring strace xauth xvfb xdotool
           rustup toolchain install stable --profile minimal
           rustup default stable
           # Resolve the published tzap-core dependency after dropping the
@@ -74,6 +74,17 @@ jobs:
             python3 scripts/require-network-denial.py \
             python3 scripts/test-offline-package.py "packages/zm-${{ matrix.target }}.tar.gz" \
             --workflow cargo test --offline --locked --release -p zmanager-cli --no-default-features --test offline_tzap_cli -- --nocapture
+      - name: Test installed Secret Service recovery with outbound networking denied
+        timeout-minutes: 10
+        env:
+          ZMANAGER_TEST_CATALOG_DISK_FULL: "1"
+          ZMANAGER_TEST_IDENTITY_INTERRUPT: "1"
+        run: |
+          sudo --preserve-env=HOME,PATH,RUSTUP_HOME,CARGO_HOME,LANG,LC_ALL,GITHUB_ACTIONS,RUNNER_ENVIRONMENT,ZMANAGER_TEST_CATALOG_DISK_FULL,ZMANAGER_TEST_IDENTITY_INTERRUPT,ZMANAGER_TEST_SKIP_REPORT \
+            unshare --net --setuid "$(id -u)" --setgid "$(id -g)" -- \
+            python3 scripts/require-network-denial.py \
+            python3 scripts/test-offline-package.py "packages/zm-${{ matrix.target }}.tar.gz" \
+            --workflow python3 -c 'import os,subprocess; subprocess.run(["python3","scripts/test-linux-secret-store.py",os.environ["ZMANAGER_AUDIT_BINARY"]],check=True)'
       - name: Report optional check inventory
         if: always()
         run: python3 scripts/report-test-skips.py "$ZMANAGER_TEST_SKIP_REPORT"
