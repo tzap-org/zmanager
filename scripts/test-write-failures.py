@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,20 @@ def bounded_volume(root):
             raise SystemExit("Linux bounded-filesystem tests require root in Docker or a GitHub-hosted runner.")
         run(prefix + ["mount", "-t", "tmpfs", "-o", f"size=16m,mode=0700,uid={os.getuid()},gid={os.getgid()}", "tmpfs", mount])
         detach = prefix + ["umount", mount]
+    elif sys.platform == "win32":
+        helper = pathlib.Path(__file__).with_name("test-windows-bounded-volume.ps1").resolve(strict=True)
+        image = root / "bounded.vhd"
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", helper,
+                   "-ImagePath", image, "-MountPath", mount]
+        try:
+            run(command)
+            assert shutil.disk_usage(mount).total <= 64 * 1024 * 1024, "refusing to fill an unbounded Windows filesystem"
+            yield mount
+        finally:
+            run(command + ["-Detach"])
+        return
     else:
-        raise SystemExit("macOS or Linux required for this filesystem harness")
+        raise SystemExit("macOS, Linux or Windows required for this filesystem harness")
     try:
         capacity = os.statvfs(mount)
         assert capacity.f_blocks * capacity.f_frsize <= 64 * 1024 * 1024, "refusing to fill an unbounded filesystem"

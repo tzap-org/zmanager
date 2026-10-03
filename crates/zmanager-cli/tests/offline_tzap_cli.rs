@@ -16,14 +16,14 @@ use zmanager_tzap_hosted::trust::TzapIdentityAssurance;
 
 struct TestIdentity(FileTzapLocalIdentityStore, std::path::PathBuf);
 
-#[cfg(unix)]
 fn assert_export_disk_full(command: &Command, trust_root: &std::path::Path) {
     if std::env::var_os("ZMANAGER_TEST_EXPORT_DISK_FULL").is_none() {
         record_optional_skip("bounded-filesystem export checks require ZMANAGER_TEST_EXPORT_DISK_FULL=1");
         return;
     }
     let harness = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-write-failures.py");
-    let output = Command::new(find_on_path("python3").expect("Python is required for disk-full export coverage"))
+    let python = if cfg!(windows) { "python.exe" } else { "python3" };
+    let output = Command::new(find_on_path(python).expect("Python is required for disk-full export coverage"))
         .arg(harness)
         .arg("--export")
         .arg(trust_root)
@@ -152,47 +152,32 @@ fn offline_document_sign_verify_contacts_and_share() {
     let list = Command::new(&binary).args(["tzap", "certs", "--state-dir", state.to_str().unwrap(), "--json"]).output().unwrap();
     assert_success("offline certs", &list);
     assert!(String::from_utf8_lossy(&list.stdout).contains(&certificate.certificate_id));
-    let sign = Command::new(&binary)
-        .args([
-            "tzap",
-            "sign",
-            payload.to_str().unwrap(),
-            "--certificate-id",
-            &certificate.certificate_id,
-            "--output",
-            envelope.to_str().unwrap(),
-            "--state-dir",
-            state.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert_success("offline sign", &sign);
+    let mut sign_command = Command::new(&binary);
+    sign_command.args([
+        "tzap",
+        "sign",
+        payload.to_str().unwrap(),
+        "--certificate-id",
+        &certificate.certificate_id,
+        "--output",
+        envelope.to_str().unwrap(),
+        "--state-dir",
+        state.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_success("offline sign", &sign_command.output().unwrap());
     #[cfg(unix)]
     {
         let previous = fs::read(&envelope).unwrap();
-        let mut command = Command::new(&binary);
-        command.args([
-            "tzap",
-            "sign",
-            payload.to_str().unwrap(),
-            "--certificate-id",
-            &certificate.certificate_id,
-            "--output",
-            envelope.to_str().unwrap(),
-            "--state-dir",
-            state.to_str().unwrap(),
-            "--json",
-        ]);
-        let failed = output_with_file_size_limit(&command, 1024);
+        let failed = output_with_file_size_limit(&sign_command, 1024);
         assert_failure("document output exceeds OS file limit", &failed);
         assert!(String::from_utf8_lossy(&failed.stderr).contains("sign failed:"));
         assert_eq!(fs::read(&envelope).unwrap(), previous, "failed document write must preserve the previous envelope");
-        assert_success("document export recovers after write failure", &command.output().unwrap());
-        assert_export_disk_full(&command, &root);
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        assert_export_survives_interruption(&mut command, &envelope, &state);
+        assert_success("document export recovers after write failure", &sign_command.output().unwrap());
     }
+    assert_export_disk_full(&sign_command, &root);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert_export_survives_interruption(&mut sign_command, &envelope, &state);
     let verify = || {
         Command::new(&binary)
             .args(["tzap", "verify", envelope.to_str().unwrap(), "--custom-trust-root-cert", root.to_str().unwrap(), "--json"])
@@ -229,54 +214,35 @@ fn offline_document_sign_verify_contacts_and_share() {
         // keys created by a different application on macOS.
         let key_id = inventory.recipient_encryption_keys[number].key_id.clone();
         let card = temp.path(format!("contact-{number}.json"));
-        let export = Command::new(&binary)
-            .args([
-                "tzap",
-                "contact",
-                "export",
-                "--recipient-key-id",
-                &key_id,
-                "--certificate-id",
-                &certificate.certificate_id,
-                "--display-name",
-                "Offline Test Contact",
-                "--output",
-                card.to_str().unwrap(),
-                "--state-dir",
-                state.to_str().unwrap(),
-                "--json",
-            ])
-            .output()
-            .unwrap();
-        assert_success("offline contact export", &export);
+        let mut export_command = Command::new(&binary);
+        export_command.args([
+            "tzap",
+            "contact",
+            "export",
+            "--recipient-key-id",
+            &key_id,
+            "--certificate-id",
+            &certificate.certificate_id,
+            "--display-name",
+            "Offline Test Contact",
+            "--output",
+            card.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--json",
+        ]);
+        assert_success("offline contact export", &export_command.output().unwrap());
         #[cfg(unix)]
         {
             let previous = fs::read(&card).unwrap();
-            let mut command = Command::new(&binary);
-            command.args([
-                "tzap",
-                "contact",
-                "export",
-                "--recipient-key-id",
-                &key_id,
-                "--certificate-id",
-                &certificate.certificate_id,
-                "--display-name",
-                "Offline Test Contact",
-                "--output",
-                card.to_str().unwrap(),
-                "--state-dir",
-                state.to_str().unwrap(),
-                "--json",
-            ]);
-            assert_failure("contact output exceeds OS file limit", &output_with_file_size_limit(&command, 1024));
+            assert_failure("contact output exceeds OS file limit", &output_with_file_size_limit(&export_command, 1024));
             assert_eq!(fs::read(&card).unwrap(), previous, "failed contact write must preserve the previous card");
-            assert_success("contact export recovers after write failure", &command.output().unwrap());
-            if number == 0 {
-                assert_export_disk_full(&command, &root);
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                assert_export_survives_interruption(&mut command, &card, &state);
-            }
+            assert_success("contact export recovers after write failure", &export_command.output().unwrap());
+        }
+        if number == 0 {
+            assert_export_disk_full(&export_command, &root);
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            assert_export_survives_interruption(&mut export_command, &card, &state);
         }
         let import = || {
             Command::new(&binary)

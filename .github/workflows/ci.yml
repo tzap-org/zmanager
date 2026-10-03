@@ -376,9 +376,9 @@ jobs:
           -VcArch "${{ matrix.vcarch }}"
           -VsComponent "${{ matrix.component }}"
 
-      - name: Killed-writer recovery
+      - name: Disk-full and killed-writer recovery
         shell: pwsh
-        run: python scripts/test-write-failures.py "target/${{ matrix.target }}/release/zm.exe" --interrupt-only
+        run: python scripts/test-write-failures.py "target/${{ matrix.target }}/release/zm.exe"
 
       - name: Report skipped optional checks
         if: always()

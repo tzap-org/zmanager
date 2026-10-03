@@ -499,3 +499,26 @@ and requires the corresponding debugger/tracer and enables actual disk-full
 export tests in the isolated release CLI step on all four Unix jobs. Optional
 local omissions are recorded in the skip inventory. Native x86_64 results and
 Windows-specific export/disk-full checks remain unverified by this addition.
+
+## Windows bounded-filesystem coverage
+
+Both Windows CI jobs now require the archive disk-full harness, rather than
+running only its process-kill check. The shared export workflow also enables
+real disk-full document/contact exports for the reduced Windows release test.
+`test-windows-bounded-volume.ps1` creates a new 32 MiB VHD, associates it with
+exactly one non-system disk through `Get-DiskImage`, verifies a bounded size and
+RAW partition state, and only then formats the fixture as NTFS. Its empty mount
+directory and image path are restricted to the harness's disposable directory;
+it accepts no physical disk number. Python independently checks the mounted
+filesystem capacity before filling it. Cleanup removes the fixture mount path,
+detaches that exact image and verifies detachment.
+
+Provisioning requires an administrator session on a GitHub-hosted runner.
+Windows PowerShell parsing and refusal of ordinary local execution passed in
+the native Windows 11 ARM64 VM. The VM's standard account did not mount or
+format a disk, so these checks do not establish VHD runtime or ENOSPC coverage.
+That evidence must come from the matching Windows CI jobs. The existing macOS
+workspace gate and Linux reduced-profile export suite passed after sharing the
+export test command construction across platforms. Abrupt signed-export
+termination on Windows is still not established by this filesystem addition;
+its separate archive writer-kill check remains required.

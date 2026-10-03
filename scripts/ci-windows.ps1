@@ -242,15 +242,23 @@ function Invoke-CargoTest {
     # Run each reduced artifact independently so workspace feature unification
     # cannot hide an offline-only failure. Exercise the shipped CLI profile too.
     foreach ($package in @("zmanager-core", "zmanager-ffi", "zmanager-cli")) {
+        $previousExportDiskFull = [Environment]::GetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", "Process")
         $arguments = @("test", "--locked", "--target", $TargetTriple, "-p", $package, "--no-default-features")
         if ($package -eq "zmanager-cli") {
             $arguments += "--release"
+            [Environment]::SetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", "1", "Process")
         }
-        Invoke-NativeLogged `
-            -Title "offline $package tests failed on $TargetTriple" `
-            -LogName "cargo-test-offline-$package-$TargetTriple.log" `
-            -FilePath "cargo" `
-            -Arguments $arguments
+        try {
+            Invoke-NativeLogged `
+                -Title "offline $package tests failed on $TargetTriple" `
+                -LogName "cargo-test-offline-$package-$TargetTriple.log" `
+                -FilePath "cargo" `
+                -Arguments $arguments
+        } finally {
+            if ($package -eq "zmanager-cli") {
+                [Environment]::SetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", $previousExportDiskFull, "Process")
+            }
+        }
     }
 
     $releaseDirectory = Join-Path $RepositoryRoot "target\$TargetTriple\release"
