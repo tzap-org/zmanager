@@ -456,8 +456,8 @@ impl TzapSecretMaterialStore for FileTzapSecretMaterialStore {
 }
 
 /// Persists a legacy inventory through the catalog, reusing existing secret
-/// references for keys that persist so refs stay stable across saves and no
-/// secrets are orphaned.
+/// references for keys that persist so refs stay stable across saves. Failed
+/// writes attempt to remove newly stored secrets without deleting published keys.
 pub fn store_inventory_as_catalog(
     catalog_store: &mut impl TzapIdentityCatalogStore,
     secret_store: &mut impl TzapSecretMaterialStore,
@@ -511,18 +511,35 @@ pub fn store_inventory_as_catalog(
 
     preserve_default_signing_identity(existing.as_ref(), &mut catalog);
 
-    for record in &inventory.device_signing_keys {
-        let reference = signing_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "facade.signing_refs" })?;
-        secret_store.put_at(TzapSecretPurpose::SigningKey, reference, record.private_key_der.clone())?;
+    let existing_refs = existing.as_ref().map_or_else(HashSet::new, catalog_secret_references);
+    let mut new_secrets = HashSet::new();
+    let result = (|| {
+        for record in &inventory.device_signing_keys {
+            let reference = signing_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "facade.signing_refs" })?;
+            store_catalog_secret(secret_store, TzapSecretPurpose::SigningKey, reference, record.private_key_der.clone(), &existing_refs, &mut new_secrets)?;
+        }
+        for record in &inventory.recipient_encryption_keys {
+            let reference = recipient_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "facade.recipient_refs" })?;
+            store_catalog_secret(secret_store, TzapSecretPurpose::RecipientKey, reference, record.private_key_der.clone(), &existing_refs, &mut new_secrets)?;
+        }
+        let expected_revision = existing.as_ref().map(|catalog| catalog.revision);
+        catalog.revision = expected_revision.map_or(1, |revision| revision.saturating_add(1));
+        catalog_store.save_catalog(account_key, expected_revision, catalog)
+    })();
+    if let Err(error) = result {
+        // Re-read before deleting: a backend can report an ambiguous commit
+        // failure. Unreadable or published references must remain recoverable.
+        if let Ok(current) = catalog_store.load_catalog(account_key) {
+            let published = current.as_ref().map_or_else(HashSet::new, catalog_secret_references);
+            for (purpose, reference) in new_secrets {
+                if !published.contains(&(purpose, reference.clone())) {
+                    // Preserve the triggering error if cleanup is unavailable.
+                    let _ = secret_store.delete(purpose, &reference);
+                }
+            }
+        }
+        return Err(error);
     }
-    for record in &inventory.recipient_encryption_keys {
-        let reference = recipient_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "facade.recipient_refs" })?;
-        secret_store.put_at(TzapSecretPurpose::RecipientKey, reference, record.private_key_der.clone())?;
-    }
-
-    let expected_revision = existing.as_ref().map(|catalog| catalog.revision);
-    catalog.revision = expected_revision.map_or(1, |revision| revision.saturating_add(1));
-    catalog_store.save_catalog(account_key, expected_revision, catalog)?;
     // Deleting old secrets is safe only after the catalog atomically points at
     // the replacement inventory. If the commit failed, the old catalog still
     // retains these references and they must remain resolvable.
@@ -531,6 +548,31 @@ pub fn store_inventory_as_catalog(
     }
     for reference in obsolete_recipient_refs {
         let _ = secret_store.delete(TzapSecretPurpose::RecipientKey, &reference);
+    }
+    Ok(())
+}
+
+fn catalog_secret_references(catalog: &TzapIdentityCatalog) -> HashSet<(TzapSecretPurpose, TzapSecretRef)> {
+    catalog
+        .signing_identities
+        .iter()
+        .map(|identity| (TzapSecretPurpose::SigningKey, identity.signing_key_ref.clone()))
+        .chain(catalog.recipient_keys.iter().map(|key| (TzapSecretPurpose::RecipientKey, key.private_key_ref.clone())))
+        .collect()
+}
+
+fn store_catalog_secret(
+    store: &mut impl TzapSecretMaterialStore,
+    purpose: TzapSecretPurpose,
+    reference: &TzapSecretRef,
+    material: SecretBytes,
+    existing: &HashSet<(TzapSecretPurpose, TzapSecretRef)>,
+    written: &mut HashSet<(TzapSecretPurpose, TzapSecretRef)>,
+) -> Result<(), TzapSecretStoreError> {
+    store.put_at(purpose, reference, material)?;
+    let entry = (purpose, reference.clone());
+    if !existing.contains(&entry) {
+        written.insert(entry);
     }
     Ok(())
 }
@@ -777,6 +819,114 @@ mod tests {
 
     struct FailingCatalogStore {
         inner: InMemoryTzapIdentityCatalogStore,
+        commit_before_failure: bool,
+    }
+
+    #[derive(Default)]
+    struct RecordingSecretStore {
+        inner: InMemoryTzapSecretMaterialStore,
+        references: HashSet<(TzapSecretPurpose, TzapSecretRef)>,
+        writes: usize,
+        fail_write: Option<usize>,
+    }
+
+    impl TzapSecretMaterialStore for RecordingSecretStore {
+        fn put(&mut self, purpose: TzapSecretPurpose, material: SecretBytes) -> Result<TzapSecretRef, TzapSecretStoreError> {
+            let reference = TzapSecretRef::generate();
+            self.put_at(purpose, &reference, material)?;
+            Ok(reference)
+        }
+
+        fn put_at(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef, material: SecretBytes) -> Result<(), TzapSecretStoreError> {
+            self.writes += 1;
+            if self.fail_write == Some(self.writes) {
+                return Err(TzapSecretStoreError::Denied);
+            }
+            self.inner.put_at(purpose, reference, material)?;
+            self.references.insert((purpose, reference.clone()));
+            Ok(())
+        }
+
+        fn resolve(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<SecretBytes, TzapSecretStoreError> {
+            self.inner.resolve(purpose, reference)
+        }
+
+        fn delete(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<(), TzapSecretStoreError> {
+            self.inner.delete(purpose, reference)?;
+            self.references.remove(&(purpose, reference.clone()));
+            Ok(())
+        }
+    }
+
+    fn recipient_inventory(count: usize) -> TzapLocalIdentityInventory {
+        let mut inventory = TzapLocalIdentityInventory::empty();
+        for _ in 0..count {
+            let key = crate::device_identity::generate_recipient_encryption_key().unwrap();
+            inventory.recipient_encryption_keys.push(TzapRecipientEncryptionKeyRecord {
+                key_id: key.public_key_fingerprint.clone(),
+                algorithm: key.algorithm.to_owned(),
+                public_key_fingerprint: key.public_key_fingerprint,
+                public_key_der: key.public_key_spki_der,
+                private_key_der: key.private_key_der,
+                created_at_unix_seconds: 1,
+                label: None,
+            });
+        }
+        inventory
+    }
+
+    #[test]
+    fn failed_catalog_commit_removes_new_secrets_and_retry_recovers() {
+        let mut catalogs = FailingCatalogStore { inner: InMemoryTzapIdentityCatalogStore::new(), commit_before_failure: false };
+        let mut secrets = RecordingSecretStore::default();
+        let inventory = recipient_inventory(2);
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        assert!(secrets.references.is_empty(), "a failed catalogue commit orphaned new private keys");
+        assert!(catalogs.load_catalog("default").unwrap().is_none());
+        store_inventory_as_catalog(&mut catalogs.inner, &mut secrets, "default", &inventory, 3).unwrap();
+        assert_eq!(secrets.references.len(), 2, "retry must not retain orphaned keys");
+    }
+
+    #[test]
+    fn failed_second_secret_write_removes_first_new_secret() {
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        let mut secrets = RecordingSecretStore { fail_write: Some(2), ..RecordingSecretStore::default() };
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(2), 2).is_err());
+        assert!(secrets.references.is_empty(), "a later secret-store failure orphaned an earlier key");
+        assert!(catalogs.load_catalog("default").unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_catalog_commit_removes_only_new_secrets() {
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        let mut secrets = RecordingSecretStore::default();
+        let mut inventory = recipient_inventory(1);
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 1).unwrap();
+        let original = catalogs.load_catalog("default").unwrap().unwrap();
+        let original_refs = secrets.references.clone();
+        inventory.recipient_encryption_keys.extend(recipient_inventory(1).recipient_encryption_keys);
+        let mut catalogs = FailingCatalogStore { inner: catalogs, commit_before_failure: false };
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        assert_eq!(secrets.references, original_refs, "rollback must preserve existing references and remove only new keys");
+        assert_eq!(catalogs.load_catalog("default").unwrap().unwrap(), original);
+        assert_eq!(
+            secrets.resolve(TzapSecretPurpose::RecipientKey, &original.recipient_keys[0].private_key_ref).unwrap().expose_secret(),
+            inventory.recipient_encryption_keys[0].private_key_der.expose_secret()
+        );
+    }
+
+    #[test]
+    fn ambiguous_commit_error_does_not_delete_published_secrets() {
+        let mut catalogs = FailingCatalogStore { inner: InMemoryTzapIdentityCatalogStore::new(), commit_before_failure: true };
+        let mut secrets = RecordingSecretStore::default();
+        let inventory = recipient_inventory(1);
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        let published = catalogs.load_catalog("default").unwrap().unwrap();
+        assert_eq!(secrets.references.len(), 1);
+        assert_eq!(
+            secrets.resolve(TzapSecretPurpose::RecipientKey, &published.recipient_keys[0].private_key_ref).unwrap().expose_secret(),
+            inventory.recipient_encryption_keys[0].private_key_der.expose_secret()
+        );
     }
 
     impl TzapIdentityCatalogStore for FailingCatalogStore {
@@ -784,7 +934,10 @@ mod tests {
             self.inner.load_catalog(account_key)
         }
 
-        fn save_catalog(&mut self, _account_key: &str, _expected_revision: Option<u64>, _catalog: TzapIdentityCatalog) -> Result<(), TzapIdentityCatalogError> {
+        fn save_catalog(&mut self, account_key: &str, expected_revision: Option<u64>, catalog: TzapIdentityCatalog) -> Result<(), TzapIdentityCatalogError> {
+            if self.commit_before_failure {
+                self.inner.save_catalog(account_key, expected_revision, catalog)?;
+            }
             Err(TzapIdentityCatalogError::ConcurrentWrite)
         }
 
@@ -810,7 +963,7 @@ mod tests {
         });
         let mut inner = InMemoryTzapIdentityCatalogStore::new();
         inner.save_catalog("default", None, existing).unwrap();
-        let mut catalogs = FailingCatalogStore { inner };
+        let mut catalogs = FailingCatalogStore { inner, commit_before_failure: false };
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
         secrets.put_at(TzapSecretPurpose::RecipientKey, &old_reference, SecretBytes::from(vec![7])).unwrap();
 

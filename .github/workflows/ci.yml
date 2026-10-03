@@ -214,6 +214,8 @@ jobs:
 
       - name: Native Secret Service cancellation and unlock recovery
         if: runner.os == 'Linux'
+        env:
+          ZMANAGER_TEST_CATALOG_DISK_FULL: "1"
         run: python3 scripts/test-linux-secret-store.py target/release/zm
 
       - name: Report skipped optional checks

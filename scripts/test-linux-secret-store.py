@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Test a native unlock dialog in a private home, D-Bus session and X server."""
 import json
+import importlib.util
 import os
 import pathlib
 import secrets
+import re
 import signal
 import subprocess
 import sys
@@ -53,6 +55,39 @@ def prompted_keygen(command, authenticate, password):
         process.stderr.close()
 
 
+def native_items(properties):
+    return set(re.findall(rb"'(/org/freedesktop/secrets/collection/[^']+)'", run(properties + ["Items"])))
+
+
+def disk_full_keygen(binary, properties):
+    # Reuse the bounded-volume guard rather than filling the runner's real disk.
+    specification = importlib.util.spec_from_file_location("write_fixture", pathlib.Path(__file__).with_name("test-write-failures.py"))
+    fixture = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(fixture)
+    root = pathlib.Path(os.environ["HOME"])
+    with fixture.bounded_volume(root) as volume:
+        state = volume / "identity"
+        command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state), "--json"]
+        assert json.loads(run(command))["generated"] is True
+        catalog = state / "default.identity-catalog.json"
+        original = catalog.read_bytes()
+        items = native_items(properties)
+        filler = fixture.exhaust(volume)
+        try:
+            failed = subprocess.run(command, capture_output=True, timeout=30)
+            assert failed.returncode != 0
+            diagnostic = json.loads(failed.stdout)["error"]
+            assert catalog.read_bytes() == original, "disk-full keygen changed the existing catalogue"
+            assert native_items(properties) == items, "disk-full keygen orphaned a native private key"
+            assert "space" in diagnostic.lower(), f"keygen did not report real disk-full failure: {diagnostic}"
+        finally:
+            filler.unlink()
+        assert json.loads(run(command))["generated"] is True
+        assert len(json.loads(catalog.read_bytes())["recipient_keys"]) == 2
+        assert len(native_items(properties)) == len(items) + 1, "retry retained a failed key"
+        print("PASS: real disk-full identity commit preserves catalogue and native secrets; retry succeeds", flush=True)
+
+
 def exercise(binary, password):
     state = pathlib.Path(os.environ["HOME"]) / "identity"
     command = [str(binary), "tzap", "contact", "keygen", "--state-dir", str(state), "--json"]
@@ -71,17 +106,19 @@ def exercise(binary, password):
     assert collection.encode() in run(service + ["org.freedesktop.Secret.Service.Lock", f"['{collection}']"])
     properties = ["gdbus", "call", "--session", "--dest", "org.freedesktop.secrets", "--object-path", collection, "--method", "org.freedesktop.DBus.Properties.Get", "org.freedesktop.Secret.Collection"]
     assert b"true" in run(properties + ["Locked"]), "fixture collection was not locked"
-    items = run(properties + ["Items"])
+    items = native_items(properties)
     run([binary, "tzap", "certs", "--state-dir", state, "--json"])
     denied = prompted_keygen(command, False, password)
     assert denied["ok"] is False and "secure secret store is locked" in denied["error"]
     assert catalog.read_bytes() == original, "cancelled authentication changed the catalogue"
-    assert run(properties + ["Items"]) == items, "cancelled key generation left a native secret"
+    assert native_items(properties) == items, "cancelled key generation left a native secret"
     print("PASS: locked native keyring, public discovery and cancelled unlock preserve state", flush=True)
     assert prompted_keygen(command, True, password)["generated"] is True
     assert b"false" in run(properties + ["Locked"])
     assert len(json.loads(catalog.read_bytes())["recipient_keys"]) == 2
     print("PASS: native unlock authentication and key-generation recovery", flush=True)
+    if os.environ.get("ZMANAGER_TEST_CATALOG_DISK_FULL") == "1":
+        disk_full_keygen(binary, properties)
 
 
 def isolated(binary):

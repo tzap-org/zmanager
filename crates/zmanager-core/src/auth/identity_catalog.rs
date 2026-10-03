@@ -485,7 +485,7 @@ impl fmt::Display for TzapIdentityCatalogError {
                 write!(f, "identity catalog revision conflict (expected {expected:?}, actual {actual:?})")
             }
             Self::ConcurrentWrite => f.write_str("identity catalog is already being updated"),
-            Self::Io(kind) => write!(f, "identity catalog I/O failed: {kind:?}"),
+            Self::Io(kind) => write!(f, "identity catalog I/O failed: {}", io::Error::from(*kind)),
             Self::Json(message) => write!(f, "identity catalog JSON is invalid: {message}"),
             Self::Legacy(error) => write!(f, "legacy identity migration failed: {error}"),
             Self::Secret(error) => write!(f, "secure secret migration failed: {error}"),
@@ -595,6 +595,13 @@ mod tests {
         InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn catalog_io_errors_use_plain_language() {
+        let message = TzapIdentityCatalogError::Io(io::ErrorKind::StorageFull).to_string();
+        assert!(message.contains("space"), "{message}");
+        assert!(!message.contains("StorageFull"));
+    }
 
     #[test]
     fn empty_catalog_is_public_and_has_no_secret_fields() {

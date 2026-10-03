@@ -335,3 +335,37 @@ in the Windows 11 ARM64 Parallels VM. Its current-user session is not an
 administrator, so no firewall rule or profile was modified there. Actual
 enforcement and the network-denied CLI run remain pending until both Windows
 CI architecture jobs execute this new harness successfully.
+
+## Identity commit failure regression
+
+Failure-injection tests reproduced orphaned private keys when the legacy
+inventory facade successfully wrote secrets but the catalogue commit failed,
+or when a later secret write failed. The facade now tracks newly written
+references and attempts rollback on error, preserving all existing references.
+It re-reads the public catalogue before cleanup and retains references that a
+backend actually published despite returning an error. A regression covers this
+ambiguous-commit case as well as unchanged old key material and successful retry.
+The original catalogue/secret-store error remains the diagnostic if cleanup is
+unavailable.
+
+The native Linux harness can now fill a bounded tmpfs containing only the
+fixture identity catalogue while keeping its private GNOME Keyring elsewhere.
+This reproduced the orphan with the preceding binary, independently of the
+in-memory tests. `ZMANAGER_TEST_CATALOG_DISK_FULL=1` enables the check; both Linux
+CI jobs require it. It verifies unchanged catalogue bytes and native secret
+entries on failure, then removes the filler and requires exactly one additional
+key after successful retry. Catalogue I/O errors now use plain-language error
+descriptions rather than Rust enum names such as `StorageFull`.
+
+The rebuilt release CLI passed this real disk-full check on Linux ARM64 Docker,
+along with the native cancellation/unlock sequence. Linux workspace Clippy/check
+passed without warnings and 24 focused identity-related core tests passed. The
+macOS workspace run passed after the rollback change; final checks after the
+plain-language diagnostic update also cover the affected core and CLI crates.
+
+Rollback after a reported error is separate from abrupt process death. A kill
+between native secret creation and catalogue publication can still leave an
+unreferenced secret; durable recovery for that interval remains open. If the
+catalogue cannot be re-read or the secret store refuses deletion, the rollback
+retains keys rather than risking deletion of a published identity. These limits
+must not be presented as fully covered interruption/cleanup guarantees.
