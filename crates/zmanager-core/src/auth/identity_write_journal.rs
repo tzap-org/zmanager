@@ -17,7 +17,7 @@ type SecretReference = (TzapSecretPurpose, TzapSecretRef);
 struct PendingWrites {
     // Keep the OS lock until catalogue publication and journal cleanup finish.
     // Never unlink its path: another writer must lock the same inode.
-    _lock: fs::File,
+    lock: fs::File,
     path: PathBuf,
     references: Vec<SecretReference>,
 }
@@ -53,7 +53,7 @@ impl PendingWrites {
                 return Err(TzapIdentityCatalogError::InvalidCatalog { field: "pending_secret_writes.reference" });
             }
         }
-        Ok(Self { _lock: lock, path, references })
+        Ok(Self { lock, path, references })
     }
 
     fn record(&mut self, entry: SecretReference) -> Result<(), TzapIdentityCatalogError> {
@@ -90,6 +90,16 @@ impl PendingWrites {
             }
         }
         self.clear()
+    }
+}
+
+impl Drop for PendingWrites {
+    fn drop(&mut self) {
+        // On Unix a concurrently spawned child can temporarily inherit the
+        // same open file description before exec closes its CLOEXEC handle.
+        // Closing only our handle would keep its flock alive in that child.
+        // Release the completed writer's lock even while that copy exists.
+        let _ = self.lock.unlock();
     }
 }
 
@@ -205,6 +215,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_writer_unlocks_while_an_inherited_descriptor_is_alive() {
+        let mut fixture = Fixture::new();
+        let (pending, reference) = fixture.pending_secret();
+        // A duplicate models the shared file description inherited between
+        // fork and exec, without unsafe fork calls or timing-sensitive sleeps.
+        let inherited = pending.lock.try_clone().unwrap();
+        assert!(matches!(PendingWrites::open(&fixture.catalogue, "default"), Err(TzapIdentityCatalogError::ConcurrentWrite)));
+        drop(pending);
+        let mut next = PendingWrites::open(&fixture.catalogue, "default").expect("a completed writer must release the lock despite an inherited handle");
+        assert_eq!(next.references, vec![(TzapSecretPurpose::RecipientKey, reference.clone())]);
+        next.recover(&fixture.catalogue, &mut fixture.secrets, "default").unwrap();
+        assert!(matches!(fixture.secrets.resolve(TzapSecretPurpose::RecipientKey, &reference), Err(TzapSecretStoreError::Missing { .. })));
+        drop(inherited);
     }
 
     #[test]
