@@ -11,7 +11,7 @@ current evidence and outstanding checks.
 | Native secret-store failure and recovery | Linux ARM64 packaged executable passed unavailable service, locked collection, native cancellation, authentication/retry, ENOSPC and killed-keygen recovery, including an outbound-denied run | macOS disposable-account Keychain CI; macOS GUI consent/denial remains an explicitly tracked interactive check |
 | Installed packages and first launch | Preview 37129928428 at `6ba7bc6` passed all six package architectures; actual macOS/Linux ARM64 packages passed their full identity workflows | New macOS ARM64/Intel producer identity gates in Preview 37132262938; Windows/Intel Linux package smoke does not establish full packaged identity coverage |
 | Optional compatibility omissions | CI emits a skip inventory and uploads its JSONL evidence; successful Linux ARM64/x86_64 and Windows x64 jobs in run 37129928507 include reporting | Inspect inventories from the remaining jobs; skipped checks are never counted as verified |
-| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and Windows x64 CI establish their required recovery checks; Linux packaged native-key crash recovery also passed | Windows ARM64 VHD runtime; corrected macOS Intel interruption checkpoint; Windows signed-export process-kill coverage remains unestablished |
+| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and both Windows architectures establish their required recovery checks; Linux packaged native-key crash recovery also passed | Corrected macOS Intel interruption checkpoint; Windows signed-export process-kill coverage remains unestablished |
 | Offline network enforcement | Actual macOS/Linux ARM64 package workflows passed with enforced denial; Linux native GUI recovery also passed in a private network namespace; Windows x64 CI confirmed both firewall paths | Finish the matching corrected six-architecture CI matrix |
 | Required Rust gates and fixes | `8ebb644` passed formatting, workspace Clippy/check and workspace tests without warnings; `c7bf9a9` passed workflow lint and affected CLI tests with workspace Clippy/check | Native CI results remain required before claiming parity complete |
 | Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; no signing/notarization scope was added | Browser quarantine and Gatekeeper consent remain a tracked manual distribution check |
@@ -582,7 +582,10 @@ The reduced CLI identity workflow ran with export disk-full checks required.
 The archive fixture log confirms real ZIP, 7z and tar.zst disk-full preservation
 and recovery, plus killed archive-writer preservation and successful restart.
 Both executable paths passed the firewall positive control and enforced TCP
-denial. Windows ARM64 runtime results remain pending.
+denial. Windows ARM64 job 111222843565 in the same run subsequently passed the
+same required suites, both firewall controls, real ZIP/7z/tar.zst disk-full
+recovery and killed archive-writer restart. The overall run failed on the older
+macOS debugger checkpoint; that does not erase the completed Windows evidence.
 
 The checksum-verified Linux ARM64 static musl package at `6ba7bc6` also passed
 `test-linux-secret-store.py` in Docker with both catalogue disk-full and
@@ -603,3 +606,20 @@ PATH directory, retaining directory precedence and explicit-extension behavior.
 Unix lookup retains exact filenames. The same helper source and both regression
 tests then passed with native MSVC in that VM. This verifies tool discovery;
 the newly enabled Windows compatibility tests still require their CI results.
+
+## Native macOS Keychain fixture diagnosis
+
+macOS ARM64 job 111228688777 in run 37131968021 passed the corrected release
+interruption suite, network-denied suite, sudo authentication and archive
+disk-full/killed-writer recovery. Its native Keychain fixture proved absent-store
+failure without catalogue publication, then failed at the first key generation
+after creating and verifying an unlocked private Keychain. The assertion
+originally hid the CLI diagnostic; the harness now includes its redacted error
+and exit status after checking that the fixture password was not echoed.
+
+The manual Offline Keychain Audit workflow downloads only a successful Preview
+run with an exact supplied commit SHA, verifies the archive checksum, and tests
+the still-unpacked executable on native macOS ARM64 and Intel runners. It reuses
+the restricted disposable-account provisioner and cleanup. This provides a short
+native diagnosis loop without recompiling the workspace; it does not establish
+that a different source revision's packaged build passed or click GUI consent.

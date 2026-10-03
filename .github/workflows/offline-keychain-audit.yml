@@ -1,0 +1,46 @@
+name: Offline Keychain Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Package Preview run containing the offline binaries
+        required: true
+        type: string
+      package_commit:
+        description: Exact commit SHA expected in that Package Preview run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  keychain:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+      PACKAGE_COMMIT: ${{ inputs.package_commit }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify and download the selected package build
+        run: |
+          gh run view "$PACKAGE_RUN_ID" --json headSha,conclusion > package-run.json
+          python3 -c 'import json,os; r=json.load(open("package-run.json")); assert r["conclusion"] == "success" and r["headSha"] == os.environ["PACKAGE_COMMIT"], "package build identity or conclusion mismatch"'
+          gh run download "$PACKAGE_RUN_ID" --name "zm-preview-${{ matrix.target }}-offline" --dir packages
+      - name: Test installed package and native Keychain recovery
+        timeout-minutes: 5
+        run: |
+          python3 scripts/test-offline-package.py "packages/zm-${{ matrix.target }}.tar.gz" \
+            --workflow python3 -c 'import os,subprocess; subprocess.run(["python3","scripts/ci-unix-elevation.py","--keychain",os.environ["ZMANAGER_AUDIT_BINARY"]],check=True)'

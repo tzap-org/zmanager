@@ -59,7 +59,11 @@ def main():
         result = subprocess.run(command, capture_output=True, timeout=20)
         assert password.encode() not in result.stdout + result.stderr, "fixture password was echoed"
         response = json.loads(result.stdout)
-        assert (result.returncode == 0) == success, "unexpected native key generation result"
+        expected = "success" if success else "failure"
+        assert (result.returncode == 0) == success, (
+            f"native key generation expected {expected}, exit {result.returncode}: "
+            f"{response.get('error', 'no error diagnostic')}"
+        )
         if success:
             assert response["generated"] is True
         else:
