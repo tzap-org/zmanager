@@ -42,8 +42,13 @@ def exercise(binary, directory):
     environment.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home / "roaming"), LOCALAPPDATA=str(home / "local"))
     # The installed executable must work without development tools or another zm.
     environment["PATH"] = str(binary.parent)
+    first_launch_command = ["zm", "--version"]
     if sys.platform == "win32":
-        environment["PATH"] += os.pathsep + str(pathlib.Path(environment["SystemRoot"]) / "System32")
+        # os.environ performs Windows' case-insensitive lookup; its dict copy does not.
+        system_directory = pathlib.Path(os.environ["SystemRoot"]) / "System32"
+        environment["PATH"] += os.pathsep + str(system_directory)
+        # CreateProcess searches the parent's PATH. cmd searches the child's fresh PATH.
+        first_launch_command = [str(system_directory / "cmd.exe"), "/d", "/c", "zm --version"]
 
     def run(*arguments, password=None, success=True):
         result = subprocess.run([str(binary), *map(str, arguments)], cwd=directory, env=environment,
@@ -53,7 +58,7 @@ def exercise(binary, directory):
             assert password.strip() not in result.stdout + result.stderr, "archive password was echoed"
         return result
 
-    first_launch = subprocess.run(["zm", "--version"], cwd=directory, env=environment, capture_output=True, timeout=30)
+    first_launch = subprocess.run(first_launch_command, cwd=directory, env=environment, capture_output=True, timeout=30)
     assert first_launch.returncode == 0, "installed zm was not executable through the fresh PATH"
     version = first_launch.stdout.decode()
     assert re.search(r"\(offline(?:,|\))", version), "package contains the wrong build flavor"

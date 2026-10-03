@@ -428,3 +428,26 @@ Windows journal/lock runtime coverage and native macOS Keychain consent/denial
 still require their matching CI or interactive checks. This journal covers new
 keys written through file-backed inventory facades; it does not establish every
 identity deletion, export interruption, installer SIGKILL or power-loss case.
+
+## Inspected CI and Windows package harness correction
+
+Commit `7fcad10` passed all six platform jobs in
+[CI 37125348204](https://github.com/tzap-org/zmanager/actions/runs/37125348204).
+Both Windows architectures recorded a successful staging TCP positive control
+and socket error 10013 under the outbound rules for each release executable,
+then passed the network-denied offline CLI suite. This closes the earlier
+pending Windows firewall runtime check. Both macOS architectures passed real
+sudo password authentication. The interruption journal added in `808b296` still
+needs its own complete CI results.
+
+The same commit's package preview passed the four Unix installed-package tests
+but failed both Windows tests in the harness before launching the executable:
+copying `os.environ` loses its Windows case-insensitive lookup. Fixing that
+revealed that Windows CreateProcess searches the parent's PATH rather than the
+explicit child environment. The harness now reads SystemRoot through
+`os.environ` and launches the command-name check through the system `cmd.exe`
+with its fresh PATH. All subsequent operations still invoke the exact installed
+executable directly. The corrected harness passed against the published
+`89b6a50` ARM64 Windows package in the native Windows 11 VM and against its
+macOS ARM64 package. Current six-target package preview results remain required;
+the VM result does not establish native x86_64 Windows package coverage.
