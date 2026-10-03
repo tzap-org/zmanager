@@ -123,6 +123,7 @@ def main():
                                 capture_output=True, timeout=15)
         assert public.returncode == 0, "public discovery required private Keychain access"
         locked = keygen(False)
+        assert "secure secret store is locked" in locked["error"], locked["error"]
         assert catalogue.read_bytes() == original, "locked access changed the existing catalogue"
         print(f"PASS: verified locked Keychain preserves catalogue: {locked['error']}", flush=True)
         security("unlock-keychain", "-p", password, keychain, password=password)

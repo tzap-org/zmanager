@@ -176,6 +176,15 @@ by `spctl --assess --type execute`; its unquarantined shell launch passed.
 Browser quarantine and the resulting consent interaction remain a separate
 manual distribution check.
 
+### Offline identity and Keychain access
+
+The macOS CLI allows native Keychain prompts when stdin and stderr are attached
+to a terminal. When either is redirected, a locked Keychain fails promptly with
+a locked-store diagnostic. Unlock the Keychain or retry from Terminal when
+native authorization is required. Cancelled authorization reports denied
+access. Public certificate discovery remains available while the Keychain is
+locked.
+
 macOS users can also install the latest matching release into `$HOME/.local/bin`:
 
 ```sh

@@ -31,6 +31,20 @@ const OVERWRITE_PROMPT_SUFFIX: &str = " [y]es/[n]o/[a]ll/[r]ename/[q]uit: ";
 const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or quit";
 #[must_use]
 pub fn run_from_env() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    let _keychain_interaction = if io::stdin().is_terminal() && io::stderr().is_terminal() {
+        None
+    } else {
+        // A captured CLI cannot respond to a native Keychain unlock dialog.
+        // Keep this process-wide guard alive throughout command dispatch.
+        match security_framework::os::macos::keychain::SecKeychain::disable_user_interaction() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!("could not configure unattended Keychain access: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
     #[cfg(unix)]
     if raw_args.first().is_some_and(|arg| arg == crate::cli::unix_elevation::RETRY_COMMAND) {

@@ -323,6 +323,10 @@ impl TzapSessionStore for NativeTzapSecretStore {
 }
 
 fn map_keyring_error(error: &KeyringError, reference: &TzapSecretRef) -> TzapSecretStoreError {
+    #[cfg(target_os = "macos")]
+    if let Some(error) = map_macos_keyring_error(error) {
+        return error;
+    }
     match error {
         KeyringError::NoEntry => TzapSecretStoreError::Missing { reference: reference.clone() },
         KeyringError::BadEncoding(_) | KeyringError::Ambiguous(_) => TzapSecretStoreError::Corrupt,
@@ -332,10 +336,60 @@ fn map_keyring_error(error: &KeyringError, reference: &TzapSecretRef) -> TzapSec
     }
 }
 
+#[cfg(target_os = "macos")]
+fn map_macos_keyring_error(error: &KeyringError) -> Option<TzapSecretStoreError> {
+    // Security.framework OSStatus values from SecBase.h. The upstream store
+    // wraps these in either PlatformFailure or NoStorageAccess.
+    const INTERACTION_REQUIRED: [i32; 2] = [-25308, -25315];
+    // User cancellation, failed authentication, item access, write permission,
+    // ownership, and a read-only Keychain all deny this operation.
+    const ACCESS_DENIED: [i32; 6] = [-128, -25293, -25243, -61, -25244, -25292];
+    const STORE_UNAVAILABLE: [i32; 4] = [-25291, -25294, -25295, -25307];
+    let (KeyringError::PlatformFailure(underlying) | KeyringError::NoStorageAccess(underlying)) = error else {
+        return None;
+    };
+    let code = underlying.downcast_ref::<security_framework::base::Error>()?.code();
+    if INTERACTION_REQUIRED.contains(&code) {
+        Some(TzapSecretStoreError::Locked)
+    } else if ACCESS_DENIED.contains(&code) {
+        Some(TzapSecretStoreError::Denied)
+    } else if STORE_UNAVAILABLE.contains(&code) {
+        Some(TzapSecretStoreError::Unavailable)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{NativeTzapSecretStore, cache_secret, cached_secret, invalidate_cached_secret};
     use zmanager_core::secrets::SecretBytes;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_macos_keyring_reports_interaction_and_cancellation_errors() {
+        use super::map_keyring_error;
+        use keyring::Error as KeyringError;
+        use security_framework::base::Error;
+        use zmanager_core::identity_catalog::{TzapSecretRef, TzapSecretStoreError};
+
+        let reference = TzapSecretRef::generate();
+        for (code, expected) in [
+            (-25308, TzapSecretStoreError::Locked),
+            (-25315, TzapSecretStoreError::Locked),
+            (-128, TzapSecretStoreError::Denied),
+            (-25293, TzapSecretStoreError::Denied),
+            (-25243, TzapSecretStoreError::Denied),
+            (-61, TzapSecretStoreError::Denied),
+            (-25292, TzapSecretStoreError::Denied),
+            (-25291, TzapSecretStoreError::Unavailable),
+            (-25307, TzapSecretStoreError::Unavailable),
+        ] {
+            for error in [KeyringError::PlatformFailure(Box::new(Error::from_code(code))), KeyringError::NoStorageAccess(Box::new(Error::from_code(code)))] {
+                assert_eq!(map_keyring_error(&error, &reference), expected);
+            }
+        }
+    }
 
     #[test]
     fn keyring_scope_rejects_path_and_namespace_injection() {

@@ -623,3 +623,19 @@ the still-unpacked executable on native macOS ARM64 and Intel runners. It reuses
 the restricted disposable-account provisioner and cleanup. This provides a short
 native diagnosis loop without recompiling the workspace; it does not establish
 that a different source revision's packaged build passed or click GUI consent.
+
+The native-domain probe subsequently returned `errSecNoDefaultKeychain` on both
+architectures. Creating the disposable account's normal Library/Preferences and
+Library/Keychains directories fixed preference persistence: both native default
+selection and fresh CLI key generation passed, as did recovery of the earlier
+unavailable-store state. The locked-Keychain step then timed out waiting for
+native interaction, exposing a separate unattended CLI problem.
+
+The macOS CLI now disables native Keychain interaction for its command lifetime
+when stdin or stderr is not a terminal. Terminal invocations retain native
+interaction. The store maps Apple's interaction-required errors to Locked,
+cancellation/access failures to Denied, and missing/unavailable stores to
+Unavailable. A native-error regression failed with the old generic Unavailable
+mapping and passed after the fix. The fixture now requires the specific locked
+diagnostic, unchanged catalogue and successful unlock/retry. Native runtime
+verification of the updated executable remains required.
