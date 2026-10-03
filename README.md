@@ -24,9 +24,12 @@ Release builds are published on the
 [latest release page](https://github.com/tzap-org/zmanager/releases/latest).
 Each release ships two flavors:
 
-- **full** — all commands, including the online identity features behind
-  `zm auth` (default install)
-- **offline** — the same archive commands with no network features
+- **normal (default)** — archive commands and local identity signing, verification,
+  contacts, sharing, and certificates; no network features (reported as `offline`)
+- **Full** — the normal build plus online identity and certificate enrollment
+
+Normal release assets are named `zm-<target>`; Full assets are named
+`zm-full-<target>`.
 
 `zm --version` reports which flavor is installed (`zm 2.1.7 (full)` or
 `zm 2.1.7 (offline)`). For full installation details and checksum examples,
@@ -34,16 +37,16 @@ see [docs/INSTALL.md](docs/INSTALL.md).
 
 ### macOS
 
-Install the full build from the Homebrew tap:
+Install the normal build from the Homebrew tap:
 
 ```sh
 brew install tzap-org/zmanager/zmanager
 ```
 
-For the offline build, install the offline formula:
+For the Full build with online features:
 
 ```sh
-brew install tzap-org/zmanager/zmanager-offline
+brew install tzap-org/zmanager/zmanager-full
 ```
 
 ### Linux
@@ -54,28 +57,29 @@ Install the latest matching release into `$HOME/.local/bin`:
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh
 ```
 
-Pass `--offline` for the offline build:
+Pass `--full` for the Full build with online features:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh -s -- --offline
+curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh -s -- --full
 ```
 
 ### Windows
 
-Install with WinGet:
+Install the normal offline build with WinGet:
 
 ```powershell
 winget install FrankZhu.ZManagerCLI
 ```
 
-For the offline build:
+The published WinGet package ID is still `FrankZhu.ZManagerCLI`, even though
+release downloads are hosted under the `tzap-org` GitHub organization.
 
-```powershell
-winget install TzapOrg.ZManagerCLI.Offline
-```
+For direct installation, download `zm-x86_64-pc-windows-msvc.zip` (x64) or
+`zm-aarch64-pc-windows-msvc.zip` (ARM64) from the
+[latest release page](https://github.com/tzap-org/zmanager/releases/latest).
 
-Future version manifests will use `TzapOrg.ZManagerCLI`; new releases use the
-organization-scoped package identity.
+See [the install guide](docs/INSTALL.md) for checksum verification and manual
+installation.
 
 ### Preview builds (developers)
 
@@ -89,7 +93,7 @@ preview build with the install script (requires the
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sh -s -- --preview
 ```
 
-Combine with `--offline` for the offline preview build. The latest successful
+Combine with `--full` for the Full preview build. The latest successful
 preview run is used; set `ZMANAGER_RUN_ID` to install a specific run.
 
 ## Quick Start

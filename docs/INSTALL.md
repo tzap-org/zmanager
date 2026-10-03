@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
   | sudo env ZMANAGER_VERSION=v2.1.7 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
-The default installs the **offline** signer — every archive command plus
+The default installs the **normal** build (reported as `offline`) — every archive command plus
 `zm tzap sign`, `verify`, `contact`, `share`, and `certs` (which work entirely
 against the local identity catalogue, no network required). To install the
 **full** build, which adds online identity and certificate enrollment, pass
@@ -41,8 +41,8 @@ curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
   | sh -s -- --full
 ```
 
-`zm --version` reports which flavor is installed: `zm 2.0.1 (full)` or
-`zm 2.0.1 (offline)`.
+`zm --version` reports which flavor is installed: `zm 2.1.7 (full)` or
+`zm 2.1.7 (offline)`.
 
 If no matching binary exists, the installer falls back to building from source.
 Source fallback requires `git`, Rust/Cargo, and the target platform's native
@@ -61,6 +61,11 @@ install layouts. Download the archive for your platform from the GitHub release:
 | Linux x86_64 | `zm-x86_64-unknown-linux-musl.tar.gz` |
 | Windows ARM64 | `zm-aarch64-pc-windows-msvc.zip` |
 | Windows x64 | `zm-x86_64-pc-windows-msvc.zip` |
+
+These are the normal (default) build assets. For the **Full** build with online
+identity and certificate enrollment, use the corresponding `zm-full-<target>`
+archive instead. It contains `zm-full` or `zm-full.exe`; install that binary on
+`PATH` as `zm` or `zm.exe` to use the same command name.
 
 Verify checksums before installing.
 
@@ -227,19 +232,22 @@ Copy `dist/package-metadata/homebrew/Formula/zmanager.rb` to
 
 ## WinGet
 
-After release metadata is generated, validate the manifests before submitting
+The currently published package installs the normal offline (default) build:
+
+```powershell
+winget install FrankZhu.ZManagerCLI
+```
+
+Release downloads are hosted under `tzap-org` on GitHub, but the published
+WinGet package ID has not changed. A separate Full package has not been
+submitted to WinGet.
+
+The generated `TzapOrg` manifests below are not the currently published package
+IDs. After release metadata is generated, validate the manifests before submitting
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\1.0.3
-```
-
-After the manifest is accepted, users install with:
-
-```powershell
-winget install TzapOrg.ZManagerCLI
-# Hosted login and certificate enrollment:
-winget install TzapOrg.ZManagerCLI.Full
+winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.1.7
 ```
 
 WinGet metadata is generated from the same `SHA256SUMS` file as the Homebrew
