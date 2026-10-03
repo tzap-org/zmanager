@@ -150,6 +150,26 @@ Use `zm-aarch64-unknown-linux-musl.tar.gz` on ARM64 systems.
 
 ## macOS Install Script
 
+### Gatekeeper and the current portable packages
+
+The macOS tarballs are not Developer ID signed or notarized. Apple Silicon
+executables may carry the linker's ad hoc signature; that is not a Developer ID
+signature. Checksum verification establishes that the download matches the
+published artifact, but does not establish Apple notarization.
+
+A browser-downloaded executable can encounter Gatekeeper on first launch.
+If macOS blocks a package you have verified and intend to trust, follow
+[Apple's instructions for opening software from an unidentified developer](https://support.apple.com/102445)
+using System Settings > Privacy & Security. Keep Gatekeeper enabled; managed
+devices may restrict exceptions.
+
+Our package smoke tests execute an unpacked binary through a fresh `PATH`.
+They do not reproduce browser quarantine or approve an OS security prompt.
+The tested Apple Silicon preview had a valid ad hoc signature and was rejected
+by `spctl --assess --type execute`; its unquarantined shell launch passed.
+Browser quarantine and the resulting consent interaction remain a separate
+manual distribution check.
+
 macOS users can also install the latest matching release into `$HOME/.local/bin`:
 
 ```sh

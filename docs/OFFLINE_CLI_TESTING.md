@@ -234,4 +234,52 @@ Clippy/check and workflow validation passed. A negative socket probe proves the
 sandbox is active before running tests. Linux Secret Service uses a filesystem
 Unix socket to remain accessible across the network namespace. Compiler cache
 wrappers are disabled inside the sandbox because they may use local TCP.
-Windows network enforcement and installed-package validation remain open.
+Windows network enforcement remains open. Installed-package validation is
+expanded below.
+
+## Packaged executables and real write failures
+
+The current goal validates the existing macOS portable tarballs; adding
+Developer ID signing or notarization is outside its scope. See
+[the installation notes](INSTALL.md#gatekeeper-and-the-current-portable-packages)
+for the distinction between an ad hoc signature, Gatekeeper assessment and
+browser-quarantined first launch.
+
+`scripts/test-offline-package.py` verifies the package checksum before safe
+unpacking, checks notices/completions/manual files, and executes the installed
+binary from a fresh `PATH` and home directory. It exercises offline flavor,
+engine readiness, unavailable hosted login, read-only certificate discovery,
+encrypted ZIP create/test/list/extract, overwrite refusal, streaming output,
+Unicode/spaced paths and generated completions. Archive passwords are supplied
+through stdin and must not appear in output.
+
+The macOS ARM64 and Linux ARM64 artifacts from
+[Package Preview 37120223686](https://github.com/tzap-org/zmanager/actions/runs/37120223686)
+passed locally. The Linux static package also passed in a clean
+`python:3.13-alpine` container with `--network none`, without Rust, archive tools,
+or a secret-service daemon. Preview and release workflows now run this smoke
+check on all six architectures before uploading their packages. Those new CI
+checks require a subsequent run; the older preview run only proves packaging.
+This does not yet test install.sh, Homebrew, WinGet, or packaged signing/contact
+workflows that need native private-key storage.
+
+`scripts/test-write-failures.py` fills only a bounded disposable filesystem
+(32 MiB macOS disk image or 16 MiB Linux tmpfs). Real ENOSPC failures preserve
+the bytes of existing valid ZIP, 7z and tar.zst archives; removing the filler
+allows successful replacement, archive testing and exact-byte extraction.
+Failed writes leave no temporary output. A separate test observes an active
+ZIP temporary writer, kills the process, verifies the original destination,
+then retries successfully despite the orphaned temporary file. SIGKILL cannot
+run destructor cleanup; the fixture removes its private leftovers afterward.
+
+All four checks passed on macOS ARM64 and Linux ARM64 Docker. CI now runs them
+on the four Unix jobs and runs the killed-writer test on both Windows jobs.
+Windows disk-full coverage, identity/catalogue disk-full and termination,
+and interruption during the final replacement operation remain open.
+
+The local finish gate passed: cargo fmt, workspace Clippy/check without
+warnings, and the affected CLI suite. For the preceding implementation,
+[CI 37120223644](https://github.com/tzap-org/zmanager/actions/runs/37120223644)
+has passed macOS ARM64 and both Linux architectures, including network-denied
+release tests and real sudo authentication. Its other jobs were still running
+when this note was written; their final results must be inspected separately.

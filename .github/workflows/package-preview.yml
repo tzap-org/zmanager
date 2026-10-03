@@ -141,6 +141,24 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Test installed offline package (macOS)
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-offline-package.py "dist/zm-${{ matrix.target }}.tar.gz"
+
+      - name: Test installed offline package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python scripts/test-offline-package.py "dist/zm-${{ matrix.target }}.zip"
+
+      - name: Test installed static package in clean Alpine (Linux)
+        if: runner.os == 'Linux'
+        run: >
+          docker run --rm --network none
+          -v "$PWD/dist:/packages:ro"
+          -v "$PWD/scripts/test-offline-package.py:/test-offline-package.py:ro"
+          python:3.13-alpine python /test-offline-package.py
+          "/packages/zm-${{ matrix.target }}.tar.gz"
+
       - uses: actions/upload-artifact@v6
         with:
           name: zm-preview-${{ matrix.target }}-offline

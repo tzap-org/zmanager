@@ -207,6 +207,9 @@ jobs:
         run: |
           python3 scripts/ci-unix-elevation.py target/release/zm
 
+      - name: Disk-full and killed-writer recovery
+        run: python3 scripts/test-write-failures.py target/release/zm
+
       - name: Report skipped optional checks
         if: always()
         run: python3 scripts/report-test-skips.py "$ZMANAGER_TEST_SKIP_REPORT"
@@ -352,6 +355,10 @@ jobs:
           -Triplet "${{ matrix.triplet }}"
           -VcArch "${{ matrix.vcarch }}"
           -VsComponent "${{ matrix.component }}"
+
+      - name: Killed-writer recovery
+        shell: pwsh
+        run: python scripts/test-write-failures.py "target/${{ matrix.target }}/release/zm.exe" --interrupt-only
 
       - name: Report skipped optional checks
         if: always()
