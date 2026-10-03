@@ -153,7 +153,9 @@ pub(super) fn write_json_file(path: &Path, value: &Value) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-    fs::write(path, bytes)
+    // A failed or interrupted export must leave an existing envelope/card
+    // intact. Reuse the core's durable atomic replacement and private modes.
+    zmanager_core::write_atomic_secret_file(path, &bytes)
 }
 
 #[cfg(feature = "tzap-online")]

@@ -16,6 +16,8 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      ZMANAGER_TEST_SKIP_REPORT: ${{ github.workspace }}/target/optional-test-skips.jsonl
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +33,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Initialize optional test reporting
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "$ZMANAGER_TEST_SKIP_REPORT")"
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
 
       - name: Install Bash on macOS
         if: runner.os == 'macOS'
@@ -108,7 +116,12 @@ jobs:
       - name: Start D-Bus and GNOME Keyring
         if: runner.os == 'Linux'
         run: |
-          eval "$(dbus-launch --sh-syntax)"
+          # A filesystem Unix socket remains accessible inside the offline
+          # network namespace; an abstract Unix socket would be isolated too.
+          bus_directory=$(mktemp -d)
+          mapfile -t bus < <(dbus-daemon --session --fork --address="unix:path=$bus_directory/bus" --print-address=1 --print-pid=1)
+          export DBUS_SESSION_BUS_ADDRESS=${bus[0]}
+          export DBUS_SESSION_BUS_PID=${bus[1]}
           eval "$(printf '\n' | gnome-keyring-daemon --unlock 2>/dev/null || true)"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> "$GITHUB_ENV"
@@ -173,11 +186,37 @@ jobs:
           cargo test --locked -p zmanager-ffi --no-default-features
           cargo test --locked --release -p zmanager-cli --no-default-features
 
+      - name: Test offline release with network denied (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          sandbox-exec -p '(version 1)(allow default)(deny network*)'
+          python3 scripts/require-network-denial.py
+          cargo test --offline --locked --release -p zmanager-cli --no-default-features
+
+      - name: Test offline release with network denied (Linux)
+        if: runner.os == 'Linux'
+        run: >
+          sudo --preserve-env=HOME,PATH,RUSTUP_HOME,CARGO_HOME,DBUS_SESSION_BUS_ADDRESS,LANG,LC_ALL,ZMANAGER_TEST_SKIP_REPORT
+          unshare --net --setuid "$(id -u)" --setgid "$(id -g)" --
+          python3 scripts/require-network-denial.py
+          cargo test --offline --locked --release -p zmanager-cli --no-default-features
+
       - name: Sudo password authentication (${{ matrix.name }})
         shell: bash
         timeout-minutes: 5
         run: |
           python3 scripts/ci-unix-elevation.py target/release/zm
+
+      - name: Report skipped optional checks
+        if: always()
+        run: python3 scripts/report-test-skips.py "$ZMANAGER_TEST_SKIP_REPORT"
+
+      - name: Upload skipped check inventory
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-skips-${{ matrix.os }}
+          path: ${{ env.ZMANAGER_TEST_SKIP_REPORT }}
 
   uniffi-bindings-check:
     name: UniFFI bindings are up to date
@@ -259,6 +298,8 @@ jobs:
   windows-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    env:
+      ZMANAGER_TEST_SKIP_REPORT: ${{ github.workspace }}/target/optional-test-skips.jsonl
     strategy:
       fail-fast: false
       matrix:
@@ -278,6 +319,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Initialize optional test reporting
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "$ZMANAGER_TEST_SKIP_REPORT")"
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
 
       - name: Clone tzap
         shell: bash
@@ -305,3 +352,15 @@ jobs:
           -Triplet "${{ matrix.triplet }}"
           -VcArch "${{ matrix.vcarch }}"
           -VsComponent "${{ matrix.component }}"
+
+      - name: Report skipped optional checks
+        if: always()
+        shell: pwsh
+        run: python scripts/report-test-skips.py "$env:ZMANAGER_TEST_SKIP_REPORT"
+
+      - name: Upload skipped check inventory
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-skips-${{ matrix.target }}
+          path: ${{ env.ZMANAGER_TEST_SKIP_REPORT }}

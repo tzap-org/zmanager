@@ -12,6 +12,7 @@ const PAYLOAD: &[u8] = b"zmanager compatibility payload\n";
 #[test]
 fn competitor_zip_family_formats_extract_with_zm() {
     let Some(zip) = find_on_path("zip") else {
+        record_optional_skip("missing optional tool: zip");
         return;
     };
     let temp = TestDir::new("compat_zip_family");
@@ -29,6 +30,7 @@ fn competitor_zip_family_formats_extract_with_zm() {
 #[test]
 fn competitor_zipx_advanced_methods_extract_with_zm() {
     let Some(sevenzz) = find_on_path("7zz") else {
+        record_optional_skip("missing optional tool: 7zz");
         return;
     };
     let temp = TestDir::new("compat_zipx_methods");
@@ -60,6 +62,7 @@ fn competitor_zipx_advanced_methods_extract_with_zm() {
 #[test]
 fn competitor_zip_sfx_style_exe_extracts_with_zm() {
     let Some(zip) = find_on_path("zip") else {
+        record_optional_skip("missing optional tool: zip");
         return;
     };
     let temp = TestDir::new("compat_zip_exe");
@@ -75,6 +78,7 @@ fn competitor_zip_sfx_style_exe_extracts_with_zm() {
 #[test]
 fn competitor_rar_formats_extract_with_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar");
@@ -84,6 +88,7 @@ fn competitor_rar_formats_extract_with_zm() {
         let archive = temp.path(filename);
         let create = Command::new(&rar).current_dir(temp.root()).arg("a").arg("-idq").arg(switch).arg(&archive).arg("project").output().unwrap();
         if !create.status.success() && label == "rar4" {
+            record_optional_skip("installed RAR creator rejected the requested RAR4 mode");
             continue;
         }
         assert_success(&format!("rar creates {label}"), &create);
@@ -95,6 +100,7 @@ fn competitor_rar_formats_extract_with_zm() {
 #[test]
 fn competitor_rar_multipart_formats_extract_with_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_multipart");
@@ -115,6 +121,7 @@ fn competitor_rar_multipart_formats_extract_with_zm() {
             .output()
             .unwrap();
         if !create.status.success() && label.starts_with("rar4") {
+            record_optional_skip(&format!("installed RAR creator rejected mode {label}"));
             continue;
         }
         assert_success(&format!("rar creates {label}"), &create);
@@ -139,6 +146,7 @@ fn competitor_rar_multipart_formats_extract_with_zm() {
 #[test]
 fn competitor_rar_passworded_formats_extract_with_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_gap");
@@ -169,6 +177,7 @@ fn competitor_rar_passworded_links_extract_safely_with_zm() {
     use std::os::unix::fs::{MetadataExt as _, symlink};
 
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_links");
@@ -210,6 +219,7 @@ fn competitor_rar_passworded_links_extract_safely_with_zm() {
 #[test]
 fn competitor_rar_passworded_file_references_extract_with_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_file_references");
@@ -252,6 +262,7 @@ fn competitor_rar_passworded_unsafe_link_is_rejected_by_zm() {
     use std::os::unix::fs::symlink;
 
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_unsafe_link");
@@ -288,6 +299,7 @@ fn competitor_rar_passworded_unsafe_link_is_rejected_by_zm() {
 #[test]
 fn competitor_rar_passworded_unicode_paths_extract_with_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_unicode");
@@ -328,6 +340,7 @@ fn competitor_rar_passworded_unicode_paths_extract_with_zm() {
 #[test]
 fn competitor_rar_passworded_large_dictionary_is_rejected_by_zm() {
     let Some(rar) = find_on_path("rar") else {
+        record_optional_skip("missing optional tool: rar");
         return;
     };
     let temp = TestDir::new("compat_rar_passworded_large_dictionary");
@@ -376,6 +389,7 @@ fn competitor_rar_passworded_large_dictionary_is_rejected_by_zm() {
 #[test]
 fn competitor_tar_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_tar_complex");
@@ -390,6 +404,7 @@ fn competitor_tar_format_extract_with_zm() {
 #[test]
 fn competitor_ustar_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_ustar_complex");
@@ -404,6 +419,7 @@ fn competitor_ustar_format_extract_with_zm() {
 #[test]
 fn competitor_pax_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_pax_complex");
@@ -418,6 +434,7 @@ fn competitor_pax_format_extract_with_zm() {
 #[test]
 fn competitor_cpio_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_cpio_complex");
@@ -432,6 +449,7 @@ fn competitor_cpio_format_extract_with_zm() {
 #[test]
 fn competitor_keka_style_cpgz_and_spk_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_cpgz_spk");
@@ -454,6 +472,7 @@ fn competitor_keka_style_cpgz_and_spk_extract_with_zm() {
 #[allow(clippy::too_many_lines)]
 fn competitor_compressed_tar_filters_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_compressed_tar_complex");
@@ -570,7 +589,7 @@ fn competitor_compressed_tar_filters_extract_with_zm() {
     archives.push(("payload.tar.b64".to_owned(), b64_archive));
 
     if archives.is_empty() {
-        eprintln!("skipping compressed tar compatibility cases: no creator tools are installed");
+        record_optional_skip("compressed tar compatibility cases: no creator tools are installed");
         return;
     }
 
@@ -702,7 +721,7 @@ fn competitor_raw_single_file_streams_extract_with_zm() {
     archives.push(("payload.txt.b64".to_owned(), b64_raw.clone(), "payload.txt"));
 
     if archives.is_empty() {
-        eprintln!("skipping raw stream compatibility cases: no creator tools are installed");
+        record_optional_skip("raw stream compatibility cases: no creator tools are installed");
         return;
     }
 
@@ -1077,7 +1096,7 @@ fn run_optional_tool(binary: &str, label: &str, configure: impl FnOnce(&mut Comm
 
 fn optional_tool_command(binary: &str, label: &str) -> Option<Command> {
     let Some(path) = find_on_path(binary) else {
-        eprintln!("skipping {label}: {binary} is not installed");
+        record_optional_skip(&format!("{label}: missing optional tool: {binary}"));
         return None;
     };
     Some(Command::new(path))
@@ -1297,6 +1316,7 @@ fn assert_zm_extracts_complex_matrix_inner(label: &str, archive: &Path, temp: &T
 #[test]
 fn competitor_ar_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_ar");
@@ -1314,6 +1334,7 @@ fn competitor_ar_format_extract_with_zm() {
 #[test]
 fn competitor_warc_format_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_warc");
@@ -1332,6 +1353,7 @@ fn competitor_warc_format_extract_with_zm() {
 #[test]
 fn competitor_mtree_format_list_test_and_extract_with_zm() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     let temp = TestDir::new("compat_mtree");
@@ -1374,9 +1396,11 @@ fn assert_zm_extracts_apple_extra_entries(label: &str, archive: &Path, temp: &Te
 #[test]
 fn competitor_apple_dmg_and_pkg_formats_extract_with_zm() {
     let Some(hdiutil) = find_on_path("hdiutil") else {
+        record_optional_skip("missing optional tool: hdiutil");
         return;
     };
     let Some(pkgbuild) = find_on_path("pkgbuild") else {
+        record_optional_skip("missing optional tool: pkgbuild");
         return;
     };
     let temp = TestDir::new("compat_apple");
@@ -1440,6 +1464,7 @@ fn competitor_apple_dmg_and_pkg_formats_extract_with_zm() {
 #[test]
 fn competitor_msi_formats_extract_with_zm() {
     let Some(wixl) = find_on_path("wixl") else {
+        record_optional_skip("missing optional tool: wixl");
         return;
     };
     let temp = TestDir::new("compat_msi");
@@ -1498,6 +1523,7 @@ fn competitor_msi_formats_extract_with_zm() {
     // Cross-tool verification against msitools' msiextract when available:
     // the reference extraction must match entry-for-entry.
     let Some(msiextract) = find_on_path("msiextract") else {
+        record_optional_skip("missing optional tool: msiextract");
         return;
     };
     let reference = archive_temp.path("reference");
@@ -1513,12 +1539,15 @@ fn competitor_msi_formats_extract_with_zm() {
 #[test]
 fn competitor_virtual_disk_formats_extract_with_zm() {
     let Some(qemu_img) = find_on_path("qemu-img") else {
+        record_optional_skip("missing optional tool: qemu-img");
         return;
     };
     let Some(mformat) = find_on_path("mformat") else {
+        record_optional_skip("missing optional tool: mformat");
         return;
     };
     let Some(mcopy) = find_on_path("mcopy") else {
+        record_optional_skip("missing optional tool: mcopy");
         return;
     };
     let temp = TestDir::new("compat_virtual_disk");
@@ -1566,11 +1595,11 @@ fn competitor_virtual_disk_formats_extract_with_zm() {
     // mount + cp -a, no FUSE). Skip when docker is absent or the daemon is
     // not running.
     let Some(docker) = find_on_path("docker") else {
-        eprintln!("skipping NTFS/UDF compat legs: docker is not installed");
+        record_optional_skip("NTFS/UDF compat legs: docker is not installed");
         return;
     };
     if !Command::new(&docker).arg("info").output().is_ok_and(|output| output.status.success()) {
-        eprintln!("skipping NTFS/UDF compat legs: docker daemon is not running");
+        record_optional_skip("NTFS/UDF compat legs: docker daemon is not running");
         return;
     }
     let work = temp.root();

@@ -200,3 +200,38 @@ External-network denial is exercised locally in the Linux Docker validation.
 Cargo's `--offline` flag alone only prevents dependency downloads; it does not
 prevent a test executable from using the network. The regular macOS and Windows
 CI suites do not yet run inside an enforced network-denial environment.
+
+## Goal progress: failure handling and offline enforcement
+
+The first expanded CI run passed both macOS ARM64 and Intel release and real
+password checks. Both Linux jobs passed their isolated release suites, then stopped
+before the terminal test because a runner-owned sudoers include was mode 0644.
+The harness now validates only its installed fixture rule; a Docker regression
+with the same unrelated file permissions passed real authentication and cleanup.
+The fixture's `sudo -n` rejection and authenticated retry still prove its
+password-required policy is active. Windows results remain pending until inspected.
+
+A real OS file-size limit reproduced truncation of an existing document export.
+Document envelopes and contact exports now reuse the durable core atomic writer.
+Regression checks exercise partial-write failure, preserve the original bytes,
+and then retry successfully for both exports. This covers file-size-limit write
+failure, not yet every disk-full or abrupt-termination case.
+
+A Linux native Secret Service test now verifies unavailable-service errors,
+unchanged public catalogue after failed key generation, and successful key
+generation after recovery. Locked and user-denied interactions remain open.
+
+CLI optional checks append actual skipped checks to a JSON-lines inventory,
+including tool absence, unsupported reference formats, and permission/platform
+prerequisites. CI publishes a readable summary and the inventory on failure too.
+Missing committed fixtures fail instead of returning successfully. Cargo totals
+still require this inventory to interpret which optional comparisons ran.
+
+The release CLI suite passed with outbound TCP denied in a macOS process sandbox
+(224 tests) and a Linux network namespace without external interfaces (224 tests).
+The Linux workspace passed 2,145 tests; macOS passed 2,263. Format, workspace
+Clippy/check and workflow validation passed. A negative socket probe proves the
+sandbox is active before running tests. Linux Secret Service uses a filesystem
+Unix socket to remain accessible across the network namespace. Compiler cache
+wrappers are disabled inside the sandbox because they may use local TCP.
+Windows network enforcement and installed-package validation remain open.

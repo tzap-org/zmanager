@@ -92,6 +92,42 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
     env::split_paths(&path).map(|dir| dir.join(binary)).find(|candidate| candidate.is_file())
 }
 
+/// Records an actual skipped check even when Cargo captures successful-test output.
+#[track_caller]
+pub fn record_optional_skip(reason: &str) {
+    use std::io::Write as _;
+
+    let caller = std::panic::Location::caller();
+    let thread = std::thread::current();
+    let test = thread.name().unwrap_or("unnamed test thread");
+    eprintln!("SKIP {test}: {reason} ({}:{})", caller.file(), caller.line());
+    if let Some(path) = env::var_os("ZMANAGER_TEST_SKIP_REPORT") {
+        let mut report = fs::OpenOptions::new().create(true).append(true).open(path).expect("open optional-test skip report");
+        let mut record = serde_json::to_vec(&serde_json::json!({
+            "test": test, "reason": reason, "file": caller.file(), "line": caller.line(),
+        }))
+        .unwrap();
+        record.push(b'\n');
+        report.write_all(&record).expect("append optional-test skip report");
+    }
+}
+
+/// Runs a real CLI with writes limited by the OS, without changing the test process.
+#[cfg(unix)]
+pub fn output_with_file_size_limit(command: &std::process::Command, bytes: u64) -> Output {
+    let python = find_on_path("python3").expect("Python is required for write-failure coverage");
+    std::process::Command::new(python)
+        .args([
+            "-c",
+            "import os,resource,signal,sys; signal.signal(signal.SIGXFSZ,signal.SIG_IGN); resource.setrlimit(resource.RLIMIT_FSIZE,(int(sys.argv[1]),int(sys.argv[1]))); os.execv(sys.argv[2],sys.argv[2:])",
+        ])
+        .arg(bytes.to_string())
+        .arg(command.get_program())
+        .args(command.get_args())
+        .output()
+        .unwrap()
+}
+
 /// Asserts that a file is only readable/writable by its owner (mode 0600).
 #[cfg(unix)]
 pub fn assert_owner_only_file(path: PathBuf) {

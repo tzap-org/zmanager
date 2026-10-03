@@ -590,9 +590,7 @@ fn configure_fixture_extract_command(command: &mut Command, fixture: &Fixture) {
 #[test]
 fn cli_lists_tests_and_extracts_msi_fixture() {
     let fixture = archives_dir().join("basic.msi");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
     let temp = TestDir::new("fixture-cli-msi");
 
     let list = Command::new(cli_path()).arg("list").arg(&fixture).output().unwrap();
@@ -707,9 +705,7 @@ fn cli_lists_tests_and_extracts_virtual_disk_fixtures() {
 #[test]
 fn cli_lists_tests_and_extracts_hybrid_iso_fixture() {
     let fixture = archives_dir().join("basic.iso");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
     let temp = TestDir::new("fixture-cli-hybrid-iso");
 
     let list = Command::new(cli_path()).arg("list").arg(&fixture).output().unwrap();
@@ -808,9 +804,7 @@ fn cli_lists_tests_and_extracts_squashfs_fixtures() {
 #[test]
 fn cli_lists_tests_and_extracts_appimage_fixture() {
     let fixture = archives_dir().join("basic.AppImage");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
     let temp = TestDir::new("fixture-cli-appimage");
 
     let list = Command::new(cli_path()).arg("list").arg(&fixture).output().unwrap();
@@ -961,9 +955,7 @@ fn cli_lists_tests_and_extracts_wim_fixtures() {
 fn cli_rejects_a_split_wim_missing_its_second_part() {
     let split = archives_dir().join("split.swm");
     let split2 = archives_dir().join("split2.swm");
-    if !split.exists() || !split2.exists() {
-        return;
-    }
+    assert!(split.exists() && split2.exists(), "committed split-WIM fixtures are missing");
     let temp = TestDir::new("fixture-cli-wim-split-incomplete");
     // Copy only the first part into an isolated directory so wimlib's sibling
     // resolution (which scans the part's own directory) cannot find part 2.
@@ -1132,9 +1124,7 @@ fn cli_exercises_the_complete_authentic_cdi_operation_matrix() {
 #[test]
 fn cli_lists_tests_and_extracts_optical_disc_fixtures() {
     let iso_path = archives_dir().join("basic.iso");
-    if !iso_path.exists() {
-        return;
-    }
+    assert!(iso_path.exists(), "committed fixture is missing: {}", iso_path.display());
     let iso_bytes = fs::read(&iso_path).unwrap();
     let iso_len = u32::try_from(iso_bytes.len()).unwrap();
     let temp = TestDir::new("fixture-cli-optical");
@@ -1245,6 +1235,7 @@ fn cli_lists_tests_and_extracts_optical_disc_fixtures() {
 #[test]
 fn optional_7zz_compares_vhd_vmdk_extraction_when_available() {
     let Some(seven_zip) = find_on_path("7zz") else {
+        record_optional_skip("missing optional tool: 7zz");
         return;
     };
     for filename in ["basic.vhd", "basic.vmdk"] {
@@ -1276,6 +1267,7 @@ fn optional_7zz_compares_vhd_vmdk_extraction_when_available() {
 #[test]
 fn optional_qemu_img_info_validates_virtual_disk_fixtures_when_available() {
     let Some(qemu_img) = find_on_path("qemu-img") else {
+        record_optional_skip("missing optional tool: qemu-img");
         return;
     };
     for filename in ["basic.vhd", "basic.vmdk"] {
@@ -1295,17 +1287,16 @@ fn optional_qemu_img_info_validates_virtual_disk_fixtures_when_available() {
 #[test]
 fn optional_hdiutil_attach_compares_udf_fixture_when_available() {
     if cfg!(not(target_os = "macos")) {
+        record_optional_skip("requires macOS hdiutil");
         return;
     }
     let fixture = archives_dir().join("basic.udf");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
     let temp = TestDir::new("fixture-cli-hdiutil-udf-compare");
     let mountpoint = temp.path("mount");
     let attach = Command::new("hdiutil").arg("attach").arg("-readonly").arg("-nobrowse").arg("-mountpoint").arg(&mountpoint).arg(&fixture).output().unwrap();
     if !attach.status.success() {
-        eprintln!("skipping hdiutil UDF compare: attach failed: {}", String::from_utf8_lossy(&attach.stderr));
+        record_optional_skip(&format!("hdiutil UDF compare: attach failed: {}", String::from_utf8_lossy(&attach.stderr)));
         return;
     }
     let out = temp.path("zm");
@@ -1487,12 +1478,11 @@ fn cli_preserves_rar_link_records_on_every_supported_platform() {
 #[test]
 fn optional_unzip_validates_zip_fixture_when_available() {
     let Some(unzip) = find_on_path("unzip") else {
+        record_optional_skip("missing optional tool: unzip");
         return;
     };
     let fixture = archives_dir().join("basic.zip");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let output = Command::new(unzip).arg("-t").arg(&fixture).output().unwrap();
 
@@ -1508,6 +1498,7 @@ fn optional_unzip_validates_zip_fixture_when_available() {
 #[test]
 fn optional_bsdtar_lists_common_archive_fixtures_when_available() {
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
 
@@ -1531,12 +1522,11 @@ fn optional_bsdtar_lists_common_archive_fixtures_when_available() {
 #[test]
 fn optional_xar_lists_xar_fixture_when_available() {
     let Some(xar) = find_on_path("xar") else {
+        record_optional_skip("missing optional tool: xar");
         return;
     };
     let fixture = archives_dir().join("basic.xar");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let output = Command::new(xar).arg("-tf").arg(&fixture).output().unwrap();
 
@@ -1553,12 +1543,11 @@ fn optional_xar_lists_xar_fixture_when_available() {
 #[test]
 fn optional_hdiutil_verifies_dmg_fixture_when_available() {
     let Some(hdiutil) = find_on_path("hdiutil") else {
+        record_optional_skip("missing optional tool: hdiutil");
         return;
     };
     let fixture = archives_dir().join("basic.dmg");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let output = Command::new(hdiutil).arg("verify").arg(&fixture).output().unwrap();
 
@@ -1577,12 +1566,11 @@ fn optional_hdiutil_verifies_dmg_fixture_when_available() {
 #[test]
 fn optional_hdiutil_attach_compares_dmg_extraction_when_available() {
     let Some(hdiutil) = find_on_path("hdiutil") else {
+        record_optional_skip("missing optional tool: hdiutil");
         return;
     };
     let fixture = archives_dir().join("basic.dmg");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let temp = TestDir::new("fixture-cli-hdiutil-compare");
     let mountpoint = temp.path("mnt");
@@ -1615,12 +1603,11 @@ fn optional_hdiutil_attach_compares_dmg_extraction_when_available() {
 #[test]
 fn optional_pkgutil_compares_pkg_extraction_when_available() {
     let Some(pkgutil) = find_on_path("pkgutil") else {
+        record_optional_skip("missing optional tool: pkgutil");
         return;
     };
     let fixture = archives_dir().join("basic.pkg");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let temp = TestDir::new("fixture-cli-pkgutil-compare");
     let expanded = temp.path("expanded");
@@ -1648,12 +1635,11 @@ fn optional_pkgutil_compares_pkg_extraction_when_available() {
 #[test]
 fn optional_msiextract_compares_msi_extraction_when_available() {
     let Some(msiextract) = find_on_path("msiextract") else {
+        record_optional_skip("missing optional tool: msiextract");
         return;
     };
     let fixture = archives_dir().join("basic.msi");
-    if !fixture.exists() {
-        return;
-    }
+    assert!(fixture.exists(), "committed fixture is missing: {}", fixture.display());
 
     let temp = TestDir::new("fixture-cli-msiextract-compare");
     let reference = temp.path("reference");
@@ -1922,6 +1908,7 @@ fn zm_create_junk_paths_flattens_names_and_unzip_accepts_archive() {
     assert!(!stdout.contains("docs/guide.md"), "{stdout}");
 
     let Some(unzip) = find_on_path("unzip") else {
+        record_optional_skip("missing optional tool: unzip");
         return;
     };
     let unzip_test = Command::new(unzip).arg("-t").arg(&archive).output().unwrap();
@@ -1955,6 +1942,7 @@ fn zm_create_junk_paths_rejects_duplicate_flattened_names() {
 #[test]
 fn zm_lists_zip_created_with_competitor_junk_paths() {
     let Some(zip) = find_on_path("zip") else {
+        record_optional_skip("missing optional tool: zip");
         return;
     };
     let temp = TestDir::new("zm_reads_zip_junk_paths");
@@ -1985,6 +1973,7 @@ fn zm_create_zip_level_is_accepted_and_unzip_validates_archive() {
     assert_success("zm -9cf", &create);
 
     let Some(unzip) = find_on_path("unzip") else {
+        record_optional_skip("missing optional tool: unzip");
         return;
     };
     let unzip_test = Command::new(unzip).arg("-t").arg(&archive).output().unwrap();
@@ -2105,6 +2094,7 @@ fn zm_create_tar_zst_level_round_trips_and_bsdtar_extracts_when_available() {
     assert_eq!(fs::read_to_string(temp.path("out-zm/project/file.txt")).unwrap(), "zstd level\n");
 
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     fs::create_dir_all(temp.path("out-bsdtar")).unwrap();
@@ -2128,6 +2118,7 @@ fn zm_create_tgz_level_round_trips_and_bsdtar_extracts_when_available() {
     assert_eq!(fs::read_to_string(temp.path("out-zm/project/file.txt")).unwrap(), "gzip level\n");
 
     let Some(bsdtar) = find_on_path("bsdtar") else {
+        record_optional_skip("missing optional tool: bsdtar");
         return;
     };
     fs::create_dir_all(temp.path("out-bsdtar")).unwrap();
@@ -2410,7 +2401,7 @@ fn zm_extract_tzap_preserves_windows_entry_metadata() {
     fs::create_dir_all(&source_directory).unwrap();
     fs::write(&source_file, b"windows metadata").unwrap();
     if !try_create_windows_relative_symlink(&source_link, r"scripts\payload.txt") {
-        eprintln!("skipping zm_extract_tzap_preserves_windows_entry_metadata: symlink privilege not held");
+        record_optional_skip("zm_extract_tzap_preserves_windows_entry_metadata: symlink privilege not held");
         return;
     }
     fs::write(PathBuf::from(format!("{}:zmanager-cli", source_file.display())), b"file alternate data").unwrap();
@@ -2517,6 +2508,7 @@ fn zm_create_7z_level_round_trips_with_backend() {
 #[test]
 fn optional_7zip_validates_zm_created_7z_when_available() {
     let Some(sevenzip) = find_7zip() else {
+        record_optional_skip("missing optional tool: 7zz or 7z");
         return;
     };
     let temp = TestDir::new("zm_7zip_validates_zm_archive");
@@ -2534,6 +2526,7 @@ fn optional_7zip_validates_zm_created_7z_when_available() {
 #[test]
 fn optional_zm_extracts_7zip_created_archive_when_available() {
     let Some(sevenzip) = find_7zip() else {
+        record_optional_skip("missing optional tool: 7zz or 7z");
         return;
     };
     let temp = TestDir::new("zm_extract_7zip_archive");
@@ -2812,6 +2805,7 @@ fn optional_zm_reads_infozip_and_7zip_split_zip_sets_when_available() {
 #[test]
 fn optional_zm_reads_7zip_created_split_7z_when_available() {
     let Some(sevenzip) = find_7zip() else {
+        record_optional_skip("missing optional tool: 7zz or 7z");
         return;
     };
     let temp = TestDir::new("zm_reads_external_split_7z");
@@ -2837,6 +2831,7 @@ fn optional_zm_reads_7zip_created_split_7z_when_available() {
 #[test]
 fn optional_zm_extracts_7zip_created_tar_family_archives_when_available() {
     let Some(sevenzip) = find_7zip() else {
+        record_optional_skip("missing optional tool: 7zz or 7z");
         return;
     };
     let temp = TestDir::new("zm_extract_7zip_tar_family");
@@ -2920,6 +2915,7 @@ fn zm_extracts_zip_symlink_created_by_competitor() {
     use std::os::unix::fs::symlink;
 
     let Some(zip) = find_on_path("zip") else {
+        record_optional_skip("missing optional tool: zip");
         return;
     };
     let temp = TestDir::new("zm_extract_competitor_zip_symlink");
@@ -3050,6 +3046,7 @@ fn zm_create_no_metadata_archives_remain_readable_across_formats() {
 #[test]
 fn zm_extracts_selected_zip_entries_created_by_competitor() {
     let Some(zip) = find_on_path("zip") else {
+        record_optional_skip("missing optional tool: zip");
         return;
     };
     let temp = TestDir::new("zm_extract_competitor_zip_filters");
@@ -3273,6 +3270,7 @@ fn zm_extract_zip_to_stdout_matches_selected_file_bytes() {
     assert!(extract.stderr.is_empty(), "stderr should stay quiet unless verbose/error:\n{}", String::from_utf8_lossy(&extract.stderr));
 
     let Some(unzip) = find_on_path("unzip") else {
+        record_optional_skip("missing optional tool: unzip");
         return;
     };
     let unzip_output = Command::new(unzip).arg("-p").arg(&archive).arg("project/keep.txt").output().unwrap();
@@ -3770,9 +3768,7 @@ fn write_tar_hardlink_entries<W: std::io::Write>(writer: W, target_path: &str, l
 }
 
 fn assert_no_zmanager_temp_files(root: &Path) {
-    if !root.exists() {
-        return;
-    }
+    assert!(root.exists(), "committed fixture is missing: {}", root.display());
 
     for entry in fs::read_dir(root).unwrap() {
         let entry = entry.unwrap();

@@ -92,6 +92,28 @@ fn offline_document_sign_verify_contacts_and_share() {
         .output()
         .unwrap();
     assert_success("offline sign", &sign);
+    #[cfg(unix)]
+    {
+        let previous = fs::read(&envelope).unwrap();
+        let mut command = Command::new(&binary);
+        command.args([
+            "tzap",
+            "sign",
+            payload.to_str().unwrap(),
+            "--certificate-id",
+            &certificate.certificate_id,
+            "--output",
+            envelope.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--json",
+        ]);
+        let failed = output_with_file_size_limit(&command, 1024);
+        assert_failure("document output exceeds OS file limit", &failed);
+        assert!(String::from_utf8_lossy(&failed.stderr).contains("sign failed:"));
+        assert_eq!(fs::read(&envelope).unwrap(), previous, "failed document write must preserve the previous envelope");
+        assert_success("document export recovers after write failure", &command.output().unwrap());
+    }
     let verify = || {
         Command::new(&binary)
             .args(["tzap", "verify", envelope.to_str().unwrap(), "--custom-trust-root-cert", root.to_str().unwrap(), "--json"])
@@ -148,6 +170,30 @@ fn offline_document_sign_verify_contacts_and_share() {
             .output()
             .unwrap();
         assert_success("offline contact export", &export);
+        #[cfg(unix)]
+        {
+            let previous = fs::read(&card).unwrap();
+            let mut command = Command::new(&binary);
+            command.args([
+                "tzap",
+                "contact",
+                "export",
+                "--recipient-key-id",
+                &key_id,
+                "--certificate-id",
+                &certificate.certificate_id,
+                "--display-name",
+                "Offline Test Contact",
+                "--output",
+                card.to_str().unwrap(),
+                "--state-dir",
+                state.to_str().unwrap(),
+                "--json",
+            ]);
+            assert_failure("contact output exceeds OS file limit", &output_with_file_size_limit(&command, 1024));
+            assert_eq!(fs::read(&card).unwrap(), previous, "failed contact write must preserve the previous card");
+            assert_success("contact export recovers after write failure", &command.output().unwrap());
+        }
         let import = || {
             Command::new(&binary)
                 .args([
@@ -406,4 +452,31 @@ fn offline_share_rejects_unknown_contact_without_creating_archive() {
     );
     assert_failure("unknown contact", &result);
     assert!(!archive.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unavailable_secret_service_preserves_catalog_and_keygen_recovers() {
+    use zmanager_core::identity_catalog::TzapIdentityCatalog;
+
+    let temp = TestDir::new("offline-unavailable-keyring");
+    let state = temp.path("state");
+    let mut catalog_store = FileTzapIdentityCatalogStore::new(&state);
+    let initial = TzapIdentityCatalog::empty();
+    catalog_store.save_catalog("default", None, initial.clone()).unwrap();
+    let unavailable = Command::new(zm_path())
+        .args(["tzap", "contact", "keygen", "--state-dir", state.to_str().unwrap(), "--json"])
+        .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", temp.path("absent-bus").display()))
+        .output()
+        .unwrap();
+    assert_failure("keygen without Secret Service", &unavailable);
+    let result: Value = serde_json::from_slice(&unavailable.stdout).unwrap();
+    assert_eq!(result["operation"], "contact_keygen");
+    assert!(result["error"].as_str().unwrap().contains("secure secret store is unavailable"));
+    assert_eq!(catalog_store.load_catalog("default").unwrap().unwrap(), initial, "failed keygen must not commit an unusable key");
+    let recovered = offline_command(&["tzap", "contact", "keygen"], &state);
+    assert_success("keygen after Secret Service recovery", &recovered);
+    let catalog = catalog_store.load_catalog("default").unwrap().unwrap();
+    assert_eq!(catalog.recipient_keys.len(), 1);
+    delete_fixture_secret(TzapSecretPurpose::RecipientKey, &catalog.recipient_keys[0].private_key_ref);
 }

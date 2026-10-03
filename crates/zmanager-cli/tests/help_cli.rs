@@ -621,10 +621,12 @@ fn static_completion_files_capture_navigation_contract() {
 #[test]
 fn bash_completion_matches_help_navigation_contract() {
     if cfg!(windows) {
+        record_optional_skip("Windows uses the PowerShell completion contract");
         return;
     }
 
     if !command_available("bash") {
+        record_optional_skip("missing optional tool: bash");
         return;
     }
 

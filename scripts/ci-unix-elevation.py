@@ -65,7 +65,11 @@ def provision_and_test(binary, harness):
             run("/usr/sbin/visudo", "-cf", str(candidate), stdout=subprocess.DEVNULL)
             shutil.copyfile(candidate, sudoers)
             sudoers.chmod(0o440)
-            run("/usr/sbin/visudo", "-c", stdout=subprocess.DEVNULL)
+            # Validate the installed fixture rule, rather than auditing unrelated
+            # runner-managed sudoers files (some hosted images ship those 0644).
+            # The harness's sudo -n rejection and authenticated retry then prove
+            # that the active policy includes this password-required account.
+            run("/usr/sbin/visudo", "-cf", str(sudoers), stdout=subprocess.DEVNULL)
             # Copy into an accessible fixture directory: runner home directories
             # and build caches need not be readable by the disposable account.
             for source, name in [(binary, "zm"), (harness, "test-unix-elevation.py")]:

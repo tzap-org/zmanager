@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{TestDir, assert_failure, assert_success, assert_trees_match, collect_tree_entries, find_on_path, is_apple_double, zm_path};
+use common::{TestDir, assert_failure, assert_success, assert_trees_match, collect_tree_entries, find_on_path, is_apple_double, record_optional_skip, zm_path};
 
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -100,42 +100,42 @@ struct FixtureCase {
 
 impl FixtureCase {
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
-    fn is_supported(self, binary: &Path) -> bool {
+    fn skip_reason(self, binary: &Path) -> Option<&'static str> {
         let name = binary.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name == "tar" {
             if self.filename.ends_with(".cpio") {
-                return false;
+                return Some("reference tar does not support cpio");
             }
             if self.filename.ends_with(".lz") && find_on_path("lzip").is_none() {
-                return false;
+                return Some("missing lzip filter");
             }
             if self.filename.ends_with(".lzo") && find_on_path("lzop").is_none() {
-                return false;
+                return Some("missing lzop filter");
             }
             if (self.filename.ends_with(".tar.Z") || self.filename.ends_with(".taz"))
                 && find_on_path("uncompress").is_none()
                 && find_on_path("ncompress").is_none()
                 && find_on_path("compress").is_none()
             {
-                return false;
+                return Some("missing compress/uncompress filter");
             }
             if self.filename.ends_with(".lz4") && find_on_path("lz4").is_none() {
-                return false;
+                return Some("missing lz4 filter");
             }
             if self.filename.ends_with(".zst") && find_on_path("zstd").is_none() {
-                return false;
+                return Some("missing zstd filter");
             }
             if (self.filename.ends_with(".xz") || self.filename.ends_with(".lzma")) && find_on_path("xz").is_none() && find_on_path("lzma").is_none() {
-                return false;
+                return Some("missing xz/lzma filter");
             }
             if (self.filename.ends_with(".bz2") || self.filename.ends_with(".tbz") || self.filename.ends_with(".tbz2")) && find_on_path("bzip2").is_none() {
-                return false;
+                return Some("missing bzip2 filter");
             }
             if (self.filename.ends_with(".gz") || self.filename.ends_with(".tgz")) && find_on_path("gzip").is_none() {
-                return false;
+                return Some("missing gzip filter");
             }
         }
-        true
+        None
     }
 }
 
@@ -165,11 +165,11 @@ fn external_tools_list_and_extract_committed_fixtures() {
     let archives = repo_root().join("fixtures/archives");
     for case in cases {
         let Some(binary) = case.tool.binary() else {
-            eprintln!("skipping external fixture {}: required tool is not installed", case.filename);
+            record_optional_skip(&format!("external fixture {}: required tool is not installed", case.filename));
             continue;
         };
-        if !case.is_supported(&binary) {
-            eprintln!("skipping external fixture {}: required helper tool for {} is not installed", case.filename, binary.display());
+        if let Some(reason) = case.skip_reason(&binary) {
+            record_optional_skip(&format!("external fixture {}: {reason} ({})", case.filename, binary.display()));
             continue;
         }
         validate_fixture(case, &binary, &archives.join(case.filename));
@@ -179,7 +179,7 @@ fn external_tools_list_and_extract_committed_fixtures() {
 #[test]
 fn reference_tzap_cross_checks_basic_and_feature_matrix() {
     let Some(tzap) = find_on_path("tzap") else {
-        eprintln!("skipping TZAP cross-check: reference tzap command is not installed");
+        record_optional_skip("TZAP cross-check: reference tzap command is not installed");
         return;
     };
 
@@ -240,7 +240,7 @@ fn reference_tzap_cross_checks_basic_and_feature_matrix() {
     assert_tzap_and_zm_open_rejected(&tzap, &tampered_archive, &TzapAccess::password("reference password"), "tampered header");
 
     let Some(openssl) = find_on_path("openssl") else {
-        eprintln!("skipping X.509 TZAP cross-checks: openssl command is not installed");
+        record_optional_skip("X.509 TZAP cross-checks: openssl command is not installed");
         return;
     };
     let (signer_certificate, signer_key) = create_self_signed_rsa_certificate(&openssl, &temp, "reference-signer");
