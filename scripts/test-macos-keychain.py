@@ -102,6 +102,10 @@ def main():
     print(f"PASS: absent native Keychain fails closed: {unavailable['error']}", flush=True)
     keychain = home / "fixture.keychain-db"
     try:
+        # Fresh dscl accounts have no standard user Library directories yet.
+        # Provide the normal private locations for user Keychain preferences.
+        (home / "Library" / "Preferences").mkdir(parents=True, mode=0o700)
+        (home / "Library" / "Keychains").mkdir(mode=0o700)
         security("create-keychain", "-p", password, keychain, password=password)
         security("list-keychains", "-d", "user", "-s", keychain)
         security("default-keychain", "-d", "user", "-s", keychain)
