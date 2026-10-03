@@ -5,6 +5,7 @@ REPO_URL="${ZMANAGER_REPO_URL:-https://github.com/tzap-org/zmanager}"
 VERSION="${ZMANAGER_VERSION:-latest}"
 INSTALL_DIR="${ZMANAGER_INSTALL_DIR:-$HOME/.local/bin}"
 TMPDIR="${TMPDIR:-/tmp}"
+install_stage=""
 
 # Default: the offline signer. --full installs the enrollment-capable build;
 # `zm --version` reports which flavor.
@@ -58,9 +59,9 @@ fail_install_permission() {
   printf 'zmanager install: cannot write to %s\n' "$INSTALL_DIR" >&2
   printf 'Try a user-writable install directory, or rerun with sudo:\n' >&2
   if [ "$VERSION" = "latest" ]; then
-    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_INSTALL_DIR=%s sh\n' "$INSTALL_DIR" >&2
+    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_INSTALL_DIR="%s" sh\n' "$INSTALL_DIR" >&2
   else
-    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_VERSION=%s ZMANAGER_INSTALL_DIR=%s sh\n' "$VERSION" "$INSTALL_DIR" >&2
+    printf '  curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh | sudo env ZMANAGER_VERSION="%s" ZMANAGER_INSTALL_DIR="%s" sh\n' "$VERSION" "$INSTALL_DIR" >&2
   fi
   exit 1
 }
@@ -106,10 +107,15 @@ sha256_file() {
 
 install_binary() {
   src="$1"
-  mkdir -p "$INSTALL_DIR" || fail_install_permission
+  mkdir -p "$INSTALL_DIR" || fail "could not create install directory $INSTALL_DIR"
   [ -w "$INSTALL_DIR" ] || fail_install_permission
-  cp "$src" "$INSTALL_DIR/zm" || fail_install_permission
-  chmod 0755 "$INSTALL_DIR/zm" || fail "could not mark $INSTALL_DIR/zm executable"
+  [ ! -d "$INSTALL_DIR/zm" ] || fail "install destination $INSTALL_DIR/zm is a directory"
+  install_stage="$(mktemp "$INSTALL_DIR/.zm-install.XXXXXX")" \
+    || fail "could not stage the replacement executable in $INSTALL_DIR"
+  cp "$src" "$install_stage" || fail "could not copy the replacement executable; the existing installation was preserved"
+  chmod 0755 "$install_stage" || fail "could not mark the replacement executable as executable"
+  mv -f "$install_stage" "$INSTALL_DIR/zm" || fail "could not replace $INSTALL_DIR/zm"
+  install_stage=""
 }
 
 print_path_hint() {
@@ -117,7 +123,7 @@ print_path_hint() {
   case "$shell_name" in
     fish)
       say "Add zm to PATH for future fish sessions:"
-      say "  fish_add_path $INSTALL_DIR"
+      say "  fish_add_path \"$INSTALL_DIR\""
       ;;
     zsh)
       say "Add zm to PATH for future zsh sessions:"
@@ -153,7 +159,7 @@ print_success() {
       ;;
     *)
       say "Try it now:"
-      say "  $installed healthcheck"
+      say "  \"$installed\" healthcheck"
       say ""
       print_path_hint
       ;;
@@ -264,9 +270,14 @@ target="$(detect_target)" || fail "unsupported platform: $(uname -s) $(uname -m)
 work="$(mktemp -d "$TMPDIR/zmanager-install.XXXXXX")"
 
 cleanup() {
+  if [ -n "$install_stage" ]; then
+    rm -f "$install_stage"
+  fi
   rm -rf "$work"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cd "$work"
 

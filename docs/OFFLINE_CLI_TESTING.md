@@ -369,3 +369,31 @@ unreferenced secret; durable recovery for that interval remains open. If the
 catalogue cannot be re-read or the secret store refuses deletion, the rollback
 retains keys rather than risking deletion of a published identity. These limits
 must not be presented as fully covered interruption/cleanup guarantees.
+
+## Unix installer update preservation
+
+The real `install.sh` truncated an existing executable when native `cp` hit a
+file-size limit during replacement; the macOS regression reproduced this before
+the fix. Installation now copies into a unique sibling temporary file, sets its
+executable permissions, then renames it over the destination. Ordinary failures
+and SIGINT/SIGTERM clean up the stage, and signals exit with failure. Copy errors
+describe the failed replacement and preservation of the old installation;
+unwritable directories retain the explicit sudo guidance. Suggested commands
+quote paths containing spaces.
+
+`scripts/test-unix-installer.py` uses actual packaged binaries and real curl
+file-URL downloads from a private local release layout. It verifies fresh-home
+installation and PATH launch, engine readiness, checksum rejection without
+replacement, unwritable-destination guidance, partial native-copy failure,
+SIGTERM after the copy but before publication, cleanup and successful retry.
+These checks passed on macOS ARM64 and Linux ARM64 Docker as an unprivileged
+user. Root permission-test skips are printed explicitly. Preview and release
+workflows require the harness on all four Unix targets; this does not cover
+Homebrew, WinGet or installer SIGKILL cleanup.
+
+The earlier implementation at `89b6a50` has now passed all six platform jobs in
+[CI 37120223644](https://github.com/tzap-org/zmanager/actions/runs/37120223644),
+including both Unix network-denial and real sudo-authentication architectures.
+This is baseline evidence, not verification of subsequent commits: the newer
+native-keyring, Windows network-denial and identity rollback changes still need
+their current CI results inspected.

@@ -48,6 +48,12 @@ If no matching binary exists, the installer falls back to building from source.
 Source fallback requires `git`, Rust/Cargo, and the target platform's native
 compression and cryptography development libraries.
 
+Updates stage the replacement beside the installed executable and publish it
+only after copying and setting executable permissions. A failed copy or a
+SIGINT/SIGTERM interruption before publication preserves the existing executable. An unwritable
+installation directory reports the required sudo command; the default user
+installation does not require sudo.
+
 ## Direct Downloads
 
 Manual downloads are useful for offline packaging, pinned checksums, and custom

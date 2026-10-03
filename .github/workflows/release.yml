@@ -132,6 +132,10 @@ jobs:
         if: runner.os == 'macOS'
         run: python3 scripts/test-offline-package.py "dist/zm-${{ matrix.target }}.tar.gz"
 
+      - name: Test Unix installer and failed-update recovery
+        if: runner.os != 'Windows'
+        run: python3 scripts/test-unix-installer.py "dist/zm-${{ matrix.target }}.tar.gz"
+
       - name: Test installed offline package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
