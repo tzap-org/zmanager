@@ -49,9 +49,13 @@ try {
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 0) { throw "Positive-control TCP connection failed for $binary." }
         $ruleName = "ZManagerOfflineFixture-" + [Guid]::NewGuid()
-        $rule = New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block `
-            -Profile Any -Program $binary -Enabled True
-        $rules += $rule
+        # New-NetFirewallRule returned ERROR_INVALID_PARAMETER for this
+        # program-scoped rule on both native Windows CI targets. Use netsh's
+        # firewall interface and keep the rule limited to this executable.
+        $programArgument = 'program="' + $binary + '"'
+        & netsh.exe advfirewall firewall add rule "name=$ruleName" dir=out action=block profile=any $programArgument enable=yes
+        if ($LASTEXITCODE -ne 0) { throw "Could not create the outbound firewall rule for $binary (netsh exit $LASTEXITCODE)." }
+        $rules += [pscustomobject]@{ Name = $ruleName; Program = $binary }
         & $binary $address.IPAddressToString
         if ($LASTEXITCODE -ne 42) { throw "The firewall did not reject TCP with WSAEACCES for $binary." }
         Copy-Item $backup $binary -Force
@@ -77,20 +81,14 @@ try {
     }
     foreach ($rule in $rules) {
         try {
-            $instanceId = [string]$rule.InstanceID
+            & netsh.exe advfirewall firewall delete rule "name=$($rule.Name)" dir=out
+            if ($LASTEXITCODE -ne 0) { throw "Could not delete fixture firewall rule $($rule.Name) (netsh exit $LASTEXITCODE)." }
             $remainingRules = @(
                 Get-NetFirewallRule |
-                    Where-Object { [string]$_.InstanceID -eq $instanceId }
+                    Where-Object { [string]$_.Name -eq [string]$rule.Name }
             )
             if ($remainingRules.Count -gt 0) {
-                Remove-NetFirewallRule -InputObject $remainingRules -ErrorAction Stop
-            }
-            $remainingRules = @(
-                Get-NetFirewallRule |
-                    Where-Object { [string]$_.InstanceID -eq $instanceId }
-            )
-            if ($remainingRules.Count -gt 0) {
-                throw "Fixture firewall rule was not removed: $($rule.Name)"
+                throw "Fixture firewall rule was not removed: $($rule.Name)."
             }
         } catch { $cleanupErrors += $_.Exception.Message }
     }
