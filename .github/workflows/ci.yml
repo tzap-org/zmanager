@@ -106,6 +106,8 @@ jobs:
             python3 \
             rpm \
             unzip \
+            xdotool \
+            xvfb \
             xz-utils \
             zlib1g-dev \
             zip \
@@ -209,6 +211,10 @@ jobs:
 
       - name: Disk-full and killed-writer recovery
         run: python3 scripts/test-write-failures.py target/release/zm
+
+      - name: Native Secret Service cancellation and unlock recovery
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-linux-secret-store.py target/release/zm
 
       - name: Report skipped optional checks
         if: always()

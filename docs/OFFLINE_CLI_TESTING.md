@@ -283,3 +283,28 @@ warnings, and the affected CLI suite. For the preceding implementation,
 has passed macOS ARM64 and both Linux architectures, including network-denied
 release tests and real sudo authentication. Its other jobs were still running
 when this note was written; their final results must be inspected separately.
+
+## Native Linux unlock cancellation and recovery
+
+`scripts/test-linux-secret-store.py` exercises GNOME Keyring through its real
+Secret Service and GTK unlock dialog. It starts with a private home directory,
+D-Bus session and virtual X server; the bus is created after setting the fixture
+environment so auto-activated services cannot use the caller's keyring. The
+random keyring password exists only in this disposable fixture. The daemon and
+prompter are stopped and the fixture directory is removed afterward.
+
+The test first generates a key, then proves an unavailable bus reports the
+unavailable-store error without modifying the existing catalogue. It locks the
+native collection, checks the locked property, and verifies public certificate
+discovery still works. It cancels the actual unlock dialog using Escape and
+asserts a nonzero CLI status, a locked-store diagnostic, unchanged catalogue
+bytes and unchanged native secret entries. A subsequent retry supplies the
+fixture password to the real dialog, verifies the collection becomes unlocked,
+and commits exactly one additional key. The current backend reports cancelled
+unlock as a locked store; this test does not claim a distinct denied error code.
+
+This passed on Linux ARM64 Docker as an unprivileged user, both with the release
+Cargo executable and the actual static musl package from Preview 37120223686.
+Both Linux CI architectures now run the harness with required Xvfb/xdotool
+dependencies. Native macOS Keychain lock/deny recovery and corresponding Windows
+credential-store failures remain open; no personal macOS Keychain was locked.
