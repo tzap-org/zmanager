@@ -308,3 +308,30 @@ Cargo executable and the actual static musl package from Preview 37120223686.
 Both Linux CI architectures now run the harness with required Xvfb/xdotool
 dependencies. Native macOS Keychain lock/deny recovery and corresponding Windows
 credential-store failures remain open; no personal macOS Keychain was locked.
+
+## Windows outbound-network enforcement
+
+The Windows CI script now repeats the complete reduced release CLI suite under
+temporary Windows Firewall outbound block rules for both executable entry
+points (`zm.exe` and `zmanager-cli.exe`). The harness first replaces each build
+output with a small TCP probe at the exact same path, proves a connection to
+staging port 443 succeeds, installs the program rule, and requires socket error
+10013 (WSAEACCES). Timeouts and unrelated socket errors fail the check. It then
+restores the original executable, verifies its SHA256, and runs the tests while
+the rule remains active. This covers tests that use Cargo's binary paths as well
+as the shared CLI helper, without redirecting them to another executable.
+
+The probe performs only a TCP handshake, with no HTTP request or credentials.
+See Microsoft's documentation for
+[program-specific outbound rules](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule)
+and [socket access-denied errors](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2).
+The harness attempts executable restoration, rule removal and profile restoration
+even on failure, and retains backups if cleanup cannot be verified. Disabled
+firewall profiles may be enabled temporarily only on disposable GitHub-hosted
+runners; other hosts must already have enabled profiles.
+
+PowerShell parsing, .NET probe compilation and the TCP positive control passed
+in the Windows 11 ARM64 Parallels VM. Its current-user session is not an
+administrator, so no firewall rule or profile was modified there. Actual
+enforcement and the network-denied CLI run remain pending until both Windows
+CI architecture jobs execute this new harness successfully.

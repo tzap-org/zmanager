@@ -252,6 +252,11 @@ function Invoke-CargoTest {
             -FilePath "cargo" `
             -Arguments $arguments
     }
+
+    $releaseDirectory = Join-Path $RepositoryRoot "target\$TargetTriple\release"
+    & (Join-Path $PSScriptRoot "test-windows-network-denial.ps1") `
+        -Binaries @((Join-Path $releaseDirectory "zm.exe"), (Join-Path $releaseDirectory "zmanager-cli.exe")) `
+        -TestCommand @("cargo", "test", "--locked", "--offline", "--target", $TargetTriple, "-p", "zmanager-cli", "--release", "--no-default-features")
 }
 
 function Invoke-CargoBuildRelease {
