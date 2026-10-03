@@ -36,6 +36,10 @@ jobs:
             target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v6
+      - name: Initialize optional test reporting
+        run: |
+          mkdir -p target
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
       - name: Verify and download the selected package build
         run: |
           python3 scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
@@ -52,12 +56,9 @@ jobs:
           sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev liblzma-dev libbz2-dev liblz4-dev libzstd-dev libexpat1-dev nettle-dev zlib1g-dev dbus gnome-keyring strace
           rustup toolchain install stable --profile minimal
           rustup default stable
-          # Convert the development path-patch lock entry to the same published
-          # version declared by zmanager-core before locking the audit build.
-          cargo update -p tzap-core --precise 0.2.5
-          mkdir -p target
-          : > "$ZMANAGER_TEST_SKIP_REPORT"
-          cargo test --locked --release -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run
+          # Resolve the published tzap-core dependency after dropping the
+          # development path patch. The test run below then uses this lockfile.
+          cargo test --release -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run
       - name: Test installed identities with outbound networking denied
         timeout-minutes: 10
         run: |
@@ -104,6 +105,11 @@ jobs:
             component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
     steps:
       - uses: actions/checkout@v6
+      - name: Initialize optional test reporting
+        shell: bash
+        run: |
+          mkdir -p target
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
       - name: Verify and download the selected package build
         shell: bash
         run: |
@@ -120,8 +126,6 @@ jobs:
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
           python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
-          mkdir -p target
-          : > "$ZMANAGER_TEST_SKIP_REPORT"
       - name: Prepare native export debugger
         shell: pwsh
         timeout-minutes: 10

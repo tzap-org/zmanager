@@ -555,18 +555,13 @@ Invoke-NativeLogged `
 
 if ($AuditOfflinePackage) {
     $archive = (Resolve-Path $AuditOfflinePackage).Path
-    # The audit workflow removes the development source patch. Keep the
-    # published dependency at zmanager-core's declared version, then lock it.
-    Invoke-NativeLogged `
-        -Title "offline package audit dependency resolution failed" `
-        -LogName "cargo-package-identity-lock-$Target.log" `
-        -FilePath "cargo" `
-        -Arguments @("update", "-p", "tzap-core", "--precise", "0.2.5")
+    # The audit workflow removes the development source patch. Resolve the
+    # published dependency while compiling, then reuse that lockfile offline.
     Invoke-NativeLogged `
         -Title "offline package identity harness compilation failed" `
         -LogName "cargo-package-identity-$Target.log" `
         -FilePath "cargo" `
-        -Arguments @("test", "--locked", "--release", "--target", $Target, "-p", "zmanager-cli", "--no-default-features", "--test", "offline_tzap_cli", "--no-run")
+        -Arguments @("test", "--release", "--target", $Target, "-p", "zmanager-cli", "--no-default-features", "--test", "offline_tzap_cli", "--no-run")
     Invoke-NativeLogged `
         -Title "installed offline package identity workflows failed" `
         -LogName "package-identity-$Target.log" `
