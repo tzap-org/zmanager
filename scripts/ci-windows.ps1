@@ -13,6 +13,8 @@ param(
 
     [switch]$Package,
 
+    [string]$AuditOfflinePackage,
+
     [string]$OutDir = "dist",
 
     [string]$VcpkgRoot = "C:\vcpkg"
@@ -551,7 +553,30 @@ Invoke-NativeLogged `
     -FilePath "rustup" `
     -Arguments @("default", "stable")
 
-if ($Package) {
+if ($AuditOfflinePackage) {
+    $archive = (Resolve-Path $AuditOfflinePackage).Path
+    # The audit workflow removes the development source patch. Keep the
+    # published dependency at zmanager-core's declared version, then lock it.
+    Invoke-NativeLogged `
+        -Title "offline package audit dependency resolution failed" `
+        -LogName "cargo-package-identity-lock-$Target.log" `
+        -FilePath "cargo" `
+        -Arguments @("update", "-p", "tzap-core", "--precise", "0.2.5")
+    Invoke-NativeLogged `
+        -Title "offline package identity harness compilation failed" `
+        -LogName "cargo-package-identity-$Target.log" `
+        -FilePath "cargo" `
+        -Arguments @("test", "--locked", "--release", "--target", $Target, "-p", "zmanager-cli", "--no-default-features", "--test", "offline_tzap_cli", "--no-run")
+    Invoke-NativeLogged `
+        -Title "installed offline package identity workflows failed" `
+        -LogName "package-identity-$Target.log" `
+        -FilePath "python" `
+        -Arguments @(
+            "scripts/test-offline-package.py", $archive, "--workflow",
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            "scripts/test-windows-package-identity.ps1", "-Target", $Target
+        )
+} elseif ($Package) {
     Invoke-CargoBuildRelease -TargetTriple $Target
     New-ReleasePackage -TargetTriple $Target
     Invoke-CargoBuildRelease -TargetTriple $Target -Full

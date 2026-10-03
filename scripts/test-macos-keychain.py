@@ -123,7 +123,12 @@ def main():
                                 capture_output=True, timeout=15)
         assert public.returncode == 0, "public discovery required private Keychain access"
         locked = keygen(False)
-        assert "secure secret store is locked" in locked["error"], locked["error"]
+        # Native locked-store operations can report an authentication/access
+        # denial rather than an interaction-required status. The native status
+        # check above proves the lock; require a specific access failure here.
+        assert any(message in locked["error"] for message in (
+            "secure secret store is locked", "secure secret store access was denied",
+        )), locked["error"]
         assert catalogue.read_bytes() == original, "locked access changed the existing catalogue"
         print(f"PASS: verified locked Keychain preserves catalogue: {locked['error']}", flush=True)
         security("unlock-keychain", "-p", password, keychain, password=password)

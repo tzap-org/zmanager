@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Package Preview run containing the offline binaries
+        description: Package Preview run with successful macOS package jobs
         required: true
         type: string
       package_commit:
@@ -36,9 +36,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Verify and download the selected package build
         run: |
-          gh run view "$PACKAGE_RUN_ID" --json headSha,conclusion > package-run.json
-          python3 -c 'import json,os; r=json.load(open("package-run.json")); assert r["conclusion"] == "success" and r["headSha"] == os.environ["PACKAGE_COMMIT"], "package build identity or conclusion mismatch"'
-          gh run download "$PACKAGE_RUN_ID" --name "zm-preview-${{ matrix.target }}-offline" --dir packages
+          python3 scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
+            --commit "$PACKAGE_COMMIT" --target "${{ matrix.target }}" --destination packages
       - name: Test installed package and native Keychain recovery
         timeout-minutes: 5
         run: |

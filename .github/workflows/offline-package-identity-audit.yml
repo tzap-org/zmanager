@@ -1,0 +1,149 @@
+name: Offline Package Identity Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Package Preview run with successful package jobs for the audited targets
+        required: true
+        type: string
+      package_commit:
+        description: Exact commit SHA expected in that Package Preview run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+  PACKAGE_COMMIT: ${{ inputs.package_commit }}
+  ZMANAGER_TEST_SKIP_REPORT: ${{ github.workspace }}/target/package-identity-skips.jsonl
+
+jobs:
+  linux:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify and download the selected package build
+        run: |
+          python3 scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
+            --commit "$PACKAGE_COMMIT" --target "${{ matrix.target }}" --destination packages
+      - name: Prepare harness dependencies
+        run: |
+          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
+          git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
+          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
+          git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
+          # Build the audit harness with the released tzap-core dependency.
+          python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev liblzma-dev libbz2-dev liblz4-dev libzstd-dev libexpat1-dev nettle-dev zlib1g-dev dbus gnome-keyring strace
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          # Convert the development path-patch lock entry to the same published
+          # version declared by zmanager-core before locking the audit build.
+          cargo update -p tzap-core --precise 0.2.5
+          mkdir -p target
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
+          cargo test --locked --release -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run
+      - name: Test installed identities with outbound networking denied
+        timeout-minutes: 10
+        run: |
+          bus_directory=$(mktemp -d)
+          mapfile -t bus < <(dbus-daemon --session --fork --address="unix:path=$bus_directory/bus" --print-address=1 --print-pid=1)
+          export DBUS_SESSION_BUS_ADDRESS=${bus[0]}
+          export DBUS_SESSION_BUS_PID=${bus[1]}
+          trap 'kill "$DBUS_SESSION_BUS_PID"; rm -rf "$bus_directory"' EXIT
+          printf '\n' | gnome-keyring-daemon --unlock
+          export ZMANAGER_TEST_EXPORT_DISK_FULL=1
+          sudo --preserve-env=HOME,PATH,RUSTUP_HOME,CARGO_HOME,LANG,LC_ALL,GITHUB_ACTIONS,RUNNER_ENVIRONMENT,DBUS_SESSION_BUS_ADDRESS,ZMANAGER_TEST_EXPORT_DISK_FULL,ZMANAGER_TEST_SKIP_REPORT \
+            unshare --net --setuid "$(id -u)" --setgid "$(id -g)" -- \
+            python3 scripts/require-network-denial.py \
+            python3 scripts/test-offline-package.py "packages/zm-${{ matrix.target }}.tar.gz" \
+            --workflow cargo test --offline --locked --release -p zmanager-cli --no-default-features --test offline_tzap_cli -- --nocapture
+      - name: Report optional check inventory
+        if: always()
+        run: python3 scripts/report-test-skips.py "$ZMANAGER_TEST_SKIP_REPORT"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: package-identity-skips-${{ matrix.target }}
+          path: |
+            target/package-identity-skips.jsonl
+            Cargo.lock
+          if-no-files-found: warn
+
+  windows:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            triplet: x64-windows-static
+            vcarch: x64
+            component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            triplet: arm64-windows-static
+            vcarch: arm64
+            component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify and download the selected package build
+        shell: bash
+        run: |
+          python scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
+            --commit "$PACKAGE_COMMIT" --target "${{ matrix.target }}" --destination packages
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Prepare harness source dependencies
+        shell: bash
+        run: |
+          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
+          git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
+          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
+          git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
+          python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
+          mkdir -p target
+          : > "$ZMANAGER_TEST_SKIP_REPORT"
+      - name: Prepare native export debugger
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./scripts/prepare-windows-export-debugger.ps1 -Target "${{ matrix.target }}"
+      - name: Test installed identities with outbound networking denied
+        shell: pwsh
+        run: >
+          powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1
+          -Target "${{ matrix.target }}"
+          -Triplet "${{ matrix.triplet }}"
+          -VcArch "${{ matrix.vcarch }}"
+          -VsComponent "${{ matrix.component }}"
+          -AuditOfflinePackage "packages/zm-${{ matrix.target }}.zip"
+      - name: Report optional check inventory
+        if: always()
+        shell: pwsh
+        run: python scripts/report-test-skips.py "$env:ZMANAGER_TEST_SKIP_REPORT"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: package-identity-skips-${{ matrix.target }}
+          path: |
+            target/package-identity-skips.jsonl
+            Cargo.lock
+          if-no-files-found: warn

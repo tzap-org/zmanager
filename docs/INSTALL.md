@@ -180,8 +180,8 @@ manual distribution check.
 
 The macOS CLI allows native Keychain prompts when stdin and stderr are attached
 to a terminal. When either is redirected, a locked Keychain fails promptly with
-a locked-store diagnostic. Unlock the Keychain or retry from Terminal when
-native authorization is required. Cancelled authorization reports denied
+a locked-store or access-denied diagnostic. Unlock the Keychain or retry from
+Terminal when native authorization is required. Cancelled authorization reports denied
 access. Public certificate discovery remains available while the Keychain is
 locked.
 

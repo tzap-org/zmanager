@@ -8,18 +8,19 @@ current evidence and outstanding checks.
 
 | Goal requirement | Evidence | Outstanding verification |
 | --- | --- | --- |
-| Native secret-store failure and recovery | Linux ARM64 packaged executable passed unavailable service, locked collection, native cancellation, authentication/retry, ENOSPC and killed-keygen recovery, including an outbound-denied run | macOS disposable-account Keychain CI; macOS GUI consent/denial remains an explicitly tracked interactive check |
-| Installed packages and first launch | Preview 37129928428 at `6ba7bc6` passed all six package architectures; actual macOS/Linux ARM64 packages passed their full identity workflows | New macOS ARM64/Intel producer identity gates in Preview 37132262938; Windows/Intel Linux package smoke does not establish full packaged identity coverage |
+| Native secret-store failure and recovery | Linux ARM64 packaged executable passed unavailable service, locked collection, native cancellation, authentication/retry, ENOSPC and killed-keygen recovery, including an outbound-denied run | Updated macOS unattended Keychain behavior in native CI; macOS GUI consent/denial remains an explicitly tracked interactive check |
+| Installed packages and first launch | Preview 37129928428 at `6ba7bc6` passed all six package architectures; actual macOS/Linux ARM64 packages passed full identity workflows; Preview 37134929673's macOS ARM64 package at `178bb4f` passed its installed identity workflow with network denied | Intel macOS producer gate and remaining latest package jobs; new Windows/Linux package identity consumer audit requires runtime validation |
 | Optional compatibility omissions | CI emits a skip inventory and uploads its JSONL evidence; successful Linux ARM64/x86_64 and Windows x64 jobs in run 37129928507 include reporting | Inspect inventories from the remaining jobs; skipped checks are never counted as verified |
-| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and both Windows architectures establish their required recovery checks; Linux packaged native-key crash recovery also passed | Corrected macOS Intel interruption checkpoint; Windows signed-export process-kill coverage remains unestablished |
+| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and both Windows architectures establish their required recovery checks; Linux packaged native-key crash recovery also passed; exact Windows interruption helper passed against a native ARM64 staged writer | Corrected macOS Intel checkpoint; actual Windows signed document/contact interruption runs; latest inherited-lock fix requires native matrix validation |
 | Offline network enforcement | Actual macOS/Linux ARM64 package workflows passed with enforced denial; Linux native GUI recovery also passed in a private network namespace; Windows x64 CI confirmed both firewall paths | Finish the matching corrected six-architecture CI matrix |
-| Required Rust gates and fixes | `8ebb644` passed formatting, workspace Clippy/check and workspace tests without warnings; `c7bf9a9` passed workflow lint and affected CLI tests with workspace Clippy/check | Native CI results remain required before claiming parity complete |
+| Required Rust gates and fixes | `178bb4f` passed local formatting, workspace Clippy/check and workspace tests; `f7df16c` passed affected CLI tests and workspace Clippy/check; inherited-descriptor lock regression failed before its fix and passed on macOS/Linux afterward | Follow-up finish gates and native CI results remain required before claiming parity complete |
 | Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; no signing/notarization scope was added | Browser quarantine and Gatekeeper consent remain a tracked manual distribution check |
 
-Run 37131968021 at `8ebb644` tests the same Rust code and main CI workflow as
-`c7bf9a9`; their diff contains only package workflows and this document. The
-duplicate main CI run at `c7bf9a9` was cancelled to free runners, while its
-changed package workflow remains required and running. The goal is not complete.
+CI 37134929597 at `178bb4f` exposed an inherited-file-descriptor lock conflict in
+Linux x86_64 identity setup. A targeted Linux stress probe and deterministic
+regression reproduced the problem; the follow-up explicitly unlocks the journal
+when its writer completes. Other native jobs and Package Preview 37134929673
+remain under inspection. The goal is not complete.
 
 ## Initial parity baseline
 
@@ -636,9 +637,12 @@ when stdin or stderr is not a terminal. Terminal invocations retain native
 interaction. The store maps Apple's interaction-required errors to Locked,
 cancellation/access failures to Denied, and missing/unavailable stores to
 Unavailable. A native-error regression failed with the old generic Unavailable
-mapping and passed after the fix. The fixture now requires the specific locked
-diagnostic, unchanged catalogue and successful unlock/retry. Native runtime
-verification of the updated executable remains required.
+mapping and passed after the fix. The fixture requires a specific access
+diagnostic, unchanged catalogue and successful unlock/retry. Native CI at
+`178bb4f` subsequently proved that locked access fails promptly but returned the
+specific access-denied diagnostic. The fixture now accepts locked or denied
+access after its independent native lock-status assertion; generic unavailable
+errors still fail this check. Complete unlock/retry verification remains required.
 
 ## Windows signed-export interruption checkpoint
 
@@ -659,3 +663,37 @@ against a standalone Rust staged writer, including a Unicode path with spaces,
 real file-flush termination, old-output preservation and retry. This validates
 the debugger checkpoint and helper, not the signed CLI workflow. Actual document
 and contact runs on both Windows architectures remain required in CI.
+
+## Journal lock release after concurrent subprocess creation
+
+Linux x86_64 CI 37134929597 failed the second fixture inventory save with
+`Catalog(ConcurrentWrite)` despite a single writer for that catalogue. A Linux
+stress probe reproduced 42,288 false lock conflicts in 100,000 acquisitions while
+other threads spawned subprocesses; explicit unlock reduced that count to zero.
+An inherited descriptor can keep Unix flock alive between fork and exec even
+after the completed writer closes its own handle.
+
+The journal guard now explicitly unlocks on drop. A deterministic regression
+keeps a duplicate descriptor alive, verifies an active writer still excludes a
+second writer, then requires the next writer to acquire the completed writer's
+lock and recover its unpublished secret. It failed before the fix in Linux
+Docker and passed afterward on Linux and macOS. Native matrix validation remains
+required.
+
+## Installed Windows and Linux identity consumer audit
+
+`Offline Package Identity Audit` downloads checksum-verified packages for both
+native Windows architectures and both native Linux architectures. Its producer
+verifier requires the exact Package Preview commit, workflow and selected target
+job's successful completion; unrelated jobs need not finish first. This is
+per-target evidence and never establishes that the full producer matrix passed.
+
+The consumer compiles a reduced identity harness, then routes CLI subprocesses
+to the actual unpacked executable. Windows applies its verified outbound firewall
+denial and requires native CDB interruption and bounded-volume ENOSPC coverage.
+Linux runs first launch and the full identity suite in a private network
+namespace, with a filesystem D-Bus socket, strace interruption and bounded-volume
+ENOSPC coverage. The harness lockfile and optional-check inventory are uploaded.
+Runtime results remain required before claiming these four packaged identity
+workflows passed. macOS producer identity gates and the native Keychain consumer
+audit remain separate required checks.
