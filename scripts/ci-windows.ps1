@@ -235,6 +235,18 @@ function Invoke-CargoTest {
         [string]$TargetTriple
     )
 
+    $referenceManifest = Join-Path $RepositoryRoot "..\tzap\Cargo.toml"
+    Invoke-NativeLogged `
+        -Title "reference TZAP CLI build failed on $TargetTriple" `
+        -LogName "cargo-reference-tzap-$TargetTriple.log" `
+        -FilePath "cargo" `
+        -Arguments @("build", "--locked", "--target", $TargetTriple, "--manifest-path", $referenceManifest, "-p", "tzap")
+    $referenceBin = Join-Path $RepositoryRoot "..\tzap\target\$TargetTriple\debug"
+    $env:PATH = "$referenceBin;$env:PATH"
+    if (-not (Get-Command "tzap.exe" -ErrorAction SilentlyContinue)) {
+        throw "Reference TZAP CLI was not found after its successful build on $TargetTriple"
+    }
+
     Invoke-NativeLogged `
         -Title "cargo test failed on $TargetTriple" `
         -LogName "cargo-test-windows-$TargetTriple.log" `

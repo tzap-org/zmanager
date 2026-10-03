@@ -137,6 +137,13 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
           rustup default stable
 
+      - name: Build reference TZAP CLI
+        if: runner.os != 'Windows'
+        run: |
+          cargo build --locked --manifest-path ../tzap/Cargo.toml -p tzap
+          echo "$(cd ../tzap/target/debug && pwd)" >> "$GITHUB_PATH"
+          command -v tzap
+
       - name: Format
         run: cargo fmt --check
 
