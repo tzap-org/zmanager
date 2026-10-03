@@ -120,8 +120,10 @@ GNOME Keyring matches the dependencies listed in `.github/workflows/ci.yml`.
 
 The four Unix jobs in `.github/workflows/ci.yml` also invoke
 `python3 scripts/ci-unix-elevation.py target/release/zm`: macOS ARM64 and Intel,
-and Linux ARM64 and x86_64. This new authentication step still needs its first
-GitHub run after publication; the local Linux Docker rehearsal passed.
+and Linux ARM64 and x86_64. The first run containing these checks is
+[GitHub run 37118119096](https://github.com/tzap-org/zmanager/actions/runs/37118119096),
+triggered by `64fccb0`; its platform results are pending. The local Linux
+Docker rehearsal passed.
 
 GitHub-hosted runners normally have passwordless sudo. The helper creates a
 separate standard account with a random fixture password and a temporary
@@ -138,6 +140,26 @@ The overwrite check deliberately expects a nonzero exit and an error containing
 contents preserved` for this case. The CLI retains that specific extraction
 error and exit status without appending the ambiguous `Sudo extraction failed
 or was cancelled` message.
+
+## Final local verification of `64fccb0`
+
+| Suite | macOS ARM64 | Linux ARM64 Docker |
+| --- | --- | --- |
+| Workspace | 2,263 passed, 2 ignored | 2,144 passed, 2 ignored |
+| Isolated reduced core | 1,866 passed, 1 ignored | 1,750 passed, 1 ignored |
+| Isolated reduced FFI | 23 passed | 23 passed |
+| Release offline CLI | 224 passed | 223 passed |
+
+Format, workspace Clippy/check, dependency profile audits and workflow syntax
+validation passed. The Docker container's external network was disconnected
+before all these Rust tests; loopback remained available. The workspace and
+profile suites ran as root in this final container, so the disposable non-root
+account separately verified the release binary's permission and terminal paths,
+including actual sudo authentication, cancellation at the password prompt,
+overwrite rejection and separate encrypted-archive authentication. Its account,
+sudoers rule and root-owned extraction fixtures were removed. On macOS, the
+release binary passed the consent/cancellation/unattended terminal harness;
+actual user authentication was verified by the earlier interactive smoke test.
 
 ## Critical review of offline build coverage
 
