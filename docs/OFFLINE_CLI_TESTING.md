@@ -485,9 +485,9 @@ remain byte-exact. Once capacity is released, the document retry must pass
 cryptographic verification and the contact retry must pass verified import
 into a separate fresh state directory. No production service is involved.
 
-Interruption checks stop the real CLI at its staged-file fsync: strace injects
-SIGKILL on Linux and LLDB stops at fsync then kills its own launched process on
-macOS. Linux tracing includes only fsync metadata and checks the annotated file
+Interruption checks stop the real CLI at its staged-file synchronization: strace
+injects SIGKILL at fsync on Linux and LLDB stops at fcntl(F_FULLFSYNC) then kills
+its own launched process on macOS. Linux tracing includes only fsync metadata and checks the annotated file
 descriptor identifies the intended output. Both require a nonempty staged
 export, preservation of the original output and catalogue, and successful
 retry followed by the workflow's cryptographic checks. Only the observed
@@ -522,3 +522,25 @@ workspace gate and Linux reduced-profile export suite passed after sharing the
 export test command construction across platforms. Abrupt signed-export
 termination on Windows is still not established by this filesystem addition;
 its separate archive writer-kill check remains required.
+
+## macOS release interruption checkpoint and installed identity workflow
+
+The release interruption test initially watched libc `fsync`, but Rust's Apple
+`sync_all` calls `fcntl(F_FULLFSYNC)`. Reproduction against the downloaded release
+failed both inside and outside the network sandbox, identifying a debugger
+checkpoint error. The corrected LLDB breakpoint checks opcode 51 in the second
+C ABI argument on ARM64 and x86_64. It requires an actual breakpoint stop and a
+nonempty staged export before asserting preservation and retry.
+
+The checksum-verified macOS ARM64 package from Preview 37129928428 at `6ba7bc6`
+passed all ten reduced-profile identity workflow tests with external networking
+denied, including document/contact interruption and recovery. The package test
+accepts `--workflow` followed by a test command and exposes its still-unpacked
+executable through `ZMANAGER_AUDIT_BINARY`; this prevents the workflow from
+silently testing a separate Cargo executable. The basic package smoke tests
+passed on all six Preview architectures. The matching Linux ARM64 static musl
+package passed all eleven reduced-profile identity tests in Docker with a
+private filesystem D-Bus and a network namespace denying outbound TCP. That run
+also required actual signed-export disk-full preservation/recovery and killed
+document/contact writer recovery. This evidence does not establish packaged
+identity workflow coverage for the other four architectures.

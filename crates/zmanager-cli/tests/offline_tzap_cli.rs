@@ -61,19 +61,24 @@ fn assert_export_survives_interruption(command: &mut Command, destination: &std:
     }
     #[cfg(target_os = "macos")]
     {
+        const F_FULLFSYNC: u32 = 51;
         let Some(lldb) = find_on_path("lldb") else {
-            record_optional_skip("LLDB is required to kill the export at its staged-file fsync");
+            record_optional_skip("LLDB is required to kill the export at its staged-file full sync");
             return;
         };
+        // Rust's Apple sync_all uses fcntl(F_FULLFSYNC), not libc fsync.
+        // The opcode is public metadata, read from the second C ABI argument.
+        let command_register = if cfg!(target_arch = "aarch64") { "$x1" } else { "$rsi" };
+        let breakpoint = format!("breakpoint set -n fcntl -n fcntl$NOCANCEL -n __fcntl_nocancel -c '({command_register} & 0xffffffff) == {F_FULLFSYNC}'");
         let output = Command::new(lldb)
-            .args(["--batch", "-o", "breakpoint set -n fsync", "-o", "run", "-o", "process kill", "--"])
+            .args(["--batch", "-o", &breakpoint, "-o", "run", "-o", "process kill", "--"])
             .arg(command.get_program())
             .args(command.get_args())
             .output()
             .unwrap();
         assert_success("LLDB export interruption", &output);
         let trace = String::from_utf8_lossy(&output.stdout);
-        assert!(trace.contains("stop reason = breakpoint") && trace.contains("fsync"), "export did not stop at fsync: {trace}");
+        assert!(trace.contains("stop reason = breakpoint") && trace.contains("fcntl"), "export did not stop at full sync: {trace}");
     }
     assert_eq!(fs::read(destination).unwrap(), previous, "killed export replaced the existing output");
     assert_eq!(fs::read(&catalogue).unwrap(), previous_catalogue, "killed export changed the identity catalogue");

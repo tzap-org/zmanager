@@ -104,6 +104,12 @@ def main():
         binary = installed / ("zm.exe" if sys.platform == "win32" else "zm")
         assert binary.is_file(), "offline executable is missing"
         exercise(binary, root)
+        if len(sys.argv) > 2:
+            assert sys.argv[2] == "--workflow" and len(sys.argv) > 3, "expected --workflow followed by a test command"
+            environment = os.environ.copy()
+            environment["ZMANAGER_AUDIT_BINARY"] = str(binary)
+            subprocess.run(sys.argv[3:], env=environment, check=True)
+            print("PASS: offline identity workflow against the checksum-verified installed executable", flush=True)
 
 
 if __name__ == "__main__":
