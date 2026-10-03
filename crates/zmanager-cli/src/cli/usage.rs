@@ -219,6 +219,12 @@ Safety:
   Redirected input/output, --json, --quiet, and --password-stdin never prompt
   for elevation. Administrator retries retain the original options and may
   ask again for the archive password.
+  On macOS and Linux, a protected extraction destination offers an explicit
+  sudo retry before writing files. Sudo requests your system password when
+  needed; any archive password is requested separately. The default is No.
+  Redirected input/output, --json, --quiet, and --password-stdin never offer
+  sudo. --no-password-prompt also disables sudo retries. Files written by a
+  sudo retry may be owned by root.
 ";
 
 pub(crate) const LIST_HELP: &str = "\

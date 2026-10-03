@@ -32,6 +32,10 @@ const OVERWRITE_INVALID_CHOICE: &str = "please answer yes, no, all, rename, or q
 #[must_use]
 pub fn run_from_env() -> ExitCode {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    #[cfg(unix)]
+    if raw_args.first().is_some_and(|arg| arg == crate::cli::unix_elevation::RETRY_COMMAND) {
+        return crate::cli::unix_elevation::run_elevated_retry(|| run_with_args(raw_args.into_iter().skip(1).collect()));
+    }
     #[cfg(windows)]
     if raw_args.first().is_some_and(|arg| arg == crate::cli::windows_elevation::RETRY_COMMAND) {
         return crate::cli::windows_elevation::run_elevated_retry(|| run_with_args(raw_args.into_iter().skip(1).collect()));

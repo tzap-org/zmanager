@@ -635,9 +635,10 @@ fn bash_completion_matches_help_navigation_contract() {
 
     let completion = workspace_root().join("completions/zm.bash");
     let output = Command::new("bash")
-        .arg("-lc")
+        .args(["--noprofile", "--norc", "-c"])
         .arg(
             r#"
+export PATH="$(dirname "$2"):$PATH"
 source "$1"
 run_case() {
   local name="$1"
@@ -666,6 +667,7 @@ run_case list_files zm list ""
         )
         .arg("_")
         .arg(completion)
+        .arg(zm_path())
         .current_dir(&temp)
         .output()
         .unwrap();
@@ -674,9 +676,11 @@ run_case list_files zm list ""
     assert_success("bash completion contract", &output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_contains(&stdout, "top: help\n");
-    // Without a Full executable on PATH, the static script defaults to the
-    // offline command surface. Explicitly typed auth paths remain recognizable.
-    assert_contains(&stdout, "help_topics: create extract list test plan formats tzap sign verify contact share certs doctor completions\n");
+    let hosted_topics = if cfg!(feature = "tzap-online") { "auth me cert device " } else { "" };
+    assert_contains(
+        &stdout,
+        &format!("help_topics: create extract list test plan formats tzap sign verify contact share certs {hosted_topics}doctor completions\n"),
+    );
     assert_contains(&stdout, "list_options: --help");
     assert_contains(&stdout, "--tree");
     assert_contains(&stdout, "create_options: --help");

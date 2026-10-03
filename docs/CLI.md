@@ -63,7 +63,17 @@ command arguments. Scripts can pipe one password line into `--password-stdin`;
 
 Output archives and extracted files are protected against accidental overwrite.
 Use `create --force` to replace an archive, or `extract --overwrite always` when
-you intend to replace extracted files. Quote filter patterns:
+you intend to replace extracted files.
+
+On macOS and Linux, extracting into a protected destination offers a sudo
+retry before writing files. The default answer is No. Sudo requests your
+system password when needed; an encrypted archive's password is requested
+separately. The retry keeps your extraction options, and its output may be
+owned by root. Choose a writable destination to avoid needing sudo.
+Redirected input/output, `--json`, `--quiet`, `--password-stdin`, and
+`--no-password-prompt` disable this retry prompt.
+
+Quote filter patterns:
 
 ```powershell
 zm extract project.zip -C selected/ --include 'project/docs/**'

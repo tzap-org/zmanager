@@ -188,6 +188,10 @@ fn run_engine_extract(
     let archive_path = archive.as_ref().to_path_buf();
     let destination_path = destination.as_ref().to_path_buf();
     let format_kind = detect_archive_format(&archive_path);
+    #[cfg(unix)]
+    if let Some(code) = super::unix_elevation::offer_for_destination(&destination_path, global, allow_elevation) {
+        return code;
+    }
     #[cfg(windows)]
     if allow_elevation
         && format_kind == ArchiveFormatKind::Tzap
