@@ -76,9 +76,9 @@ forensic-vfs-engine = { path = "../../../forensic-vfs-engine", version = "=0.1.1
 # The engine does not re-export the contract types (FileSystem, FsKind, ...);
 # same floor as the engine so cargo unifies to one copy.
 forensic-vfs = "0.7"
-# Pinned fork: hybrid ISO session validation fix, aligned with the engine's
-# forensic-vfs 0.7 dependency until a compatible upstream release exists.
-iso = { git = "https://github.com/frankmanzhu/iso9660-forensic", rev = "2e8619d", version = "0.8.0", package = "iso9660-forensic" }
+# Use the upstream ISO commit carrying the merged hybrid-session fixes; the
+# published 0.8.0 crate predates them. Switch back to crates.io after release.
+iso = { git = "https://github.com/SecurityRonin/iso9660-forensic", rev = "2a2ab27", version = "0.8.0", package = "iso9660-forensic" }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 zmanager-apple-archive = { workspace = true }

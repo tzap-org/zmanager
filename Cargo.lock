@@ -2736,7 +2736,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "iso9660-forensic"
 version = "0.8.0"
-source = "git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d#2e8619d6cc39e4741bdc8c17812d76470a76c8ab"
+source = "git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27#2a2ab27221aa90f12549fcd2dc3b945d28518cec"
 dependencies = [
  "forensicnomicon",
  "iso9660-forensic-core",
@@ -2748,9 +2748,8 @@ dependencies = [
 [[package]]
 name = "iso9660-forensic-core"
 version = "0.1.0"
-source = "git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d#2e8619d6cc39e4741bdc8c17812d76470a76c8ab"
+source = "git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27#2a2ab27221aa90f12549fcd2dc3b945d28518cec"
 dependencies = [
- "forensic-vfs",
  "safe-read 0.1.0",
  "sha1 0.10.7",
  "sha2 0.10.9",
