@@ -4,17 +4,35 @@
 
 The sections below preserve the sequence of fixes and verification. Their older
 pending statements describe the state at that revision; this table records the
-current evidence and outstanding checks.
+current evidence and remaining manual checks.
 
 | Goal requirement | Evidence | Outstanding verification |
 | --- | --- | --- |
-| Native secret-store failure and recovery | Linux ARM64 packaged executable passed unavailable service, locked collection, native cancellation, authentication/retry, ENOSPC and killed-keygen recovery, including an outbound-denied run | Updated macOS unattended Keychain behavior in native CI; macOS GUI consent/denial remains an explicitly tracked interactive check |
-| Installed packages and first launch | Preview 37129928428 at `6ba7bc6` passed all six package architectures; actual macOS/Linux ARM64 packages passed full identity workflows; Preview 37134929673's macOS ARM64 package at `178bb4f` passed its installed identity workflow with network denied | Intel macOS producer gate and remaining latest package jobs; new Windows/Linux package identity consumer audit requires runtime validation |
-| Optional compatibility omissions | CI emits a skip inventory and uploads its JSONL evidence; successful Linux ARM64/x86_64 and Windows x64 jobs in run 37129928507 include reporting | Inspect inventories from the remaining jobs; skipped checks are never counted as verified |
-| Disk-full and interrupted writes | Local macOS ARM64, Docker Linux ARM64, Linux x86_64 CI and both Windows architectures establish their required recovery checks; Linux packaged native-key crash recovery also passed; exact Windows interruption helper passed against a native ARM64 staged writer | Corrected macOS Intel checkpoint; actual Windows signed document/contact interruption runs; latest inherited-lock fix requires native matrix validation |
-| Offline network enforcement | Actual macOS/Linux ARM64 package workflows passed with enforced denial; Linux native GUI recovery also passed in a private network namespace; Windows x64 CI confirmed both firewall paths | Finish the matching corrected six-architecture CI matrix |
-| Required Rust gates and fixes | `178bb4f` passed local formatting, workspace Clippy/check and workspace tests; `f7df16c` passed affected CLI tests and workspace Clippy/check; inherited-descriptor lock regression failed before its fix and passed on macOS/Linux afterward | Follow-up finish gates and native CI results remain required before claiming parity complete |
-| Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; no signing/notarization scope was added | Browser quarantine and Gatekeeper consent remain a tracked manual distribution check |
+| Native secret-store failure and recovery | The packaged Linux ARM64/x64 consumers passed unavailable and locked service, native cancellation, authentication/retry, ENOSPC and interrupted-keygen recovery with outbound networking denied in [audit 37152763090](https://github.com/tzap-org/zmanager/actions/runs/37152763090). The native Keychain audit passed on Intel and ARM64 in [audit 37144143940](https://github.com/tzap-org/zmanager/actions/runs/37144143940). | macOS GUI Keychain consent/denial remains an explicitly tracked interactive check. |
+| Installed packages and first launch | [Package Preview 37150369200](https://github.com/tzap-org/zmanager/actions/runs/37150369200) built all six macOS, Linux musl and Windows artifacts at `2ffacf7` and passed installed macOS package checks on Intel and ARM64. The exact artifacts then passed all four Linux/Windows identity consumer audits with outbound access denied and zero optional skips in [audit 37152763090](https://github.com/tzap-org/zmanager/actions/runs/37152763090). | None for the tested package identities and first-launch flows. Browser quarantine and Gatekeeper launch behavior remains manual. |
+| Optional compatibility omissions | The successful six-target [CI run 37150369223](https://github.com/tzap-org/zmanager/actions/runs/37150369223) uploaded skip inventories for every target. Skips stay visible and are not counted as verified compatibility checks. | Optional external-tool comparisons remain unverified where the inventory reports a skip; see the inventory summary below. |
+| Disk-full and interrupted writes | All platform jobs and the architecture/binding checks passed in [CI 37150369223](https://github.com/tzap-org/zmanager/actions/runs/37150369223), including the corrected macOS Intel checkpoint, native Windows document/contact interruption and disk-full paths, and Linux inherited-lock regression. The exact four-target package audit also passed in [37152763090](https://github.com/tzap-org/zmanager/actions/runs/37152763090). | None for the automated failure and recovery paths listed in these workflows. |
+| Offline network enforcement | [CI 37150369223](https://github.com/tzap-org/zmanager/actions/runs/37150369223) passed enforced denial on macOS, Linux and Windows. The exact packaged Linux/Windows consumers passed positive-control and denial probes in [audit 37152763090](https://github.com/tzap-org/zmanager/actions/runs/37152763090). | None for automated network-denial coverage. |
+| Required Rust gates and fixes | On `2ffacf7`, `cargo fmt`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `cargo check --workspace --all-targets` all passed locally. The full native CI matrix passed in [run 37150369223](https://github.com/tzap-org/zmanager/actions/runs/37150369223). | None. |
+| Current macOS distribution policy | Unsigned portable tarballs are documented in INSTALL.md; the package preview passed the installed checks on both macOS architectures. | Browser quarantine, Gatekeeper launch and GUI Keychain consent remain tracked manual distribution checks. |
+
+The latest compatibility inventories contain 49 skipped checks per macOS
+architecture, 58 per Linux architecture, and 121 per Windows architecture.
+They report missing optional tools such as `rar`, `bsdtar`, `7zz`, `zip`,
+`qemu-img`, `wixl`, `msiextract`, `pkgutil`, `xar`, `lzip`, `lz4`, `lzop`,
+`compress` and `lrzip`; macOS-only `hdiutil` checks are also skipped off macOS.
+The macOS UDF `hdiutil attach` comparison reports an unrecognized image. The
+RAR oracle remains absent because it is proprietary; committed RAR fixtures and
+the native decoder tests still run. The four bounded-filesystem skips per target
+are the optional export checks in the ordinary CI suite. The Linux and Windows
+package identity audits separately enable and pass the signed-export ENOSPC
+checks. The Windows compatibility suite also records its PowerShell-only completion
+contract as a platform skip. These inventory entries are exclusions from the
+reported coverage, not passes.
+
+Everything below this current-status summary is a chronological investigation
+log. Any pending, open or required status in those older checkpoints describes
+the state at that point and is superseded by the evidence in this table.
 
 Both Windows jobs in CI 37133100682 at `4b296bb` completed successfully. Their
 native `cmd` discovery test passed in debug, reduced release and outbound-denied
@@ -27,8 +45,9 @@ ENOSPC omissions are the document/contact checks in the other two suite runs.
 CI 37134929597 at `178bb4f` exposed an inherited-file-descriptor lock conflict in
 Linux x86_64 identity setup. A targeted Linux stress probe and deterministic
 regression reproduced the problem; the follow-up explicitly unlocks the journal
-when its writer completes. Other native jobs and Package Preview 37134929673
-remain under inspection. The goal is not complete.
+when its writer completes. At that checkpoint, other native jobs and Package
+Preview 37134929673 were still under inspection; their final results are
+summarized above.
 
 ## Initial parity baseline
 
@@ -210,7 +229,7 @@ Dependency audits now reject HTTP transport (`reqwest`) in the default CLI as
 well as reduced CLI, core and reduced FFI. Default FFI deliberately includes
 LocalSend and its transport, so it is not subject to that HTTP exclusion.
 
-Remaining coverage limits, in priority order:
+Coverage limits recorded at this checkpoint (historical):
 
 1. Native secret-store failure UX: end-to-end signing/key generation against a
    locked, unavailable, or user-denied Keychain/Secret Service. Public certificate
