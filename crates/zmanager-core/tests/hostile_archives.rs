@@ -51,6 +51,69 @@ fn zip_hostile_fixtures_are_rejected() {
 }
 
 #[test]
+#[cfg(unix)]
+fn symlink_chains_cannot_escape_fresh_extraction_roots() {
+    use zmanager_core::engine::{ArchiveSource, ExtractOptions, OpenOptions, create_default_engine};
+
+    let temp = TestDir::new("symlink-chain-escape");
+    for reverse in [false, true] {
+        let mut links = [("a", "."), ("b", "a/..")];
+        if reverse {
+            links.reverse();
+        }
+        for format in ["tar", "zip"] {
+            let archive = temp.path(format!("chain-{reverse}.{format}"));
+            if format == "tar" {
+                raw_tar_case(
+                    archive.clone(),
+                    &[
+                        RawTarEntry::symlink(links[0].0, links[0].1),
+                        RawTarEntry::symlink(links[1].0, links[1].1),
+                        RawTarEntry::file("b/escaped.txt", b"marker"),
+                    ],
+                );
+            } else {
+                let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+                for (name, target) in links {
+                    writer.add_symlink(name, target, SimpleFileOptions::default()).unwrap();
+                }
+                writer.start_file("b/escaped.txt", SimpleFileOptions::default()).unwrap();
+                writer.write_all(b"marker").unwrap();
+                writer.finish().unwrap();
+            }
+            let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive), OpenOptions::default()).unwrap();
+            let mut options = ExtractOptions { destination: temp.path(format!("out-{reverse}-{format}")), ..Default::default() };
+
+            let result = handle.extract(&mut options);
+
+            assert!(!temp.path("escaped.txt").exists(), "{format} wrote outside a fresh destination");
+            assert!(result.is_err(), "{format} must reject traversal through a symlink");
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn extraction_refuses_preexisting_symlink_ancestors_even_with_replace() {
+    use zmanager_core::engine::{ArchiveSource, ExtractOptions, OpenOptions, create_default_engine};
+    use zmanager_core::safety::OverwritePolicy;
+
+    let temp = TestDir::new("existing-symlink-ancestor");
+    temp.create_dir("outside");
+    let archive = zip_file_case(temp.path("payload.zip"), "redirect/escaped.txt", b"marker");
+    for overwrite in [OverwritePolicy::Refuse, OverwritePolicy::Replace] {
+        let destination = temp.path(format!("out-{overwrite:?}"));
+        fs::create_dir(&destination).unwrap();
+        std::os::unix::fs::symlink(temp.path("outside"), destination.join("redirect")).unwrap();
+        let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive.clone()), OpenOptions::default()).unwrap();
+        let mut options = ExtractOptions { destination, policy: ExtractionPolicy { overwrite, ..Default::default() }, ..Default::default() };
+
+        assert!(handle.extract(&mut options).is_err());
+        assert!(!temp.path("outside/escaped.txt").exists());
+    }
+}
+
+#[test]
 fn tar_zst_hostile_fixtures_are_rejected() {
     let temp = TestDir::new("tar_zst_hostile_fixtures_are_rejected");
     let cases = [

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -254,6 +254,8 @@ pub struct ExtractionSafetyPlanner<'a> {
     compiled_includes: Vec<CompiledPattern>,
     compiled_excludes: Vec<CompiledPattern>,
     seen_paths: HashMap<String, String>,
+    planned_symlinks: HashSet<String>,
+    required_non_symlink_paths: HashSet<String>,
     planned_expanded_bytes: u64,
     planned_entries: u64,
     /// Lowest rename suffix not yet known to be taken, keyed by the conflicting
@@ -327,6 +329,8 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             compiled_includes,
             compiled_excludes,
             seen_paths: HashMap::new(),
+            planned_symlinks: HashSet::new(),
+            required_non_symlink_paths: HashSet::new(),
             planned_expanded_bytes: 0,
             planned_entries: 0,
             next_rename_index: HashMap::new(),
@@ -389,10 +393,94 @@ impl<'a> ExtractionSafetyPlanner<'a> {
 
         match plan {
             PlannedDestination::Write(plan) => {
+                self.validate_write_paths(entry, &plan)?;
                 self.reserve_expanded_size(entry)?;
+                self.record_write_paths(entry, &plan);
                 Ok(plan.into_decision())
             }
             PlannedDestination::Skip { normalized_archive_path, reason } => Ok(ExtractionDecision::Skip { normalized_archive_path, reason }),
+        }
+    }
+
+    // Like tzap-core's restore graph, selected descendants must never traverse
+    // a selected symlink. Track planned paths as well as on-disk paths because
+    // callback-based backends validate the whole archive before writing it.
+    fn validate_write_paths(&self, entry: &ExtractionEntry, plan: &PlannedWrite) -> Result<(), ExtractionSafetyError> {
+        for ancestor in self.destination_ancestors(&plan.destination_path) {
+            self.require_non_symlink(&ancestor, &entry.archive_path)?;
+        }
+        if matches!(entry.kind, ExtractionEntryKind::Symlink { .. })
+            && self.required_non_symlink_paths.contains(&case_collision_key(&plan.destination_path.to_string_lossy()))
+        {
+            return Err(ExtractionSafetyError::SymlinkAncestor { archive_path: entry.archive_path.clone(), ancestor_path: plan.destination_path.clone() });
+        }
+        if let Some(target) = &plan.link_target_path {
+            for path in self.destination_ancestors(target).into_iter().chain(std::iter::once(target.clone())) {
+                self.require_non_symlink(&path, &entry.archive_path)?;
+            }
+        }
+        if let ExtractionEntryKind::Symlink { target } = &entry.kind
+            && let Some(parent) = plan.destination_path.parent()
+        {
+            for ancestor in self.destination_ancestors(&parent.join(target)) {
+                self.require_non_symlink(&ancestor, &entry.archive_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn require_non_symlink(&self, path: &Path, archive_path: &str) -> Result<(), ExtractionSafetyError> {
+        let metadata = std::fs::symlink_metadata(path);
+        if self.planned_symlinks.contains(&case_collision_key(&path.to_string_lossy())) || metadata.as_ref().is_ok_and(is_symlink_or_reparse_point) {
+            return Err(ExtractionSafetyError::SymlinkAncestor { archive_path: archive_path.to_owned(), ancestor_path: path.to_path_buf() });
+        }
+        if let Err(error) = metadata
+            && !destination_is_absent(&error)
+        {
+            return Err(ExtractionSafetyError::DestinationProbe {
+                archive_path: archive_path.to_owned(),
+                destination_path: path.to_path_buf(),
+                message: error.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn destination_ancestors(&self, path: &Path) -> Vec<PathBuf> {
+        let mut ancestors = Vec::new();
+        let mut current = self.destination_root.clone();
+        if let Some(parent) = path.parent()
+            && let Ok(relative) = parent.strip_prefix(&self.destination_root)
+        {
+            for component in relative.components() {
+                current.push(component);
+                current = lexically_normalize(&current);
+                ancestors.push(current.clone());
+            }
+        }
+        ancestors
+    }
+
+    fn record_write_paths(&mut self, entry: &ExtractionEntry, plan: &PlannedWrite) {
+        let mut required = self.destination_ancestors(&plan.destination_path);
+        if matches!(entry.kind, ExtractionEntryKind::Directory) {
+            required.push(plan.destination_path.clone());
+        }
+        if let Some(target) = &plan.link_target_path {
+            required.extend(self.destination_ancestors(target));
+            required.push(target.clone());
+        }
+        if let ExtractionEntryKind::Symlink { target } = &entry.kind
+            && let Some(parent) = plan.destination_path.parent()
+        {
+            required.extend(self.destination_ancestors(&parent.join(target)));
+        }
+        self.required_non_symlink_paths.extend(required.iter().map(|path| case_collision_key(&path.to_string_lossy())));
+        let key = case_collision_key(&plan.destination_path.to_string_lossy());
+        if matches!(entry.kind, ExtractionEntryKind::Symlink { .. }) {
+            self.planned_symlinks.insert(key);
+        } else {
+            self.planned_symlinks.remove(&key);
         }
     }
 
@@ -510,6 +598,26 @@ impl<'a> ExtractionSafetyPlanner<'a> {
 
         if !resolved_target.starts_with(&self.destination_root) {
             return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
+        }
+
+        // An existing final target can itself be a symlink. Resolve it before
+        // accepting the new link; lexical containment alone cannot vouch for
+        // a link to an already-present redirect outside the extraction root.
+        match parent.join(target).canonicalize() {
+            Ok(actual) => {
+                let root = self.destination_root.canonicalize().unwrap_or_else(|_| self.destination_root.clone());
+                if !actual.starts_with(root) {
+                    return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
+                }
+            }
+            Err(error) if destination_is_absent(&error) => {}
+            Err(error) => {
+                return Err(ExtractionSafetyError::DestinationProbe {
+                    archive_path: destination_path.to_string_lossy().into_owned(),
+                    destination_path: parent.join(target),
+                    message: error.to_string(),
+                });
+            }
         }
 
         Ok(())
@@ -643,6 +751,8 @@ pub enum ExtractionSafetyError {
     OverwriteAborted { archive_path: String, destination_path: PathBuf },
     /// Destination existence could not be checked safely.
     DestinationProbe { archive_path: String, destination_path: PathBuf, message: String },
+    /// A selected output or link target traverses a symlink or reparse point.
+    SymlinkAncestor { archive_path: String, ancestor_path: PathBuf },
     /// Entry type is unsafe by default.
     UnsafeFileType { archive_path: String },
     /// Link target resolves outside the extraction root.
@@ -715,6 +825,9 @@ impl fmt::Display for ExtractionSafetyError {
             }
             Self::DestinationProbe { archive_path, destination_path, message } => {
                 write!(f, "archive path {archive_path} could not check {}: {message}", destination_path.display())
+            }
+            Self::SymlinkAncestor { archive_path, ancestor_path } => {
+                write!(f, "archive path {archive_path} traverses a symlink or reparse ancestor: {}", ancestor_path.display())
             }
             Self::UnsafeFileType { archive_path } => {
                 write!(f, "archive path {archive_path} has an unsafe file type")
@@ -1014,6 +1127,19 @@ fn destination_is_absent(error: &std::io::Error) -> bool {
     matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
 }
 
+fn is_symlink_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// Removes an existing destination path before an explicit overwrite write.
 ///
 /// This uses symlink metadata so replacing a symlink removes the link itself
@@ -1303,6 +1429,20 @@ mod tests {
             panic!("expected renamed write decision");
         };
         assert_eq!(destination_path, temp.path("out/file 2.txt"));
+    }
+
+    #[test]
+    fn planning_rejects_a_symlink_that_would_redirect_an_earlier_selected_descendant() {
+        let temp = TestDir::new("planned-symlink-ancestor");
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy::default());
+        planner.validate_entry(&file_entry("link/file.txt")).unwrap();
+        let entry = ExtractionEntry {
+            archive_path: "link".to_owned(),
+            kind: ExtractionEntryKind::Symlink { target: PathBuf::from(".") },
+            uncompressed_size: None,
+            compressed_size: None,
+        };
+        assert!(matches!(planner.validate_entry(&entry), Err(ExtractionSafetyError::SymlinkAncestor { .. })));
     }
 
     #[test]

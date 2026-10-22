@@ -407,13 +407,15 @@ impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
     fn clear_inventory(&mut self, account_key: &str) -> Result<(), TzapLocalIdentityStoreError> {
         use crate::identity_catalog::{FileTzapIdentityCatalogStore, TzapIdentityCatalogStore as _};
 
-        let mut catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
-        let _ = catalog_store.clear_catalog(account_key);
-        let secrets_root = self.root.join("secrets").join(account_key);
-        if secrets_root.exists() {
-            let _ = fs::remove_dir_all(&secrets_root);
-        }
         let path = self.inventory_path(account_key)?;
+        let mut catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
+        catalog_store.clear_catalog(account_key)?;
+        let secrets_root = self.root.join("secrets").join(account_key);
+        match fs::remove_dir_all(&secrets_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -783,6 +785,21 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn clearing_inventory_rejects_invalid_accounts_before_deleting_files() {
+        let temp = TestDir::new("clear-invalid-account");
+        temp.create_dir("store/secrets");
+        let victim = temp.path("victim");
+        let absolute_account = victim.to_str().unwrap();
+        for account in [absolute_account, "../../victim"] {
+            temp.write_file("victim/keep.txt", b"keep");
+            let mut store = FileTzapLocalIdentityStore::new(temp.path("store"));
+
+            assert!(store.clear_inventory(account).is_err());
+            assert_eq!(fs::read(victim.join("keep.txt")).unwrap(), b"keep");
+        }
+    }
 
     #[test]
     fn in_memory_identity_store_round_trips_inventory() {

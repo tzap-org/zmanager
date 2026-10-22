@@ -221,6 +221,15 @@ pub fn verify_tzap_contact_card_with_missing_status_caveat(
     }
     let chain_der = contact_chain_der(&leaf_der, &intermediate_chain_der);
     let validation = validate_contact_card_chain(&chain_der, options)?;
+    let mut claimed_metadata = json_field(payload_object, "signing_public_metadata")?.clone();
+    if let Some(metadata) = claimed_metadata.as_object_mut() {
+        // The certificate profile permits an absent organization as either
+        // an omitted field or null; both describe the same personal identity.
+        metadata.entry("public_org_id").or_insert(Value::Null);
+    }
+    if claimed_metadata != public_metadata_payload(&validation.public_metadata) {
+        return Err(TzapContactCardError::InvalidField { field: "signing_public_metadata" });
+    }
     let signing_certificate_sha256 = trust::certificate_sha256_identifier_for_der(&leaf_der);
     if signing_certificate_sha256 != json_string(payload_object, "signing_certificate_sha256")? {
         return Err(TzapContactCardError::InvalidField { field: "signing_certificate_sha256" });
@@ -326,6 +335,15 @@ pub fn accepted_contact_recipients(
             {
                 return Err(TzapContactCardError::InvalidField { field: "expires_at_unix_seconds" });
             }
+            if contact.trust_anchor_type != TzapTrustAnchorType::Untrusted {
+                let der = decode_base64url(&json_string(payload_object, "signing_certificate_der")?, "signing_certificate_der")?;
+                let certificate = X509::from_der(&der).map_err(|error| TzapContactCardError::CertificateChain(error.to_string()))?;
+                let time = i64::try_from(now_unix_seconds).map_err(|_| TzapContactCardError::InvalidField { field: "now_unix_seconds" })?;
+                let time = openssl::asn1::Asn1Time::from_unix(time).map_err(|error| TzapContactCardError::CertificateChain(error.to_string()))?;
+                if certificate.not_before() > time || certificate.not_after() < time {
+                    return Err(TzapContactCardError::CertificateChain("contact signing certificate is not valid at selection time".to_owned()));
+                }
+            }
             let recipient_public_key_der = decode_base64url(&json_string(payload_object, "recipient_public_key")?, "recipient_public_key")?;
             Ok(TzapAcceptedContactRecipient {
                 contact_id: contact.contact_id.clone(),
@@ -372,20 +390,24 @@ fn contact_card_payload(
         "expires_at_unix_seconds": request.expires_at_unix_seconds,
         "signing_certificate_sha256": certificate.certificate_sha256,
         "signing_certificate_der": URL_SAFE_NO_PAD.encode(&certificate.leaf_certificate_der),
-        "signing_public_metadata": {
-            "version": certificate.public_metadata.version,
-            "public_signer_id": certificate.public_metadata.public_signer_id,
-            "public_org_id": certificate.public_metadata.public_org_id,
-            "public_device_id": certificate.public_metadata.public_device_id,
-            "assurance_level": certificate.public_metadata.assurance_level.as_str(),
-            "policy_oid": certificate.public_metadata.policy_oid,
-        },
+        "signing_public_metadata": public_metadata_payload(&certificate.public_metadata),
     });
     if !request.compact {
         payload["intermediate_chain_der"] =
             json!(trust::public_intermediate_chain_der(&certificate.intermediate_chain_der).iter().map(|der| URL_SAFE_NO_PAD.encode(der)).collect::<Vec<_>>());
     }
     payload
+}
+
+fn public_metadata_payload(metadata: &trust::TzapCertificatePublicMetadata) -> Value {
+    json!({
+        "version": metadata.version,
+        "public_signer_id": metadata.public_signer_id,
+        "public_org_id": metadata.public_org_id,
+        "public_device_id": metadata.public_device_id,
+        "assurance_level": metadata.assurance_level.as_str(),
+        "policy_oid": metadata.policy_oid,
+    })
 }
 
 fn sign_contact_card_payload(
@@ -402,9 +424,12 @@ fn validate_contact_card_chain(
     embedded_chain_der: &[Vec<u8>],
     options: &TzapContactCardImportOptions<'_>,
 ) -> Result<trust::TzapCertificateProfileValidation, TzapContactCardError> {
+    let mut profile_options = options.certificate_profile_options.clone();
+    profile_options.validation_time_unix_seconds =
+        Some(u64::try_from(options.verifier_time_unix_seconds).map_err(|_| TzapContactCardError::InvalidField { field: "verifier_time_unix_seconds" })?);
     let mut official_error = None;
     for chain_der in crate::trust::candidate_chains(embedded_chain_der, &options.official_root_certificates_der) {
-        match trust::validate_official_tzap_certificate_chain_der(&chain_der, options.official_root_pins, &options.certificate_profile_options) {
+        match trust::validate_official_tzap_certificate_chain_der(&chain_der, options.official_root_pins, &profile_options) {
             Ok(validation) => return Ok(validation),
             Err(error) => official_error = Some(error),
         }
@@ -418,7 +443,7 @@ fn validate_contact_card_chain(
         if !options.custom_trust_root_sha256.iter().any(|configured| configured == &root_sha256) {
             continue;
         }
-        match trust::validate_custom_tzap_certificate_chain_der(&chain_der, &options.certificate_profile_options) {
+        match trust::validate_custom_tzap_certificate_chain_der(&chain_der, &profile_options) {
             Ok(validation) => return Ok(validation),
             Err(error) => custom_error = Some(error),
         }
@@ -524,9 +549,64 @@ pub(crate) mod tests {
         assert_eq!(contact.verification_state, verified.verification_state);
         assert!(contact.missing_status_caveat);
         assert_eq!(fresh_store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap().contacts.len(), 1);
-        let selected_recipients = super::accepted_contact_recipients(&fresh_store, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, &[contact.contact_id], 1_001).unwrap();
+        let selected_recipients = super::accepted_contact_recipients(
+            &fresh_store,
+            DEFAULT_IDENTITY_INVENTORY_ACCOUNT,
+            &[contact.contact_id],
+            u64::try_from(options.verifier_time_unix_seconds).unwrap(),
+        )
+        .unwrap();
         assert_eq!(selected_recipients.len(), 1);
         assert!(selected_recipients[0].missing_status_caveat);
+    }
+
+    #[test]
+    fn accepted_contact_recipients_rejects_a_certificate_that_expired_after_import() {
+        let fixture = ContactFixture::new();
+        let card = export_tzap_contact_card(&fixture.store(), &fixture.export_request()).unwrap();
+        let mut store = InMemoryTzapLocalIdentityStore::new();
+        let contact = import_tzap_contact_card(&mut store, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, &card, &fixture.import_options(), Some(1_000)).unwrap();
+        let (_, certificate) = X509Certificate::from_der(&fixture.certificate.leaf_certificate_der).unwrap();
+        let after_expiry = u64::try_from(certificate.validity().not_after.timestamp() + 1).unwrap();
+
+        assert!(super::accepted_contact_recipients(&store, DEFAULT_IDENTITY_INVENTORY_ACCOUNT, &[contact.contact_id], after_expiry).is_err());
+    }
+
+    #[test]
+    fn contact_card_rejects_certificates_outside_verifier_time() {
+        let fixture = ContactFixture::new();
+        let card = export_tzap_contact_card(&fixture.store(), &fixture.export_request()).unwrap();
+        let (_, certificate) = X509Certificate::from_der(&fixture.certificate.leaf_certificate_der).unwrap();
+        for time in [certificate.validity().not_before.timestamp() - 1, certificate.validity().not_after.timestamp() + 1] {
+            let mut options = fixture.import_options();
+            options.verifier_time_unix_seconds = time;
+            assert!(verify_tzap_contact_card(&card, &options).is_err(), "certificate must be invalid at {time}");
+        }
+    }
+
+    #[test]
+    fn contact_card_rejects_signed_metadata_that_disagrees_with_certificate() {
+        let fixture = ContactFixture::new();
+        let card = export_tzap_contact_card(&fixture.store(), &fixture.export_request()).unwrap();
+        let options = fixture.import_options();
+        for (field, value) in [
+            ("public_signer_id", json!("psign_ABCDEFGH0123456789")),
+            ("public_org_id", json!(null)),
+            ("public_device_id", json!("pdev_ABCDEFGH0123456789")),
+            ("assurance_level", json!("enterprise_verified")),
+            ("version", json!(2)),
+            ("policy_oid", json!("1.2.3")),
+        ] {
+            let mut forged = card.clone();
+            forged["payload"]["signing_public_metadata"][field] = value;
+            let signature = super::sign_contact_card_payload(&fixture.signing_key, &forged["payload"]).unwrap();
+            forged["signature"] = json!(URL_SAFE_NO_PAD.encode(signature));
+
+            assert!(
+                matches!(verify_tzap_contact_card(&forged, &options), Err(TzapContactCardError::InvalidField { field: "signing_public_metadata" })),
+                "certificate metadata mismatch must be rejected for {field} even with a valid signature"
+            );
+        }
     }
 
     #[test]

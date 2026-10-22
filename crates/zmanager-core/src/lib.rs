@@ -34,6 +34,7 @@ pub mod archive_format;
 mod archive_split;
 mod atomic_file;
 mod backend_impl;
+mod decoded_reader;
 mod extract_loop;
 mod extract_materialize;
 mod gitignore;

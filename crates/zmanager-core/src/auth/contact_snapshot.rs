@@ -400,6 +400,13 @@ pub fn apply_contact_snapshot(
 
         // Re-verify the card (design §8.3: "restore re-verifies, but does not re-interrogate").
         match contact_card::verify_tzap_contact_card(&entry.card, options) {
+            Ok(verified) if verified.recipient_public_key_fingerprint != contact_id => {
+                report.failed_contacts.push(TzapContactSnapshotRestoreFailure {
+                    contact_id,
+                    display_name: Some(verified.display_name),
+                    error: "snapshot contact_id does not match the verified recipient key".to_owned(),
+                });
+            }
             Ok(verified) => {
                 let record = TzapContactRecord {
                     contact_id: verified.recipient_public_key_fingerprint.clone(),
@@ -595,6 +602,26 @@ mod tests {
         let dest_inv = dest_store.load_inventory(account_key).unwrap();
         assert_eq!(dest_inv.contacts.len(), 1);
         assert_eq!(dest_inv.contacts[0].contact_id, imported.contact_id);
+    }
+
+    #[test]
+    fn snapshot_rejects_mismatched_contact_ids_without_replacing_newer_contacts() {
+        let fixture = crate::contact_card::tests::ContactFixture::new();
+        let options = fixture.import_options();
+        let account = crate::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT;
+        let card = export_tzap_contact_card(&fixture.store(), &fixture.export_request()).unwrap();
+        let mut store = InMemoryTzapLocalIdentityStore::new();
+        let contact = import_tzap_contact_card(&mut store, account, &card, &options, Some(3_000)).unwrap();
+        let snapshot = TzapContactSnapshot::new(
+            vec![TzapContactSnapshotEntry { contact_id: Some("different-contact".to_owned()), card, local_alias: None, accepted_at: 1_000 }],
+            vec![TzapContactTombstone { contact_id: contact.contact_id.clone(), removed_at: 2_000 }],
+        );
+
+        let report = apply_contact_snapshot(&mut store, account, &snapshot, &options, 4_000).unwrap();
+
+        assert!(report.restored_contacts.is_empty());
+        assert_eq!(report.failed_contacts.len(), 1);
+        assert_eq!(store.load_inventory(account).unwrap().contacts, vec![contact]);
     }
 
     #[test]

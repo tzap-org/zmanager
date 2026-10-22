@@ -24,6 +24,11 @@ pub const RECIPIENT_KEYS_BACKUP_PAYLOAD_FORMAT_V1: &str = "v1";
 pub const DEFAULT_ARGON2ID_M_COST_KIB: u32 = 65536; // 64 MiB
 pub const DEFAULT_ARGON2ID_T_COST: u32 = 3;
 pub const DEFAULT_ARGON2ID_PARALLELISM: u32 = 1;
+// Restore reads these costs before the envelope can be authenticated. Keep
+// headroom over the writer defaults without accepting arbitrary resource use.
+pub const MAX_ARGON2ID_M_COST_KIB: u32 = 4 * DEFAULT_ARGON2ID_M_COST_KIB;
+pub const MAX_ARGON2ID_T_COST: u32 = 10;
+pub const MAX_ARGON2ID_PARALLELISM: u32 = 16;
 
 /// Fast Argon2id parameters suitable for automated unit tests.
 pub const TEST_ARGON2ID_PARAMS: TzapKeyBackupKdfParams = TzapKeyBackupKdfParams { m_cost_kib: 1024, t_cost: 1, parallelism: 1 };
@@ -197,7 +202,15 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     buf
 }
 
+fn validate_kdf_resource_limits(params: &TzapKeyBackupKdfParams) -> Result<(), TzapKeyBackupError> {
+    if params.m_cost_kib > MAX_ARGON2ID_M_COST_KIB || params.t_cost > MAX_ARGON2ID_T_COST || params.parallelism > MAX_ARGON2ID_PARALLELISM {
+        return Err(TzapKeyBackupError::InvalidFormat("argon2 parameters exceed supported backup limits".to_owned()));
+    }
+    Ok(())
+}
+
 fn derive_wrapping_key(password: &str, salt: &[u8], params: &TzapKeyBackupKdfParams) -> Result<[u8; DATA_KEY_LEN_BYTES], TzapKeyBackupError> {
+    validate_kdf_resource_limits(params)?;
     let argon2_params = argon2::Params::new(params.m_cost_kib, params.t_cost, params.parallelism, Some(DATA_KEY_LEN_BYTES))
         .map_err(|err| TzapKeyBackupError::Crypto(format!("invalid argon2 params: {err}")))?;
 
@@ -457,6 +470,27 @@ mod tests {
             created_at_unix_seconds: 1_700_000_000,
             label: label.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn kdf_resource_policy_bounds_memory_iterations_and_parallelism_without_allocating() {
+        let boundary = TzapKeyBackupKdfParams { m_cost_kib: MAX_ARGON2ID_M_COST_KIB, t_cost: MAX_ARGON2ID_T_COST, parallelism: MAX_ARGON2ID_PARALLELISM };
+        assert!(validate_kdf_resource_limits(&boundary).is_ok());
+        for params in [
+            TzapKeyBackupKdfParams { m_cost_kib: boundary.m_cost_kib + 1, ..boundary },
+            TzapKeyBackupKdfParams { t_cost: boundary.t_cost + 1, ..boundary },
+            TzapKeyBackupKdfParams { parallelism: boundary.parallelism + 1, ..boundary },
+        ] {
+            assert!(matches!(validate_kdf_resource_limits(&params), Err(TzapKeyBackupError::InvalidFormat(_))));
+        }
+    }
+
+    #[test]
+    fn restore_rejects_excessive_kdf_work_before_authenticating_ciphertext() {
+        let mut envelope = seal_recipient_keys_backup(&[], "password", Some(TEST_ARGON2ID_PARAMS)).unwrap();
+        envelope.kdf.params.t_cost = MAX_ARGON2ID_T_COST + 1;
+
+        assert!(matches!(unseal_recipient_keys_backup_payload(&envelope, "password"), Err(TzapKeyBackupError::InvalidFormat(_))));
     }
 
     #[test]

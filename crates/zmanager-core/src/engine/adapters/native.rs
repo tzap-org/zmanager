@@ -123,6 +123,10 @@ impl NativeReadContext {
         }
     }
 
+    fn bounded_decoder<R: std::io::Read>(&self, reader: R, cancellation: Option<crate::jobs::CancellationToken>) -> crate::decoded_reader::BoundedDecoder<R> {
+        crate::decoded_reader::BoundedDecoder::new(reader, self.options.limits.max_decoded_bytes, cancellation)
+    }
+
     fn from_factory(cursor_factory: SourceCursorFactory, options: OpenOptions) -> Self {
         Self::new(cursor_factory, options)
     }
@@ -325,8 +329,12 @@ impl NativeReadAdapter for TarGzListAdapter {
         let path = archive.primary_path();
         let file = archive.open_primary_file()?;
         let decoder = GzDecoder::new(file);
-        let entries = crate::tar_backend::list_with_temp_root(crate::tar_backend::Decoded(decoder), path, archive.options().temp_root.as_deref())
-            .map_err(|error| tar_error(path, &error))?;
+        let entries = crate::tar_backend::list_with_temp_root(
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
+            path,
+            archive.options().temp_root.as_deref(),
+        )
+        .map_err(|error| tar_error(path, &error))?;
         Ok(ArchiveListing { entries: map_tar_entries(entries, "gzip") })
     }
 
@@ -335,7 +343,7 @@ impl NativeReadAdapter for TarGzListAdapter {
         let file = archive.open_primary_file()?;
         let decoder = GzDecoder::new(file);
         let report = crate::tar_backend::test_with_temp_root(
-            crate::tar_backend::Decoded(decoder),
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
             path,
             |entry_path| test_options.selects(entry_path),
             || test_options.is_cancelled(),
@@ -356,7 +364,7 @@ impl NativeReadAdapter for TarGzListAdapter {
         let decoder = GzDecoder::new(file);
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -384,7 +392,7 @@ impl NativeReadAdapter for TarGzListAdapter {
         let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_path_occurrence_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -416,7 +424,7 @@ impl NativeReadAdapter for TarGzListAdapter {
         let decoder = GzDecoder::new(file);
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_selectors_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -437,7 +445,7 @@ impl NativeReadAdapter for TarGzListAdapter {
         let file = archive.open_primary_file()?;
         let decoder = GzDecoder::new(file);
         let written_bytes = crate::tar_backend::copy_by_path_occurrence_with_temp_root(
-            crate::tar_backend::Decoded(decoder),
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
             path,
             crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
             writer,
@@ -600,6 +608,7 @@ fn tar_error(path: &std::path::Path, error: &crate::tar_backend::TarError) -> Ar
     let kind = match error {
         crate::tar_backend::TarError::Safety(source) => crate::engine::adapters::safety_error_kind(source),
         crate::tar_backend::TarError::Cancelled => ErrorKind::Cancelled,
+        crate::tar_backend::TarError::Io { source, .. } if crate::decoded_reader::is_size_limit(source) => ErrorKind::ResourceLimitExceeded,
         crate::tar_backend::TarError::Io { .. } => ErrorKind::Io,
         crate::tar_backend::TarError::MissingLinkTarget { .. } => ErrorKind::CorruptData,
     };
@@ -740,6 +749,7 @@ fn deb_error(path: &std::path::Path, error: &crate::deb_backend::DebError) -> Ar
         crate::deb_backend::DebError::Tar(source) => match source {
             crate::tar_backend::TarError::Safety(safety) => crate::engine::adapters::safety_error_kind(safety),
             crate::tar_backend::TarError::Cancelled => ErrorKind::Cancelled,
+            crate::tar_backend::TarError::Io { source, .. } if crate::decoded_reader::is_size_limit(source) => ErrorKind::ResourceLimitExceeded,
             crate::tar_backend::TarError::Io { .. } => ErrorKind::Io,
             crate::tar_backend::TarError::MissingLinkTarget { .. } => ErrorKind::CorruptData,
         },
@@ -1201,14 +1211,14 @@ impl NativeReadAdapter for CpioListAdapter {
 
     fn list(&self, archive: &NativeReadContext) -> Result<ArchiveListing, ArchiveError> {
         let path = archive.primary_path();
-        let source = cpio_source(archive)?;
+        let source = cpio_source(archive, None)?;
         let entries = crate::cpio_backend::list(&source).map_err(|error| cpio_error(path, &error))?;
         Ok(ArchiveListing { entries: map_cpio_entries(entries) })
     }
 
     fn test(&self, archive: &NativeReadContext, test_options: &TestOptions) -> Result<TestReport, ArchiveError> {
         let path = archive.primary_path();
-        let source = cpio_source(archive)?;
+        let source = cpio_source(archive, test_options.cancellation.as_ref())?;
         let report = crate::cpio_backend::test(&source, test_options).map_err(|error| cpio_error(path, &error))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.entries).unwrap_or(u64::MAX),
@@ -1220,7 +1230,7 @@ impl NativeReadAdapter for CpioListAdapter {
 
     fn extract<'a>(&self, archive: &NativeReadContext, options: &'a mut ExtractOptions<'a>) -> Result<ExtractReport, ArchiveError> {
         let path = archive.primary_path();
-        let source = cpio_source(archive)?;
+        let source = cpio_source(archive, options.cancellation.as_ref())?;
         let report = crate::cpio_backend::extract(
             &source,
             &options.destination,
@@ -1242,7 +1252,7 @@ impl NativeReadAdapter for CpioListAdapter {
         let mut reborrowed_resolver = options.overwrite_resolver.as_deref_mut().map(crate::safety::ReborrowedResolver::new);
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let source = cpio_source(archive)?;
+        let source = cpio_source(archive, options.cancellation.as_ref())?;
         let report = crate::cpio_backend::extract_by_path_occurrence(
             &source,
             &options.destination,
@@ -1259,7 +1269,7 @@ impl NativeReadAdapter for CpioListAdapter {
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let source = cpio_source(archive)?;
+        let source = cpio_source(archive, None)?;
         let written_bytes =
             crate::cpio_backend::copy_by_path_occurrence(&source, &selector.path, selector.occurrence, writer).map_err(|error| cpio_error(path, &error))?;
         Ok(CopyReport { written_bytes })
@@ -1274,12 +1284,12 @@ impl NativeReadAdapter for CpioListAdapter {
 /// costs the whole archive, and every cpio operation needs it. Caching it on
 /// the session keeps `list` + `extract`, and above all a selected-entry batch,
 /// at one decode instead of one per call.
-fn cpio_source(archive: &NativeReadContext) -> Result<std::path::PathBuf, ArchiveError> {
+fn cpio_source(archive: &NativeReadContext, cancellation: Option<&crate::jobs::CancellationToken>) -> Result<std::path::PathBuf, ArchiveError> {
     if let Some(decoded) = archive.decoded_payload.get() {
         return Ok(decoded.path.clone());
     }
 
-    let decoded = decode_cpio_payload(archive)?;
+    let decoded = decode_cpio_payload(archive, cancellation)?;
     let path = decoded.path.clone();
     // `get` above returned `None` and decoding cannot re-enter this function,
     // so the cell is still empty; ignoring the result keeps the success path
@@ -1288,7 +1298,7 @@ fn cpio_source(archive: &NativeReadContext) -> Result<std::path::PathBuf, Archiv
     Ok(path)
 }
 
-fn decode_cpio_payload(archive: &NativeReadContext) -> Result<DecodedPayload, ArchiveError> {
+fn decode_cpio_payload(archive: &NativeReadContext, cancellation: Option<&crate::jobs::CancellationToken>) -> Result<DecodedPayload, ArchiveError> {
     let path = archive.primary_path();
     let Some(format) = cpio_compression(path) else {
         return Ok(DecodedPayload { _temporary: None, path: path.to_path_buf() });
@@ -1300,13 +1310,22 @@ fn decode_cpio_payload(archive: &NativeReadContext) -> Result<DecodedPayload, Ar
     }
     .map_err(|error| ArchiveError::usable(ErrorKind::Io, error.to_string()).with_path(path))?;
     let decoded_path = temporary.path().join("payload.cpio");
-    let mut decoder = {
+    let decoder = {
         let file = archive.open_primary_file()?;
         raw_stream_backend::open_decoder_from_reader(file, format, path)
             .map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?
     };
     let mut output = File::create(&decoded_path).map_err(io_error)?;
-    std::io::copy(&mut decoder, &mut output).map_err(io_error)?;
+    std::io::copy(&mut archive.bounded_decoder(decoder, cancellation.cloned()), &mut output).map_err(|error| {
+        let kind = if crate::decoded_reader::is_size_limit(&error) {
+            ErrorKind::ResourceLimitExceeded
+        } else if crate::extract_loop::is_job_cancelled(&error) {
+            ErrorKind::Cancelled
+        } else {
+            ErrorKind::Io
+        };
+        ArchiveError::usable(kind, error.to_string()).with_path(path)
+    })?;
     output.flush().map_err(io_error)?;
     Ok(DecodedPayload { _temporary: Some(temporary), path: decoded_path })
 }
@@ -1555,8 +1574,12 @@ impl NativeReadAdapter for FilteredTarAdapter {
     fn list(&self, archive: &NativeReadContext) -> Result<ArchiveListing, ArchiveError> {
         let path = archive.primary_path();
         let reader = self.open_reader(archive)?;
-        let entries = crate::tar_backend::list_with_temp_root(crate::tar_backend::Decoded(reader), path, archive.options().temp_root.as_deref())
-            .map_err(|error| tar_error(path, &error))?;
+        let entries = crate::tar_backend::list_with_temp_root(
+            crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
+            path,
+            archive.options().temp_root.as_deref(),
+        )
+        .map_err(|error| tar_error(path, &error))?;
         Ok(ArchiveListing { entries: map_tar_entries(entries, self.method) })
     }
 
@@ -1564,7 +1587,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
         let path = archive.primary_path();
         let reader = self.open_reader(archive)?;
         let report = crate::tar_backend::test_with_temp_root(
-            crate::tar_backend::Decoded(reader),
+            crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
             path,
             |entry_path| test_options.selects(entry_path),
             || test_options.is_cancelled(),
@@ -1584,7 +1607,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
         let reader = self.open_reader(archive)?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_with_temp_root(
-                crate::tar_backend::Decoded(reader),
+                crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -1611,7 +1634,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
         let reader = self.open_reader(archive)?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_path_occurrence_with_temp_root(
-                crate::tar_backend::Decoded(reader),
+                crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -1642,7 +1665,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
         let reader = self.open_reader(archive)?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_selectors_with_temp_root(
-                crate::tar_backend::Decoded(reader),
+                crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -1662,7 +1685,7 @@ impl NativeReadAdapter for FilteredTarAdapter {
         let selector = archive.selected_entry_selector(entry_id)?;
         let reader = self.open_reader(archive)?;
         let written_bytes = crate::tar_backend::copy_by_path_occurrence_with_temp_root(
-            crate::tar_backend::Decoded(reader),
+            crate::tar_backend::Decoded(archive.bounded_decoder(reader, None)),
             path,
             crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
             writer,
@@ -1995,8 +2018,12 @@ impl NativeReadAdapter for TarZstListAdapter {
         let file = archive.open_primary_file()?;
         let decoder =
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
-        let entries = crate::tar_backend::list_with_temp_root(crate::tar_backend::Decoded(decoder), path, archive.options().temp_root.as_deref())
-            .map_err(|error| tar_error(path, &error))?;
+        let entries = crate::tar_backend::list_with_temp_root(
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
+            path,
+            archive.options().temp_root.as_deref(),
+        )
+        .map_err(|error| tar_error(path, &error))?;
         Ok(ArchiveListing { entries: map_tar_entries(entries, "zstd") })
     }
 
@@ -2006,7 +2033,7 @@ impl NativeReadAdapter for TarZstListAdapter {
         let decoder =
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
         let report = crate::tar_backend::test_with_temp_root(
-            crate::tar_backend::Decoded(decoder),
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
             path,
             |entry_path| test_options.selects(entry_path),
             || test_options.is_cancelled(),
@@ -2028,7 +2055,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -2057,7 +2084,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_path_occurrence_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -2090,7 +2117,7 @@ impl NativeReadAdapter for TarZstListAdapter {
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
         let report = with_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
             crate::tar_backend::extract_by_selectors_with_temp_root(
-                crate::tar_backend::Decoded(decoder),
+                crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
                 path,
                 &options.destination,
                 options.policy.clone(),
@@ -2112,7 +2139,7 @@ impl NativeReadAdapter for TarZstListAdapter {
         let decoder =
             zstd::stream::read::Decoder::new(file).map_err(|error| ArchiveError::usable(ErrorKind::InvalidFormat, error.to_string()).with_path(path))?;
         let written_bytes = crate::tar_backend::copy_by_path_occurrence_with_temp_root(
-            crate::tar_backend::Decoded(decoder),
+            crate::tar_backend::Decoded(archive.bounded_decoder(decoder, None)),
             path,
             crate::tar_backend::TarEntrySelector { path: &selector.path, occurrence: selector.occurrence },
             writer,

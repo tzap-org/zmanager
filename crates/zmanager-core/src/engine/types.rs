@@ -32,11 +32,21 @@ pub struct DetectedArchive {
     pub source: ArchiveSource,
 }
 
-/// Bounded source limits applied while opening an archive handle.
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+/// Resource limits bound to an opened archive handle.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct OpenLimits {
     /// Optional aggregate byte limit for the owned source/volume set.
     pub max_source_bytes: Option<u64>,
+    /// Maximum decoded bytes in temporary compressed TAR/CPIO intermediates.
+    /// Applies to listing and reading as well as extraction. Defaults to
+    /// 64 GiB; `None` disables this bound.
+    pub max_decoded_bytes: Option<u64>,
+}
+
+impl Default for OpenLimits {
+    fn default() -> Self {
+        Self { max_source_bytes: None, max_decoded_bytes: Some(crate::safety::DEFAULT_MAX_EXTRACTED_BYTES) }
+    }
 }
 
 /// Immutable credentials and source options bound to an opened archive handle.

@@ -1291,6 +1291,32 @@ fn engine_rejects_explicit_volume_sets_for_single_file_adapters() {
 }
 
 #[test]
+fn engine_bounds_decoded_intermediates_before_listing_compressed_archives() {
+    let temp = TestDir::new("engine-decoded-limit");
+    for name in ["basic.tar.gz", "basic.cpio.gz"] {
+        let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives").join(name);
+        let temp_root = temp.path(name);
+        fs::create_dir(&temp_root).unwrap();
+        let mut handle = create_default_engine()
+            .unwrap()
+            .open(
+                ArchiveSource::Path(archive),
+                OpenOptions {
+                    temp_root: Some(temp_root.clone()),
+                    limits: OpenLimits { max_decoded_bytes: Some(512), ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let error = handle.list().unwrap_err();
+
+        assert_eq!(error.kind, zmanager_core::engine::ErrorKind::ResourceLimitExceeded, "{name}");
+        assert_eq!(fs::read_dir(&temp_root).unwrap().count(), 0, "failed intermediates must be removed");
+    }
+}
+
+#[test]
 fn engine_enforces_configured_source_size_limit_before_adapter_open() {
     let temp = TestDir::new("engine-conformance-source-limit");
     let archive = temp.path("archive.zip");
@@ -1298,7 +1324,7 @@ fn engine_enforces_configured_source_size_limit_before_adapter_open() {
 
     let error = create_default_engine()
         .unwrap()
-        .open(ArchiveSource::Path(archive), OpenOptions { limits: OpenLimits { max_source_bytes: Some(1) }, ..Default::default() })
+        .open(ArchiveSource::Path(archive), OpenOptions { limits: OpenLimits { max_source_bytes: Some(1), ..Default::default() }, ..Default::default() })
         .unwrap_err();
     assert_eq!(error.kind, zmanager_core::engine::ErrorKind::ResourceLimitExceeded);
 }
@@ -1343,7 +1369,10 @@ fn engine_rejects_tzap_sibling_mutation_after_open() {
     // Opening the requested base path must still use the same format-owned
     // volume discovery path as opening one of its physical volumes.
     let limited = engine
-        .open(ArchiveSource::from_path_autodetect(&archive), OpenOptions { limits: OpenLimits { max_source_bytes: Some(1) }, ..Default::default() })
+        .open(
+            ArchiveSource::from_path_autodetect(&archive),
+            OpenOptions { limits: OpenLimits { max_source_bytes: Some(1), ..Default::default() }, ..Default::default() },
+        )
         .unwrap_err();
     assert_eq!(limited.kind, zmanager_core::engine::ErrorKind::ResourceLimitExceeded);
 
