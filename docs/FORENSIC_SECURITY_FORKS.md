@@ -7,11 +7,11 @@ copying dependency source into ZManager.
 
 | Sibling checkout | Fork | Package version | Change |
 | --- | --- | --- | --- |
-| `../dar-core` | [frankmanzhu/dar-core](https://github.com/frankmanzhu/dar-core/tree/macos/fix-codec-advisories) | `dar-core 0.7.1` | `ruzstd 0.9.1`, current decoder import, Rust floor 1.87 |
-| `../btrfs-core` | [frankmanzhu/btrfs-core](https://github.com/frankmanzhu/btrfs-core/tree/macos/fix-codec-advisories) | `btrfs-core 0.1.4` | `ruzstd 0.9.1` |
-| `../zfs-forensic-core` | [frankmanzhu/zfs-forensic-core](https://github.com/frankmanzhu/zfs-forensic-core/tree/macos/fix-codec-advisories) | `zfs-forensic-core 0.1.2` | `ruzstd 0.9.1` |
-| `../zip-forensic-core` | [frankmanzhu/zip-forensic-core](https://github.com/frankmanzhu/zip-forensic-core/tree/macos/fix-codec-advisories) | `zip-forensic-core 0.2.2` | `ruzstd 0.9.1`, `zip 9.0.5` test oracle |
-| `../aff4` | [frankmanzhu/aff4](https://github.com/frankmanzhu/aff4/tree/macos/fix-codec-advisories) | `aff4 0.2.6` | `zip-forensic-core 0.2.2`, `zip 9.0.5` for test helpers/oracles, Rust floor 1.88 |
+| `../dar-core` | [frankmanzhu/dar-core](https://github.com/frankmanzhu/dar-core/tree/macos/integration-codec-security) | `dar-core 0.7.1` | `ruzstd 0.9.1`, current decoder import, Rust floor 1.87 |
+| `../btrfs-core` | [frankmanzhu/btrfs-core](https://github.com/frankmanzhu/btrfs-core/tree/macos/integration-codec-security) | `btrfs-core 0.1.4` | `ruzstd 0.9.1` |
+| `../zfs-forensic-core` | [frankmanzhu/zfs-forensic-core](https://github.com/frankmanzhu/zfs-forensic-core/tree/macos/integration-codec-security) | `zfs-forensic-core 0.1.2` | `ruzstd 0.9.1` |
+| `../zip-forensic-core` | [frankmanzhu/zip-forensic-core](https://github.com/frankmanzhu/zip-forensic-core/tree/macos/integration-codec-security) | `zip-forensic-core 0.2.2` | `ruzstd 0.9.1`, `zip 9.0.5` test oracle |
+| `../aff4` | [frankmanzhu/aff4](https://github.com/frankmanzhu/aff4/tree/macos/integration-codec-security) | `aff4 0.2.6` | `zip-forensic-core 0.2.2`, `zip 9.0.5` for test helpers/oracles, Rust floor 1.88 |
 
 `ruzstd 0.9.1` fixes
 [RUSTSEC-2026-0344](https://rustsec.org/advisories/RUSTSEC-2026-0344.html).
@@ -64,3 +64,15 @@ the audits, workspace checks, and archive safety tests.
 See [the five-fork validation](FORENSIC_SECURITY_VALIDATION.md) for upstream
 tests, minimum-Rust checks, coverage, consumer checks and the ZIP-before-AFF4
 release ordering.
+
+## Integration and upstream branches
+
+All five forks keep the tested release fixes on
+`macos/integration-codec-security`. The sibling checkouts remain at the exact
+revisions in `forensic-forks.lock`; they do not follow newer upstream APIs.
+
+The separate `macos/upstream-codec-security` branches apply one focused commit
+to each current upstream `main`. See [the five PRs](FORENSIC_UPSTREAM_PRS.md)
+for review links, validation and existing upstream CI blockers. After fixed
+releases are published, check their API compatibility before adopting them
+and removing the corresponding overrides.

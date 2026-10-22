@@ -9,9 +9,10 @@ clean sibling checkout have been removed.
 
 The five fork revisions are recorded in `../forensic-forks.lock`. Desktop's
 manifest, lockfile, fork pins and existing security inventory assertion have
-been aligned. No upstream PR has been opened.
+been aligned. The [five upstream PRs](FORENSIC_UPSTREAM_PRS.md) are now open
+from separate main-based branches; the integration pins below are unchanged.
 
-## Upstream checks on macOS ARM64
+## Upstream workspace checks on patched release baselines (macOS ARM64)
 
 | Workspace | Tests reported passed, all features | Declared Rust floor verified | Coverage gate |
 | --- | ---: | --- | --- |
@@ -84,3 +85,23 @@ outside this local dependency experiment.
 
 Raw local logs and LCOV outputs are in
 `../dist/forensic-validation/2026-10-23/` (generated, gitignored).
+
+## Subsequent upstream-main submissions
+
+The submission branches were rebuilt from each remote upstream `main` and
+retested separately. ZIP, DAR and AFF4 pass their test suites, strict Clippy,
+minimum-Rust checks and coverage gates. Btrfs passes its 127-test suite,
+strict Clippy and minimum-Rust build, but its current line-coverage gate has
+39 uncovered lines, identical to untouched upstream `main`. ZFS passes its
+215-test default-feature suite, default-feature Clippy/checks, minimum-Rust
+build and security audits; its all-feature build fails on the same
+`StreamKind::Data` error as untouched upstream `main`.
+
+Btrfs and ZFS validation supplied upstream's existing sibling path dependency
+from `SecurityRonin/forensic-vfs` at `0bf793d`; no additional VFS override was
+added to the PRs. AFF4's paired main-based test/audit/deny run also passed with
+the fixed ZIP selected through a temporary local configuration, which was
+removed afterward. Its standalone audit still needs the fixed ZIP release.
+
+Raw submission/baseline logs are in
+`../dist/forensic-validation/2026-10-23/upstream-main/` (generated, gitignored).
