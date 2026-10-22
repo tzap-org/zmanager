@@ -154,14 +154,14 @@ jobs:
         run: bash scripts/verify-artifact-profiles.sh
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets
 
       - name: Test
         shell: bash
         run: |
           set +e
           set -o pipefail
-          cargo test --workspace 2>&1 | tee cargo-test.log
+          cargo test --locked --workspace 2>&1 | tee cargo-test.log
           status=${PIPESTATUS[0]}
           set -e
 

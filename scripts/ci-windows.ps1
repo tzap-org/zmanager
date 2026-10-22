@@ -251,7 +251,7 @@ function Invoke-CargoTest {
         -Title "cargo test failed on $TargetTriple" `
         -LogName "cargo-test-windows-$TargetTriple.log" `
         -FilePath "cargo" `
-        -Arguments @("test", "--workspace", "--target", $TargetTriple)
+        -Arguments @("test", "--locked", "--workspace", "--target", $TargetTriple)
 
     # Run each reduced artifact independently so workspace feature unification
     # cannot hide an offline-only failure. Exercise the shipped CLI profile too.

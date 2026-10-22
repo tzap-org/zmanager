@@ -6,9 +6,9 @@ set -euo pipefail
 for package in zmanager-core zmanager-cli zmanager-ffi; do
     for profile in default no-default-features; do
         if [[ "$profile" == "no-default-features" ]]; then
-            graph=$(cargo tree -e normal -p "$package" --no-default-features)
+            graph=$(cargo tree --locked -e normal -p "$package" --no-default-features)
         else
-            graph=$(cargo tree -e normal -p "$package")
+            graph=$(cargo tree --locked -e normal -p "$package")
         fi
         forbidden='libarchive|bsdtar'
         # CLI defaults are offline too. FFI defaults include LocalSend's HTTP
@@ -23,6 +23,6 @@ for package in zmanager-core zmanager-cli zmanager-ffi; do
     done
 done
 
-cargo check -p zmanager-core --no-default-features --all-targets
-cargo check -p zmanager-cli --no-default-features --all-targets
-cargo check -p zmanager-ffi --no-default-features --all-targets
+cargo check --locked -p zmanager-core --no-default-features --all-targets
+cargo check --locked -p zmanager-cli --no-default-features --all-targets
+cargo check --locked -p zmanager-ffi --no-default-features --all-targets
