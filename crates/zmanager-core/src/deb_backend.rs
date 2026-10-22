@@ -1,5 +1,6 @@
 use crate::ar_backend;
 use crate::archive_format::{self, ArchiveFormatKind};
+use crate::engine::OpenOptions;
 use crate::jobs::{JobCancelled, JobContext};
 use crate::safety::{
     ExtractionDecision, ExtractionEntry, ExtractionEntryKind, ExtractionPolicy, ExtractionSafetyError, ExtractionSafetyPlanner, OverwriteResolver,
@@ -134,7 +135,7 @@ impl From<ExtractionSafetyError> for DebError {
 /// Returns [`DebError`] when the package is malformed, a payload archive cannot
 /// be read, a safety policy rejects an entry, or filesystem writes fail.
 pub fn extract_deb_nested(archive_path: impl AsRef<Path>, destination: impl AsRef<Path>, policy: &ExtractionPolicy) -> Result<DebExtractReport, DebError> {
-    extract_deb_nested_inner(archive_path, destination, policy, None, None)
+    extract_deb_nested_inner(archive_path, destination, policy, None, None, &OpenOptions::default())
 }
 
 /// Extracts a `.deb` package-aware layout with an overwrite resolver.
@@ -150,7 +151,7 @@ pub fn extract_deb_nested_with_overwrite_resolver(
     policy: &ExtractionPolicy,
     overwrite_resolver: &mut dyn OverwriteResolver,
 ) -> Result<DebExtractReport, DebError> {
-    extract_deb_nested_inner(archive_path, destination, policy, Some(overwrite_resolver), None)
+    extract_deb_nested_inner(archive_path, destination, policy, Some(overwrite_resolver), None, &OpenOptions::default())
 }
 
 /// Extracts a `.deb` package-aware layout with a reporting context, and
@@ -167,8 +168,9 @@ pub(crate) fn extract_deb_nested_with_context(
     policy: &ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     context: Option<&mut JobContext<'_>>,
+    open_options: &OpenOptions,
 ) -> Result<DebExtractReport, DebError> {
-    extract_deb_nested_inner(archive_path, destination, policy, overwrite_resolver, context)
+    extract_deb_nested_inner(archive_path, destination, policy, overwrite_resolver, context, open_options)
 }
 
 fn extract_deb_nested_inner(
@@ -177,12 +179,16 @@ fn extract_deb_nested_inner(
     policy: &ExtractionPolicy,
     mut overwrite_resolver: Option<&mut dyn OverwriteResolver>,
     mut context: Option<&mut JobContext<'_>>,
+    open_options: &OpenOptions,
 ) -> Result<DebExtractReport, DebError> {
     let destination = destination.as_ref();
     let destination_root = crate::safety::prepare_destination_root(destination).map_err(|source| DebError::Io { path: destination.to_path_buf(), source })?;
 
     let archive_path = archive_path.as_ref();
-    let temp = TemporaryDirectory::new(DEB_TEMP_PREFIX)?;
+    let temp = match &open_options.temp_root {
+        Some(root) => TemporaryDirectory::new_in(root, DEB_TEMP_PREFIX),
+        None => TemporaryDirectory::new(DEB_TEMP_PREFIX),
+    }?;
     let members = ar_backend::list(archive_path)?;
     validate_member_layout(archive_path, &members)?;
     let debian_binary =
@@ -209,10 +215,17 @@ fn extract_deb_nested_inner(
 
     let control_policy = policy_with_remaining_budget(policy, &report);
     let control_report = match overwrite_resolver {
-        Some(ref mut resolver) => {
-            extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, Some(&mut **resolver), context.as_deref_mut())?
+        Some(ref mut resolver) => extract_payload_archive(
+            &control_member,
+            &destination_root.join(CONTROL_OUTPUT_DIR),
+            control_policy,
+            Some(&mut **resolver),
+            context.as_deref_mut(),
+            open_options,
+        )?,
+        None => {
+            extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, None, context.as_deref_mut(), open_options)?
         }
-        None => extract_payload_archive(&control_member, &destination_root.join(CONTROL_OUTPUT_DIR), control_policy, None, context.as_deref_mut())?,
     };
     absorb_archive_report(CONTROL_OUTPUT_DIR, control_report, &mut report);
 
@@ -224,10 +237,15 @@ fn extract_deb_nested_inner(
 
     let data_policy = policy_with_remaining_budget(policy, &report);
     let data_report = match overwrite_resolver {
-        Some(ref mut resolver) => {
-            extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, Some(&mut **resolver), context.as_deref_mut())?
-        }
-        None => extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, None, context)?,
+        Some(ref mut resolver) => extract_payload_archive(
+            &data_member,
+            &destination_root.join(DATA_OUTPUT_DIR),
+            data_policy,
+            Some(&mut **resolver),
+            context.as_deref_mut(),
+            open_options,
+        )?,
+        None => extract_payload_archive(&data_member, &destination_root.join(DATA_OUTPUT_DIR), data_policy, None, context, open_options)?,
     };
     absorb_archive_report(DATA_OUTPUT_DIR, data_report, &mut report);
 
@@ -260,8 +278,16 @@ pub(crate) fn validate_member_layout(archive_path: &Path, members: &[ar_backend:
     Ok(())
 }
 
-pub(crate) fn test_payload_members(archive_path: &Path, members: &[ar_backend::ArEntry], options: &crate::engine::TestOptions) -> Result<(), DebError> {
-    let temporary = TemporaryDirectory::new("zmanager-deb-test")?;
+pub(crate) fn test_payload_members(
+    archive_path: &Path,
+    members: &[ar_backend::ArEntry],
+    options: &crate::engine::TestOptions,
+    open_options: &OpenOptions,
+) -> Result<(), DebError> {
+    let temporary = match &open_options.temp_root {
+        Some(root) => TemporaryDirectory::new_in(root, DEB_TEMP_PREFIX),
+        None => TemporaryDirectory::new(DEB_TEMP_PREFIX),
+    }?;
     for (base, required_name) in [(CONTROL_PAYLOAD_BASE, CONTROL_PAYLOAD_GLOB), (DATA_PAYLOAD_BASE, DATA_PAYLOAD_GLOB)] {
         let member = validate_single_payload_member(archive_path, members, base, required_name)?;
         if !options.selects(&member.path) {
@@ -270,7 +296,7 @@ pub(crate) fn test_payload_members(archive_path: &Path, members: &[ar_backend::A
         let payload = materialize_payload_member(archive_path, members, base, required_name, temporary.path())?;
         let engine = crate::engine::create_default_engine()?;
         let source = crate::engine::ArchiveSource::from_path_autodetect(&payload);
-        let mut handle = engine.open(source, crate::engine::OpenOptions::default())?;
+        let mut handle = engine.open(source, open_options.clone())?;
         let nested_options = crate::engine::TestOptions { cancellation: options.cancellation.clone(), ..crate::engine::TestOptions::default() };
         handle.test(&nested_options)?;
         handle.close()?;
@@ -398,16 +424,6 @@ fn copy_synthetic_file(
     Ok(())
 }
 
-fn extract_payload_archive(
-    archive_path: &Path,
-    destination: &Path,
-    policy: ExtractionPolicy,
-    overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    context: Option<&mut JobContext<'_>>,
-) -> Result<ArchiveReport, DebError> {
-    extract_payload_with_engine(archive_path, destination, policy, overwrite_resolver, context)
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct ArchiveReport {
     written_entries: usize,
@@ -416,75 +432,69 @@ struct ArchiveReport {
     warnings: Vec<String>,
 }
 
-fn extract_payload_with_engine(
+fn extract_payload_archive(
     archive_path: &Path,
     destination: &Path,
     policy: ExtractionPolicy,
     overwrite_resolver: Option<&mut dyn OverwriteResolver>,
-    mut context: Option<&mut JobContext<'_>>,
+    context: Option<&mut JobContext<'_>>,
+    open_options: &OpenOptions,
 ) -> Result<ArchiveReport, DebError> {
-    // `JobContext` already wraps the cancellation token; cloning it here lets
-    // the nested `tar_backend::extract` call observe cancellation the same
-    // way every other format's context-carrying call does.
     let cancellation = context.as_deref().map(JobContext::cancellation_token);
     let format = archive_format::detect_archive_format(archive_path);
-    let report = match format {
-        ArchiveFormatKind::Tar => {
-            let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            crate::tar_backend::extract(file, archive_path, destination, policy, overwrite_resolver, None, cancellation.as_ref(), context.as_deref_mut())?
-        }
-        ArchiveFormatKind::TarGz => {
-            let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            crate::tar_backend::extract(
-                crate::tar_backend::Decoded(flate2::read::GzDecoder::new(file)),
-                archive_path,
-                destination,
-                policy,
-                overwrite_resolver,
-                None,
-                cancellation.as_ref(),
-                context.as_deref_mut(),
-            )?
-        }
-        ArchiveFormatKind::TarZst => {
-            let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            let decoder = zstd::stream::read::Decoder::new(file).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
-            crate::tar_backend::extract(
-                crate::tar_backend::Decoded(decoder),
-                archive_path,
-                destination,
-                policy,
-                overwrite_resolver,
-                None,
-                cancellation.as_ref(),
-                context.as_deref_mut(),
-            )?
-        }
-        ArchiveFormatKind::TarBz2 | ArchiveFormatKind::TarXz | ArchiveFormatKind::TarLzma => {
-            let format = match format {
-                ArchiveFormatKind::TarBz2 => crate::raw_stream_backend::RawStreamFormat::Bzip2,
-                ArchiveFormatKind::TarXz => crate::raw_stream_backend::RawStreamFormat::Xz,
-                ArchiveFormatKind::TarLzma => crate::raw_stream_backend::RawStreamFormat::Lzma,
-                _ => unreachable!("outer match limits filtered TAR formats"),
-            };
-            let decoder = crate::raw_stream_backend::open_decoder(archive_path, format)?;
-            crate::tar_backend::extract(
-                crate::tar_backend::Decoded(decoder),
-                archive_path,
-                destination,
-                policy,
-                overwrite_resolver,
-                None,
-                cancellation.as_ref(),
-                context,
-            )?
-        }
-        format => {
-            return Err(DebError::Engine(crate::engine::ArchiveError::usable(
-                crate::engine::ErrorKind::UnsupportedOperation,
-                format!("unsupported native DEB payload format: {format:?}"),
-            )));
-        }
+    let report = if format == ArchiveFormatKind::Tar {
+        let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
+        crate::tar_backend::extract_with_temp_root(
+            file,
+            archive_path,
+            destination,
+            policy,
+            overwrite_resolver,
+            None,
+            cancellation.as_ref(),
+            context,
+            open_options.temp_root.as_deref(),
+        )?
+    } else {
+        let decoder: Box<dyn io::Read> = match format {
+            ArchiveFormatKind::TarGz => {
+                let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
+                Box::new(flate2::read::GzDecoder::new(file))
+            }
+            ArchiveFormatKind::TarZst => {
+                let file = File::open(archive_path).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?;
+                Box::new(zstd::stream::read::Decoder::new(file).map_err(|source| DebError::Io { path: archive_path.to_path_buf(), source })?)
+            }
+            ArchiveFormatKind::TarBz2 | ArchiveFormatKind::TarXz | ArchiveFormatKind::TarLzma => {
+                let compression = match format {
+                    ArchiveFormatKind::TarBz2 => crate::raw_stream_backend::RawStreamFormat::Bzip2,
+                    ArchiveFormatKind::TarXz => crate::raw_stream_backend::RawStreamFormat::Xz,
+                    ArchiveFormatKind::TarLzma => crate::raw_stream_backend::RawStreamFormat::Lzma,
+                    _ => unreachable!("outer match limits filtered TAR formats"),
+                };
+                crate::raw_stream_backend::open_decoder(archive_path, compression)?
+            }
+            format => {
+                return Err(DebError::Engine(crate::engine::ArchiveError::usable(
+                    crate::engine::ErrorKind::UnsupportedOperation,
+                    format!("unsupported native DEB payload format: {format:?}"),
+                )));
+            }
+        };
+        // DEB payloads use the shared TAR backend directly, so apply the same
+        // decoded-byte budget as the standalone TAR adapters before spooling.
+        let decoder = crate::decoded_reader::BoundedDecoder::new(decoder, open_options.limits.max_decoded_bytes, None);
+        crate::tar_backend::extract_with_temp_root(
+            crate::tar_backend::Decoded(decoder),
+            archive_path,
+            destination,
+            policy,
+            overwrite_resolver,
+            None,
+            cancellation.as_ref(),
+            context,
+            open_options.temp_root.as_deref(),
+        )?
     };
     Ok(ArchiveReport { written_entries: report.entries, skipped_entries: report.skipped_entries, written_bytes: report.bytes, warnings: report.warnings })
 }
@@ -690,6 +700,41 @@ mod tests {
     }
 
     #[test]
+    fn engine_bounds_data_payload_after_a_smaller_control_payload() {
+        use crate::engine::{ArchiveSource, ExtractOptions, OpenLimits, TestOptions, create_default_engine};
+
+        let temp = TestDir::new("deb-data-decoded-limit");
+        let archive = temp.path("sample.deb");
+        let control = build_tar_gz(&[("control", b"Package: test\n")]);
+        let data = build_tar_zst(&[("large.bin", &[0_u8; 8192])]);
+        fs::write(&archive, build_deb(Some(b"2.0\n"), Some(&control), Some(&data))).unwrap();
+        let temp_root = temp.path("intermediates");
+        fs::create_dir(&temp_root).unwrap();
+        let mut handle = create_default_engine()
+            .unwrap()
+            .open(
+                ArchiveSource::Path(archive),
+                OpenOptions {
+                    temp_root: Some(temp_root.clone()),
+                    limits: OpenLimits { max_decoded_bytes: Some(4096), ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let tested = handle.test(&TestOptions::default()).unwrap_err();
+        let destination = temp.path("out");
+        let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
+        let extracted = handle.extract(&mut options).unwrap_err();
+
+        assert_eq!(tested.kind, crate::engine::ErrorKind::ResourceLimitExceeded);
+        assert_eq!(extracted.kind, crate::engine::ErrorKind::ResourceLimitExceeded);
+        assert_eq!(fs::read(destination.join("control/control")).unwrap(), b"Package: test\n");
+        assert!(!destination.join("data/large.bin").exists());
+        assert_eq!(fs::read_dir(temp_root).unwrap().count(), 0);
+    }
+
+    #[test]
     fn cancelling_when_data_tar_entry_starts_leaves_it_unwritten() {
         let temp = TestDir::new("deb-cancel-mid-data");
         let archive_path = temp.path("sample.deb");
@@ -712,7 +757,7 @@ mod tests {
         };
         let mut context = JobContext::new(&token, &mut sink);
 
-        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context)).unwrap_err();
+        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context), &OpenOptions::default()).unwrap_err();
 
         assert!(matches!(error, DebError::Tar(crate::tar_backend::TarError::Cancelled)), "{error}");
         assert_eq!(
@@ -743,7 +788,7 @@ mod tests {
         };
         let mut context = JobContext::new(&token, &mut sink);
 
-        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context)).unwrap_err();
+        let error = extract_deb_nested_with_context(&archive_path, &dest, &policy, None, Some(&mut context), &OpenOptions::default()).unwrap_err();
 
         assert!(matches!(error, DebError::Cancelled), "{error}");
         assert_eq!(fs::read(dest.join("control/control")).unwrap(), b"Package: test\nVersion: 1.0\n");
@@ -772,7 +817,8 @@ mod tests {
         let mut events = Vec::new();
         let mut sink = |event| events.push(event);
         let mut context = JobContext::new(&token, &mut sink);
-        extract_deb_nested_with_context(&archive_path, temp.path("out"), &ExtractionPolicy::default(), None, Some(&mut context)).unwrap();
+        extract_deb_nested_with_context(&archive_path, temp.path("out"), &ExtractionPolicy::default(), None, Some(&mut context), &OpenOptions::default())
+            .unwrap();
 
         let entries = entry_events(&events);
         assert_eq!(entries.first(), Some(&(true, DEBIAN_BINARY_MEMBER.to_owned())), "{entries:?}");
@@ -801,7 +847,7 @@ mod tests {
         let mut context = JobContext::new(&token, &mut sink);
         let policy = ExtractionPolicy { overwrite: crate::safety::OverwritePolicy::Ask, ..ExtractionPolicy::default() };
         let mut resolver = SkipAll;
-        let report = extract_deb_nested_with_context(&archive_path, &dest, &policy, Some(&mut resolver), Some(&mut context)).unwrap();
+        let report = extract_deb_nested_with_context(&archive_path, &dest, &policy, Some(&mut resolver), Some(&mut context), &OpenOptions::default()).unwrap();
 
         assert_eq!(report.skipped_entries, 1);
         assert_eq!(fs::read(dest.join(DEBIAN_BINARY_MEMBER)).unwrap(), b"keep me");

@@ -1317,6 +1317,36 @@ fn engine_bounds_decoded_intermediates_before_listing_compressed_archives() {
 }
 
 #[test]
+fn engine_bounds_decoded_deb_payloads_during_test_and_extraction() {
+    let temp = TestDir::new("engine-deb-decoded-limit");
+    let archive = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/archives/basic.deb");
+    let engine = create_default_engine().unwrap();
+    for limit in [Some(512), None] {
+        let temp_root = temp.path(format!("intermediates-{limit:?}"));
+        fs::create_dir(&temp_root).unwrap();
+        let mut handle = engine
+            .open(
+                ArchiveSource::Path(archive.clone()),
+                OpenOptions { temp_root: Some(temp_root.clone()), limits: OpenLimits { max_decoded_bytes: limit, ..Default::default() }, ..Default::default() },
+            )
+            .unwrap();
+        let tested = handle.test(&zmanager_core::engine::TestOptions::default());
+        let destination = temp.path(format!("out-{limit:?}"));
+        let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
+        let extracted = handle.extract(&mut options);
+        if limit.is_some() {
+            assert_eq!(tested.unwrap_err().kind, zmanager_core::engine::ErrorKind::ResourceLimitExceeded);
+            assert_eq!(extracted.unwrap_err().kind, zmanager_core::engine::ErrorKind::ResourceLimitExceeded);
+            assert!(!destination.join("data").exists());
+        } else {
+            tested.unwrap();
+            assert!(extracted.unwrap().written_entries > 0);
+        }
+        assert_eq!(fs::read_dir(&temp_root).unwrap().count(), 0, "nested intermediates must be removed");
+    }
+}
+
+#[test]
 fn engine_enforces_configured_source_size_limit_before_adapter_open() {
     let temp = TestDir::new("engine-conformance-source-limit");
     let archive = temp.path("archive.zip");

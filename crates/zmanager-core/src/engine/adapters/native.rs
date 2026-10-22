@@ -708,7 +708,7 @@ impl NativeReadAdapter for DebListAdapter {
         let entries = crate::ar_backend::list(path).map_err(|error| ar_error(path, &error))?;
         crate::deb_backend::validate_member_layout(path, &entries).map_err(|error| deb_error(path, &error))?;
         let report = crate::ar_backend::test(path, test_options).map_err(|error| ar_error(path, &error))?;
-        crate::deb_backend::test_payload_members(path, &entries, test_options).map_err(|error| deb_error(path, &error))?;
+        crate::deb_backend::test_payload_members(path, &entries, test_options, archive.options()).map_err(|error| deb_error(path, &error))?;
         Ok(TestReport {
             tested_entries: u64::try_from(report.entries).unwrap_or(u64::MAX),
             skipped_entries: u64::try_from(report.skipped_entries).unwrap_or(u64::MAX),
@@ -721,7 +721,7 @@ impl NativeReadAdapter for DebListAdapter {
         let path = archive.primary_path();
         let resolver = options.overwrite_resolver.as_deref_mut();
         let report = with_optional_job_context(options.cancellation.as_ref(), options.event_sink.as_deref_mut(), |context| {
-            crate::deb_backend::extract_deb_nested_with_context(path, &options.destination, &options.policy, resolver, context)
+            crate::deb_backend::extract_deb_nested_with_context(path, &options.destination, &options.policy, resolver, context, archive.options())
         })
         .map_err(|error| deb_error(path, &error))?;
         Ok(crate::engine::adapters::extract_report(report.written_entries, report.skipped_entries, report.written_bytes, report.warnings))

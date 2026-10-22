@@ -610,7 +610,15 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     return Err(ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() });
                 }
             }
-            Err(error) if destination_is_absent(&error) => {}
+            Err(error) if destination_is_absent(&error) => {
+                // A dangling final symlink also reports NotFound when resolved.
+                // Reject unresolved redirects, while allowing an ordinary
+                // missing target to be supplied by a later archive entry.
+                // Components also removes trailing slashes and `.` so the
+                // metadata probe does not follow a final link as a directory.
+                let target_path = parent.join(target).components().collect::<PathBuf>();
+                self.require_non_symlink(&target_path, &destination_path.to_string_lossy())?;
+            }
             Err(error) => {
                 return Err(ExtractionSafetyError::DestinationProbe {
                     archive_path: destination_path.to_string_lossy().into_owned(),

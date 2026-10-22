@@ -114,6 +114,75 @@ fn extraction_refuses_preexisting_symlink_ancestors_even_with_replace() {
 }
 
 #[test]
+#[cfg(unix)]
+fn extraction_rejects_dangling_symlink_targets_outside_the_root() {
+    use zmanager_core::engine::{ArchiveSource, ExtractOptions, OpenOptions, create_default_engine};
+
+    let temp = TestDir::new("dangling-symlink-target");
+    temp.create_dir("outside");
+    for (format, link_target) in
+        [("tar", "redirect"), ("zip", "redirect"), ("tar", "redirect/"), ("zip", "redirect/"), ("tar", "redirect/."), ("zip", "redirect/.")]
+    {
+        let case = link_target.replace('/', "_");
+        let archive = temp.path(format!("payload-{case}.{format}"));
+        if format == "tar" {
+            raw_tar_case(archive.clone(), &[RawTarEntry::symlink("link", link_target)]);
+        } else {
+            let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+            writer.add_symlink("link", link_target, SimpleFileOptions::default()).unwrap();
+            writer.finish().unwrap();
+        }
+        for chained in [false, true] {
+            let destination = temp.path(format!("out-{case}-{format}-{chained}"));
+            fs::create_dir(&destination).unwrap();
+            let target = temp.path(format!("outside/missing-{case}-{format}-{chained}"));
+            if chained {
+                std::os::unix::fs::symlink(&target, destination.join("alias")).unwrap();
+                std::os::unix::fs::symlink("alias", destination.join("redirect")).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&target, destination.join("redirect")).unwrap();
+            }
+            let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive.clone()), OpenOptions::default()).unwrap();
+            let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
+
+            let result = handle.extract(&mut options);
+
+            assert!(result.is_err(), "{format} accepted dangling target {link_target} (chained={chained})");
+            assert!(fs::symlink_metadata(destination.join("link")).is_err());
+            assert!(!target.exists());
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn extraction_allows_forward_symlinks_within_the_root() {
+    use zmanager_core::engine::{ArchiveSource, ExtractOptions, OpenOptions, create_default_engine};
+
+    let temp = TestDir::new("safe-forward-symlink");
+    for format in ["tar", "zip"] {
+        let archive = temp.path(format!("payload.{format}"));
+        if format == "tar" {
+            raw_tar_case(archive.clone(), &[RawTarEntry::symlink("link", "target"), RawTarEntry::file("target", b"marker")]);
+        } else {
+            let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+            writer.add_symlink("link", "target", SimpleFileOptions::default()).unwrap();
+            writer.start_file("target", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"marker").unwrap();
+            writer.finish().unwrap();
+        }
+        let destination = temp.path(format!("out-{format}"));
+        let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive), OpenOptions::default()).unwrap();
+        let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
+
+        handle.extract(&mut options).unwrap();
+
+        assert_eq!(fs::read_link(destination.join("link")).unwrap(), PathBuf::from("target"));
+        assert_eq!(fs::read(destination.join("link")).unwrap(), b"marker");
+    }
+}
+
+#[test]
 fn tar_zst_hostile_fixtures_are_rejected() {
     let temp = TestDir::new("tar_zst_hostile_fixtures_are_rejected");
     let cases = [

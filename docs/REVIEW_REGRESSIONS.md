@@ -96,3 +96,30 @@ claimed by this review.
 
 Thirteen new regression and boundary tests accompany the fixes. No archive
 fixtures were regenerated and no bindings changed.
+
+## Follow-up hardening
+
+Review of `cbc73198b5d02b585505028f4b6d6bc78e978639` identified two
+remaining gaps, reproduced with small local payloads:
+
+- Nested DEB testing opened payloads with default options, losing the caller's
+  decoded-byte budget. DEB extraction passed unbounded decoders directly to
+  the TAR backend. Both paths now inherit the configured budget and temporary
+  root; direct DEB backend callers receive the default 64 GiB decoded limit.
+  The engine regression covers rejection at 512 bytes, explicit opt-out, and
+  cleanup. A second regression verifies that a small control payload cannot
+  hide an oversized data payload. Cancellation and progress-event tests still
+  exercise the direct backend path.
+- A final dangling symlink returned `NotFound` from canonicalization and was
+  accepted as a missing target even when it pointed outside the root. Failed
+  resolution now probes the final target without following it and rejects
+  unresolved symlinks/reparse points. The probe removes trailing slashes and
+  `.` components without collapsing `..`. TAR and ZIP regressions cover direct
+  and chained dangling targets, including directory suffixes; safe forward
+  links to ordinary files remain supported. Unresolved links through existing
+  dangling redirects are rejected conservatively, including redirects whose
+  eventual destination would be inside the root.
+
+The DEB and dangling-target regressions were observed failing before their
+fixes. All follow-up tests use local temporary files. No archive fixtures or
+public API signatures changed.
