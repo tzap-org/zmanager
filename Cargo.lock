@@ -130,7 +130,7 @@ dependencies = [
  "thiserror",
  "xts-mode",
  "zip",
- "zip-forensic-core 0.1.0",
+ "zip-forensic-core",
 ]
 
 [[package]]
@@ -300,7 +300,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror",
- "zip-forensic-core 0.2.2",
+ "zip-forensic-core",
 ]
 
 [[package]]
@@ -6184,25 +6184,6 @@ dependencies = [
  "zeroize",
  "zopfli",
  "zstd 0.14.3",
-]
-
-[[package]]
-name = "zip-forensic-core"
-version = "0.1.0"
-dependencies = [
- "aes 0.8.4",
- "bzip2-rs",
- "constant_time_eq 0.3.1",
- "crc32fast",
- "ctr 0.9.2",
- "deflate64",
- "flate2",
- "hmac 0.12.1",
- "lzma-rs",
- "pbkdf2 0.12.2",
- "ruzstd",
- "sha1 0.10.7",
- "thiserror",
 ]
 
 [[package]]

@@ -22,8 +22,7 @@ aff4 = { path = "../../aff4/core" }
 btrfs-core = { path = "../../btrfs-core/core" }
 dar-core = { path = "../../dar-core/core" }
 zfs-forensic-core = { path = "../../zfs-forensic-core/core" }
-zip-forensic-core-01 = { package = "zip-forensic-core", path = "../../zip-forensic-core-0.1/core" }
-zip-forensic-core-02 = { package = "zip-forensic-core", path = "../../zip-forensic-core/core" }
+zip-forensic-core = { path = "../../zip-forensic-core/core" }
 
 [[bin]]
 name = "path_normalization"
