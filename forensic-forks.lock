@@ -1,0 +1,7 @@
+# Sibling checkout, fork URL, exact tested commit. No branch fallbacks.
+aff4 https://github.com/frankmanzhu/aff4.git f6126a8f5dbf01a8afcc0586cdc98a2afb21e5e3
+btrfs-core https://github.com/frankmanzhu/btrfs-core.git 1fa4270c0e304323c1f2972359636cea30a8933d
+dar-core https://github.com/frankmanzhu/dar-core.git 5c2b42f41adffcadd01ffb20d644b26aaed1a0ff
+zfs-forensic-core https://github.com/frankmanzhu/zfs-forensic-core.git 6b76a3d33e9f4df87cdbd228e3acd845c0d6b496
+zip-forensic-core-0.1 https://github.com/frankmanzhu/zip-forensic-core.git ac296c361841a3c13ec61c7d7f0f5363891332dc
+zip-forensic-core https://github.com/frankmanzhu/zip-forensic-core.git d079945af32d5ac38ed3a324a2ec400b0c2f057b

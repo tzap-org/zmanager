@@ -61,6 +61,7 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+          bash scripts/checkout-forensic-forks.sh
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -270,6 +271,7 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+          bash scripts/checkout-forensic-forks.sh
 
       - name: Install Linux dependencies
         run: |
@@ -375,6 +377,7 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+          bash scripts/checkout-forensic-forks.sh
 
       - name: Prepare native export debugger
         shell: pwsh

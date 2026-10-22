@@ -926,7 +926,7 @@ fn engine_lists_native_zip_entry_mtime() {
     let mut options = zip::write::FullFileOptions::default();
     let mut field = vec![0b0000_0001_u8];
     field.extend_from_slice(&1_700_000_001_u32.to_le_bytes());
-    options.add_extra_data(0x5455, field, false).unwrap();
+    options.add_extra_field(0x5455, field, false).unwrap();
     zip.start_file("hello.txt", options).unwrap();
     zip.write_all(b"Hello world!").unwrap();
     zip.finish().unwrap();

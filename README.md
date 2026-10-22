@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-100%25%20lines-brightgreen.svg)](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
-[![Security audit](https://img.shields.io/badge/security-cargo--deny%20%2B%20vet-brightgreen.svg)](deny.toml)
+[![Security audit](https://github.com/tzap-org/zmanager/actions/workflows/security-audit.yml/badge.svg)](https://github.com/tzap-org/zmanager/actions/workflows/security-audit.yml)
 
 `zm` is a universal file archiver for macOS, Linux, and Windows, built for
 high-performance compression, safe extraction, and seamless handling of
@@ -222,6 +222,7 @@ creation.
 ```sh
 git clone https://github.com/tzap-org/zmanager.git
 cd zmanager
+bash scripts/checkout-forensic-forks.sh
 cargo build -p zmanager-cli --release
 ./target/release/zm --help
 ```
@@ -232,6 +233,8 @@ cargo build -p zmanager-cli --release
 cargo fmt --check
 cargo clippy --workspace --all-targets
 cargo test --workspace
+cargo audit --deny yanked --file Cargo.lock
+cargo audit --deny yanked --file fuzz/Cargo.lock
 ```
 
 The core suite is deterministic and should pass without network access. Unix CI
@@ -239,6 +242,14 @@ also runs the committed-fixture compatibility test with `unzip`, 7-Zip, and a
 tar reader; it lists and extracts the small checked-in ZIP, 7z, TAR, every
 supported compressed-TAR variant, and CPIO fixtures, then compares the
 resulting tree with `zm`.
+
+The Security Audit workflow checks both committed lockfiles against RustSec on
+pull requests, pushes to `main`, and daily. Known vulnerabilities and yanked
+dependencies fail the check; unmaintained dependencies remain visible as
+warnings. Temporary forensic dependency updates are documented in
+[docs/FORENSIC_SECURITY_FORKS.md](docs/FORENSIC_SECURITY_FORKS.md).
+ZIP extraction clears setuid/setgid bits while retaining sticky-directory
+restrictions.
 
 ## Project Links
 

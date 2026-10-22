@@ -14,6 +14,9 @@ Both musl targets are packaged inside an Alpine container using
 The build mounts the sibling `tzap` and `forensic-vfs-engine` repositories
 because the workspace uses those local path dependencies during release
 builds. NTFS and UDF are resolved from their published crates.
+The temporary forensic codec forks in `forensic-forks.lock` are mounted as
+siblings too. Clone them with `bash scripts/checkout-forensic-forks.sh` before
+packaging; see [FORENSIC_SECURITY_FORKS.md](FORENSIC_SECURITY_FORKS.md).
 
 ## Dependencies
 

@@ -12,8 +12,18 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tzap-core = "0.2.4"
-zip = "8.6.0"
+zip = "9.0.5"
 zmanager-core = { path = "../crates/zmanager-core" }
+
+# Cargo does not inherit patches across workspace roots. Keep these aligned
+# with the main workspace until fixed forensic releases are available.
+[patch.crates-io]
+aff4 = { path = "../../aff4/core" }
+btrfs-core = { path = "../../btrfs-core/core" }
+dar-core = { path = "../../dar-core/core" }
+zfs-forensic-core = { path = "../../zfs-forensic-core/core" }
+zip-forensic-core-01 = { package = "zip-forensic-core", path = "../../zip-forensic-core-0.1/core" }
+zip-forensic-core-02 = { package = "zip-forensic-core", path = "../../zip-forensic-core/core" }
 
 [[bin]]
 name = "path_normalization"

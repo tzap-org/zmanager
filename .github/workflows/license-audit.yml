@@ -30,6 +30,7 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+          bash scripts/checkout-forensic-forks.sh
 
       # Run cargo-deny directly on the runner so it sees the sibling
       # forensic-vfs-engine checkout used by the path dependency.

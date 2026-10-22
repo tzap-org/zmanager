@@ -18,6 +18,9 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
       
       - name: Install Linux native dependencies
         run: |
@@ -38,13 +41,29 @@ jobs:
           FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+          bash scripts/checkout-forensic-forks.sh
 
       - name: Prepare for publish
         run: |
-          sed -i '/\[patch\.crates-io\]/,$d' Cargo.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          manifest = Path("Cargo.toml")
+          manifest.write_text(re.sub(r"(?ms)^\[patch\.crates-io\]\n.*?(?=^\[|\Z)", "", manifest.read_text()))
+          Path(".cargo/config.toml").write_text('[net]\ngit-fetch-with-cli = true\n')
+          PY
           cargo update
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Workspace patches do not travel with crates.io packages. Fail before
+      # publishing if removing those patches restores vulnerable dependencies.
+      - name: Audit dependencies without workspace patches
+        run: cargo audit --deny yanked --file Cargo.lock
+
+      - name: Record publish preparation
+        run: |
+          git config user.name "Frank Zhu"
+          git config user.email "frankmanzhu@hotmail.com"
           git commit -am "Strip local patches for publishing" || true
 
       - name: Publish crates

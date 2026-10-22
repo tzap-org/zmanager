@@ -358,12 +358,12 @@ pub(crate) fn list_zip_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> R
     for index in 0..archive.len() {
         let file = archive.by_index_raw(index).map_err(map_zip_error)?;
         entries.push(ZipListEntry {
-            name: file.name().to_owned(),
+            name: file.name().map_err(map_zip_error)?.into_owned(),
             kind: zip_entry_kind(&file),
             size: file.size(),
             compressed_size: file.compressed_size(),
             encrypted: file.encrypted(),
-            unix_mode: file.unix_mode(),
+            unix_mode: zip_entry_mode(&file),
             method: format!("{:?}", file.compression()),
             crc: file.crc32(),
             comment: (!file.comment().is_empty()).then(|| file.comment().to_owned()),
@@ -414,8 +414,8 @@ pub(crate) fn test_zip_archive<R: Read + Seek>(
         // Read the name straight from the parsed central directory. Opening an
         // entry reader here would decode each selected entry twice, once for its
         // name and again for its data (CR-194).
-        let name = archive.name_for_index(index).ok_or_else(|| map_zip_error(zip::result::ZipError::FileNotFound))?;
-        if !selected(name) {
+        let name = archive.name_for_index(index).ok_or_else(|| map_zip_error(zip::result::ZipError::FileNotFound))?.map_err(map_zip_error)?;
+        if !selected(&name) {
             skipped_entries += 1;
             continue;
         }
@@ -569,11 +569,15 @@ pub(crate) fn extract_zip_archive<R: Read + Seek>(
         }
         let mut file = archive.by_index_with_options(index, ZipReadOptions::new().password(password)).map_err(map_zip_error)?;
         let entry_size = file.size();
-        let unix_mode = file.unix_mode();
+        let unix_mode = zip_entry_mode(&file);
         let modified_time = zip_entry_mtime(&file);
         let kind = extraction_entry_kind(&mut file)?;
-        let entry =
-            ExtractionEntry { archive_path: file.name().to_owned(), kind, uncompressed_size: Some(entry_size), compressed_size: Some(file.compressed_size()) };
+        let entry = ExtractionEntry {
+            archive_path: file.name().map_err(map_zip_error)?.into_owned(),
+            kind,
+            uncompressed_size: Some(entry_size),
+            compressed_size: Some(file.compressed_size()),
+        };
 
         crate::extract_loop::process_extraction_entry(
             &mut report,
@@ -686,7 +690,7 @@ fn write_manifest_to_zip<W: Write + Seek>(
     Ok(report)
 }
 
-fn zip_options<'a>(entry: &ManifestEntry, create_options: &'a ZipCreateOptions) -> FullFileOptions<'a> {
+fn zip_options<'a>(entry: &ManifestEntry, create_options: &'a ZipCreateOptions) -> FullFileOptions<'a, 'static> {
     let compression_method = match create_options.compression {
         ZipCompression::Store => CompressionMethod::Stored,
         ZipCompression::Deflate => CompressionMethod::Deflated,
@@ -887,6 +891,15 @@ fn zip_entry_kind<R: Read>(file: &zip::read::ZipFile<'_, R>) -> ZipEntryKind {
     }
 }
 
+/// ZIP 9 clears special mode bits to prevent privilege escalation on extraction.
+/// Keep its setuid/setgid protection, while preserving the sticky bit on Unix
+/// directories so shared-directory deletion restrictions survive a round trip.
+fn zip_entry_mode<R: Read>(file: &ZipFile<'_, R>) -> Option<u32> {
+    const STICKY_DIRECTORY_BIT: u32 = 0o1000;
+    file.unix_mode()
+        .map(|mode| if file.is_dir() && file.system() == zip::System::Unix { mode | ((file.external_attributes() >> 16) & STICKY_DIRECTORY_BIT) } else { mode })
+}
+
 fn extraction_entry_kind<R: Read>(file: &mut zip::read::ZipFile<'_, R>) -> Result<ExtractionEntryKind, ZipBackendError> {
     if file.is_dir() {
         return Ok(ExtractionEntryKind::Directory);
@@ -894,7 +907,8 @@ fn extraction_entry_kind<R: Read>(file: &mut zip::read::ZipFile<'_, R>) -> Resul
 
     if file.is_symlink() {
         let mut target = String::new();
-        file.read_to_string(&mut target).map_err(|_| ZipBackendError::InvalidSymlinkTarget { archive_path: file.name().to_owned() })?;
+        let archive_path = file.name().map_err(map_zip_error)?.into_owned();
+        file.read_to_string(&mut target).map_err(|_| ZipBackendError::InvalidSymlinkTarget { archive_path })?;
         return Ok(ExtractionEntryKind::Symlink { target: PathBuf::from(target) });
     }
 
@@ -1022,7 +1036,7 @@ fn zip_entry_mtime<R: Read>(file: &ZipFile<'_, R>) -> Option<FileTime> {
             // `zip` exposes the field as unsigned, but Info-ZIP defines it as a
             // signed 32-bit Unix time, so pre-1970 values are negative.
             ExtraField::ExtendedTimestamp(timestamp) => extended = extended.or(timestamp.mod_time().map(|raw| i32::from_le_bytes(raw.to_le_bytes()))),
-            ExtraField::Ntfs(_) => {}
+            _ => {}
         }
     }
     // NTFS keeps sub-second precision, so it is preferred over the extended timestamp.
@@ -1077,7 +1091,7 @@ fn dos_file_time_in<Tz: chrono::TimeZone>(dt: zip::DateTime, zone: &Tz) -> Optio
 /// outside 1901-12-13..=2038-01-19 rather than written as a value readers would
 /// interpret as a different date; the NTFS field still covers those times. The
 /// DOS field covers 1980..=2107 and is clamped to that range.
-fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemTime) -> FullFileOptions<'_> {
+fn with_zip_mtime<'key, 'name>(mut options: FullFileOptions<'key, 'name>, modified: std::time::SystemTime) -> FullFileOptions<'key, 'name> {
     // `FileTime` floors pre-epoch times to whole seconds, matching Unix time,
     // and keeps the fraction as forward-counting nanoseconds.
     let file_time = FileTime::from_system_time(modified);
@@ -1091,13 +1105,13 @@ fn with_zip_mtime(mut options: FullFileOptions<'_>, modified: std::time::SystemT
         field[6..8].copy_from_slice(&NTFS_FILE_TIMES_LEN.to_le_bytes());
         // Access and creation times stay zero, which readers treat as unset, as 7-Zip writes them.
         field[8..16].copy_from_slice(&ticks.to_le_bytes());
-        let _ = options.add_extra_data(NTFS_FIELD_ID, field, false);
+        let _ = options.add_extra_field(NTFS_FIELD_ID, field, false);
     }
     if let Ok(seconds) = i32::try_from(file_time.unix_seconds()) {
         let mut field = [0_u8; 5];
         field[0] = EXTENDED_TIMESTAMP_MODIFIED;
         field[1..].copy_from_slice(&seconds.to_le_bytes());
-        let _ = options.add_extra_data(EXTENDED_TIMESTAMP_FIELD_ID, field, false);
+        let _ = options.add_extra_field(EXTENDED_TIMESTAMP_FIELD_ID, field, false);
     }
     options
 }
@@ -1313,7 +1327,7 @@ mod tests {
         zip::DateTime::from_date_and_time(2023, 11, 14, 22, 13, 20).unwrap()
     }
 
-    fn write_single_entry_zip(path: &Path, options: FullFileOptions<'_>) {
+    fn write_single_entry_zip(path: &Path, options: FullFileOptions<'_, '_>) {
         let mut writer = ZipWriter::new(File::create(path).unwrap());
         writer.start_file("hello.txt", options.compression_method(CompressionMethod::Stored).last_modified_time(dos_stamp())).unwrap();
         writer.write_all(b"hello").unwrap();
@@ -1597,7 +1611,7 @@ mod tests {
         let mut options = FullFileOptions::default();
         let mut field = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
         field.extend_from_slice(&1_600_000_000_u32.to_le_bytes());
-        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
+        options.add_extra_field(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
         write_single_entry_zip(&archive, options);
 
         assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 0));
@@ -1617,7 +1631,7 @@ mod tests {
             field.extend_from_slice(&ticks.to_le_bytes());
         }
         let mut options = FullFileOptions::default();
-        options.add_extra_data(0x000a, field, false).unwrap();
+        options.add_extra_field(0x000a, field, false).unwrap();
         write_single_entry_zip(&archive, options);
 
         assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 123_456_700));
@@ -1637,7 +1651,7 @@ mod tests {
             .extra_data_fields()
             .find_map(|field| match field {
                 zip::ExtraField::ExtendedTimestamp(timestamp) => timestamp.mod_time(),
-                zip::ExtraField::Ntfs(_) => None,
+                _ => None,
             })
             .expect("extended timestamp field present");
         // Odd second survives exactly, unlike the 2-second DOS field.
@@ -1692,7 +1706,7 @@ mod tests {
         let entry = raw_entry(&mut zip, name);
         entry.extra_data_fields().find_map(|field| match field {
             zip::ExtraField::ExtendedTimestamp(timestamp) => timestamp.mod_time().map(|raw| i32::from_le_bytes(raw.to_le_bytes())),
-            zip::ExtraField::Ntfs(_) => None,
+            _ => None,
         })
     }
 
@@ -1701,7 +1715,7 @@ mod tests {
         let entry = raw_entry(&mut zip, name);
         entry.extra_data_fields().find_map(|field| match field {
             zip::ExtraField::Ntfs(ntfs) => Some(ntfs.mtime()),
-            zip::ExtraField::ExtendedTimestamp(_) => None,
+            _ => None,
         })
     }
 
@@ -1721,7 +1735,7 @@ mod tests {
         let mut options = FullFileOptions::default();
         let mut field = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
         field.extend_from_slice(&(-86_400_i32).to_le_bytes());
-        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
+        options.add_extra_field(super::EXTENDED_TIMESTAMP_FIELD_ID, field, false).unwrap();
         write_single_entry_zip(&archive, options);
 
         // Read unsigned, these bytes would be 2106-02-06.
@@ -1843,7 +1857,7 @@ mod tests {
         let mut options = FullFileOptions::default();
         let mut extended = vec![super::EXTENDED_TIMESTAMP_MODIFIED];
         extended.extend_from_slice(&1_500_000_000_u32.to_le_bytes());
-        options.add_extra_data(super::EXTENDED_TIMESTAMP_FIELD_ID, extended, false).unwrap();
+        options.add_extra_field(super::EXTENDED_TIMESTAMP_FIELD_ID, extended, false).unwrap();
         let mtime_ticks: u64 = (1_600_000_000 + 11_644_473_600) * 10_000_000 + 5_000_000;
         let mut ntfs = Vec::new();
         ntfs.extend_from_slice(&0_u32.to_le_bytes()); // reserved
@@ -1852,7 +1866,7 @@ mod tests {
         for ticks in [mtime_ticks, mtime_ticks, mtime_ticks] {
             ntfs.extend_from_slice(&ticks.to_le_bytes());
         }
-        options.add_extra_data(0x000a, ntfs, false).unwrap();
+        options.add_extra_field(0x000a, ntfs, false).unwrap();
         write_single_entry_zip(&archive, options);
 
         assert_listed_and_extracted_mtime(&temp, &archive, filetime::FileTime::from_unix_time(1_600_000_000, 500_000_000));

@@ -101,9 +101,7 @@ skip = [
 
     # SecurityRonin forensic family disagreeing with itself; upstream issue filed
     # against the family rather than bumped per-crate here.
-    { crate = "ruzstd@0.7.3" },
     { crate = "safe-read@0.1.0" },
-    { crate = "twox-hash@1.6.3" },
     { crate = "zip-forensic-core@0.1.0" },
 
     # Codec lines held by separate subtrees (zmanager backends / forensic engine / dpp).
@@ -113,7 +111,12 @@ skip = [
     { crate = "lzma-rust2@0.16.5" },
     { crate = "lzma-rust2@0.19.0" },
     { crate = "quick-xml@0.41.0" },
-    { crate = "zip@2.4.2" },
+    # ZIP 9's fixed extraction implementation brings newer codec generations;
+    # blake3, dpp/pbzx, backhand, and tzap still require the older APIs.
+    { crate = "constant_time_eq@0.4.2" },
+    { crate = "lzma-rust2@0.20.1" },
+    { crate = "zstd@0.13.3" },
+    { crate = "zstd-safe@7.2.4" },
 
     # Build-time only (proc-macro) or platform crates not built on our targets.
     # The `mtree` crate previously anchored bitflags 1.x and smallvec 0.6 here;

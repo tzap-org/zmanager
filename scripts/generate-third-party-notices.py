@@ -91,8 +91,15 @@ def candidate_license_files(package: dict) -> list[Path]:
     if license_file:
         candidates.append((package_root / license_file).resolve())
 
-    for pattern in COMMON_LICENSE_GLOBS:
-        candidates.extend(path.resolve() for path in package_root.glob(pattern) if path.is_file())
+    # Workspace members often inherit licensing from their repository root.
+    # Look there when the crate directory has no license text of its own.
+    license_root = package_root
+    while (license_root / "Cargo.toml").is_file():
+        for pattern in COMMON_LICENSE_GLOBS:
+            candidates.extend(path.resolve() for path in license_root.glob(pattern) if path.is_file())
+        if candidates:
+            break
+        license_root = license_root.parent
 
     unique: list[Path] = []
     seen: set[Path] = set()
@@ -113,8 +120,6 @@ def collect_rust_crates(metadata: dict, license_dir: Path, notice_path: Path) ->
         if package_id in workspace_members:
             continue
         package = package_by_id[package_id]
-        if not str(package.get("source", "")).startswith("registry+"):
-            continue
 
         copied_files = []
         destination_root = license_dir / RUST_LICENSE_DIR / package_dir_name(package)
@@ -338,6 +343,7 @@ def render_notices(
             "  `crates/zmanager-unrar/vendor/unrar/license.txt`",
             "  `crates/zmanager-wim/vendor/LICENSE-MIT`,",
             "  `crates/zmanager-wim/vendor/LICENSE-APACHE`",
+            "- Sibling forensic fork provenance: `docs/FORENSIC_SECURITY_FORKS.md`",
             "",
         ]
     )

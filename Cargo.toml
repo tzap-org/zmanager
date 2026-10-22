@@ -50,6 +50,16 @@ zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.7" }
 # drop the patch, so the tagged release build resolves tzap-core from
 # crates.io.
 
+# Temporary security updates for forensic readers whose published releases
+# still require vulnerable codec versions. See docs/FORENSIC_SECURITY_FORKS.md.
+[patch.crates-io]
+aff4 = { path = "../aff4/core" }
+btrfs-core = { path = "../btrfs-core/core" }
+dar-core = { path = "../dar-core/core" }
+zfs-forensic-core = { path = "../zfs-forensic-core/core" }
+zip-forensic-core-01 = { package = "zip-forensic-core", path = "../zip-forensic-core-0.1/core" }
+zip-forensic-core-02 = { package = "zip-forensic-core", path = "../zip-forensic-core/core" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

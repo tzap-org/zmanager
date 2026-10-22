@@ -47,7 +47,7 @@ aff4 = { version = "0.2", features = ["test-helpers"] }
 flate2 = "1.1.9"
 sha2 = "0.10.9"
 tar = "0.4.45"
-zip = "8.6.0"
+zip = "9.0.5"
 zstd = "0.13.3"
 
 [target.'cfg(unix)'.dev-dependencies]

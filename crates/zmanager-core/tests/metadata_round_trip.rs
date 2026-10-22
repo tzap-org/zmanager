@@ -140,7 +140,17 @@ fn zip_manager_round_trip_restores_portable_metadata() {
     let archive = fixture.temp.path("metadata.zip");
     let manifest = plan_archive(&fixture.source, &PlanOptions::default()).unwrap();
     create_zip_from_manifest(&manifest, &archive, &ZipCreateOptions::default()).unwrap();
-    assert_metadata_round_trip(&mut fixture, &archive, true);
+    #[cfg(unix)]
+    {
+        // The archive retains source metadata. Extraction must clear setuid and
+        // setgid even when the actual ZIP attributes contain those bits.
+        let mut zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        for (name, mode) in [("src/setuid.bin", 0o4755), ("src/setgid-folder/", 0o2755)] {
+            let entry = zip.by_name(name).unwrap();
+            assert_eq!((entry.external_attributes() >> 16) & 0o7777, mode);
+        }
+    }
+    assert_metadata_round_trip(&mut fixture, &archive, false);
 }
 
 #[test]
@@ -156,7 +166,7 @@ fn split_zip_manager_round_trip_restores_portable_metadata() {
     let options = ZipCreateOptions { compression: ZipCompression::Store, volume_size: Some(SPLIT_ZIP_VOLUME_SIZE_BYTES), ..Default::default() };
     let report = create_zip_from_manifest(&manifest, &archive, &options).unwrap();
     assert!(report.volume_count > 1, "fixture should exercise split ZIP extraction");
-    assert_metadata_round_trip(&mut fixture, &archive, true);
+    assert_metadata_round_trip(&mut fixture, &archive, false);
 }
 
 #[test]

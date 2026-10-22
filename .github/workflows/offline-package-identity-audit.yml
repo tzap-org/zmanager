@@ -50,6 +50,7 @@ jobs:
           git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
+          bash scripts/checkout-forensic-forks.sh
           # Build the audit harness with the released tzap-core dependency.
           python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
           sudo apt-get update
@@ -136,6 +137,7 @@ jobs:
           git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
           git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
           git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
+          bash scripts/checkout-forensic-forks.sh
           python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
       - name: Prepare native export debugger
         shell: pwsh

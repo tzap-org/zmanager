@@ -52,6 +52,18 @@ docker_args=(
   -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine"
 )
 
+# The codec forks use sibling paths, just like forensic-vfs-engine. Keep their
+# paths identical inside the container to the ones used by Cargo on the host.
+while read -r checkout _; do
+  [[ -z "$checkout" || "$checkout" == \#* ]] && continue
+  sibling="$ROOT/../$checkout"
+  if [[ ! -d "$sibling" ]]; then
+    echo "missing $sibling; run bash scripts/checkout-forensic-forks.sh first" >&2
+    exit 1
+  fi
+  docker_args+=(-v "$(cd "$sibling" && pwd):/$checkout")
+done < "$ROOT/forensic-forks.lock"
+
 # tzap-core is patched to the ../tzap sibling by default (see
 # .cargo/config.toml); only the release build resets that file to depend on
 # crates.io instead, in which case there's no sibling to mount.

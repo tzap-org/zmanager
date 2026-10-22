@@ -1,0 +1,36 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Check newly published advisories even when dependencies have not changed.
+    - cron: "23 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: RustSec (${{ matrix.lockfile }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        lockfile: [Cargo.lock, fuzz/Cargo.lock]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install cargo-audit
+        run: cargo +stable install cargo-audit --locked --version 0.22.2
+
+      # Audit the committed lockfile directly: no dependency resolution, builds,
+      # sibling checkouts, hosted-service access, or advisory exceptions.
+      - name: Check vulnerabilities and yanked dependencies
+        run: cargo audit --deny yanked --file "${{ matrix.lockfile }}"

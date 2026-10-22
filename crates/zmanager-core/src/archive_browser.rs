@@ -1044,7 +1044,7 @@ mod tests {
         let mut options = zip::write::FullFileOptions::default().compression_method(CompressionMethod::Stored);
         let mut field = vec![0b0000_0001_u8];
         field.extend_from_slice(&1_700_000_000_u32.to_le_bytes());
-        options.add_extra_data(0x5455, field, false).unwrap();
+        options.add_extra_field(0x5455, field, false).unwrap();
         writer.start_file("hello.txt", options).unwrap();
         writer.write_all(b"hello").unwrap();
         writer.finish().unwrap();
