@@ -156,28 +156,86 @@ fn extraction_rejects_dangling_symlink_targets_outside_the_root() {
 
 #[test]
 #[cfg(unix)]
+fn extraction_rejects_symlink_targets_hidden_by_missing_directories() {
+    use zmanager_core::engine::{ArchiveSource, ErrorKind, ExtractOptions, OpenOptions, create_default_engine};
+
+    let temp = TestDir::new("missing-directory-symlink-target");
+    temp.create_dir("outside");
+    for format in ["tar", "zip"] {
+        for (index, link_target) in ["missing/../redirect", "missing/child/../../redirect", "missing/./child/../../redirect"].iter().enumerate() {
+            let archive = temp.path(format!("payload-{index}.{format}"));
+            if format == "tar" {
+                raw_tar_case(archive.clone(), &[RawTarEntry::symlink("link", link_target), RawTarEntry::file("missing/child/marker.txt", b"inside")]);
+            } else {
+                let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+                writer.add_symlink("link", *link_target, SimpleFileOptions::default()).unwrap();
+                writer.start_file("missing/child/marker.txt", SimpleFileOptions::default()).unwrap();
+                writer.write_all(b"inside").unwrap();
+                writer.finish().unwrap();
+            }
+            for target_exists in [false, true] {
+                let destination = temp.path(format!("out-{index}-{format}-{target_exists}"));
+                fs::create_dir(&destination).unwrap();
+                let target = temp.path(format!("outside/marker-{index}-{format}-{target_exists}"));
+                if target_exists {
+                    fs::write(&target, b"outside").unwrap();
+                }
+                std::os::unix::fs::symlink(&target, destination.join("redirect")).unwrap();
+                let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive.clone()), OpenOptions::default()).unwrap();
+                let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
+
+                let error = handle.extract(&mut options).expect_err("a missing directory must not conceal the final redirect");
+
+                assert_eq!(error.kind, ErrorKind::SafetyViolation, "{format}: {link_target}");
+                assert!(fs::symlink_metadata(destination.join("link")).is_err());
+                assert!(!destination.join("missing").exists());
+                if target_exists {
+                    assert_eq!(fs::read(&target).unwrap(), b"outside");
+                } else {
+                    assert!(!target.exists());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn extraction_allows_forward_symlinks_within_the_root() {
     use zmanager_core::engine::{ArchiveSource, ExtractOptions, OpenOptions, create_default_engine};
 
     let temp = TestDir::new("safe-forward-symlink");
-    for format in ["tar", "zip"] {
-        let archive = temp.path(format!("payload.{format}"));
+    for (format, link_target) in [
+        ("tar", "target"),
+        ("zip", "target"),
+        ("tar", "missing/../target"),
+        ("zip", "missing/../target"),
+        ("tar", "missing/child/../../target"),
+        ("zip", "missing/child/../../target"),
+    ] {
+        let case = link_target.replace('/', "_");
+        let archive = temp.path(format!("payload-{case}.{format}"));
         if format == "tar" {
-            raw_tar_case(archive.clone(), &[RawTarEntry::symlink("link", "target"), RawTarEntry::file("target", b"marker")]);
+            raw_tar_case(
+                archive.clone(),
+                &[RawTarEntry::symlink("link", link_target), RawTarEntry::file("missing/child/marker.txt", b"inside"), RawTarEntry::file("target", b"marker")],
+            );
         } else {
             let mut writer = ZipWriter::new(File::create(&archive).unwrap());
-            writer.add_symlink("link", "target", SimpleFileOptions::default()).unwrap();
+            writer.add_symlink("link", link_target, SimpleFileOptions::default()).unwrap();
+            writer.start_file("missing/child/marker.txt", SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"inside").unwrap();
             writer.start_file("target", SimpleFileOptions::default()).unwrap();
             writer.write_all(b"marker").unwrap();
             writer.finish().unwrap();
         }
-        let destination = temp.path(format!("out-{format}"));
+        let destination = temp.path(format!("out-{case}-{format}"));
         let mut handle = create_default_engine().unwrap().open(ArchiveSource::Path(archive), OpenOptions::default()).unwrap();
         let mut options = ExtractOptions { destination: destination.clone(), ..Default::default() };
 
         handle.extract(&mut options).unwrap();
 
-        assert_eq!(fs::read_link(destination.join("link")).unwrap(), PathBuf::from("target"));
+        assert_eq!(fs::read_link(destination.join("link")).unwrap(), PathBuf::from(link_target));
         assert_eq!(fs::read(destination.join("link")).unwrap(), b"marker");
     }
 }

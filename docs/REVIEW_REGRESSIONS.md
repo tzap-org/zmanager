@@ -114,7 +114,7 @@ remaining gaps, reproduced with small local payloads:
   accepted as a missing target even when it pointed outside the root. Failed
   resolution now probes the final target without following it and rejects
   unresolved symlinks/reparse points. The probe removes trailing slashes and
-  `.` components without collapsing `..`. TAR and ZIP regressions cover direct
+  `.` components. TAR and ZIP regressions cover direct
   and chained dangling targets, including directory suffixes; safe forward
   links to ordinary files remain supported. Unresolved links through existing
   dangling redirects are rejected conservatively, including redirects whose
@@ -123,3 +123,25 @@ remaining gaps, reproduced with small local payloads:
 The DEB and dangling-target regressions were observed failing before their
 fixes. All follow-up tests use local temporary files. No archive fixtures or
 public API signatures changed.
+
+Review of `70352a9` additionally reproduced a missing-prefix bypass: a target
+such as `missing/../redirect` hid an existing external redirect from the raw
+metadata probe. Creating `missing` later in the archive made the extracted
+link resolve outside its root. The final probe now uses the normalized target;
+the original ancestor checks remain in place to reject symlink traversal in
+components removed by normalization. TAR and ZIP regressions cover existing
+and dangling external targets, multiple missing path components, and safe
+forward links using the same `..` patterns.
+
+Validation for this missing-prefix fix on macOS:
+
+- The new regression failed before the fix; the original TAR/ZIP probes now
+  return `SafetyViolation` without creating the escaping link.
+- All 60 additional adversarial target combinations were rejected.
+- `cargo fmt`, workspace Clippy, and workspace checks passed without warnings.
+- `cargo test --workspace --offline`: 2,293 passed, two existing tests ignored.
+- Both lockfiles passed `cargo audit --deny yanked`; the workspace retains four
+  unmaintained-dependency advisories and has no known vulnerable dependencies.
+
+Windows and Linux execution are not claimed for this fix. No fixtures,
+dependencies, public API signatures, or bindings changed.

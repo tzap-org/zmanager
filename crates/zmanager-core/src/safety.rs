@@ -611,13 +611,12 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                 }
             }
             Err(error) if destination_is_absent(&error) => {
-                // A dangling final symlink also reports NotFound when resolved.
-                // Reject unresolved redirects, while allowing an ordinary
-                // missing target to be supplied by a later archive entry.
-                // Components also removes trailing slashes and `.` so the
-                // metadata probe does not follow a final link as a directory.
-                let target_path = parent.join(target).components().collect::<PathBuf>();
-                self.require_non_symlink(&target_path, &destination_path.to_string_lossy())?;
+                // Probe the normalized final target: a missing prefix in
+                // `missing/../redirect` must not hide an existing redirect.
+                // Original ancestors are checked separately in validate_write_paths
+                // so normalizing here never permits traversal through a symlink.
+                // Ordinary missing targets may still be supplied by later entries.
+                self.require_non_symlink(&resolved_target, &destination_path.to_string_lossy())?;
             }
             Err(error) => {
                 return Err(ExtractionSafetyError::DestinationProbe {
