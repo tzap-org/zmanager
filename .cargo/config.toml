@@ -8,9 +8,8 @@ git-fetch-with-cli = true
 
 # Development default: build tzap-core from the ../tzap sibling checkout
 # instead of the published crate, so in-progress tzap fixes are picked up
-# before they're released. The committed Cargo.lock must match this path
-# dependency for --locked development and preview builds. release.yml drops
-# this section and resolves tzap-core from crates.io before its locked builds.
-# Every other build workflow keeps this patch, same as local dev.
+# before they're released. The committed Cargo.lock tracks the published crate;
+# CI, package preview, offline audits, and release builds remove this section
+# before running locked builds.
 [patch.crates-io]
 tzap-core = { path = "../tzap/crates/tzap-core" }

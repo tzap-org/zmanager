@@ -43,10 +43,10 @@ zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.7" }
 
 # The TZAP 0.2.5 release carries `entry_metadata::projected_posix_mode`, so the
 # whole family (core plus the keywrap and signing plugins) is a plain crates.io
-# dependency here. Local development and CI still track the ../tzap sibling
-# ahead of release via a [patch.crates-io] in .cargo/config.toml. The committed
-# Cargo.lock tracks that development path dependency. release.yml drops the
-# patch and resolves the published dependency before its locked builds.
+# dependency here. Local development can track the ../tzap sibling ahead of
+# release via a [patch.crates-io] in .cargo/config.toml. The committed
+# Cargo.lock tracks the published dependency; CI, package preview, and release
+# builds drop the development patch before their locked builds.
 
 # Temporary security updates for forensic readers whose published releases
 # still require vulnerable codec versions. See docs/FORENSIC_SECURITY_FORKS.md.

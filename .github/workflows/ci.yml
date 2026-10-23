@@ -63,6 +63,9 @@ jobs:
           git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
           bash scripts/checkout-forensic-forks.sh
 
+      - name: Use published tzap-core dependency
+        run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
+
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         # lzop, lrzip, lha, and ncompress (uncompress) create the optional
