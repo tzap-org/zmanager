@@ -68,13 +68,17 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        # lzop, lrzip, lha, and ncompress (uncompress) create the optional
-        # compatibility fixtures in the CLI compat tests; they are test
-        # oracles only — the shipped binaries decode lzop/compress streams
-        # natively and reject lrzip with an explicit unsupported error.
+        # These packages provide third-party fixture creators and comparison
+        # tools used by optional CLI compatibility tests. They are test
+        # oracles only; the shipped binaries do not depend on them at runtime.
         run: |
-          brew install cmake libb2 lz4 xz zstd lzop lrzip ncompress lhasa sevenzip gcab dpkg cdrtools
+          brew install cmake libb2 lz4 xz zstd lzop lrzip ncompress lhasa sevenzip gcab dpkg cdrtools qemu mtools msitools
           command -v lldb
+          command -v qemu-img
+          command -v mformat
+          command -v mcopy
+          command -v wixl
+          command -v msiextract
 
       - name: Force Clang on macOS
         if: runner.os == 'macOS'
@@ -108,8 +112,11 @@ jobs:
             lz4 \
             lzip \
             lzop \
+            mtools \
+            msitools \
             ncompress \
             python3 \
+            qemu-utils \
             rpm \
             strace \
             unzip \
@@ -121,7 +128,16 @@ jobs:
             zstd
           sudo apt-get install -y 7zip || sudo apt-get install -y p7zip-full
           sudo apt-get install -y lha || sudo apt-get install -y lhasa || true
+          if [[ "$(dpkg --print-architecture)" == "amd64" ]]; then
+            sudo apt-get install -y rar
+            command -v rar
+          fi
           command -v strace
+          command -v qemu-img
+          command -v mformat
+          command -v mcopy
+          command -v wixl
+          command -v msiextract
 
       - name: Start D-Bus and GNOME Keyring
         if: runner.os == 'Linux'
