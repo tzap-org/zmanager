@@ -3111,9 +3111,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efc29601dfaf5b6d7faf0dda0eff8ec8b8eb590d87d96e80c516cfb0fc635136"
+checksum = "72ec6de4f269e1b7bfac4943f92ea18ce31984659292b437e3c739882f44b3ca"
 dependencies = [
  "ed25519-dalek",
  "openssl",

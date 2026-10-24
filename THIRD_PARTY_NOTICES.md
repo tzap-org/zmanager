@@ -533,9 +533,9 @@ release reviewers can inspect the complete Cargo dependency closure.
 | twox-hash | 2.1.3 | MIT | third-party-licenses/rust/twox-hash-2.1.3/LICENSE.txt |
 | typed-path | 0.12.3 | MIT OR Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | third-party-licenses/rust/typenum-1.20.1/LICENSE |
-| tzap-core | 0.2.5 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
-| tzap-plugin-keywrap | 0.2.5 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
-| tzap-plugin-signing | 0.2.5 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-core | 0.2.6 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-plugin-keywrap | 0.2.6 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
+| tzap-plugin-signing | 0.2.6 | Apache-2.0 | Metadata only; no license file found in the local Cargo cache |
 | udf-forensic | 0.2.8 | Apache-2.0 | third-party-licenses/rust/udf-forensic-0.2.8/LICENSE |
 | udif | 0.4.1 | MIT | third-party-licenses/rust/udif-0.4.1/LICENSE |
 | uds_windows | 1.2.1 | MIT | third-party-licenses/rust/uds_windows-1.2.1/LICENSE |
