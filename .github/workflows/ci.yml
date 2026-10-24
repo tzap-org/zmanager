@@ -120,6 +120,7 @@ jobs:
             rpm \
             strace \
             unzip \
+            wixl \
             xdotool \
             xvfb \
             xz-utils \
