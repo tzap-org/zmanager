@@ -69,13 +69,10 @@ skip = [
     # RustCrypto 0.10 -> 0.11 migration boundary. Pinned by ed25519-dalek (digest 0.10)
     # and the SecurityRonin forensic family; not resolvable until dalek moves.
     { crate = "aead@0.5.2" },
-    { crate = "aes-gcm@0.10.3" },
     { crate = "aes@0.8.4" },
     { crate = "block-buffer@0.10.4" },
     { crate = "block-padding@0.3.3" },
     { crate = "cbc@0.1.2" },
-    { crate = "chacha20@0.9.1" },
-    { crate = "chacha20poly1305@0.10.1" },
     { crate = "cipher@0.4.4" },
     { crate = "const-oid@0.9.6" },
     { crate = "constant_time_eq@0.3.1" },
@@ -85,25 +82,25 @@ skip = [
     { crate = "digest@0.10.7" },
     { crate = "getrandom@0.2.17" },
     { crate = "getrandom@0.3.4" },
-    { crate = "ghash@0.5.1" },
     { crate = "hkdf@0.12.4" },
     { crate = "hmac@0.12.1" },
     { crate = "inout@0.1.4" },
     { crate = "pbkdf2@0.12.2" },
-    { crate = "poly1305@0.8.0" },
-    { crate = "polyval@0.6.2" },
     { crate = "r-efi@5.3.0" },
     { crate = "rand_core@0.6.4" },
     { crate = "rand_core@0.9.5" },
     { crate = "sha1@0.10.7" },
     { crate = "sha2@0.10.9" },
-    { crate = "universal-hash@0.5.1" },
+    # tzap keywrap HPKE 0.14 moved X25519 to curve25519-dalek v5; signing
+    # still uses ed25519-dalek v2 and curve25519-dalek v4.
+    { crate = "curve25519-dalek@4.1.3" },
+    { crate = "curve25519-dalek@5.0.0" },
+    { crate = "fiat-crypto@0.2.9" },
+    { crate = "fiat-crypto@0.3.0" },
 
     # SecurityRonin forensic family disagreeing with itself; upstream issue filed
     # against the family rather than bumped per-crate here.
     { crate = "safe-read@0.1.0" },
-    { crate = "zip-forensic-core@0.1.0" },
-
     # Codec lines held by separate subtrees (zmanager backends / forensic engine / dpp).
     { crate = "base64@0.22.1" },
     { crate = "lz4_flex@0.11.6" },
