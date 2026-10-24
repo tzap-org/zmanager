@@ -365,8 +365,9 @@ fn competitor_rar_passworded_large_dictionary_is_rejected_by_zm() {
 
     let technical_list = run_rar_with_password(&rar, ["vt", archive.to_str().unwrap()], "secret");
     assert_success("rar lists passworded large-dictionary fixture", &technical_list);
+    let technical_list_stdout = String::from_utf8_lossy(&technical_list.stdout).to_ascii_lowercase();
     assert!(
-        String::from_utf8_lossy(&technical_list.stdout).contains("-md=1g"),
+        technical_list_stdout.contains("-md=1g") || technical_list_stdout.contains("-md=1024m"),
         "rar did not create a 1 GiB dictionary fixture\nstdout:\n{}",
         String::from_utf8_lossy(&technical_list.stdout)
     );
