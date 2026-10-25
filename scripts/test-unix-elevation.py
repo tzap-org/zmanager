@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 
@@ -37,7 +38,14 @@ def terminal_command(arguments, responses, initial_input=b""):
                     break
                 transcript.extend(chunk)
                 if pending and pending[0][0] in transcript:
-                    _, reply = pending.pop(0)
+                    response = pending.pop(0)
+                    _, reply = response[:2]
+                    if len(response) == 3 and response[2]:
+                        echo_deadline = time.monotonic() + 2
+                        while termios.tcgetattr(terminal)[3] & termios.ECHO:
+                            if time.monotonic() >= echo_deadline:
+                                raise AssertionError("password prompt did not disable terminal echo")
+                            time.sleep(0.01)
                     os.write(terminal, reply)
             ended, child_status = os.waitpid(pid, os.WNOHANG)
             if ended:
@@ -100,7 +108,7 @@ def main():
                     subprocess.run(["/usr/bin/sudo", "-k"], check=True)
                     code, output = terminal_command(
                         ["/usr/bin/sudo", "-p", "[zm-test] password: ", "--"] + command,
-                        [(b"[zm-test] password:", password.encode() + b"\n")],
+                        [(b"[zm-test] password:", password.encode() + b"\n", True)],
                     )
                     assert code == 0, "fixture sudo command failed"
                     assert password.encode() not in output, "sudo echoed the fixture password"
@@ -113,7 +121,7 @@ def main():
                 assert not destination.exists(), "cancelled authentication wrote files"
                 assert b"Sudo extraction failed or was cancelled" not in cancelled
                 subprocess.run(["/usr/bin/sudo", "-k"], check=True)
-                code, transcript = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n")])
+                code, transcript = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n", True)])
                 assert code == 0, "sudo extraction failed"
                 assert b"sudo password" in transcript
                 assert password.encode() not in transcript, "sudo echoed the fixture password"
@@ -122,7 +130,7 @@ def main():
                 fixture_sudo(["/bin/chmod", "666", str(destination / source.name)])
                 (destination / source.name).write_bytes(b"keep existing contents")
                 subprocess.run(["/usr/bin/sudo", "-k"], check=True)
-                code, rejected = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n")])
+                code, rejected = terminal_command(args, [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n", True)])
                 assert code != 0 and b"would overwrite" in rejected, "sudo retry must reject the existing file under --overwrite never"
                 assert b"Sudo extraction failed or was cancelled" not in rejected, "a generic sudo failure must not obscure the extraction error"
                 assert (destination / source.name).read_bytes() == b"keep existing contents"
@@ -136,7 +144,7 @@ def main():
                 subprocess.run(["/usr/bin/sudo", "-k"], check=True)
                 code, output = terminal_command(
                     [binary, "extract", str(encrypted_archive), "-C", str(encrypted_destination), "--no-progress"],
-                    [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n"), (b"Archive password:", archive_password + b"\n")],
+                    [(b"[y/N]", b"y\n"), (b"[zm] sudo password", password.encode() + b"\n", True), (b"Archive password:", archive_password + b"\n", True)],
                 )
                 assert code == 0, "encrypted sudo extraction failed"
                 assert archive_password not in output and password.encode() not in output, "a password was echoed"
