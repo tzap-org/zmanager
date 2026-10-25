@@ -18,6 +18,21 @@ def run(arguments, success=True):
     return result
 
 
+def detach_disk_image(mount):
+    command = ["hdiutil", "detach", mount]
+    for attempt in range(5):
+        result = subprocess.run(command, capture_output=True, timeout=60)
+        if result.returncode == 0:
+            return
+        if b"resource busy" not in result.stderr.lower():
+            raise AssertionError(result.stderr.decode(errors="replace"))
+        time.sleep(1)
+
+    # A transient process can briefly keep this disposable test volume busy.
+    # Retry a forced detach only after normal detach has had time to succeed.
+    run(command + ["-force"])
+
+
 @contextlib.contextmanager
 def bounded_volume(root):
     mount = root / "bounded volume"
@@ -26,13 +41,13 @@ def bounded_volume(root):
         image = root / "bounded.dmg"
         run(["hdiutil", "create", "-size", "32m", "-fs", "HFS+", "-volname", "ZManagerWriteFixture", image])
         run(["hdiutil", "attach", "-nobrowse", "-mountpoint", mount, image])
-        detach = ["hdiutil", "detach", mount]
+        detach = lambda: detach_disk_image(mount)
     elif sys.platform == "linux":
         prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
         if prefix and not (os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"):
             raise SystemExit("Linux bounded-filesystem tests require root in Docker or a GitHub-hosted runner.")
         run(prefix + ["mount", "-t", "tmpfs", "-o", f"size=16m,mode=0700,uid={os.getuid()},gid={os.getgid()}", "tmpfs", mount])
-        detach = prefix + ["umount", mount]
+        detach = lambda: run(prefix + ["umount", mount])
     elif sys.platform == "win32":
         helper = pathlib.Path(__file__).with_name("test-windows-bounded-volume.ps1").resolve(strict=True)
         image = root / "bounded.vhd"
@@ -52,7 +67,7 @@ def bounded_volume(root):
         assert capacity.f_blocks * capacity.f_frsize <= 64 * 1024 * 1024, "refusing to fill an unbounded filesystem"
         yield mount
     finally:
-        run(detach)
+        detach()
 
 
 def exhaust(volume):
