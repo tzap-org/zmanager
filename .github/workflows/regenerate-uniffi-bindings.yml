@@ -74,14 +74,20 @@ jobs:
             bash scripts/generate-uniffi-bindings.sh
 
       # This workflow pushes directly with GITHUB_TOKEN, so the push may not
-      # trigger the normal push-based Security Audit workflow. Check the
-      # committed dependency graph before exposing regenerated bindings to
-      # downstream projects. Binding generation may rewrite Cargo.lock to use
-      # the local ../tzap development patch, so audit the checked-in lockfile.
+      # trigger the normal push-based Security Audit workflow. Resolve Tzap
+      # from the sibling checkout, matching Security Audit CI, so development
+      # changes can be audited before a crates.io release.
+      - name: Resolve sibling Tzap dependencies
+        run: |
+          cargo update --package tzap-core
+          cargo update --package crypto-bigint
+          cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
+          cargo update --manifest-path fuzz/Cargo.toml --package crypto-bigint
+
       - name: Audit Rust dependencies before publishing bindings
         run: |
-          git show HEAD:Cargo.lock > "$RUNNER_TEMP/zmanager-Cargo.lock"
-          cargo audit --deny yanked --file "$RUNNER_TEMP/zmanager-Cargo.lock"
+          cargo audit --deny yanked --file Cargo.lock
+          cargo audit --deny yanked --file fuzz/Cargo.lock
 
       - name: Commit and push regenerated bindings
         run: |
