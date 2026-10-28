@@ -261,7 +261,14 @@ function Invoke-CargoTest {
         $arguments = @("test", "--locked", "--target", $TargetTriple, "-p", $package, "--no-default-features")
         if ($package -eq "zmanager-cli") {
             $arguments += "--release"
-            [Environment]::SetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", "1", "Process")
+            if ($env:GITHUB_ACTIONS -eq "true" -and $env:RUNNER_ENVIRONMENT -eq "github-hosted") {
+                [Environment]::SetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", "1", "Process")
+            } else {
+                # The bounded-volume test creates and mounts a VHD, so only run
+                # it on disposable GitHub-hosted runners. Locally, let the test
+                # record its normal optional skip.
+                [Environment]::SetEnvironmentVariable("ZMANAGER_TEST_EXPORT_DISK_FULL", $null, "Process")
+            }
         }
         try {
             Invoke-NativeLogged `
