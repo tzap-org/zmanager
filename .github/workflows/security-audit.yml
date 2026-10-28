@@ -43,8 +43,10 @@ jobs:
         run: |
           if [[ "${{ matrix.lockfile }}" == "Cargo.lock" ]]; then
             cargo update --package tzap-core
+            cargo update --package crypto-bigint
           else
             cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
+            cargo update --manifest-path fuzz/Cargo.toml --package crypto-bigint
           fi
 
       # The per-job lockfile now reflects the sibling Tzap checkout, matching

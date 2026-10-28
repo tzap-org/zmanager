@@ -35,7 +35,9 @@ bash scripts/checkout-forensic-forks.sh
 cargo check --workspace --all-targets --locked
 cargo test --workspace
 cargo update --package tzap-core
+cargo update --package crypto-bigint
 cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
+cargo update --manifest-path fuzz/Cargo.toml --package crypto-bigint
 cargo audit --deny yanked --file Cargo.lock
 cargo audit --deny yanked --file fuzz/Cargo.lock
 ```
@@ -48,9 +50,10 @@ The clone helper preserves existing development work and fails if an existing
 checkout is on a different commit. Alpine packaging mounts these siblings
 beside `/workspace` so Cargo resolves the same paths.
 
-The two `cargo update` commands switch only the local lockfiles to the patched
-`../tzap` sibling for auditing. Do not commit those generated lockfile changes;
-release builds use the published Tzap release recorded in the lock.
+The `cargo update` commands switch only the local lockfiles to the patched
+`../tzap` sibling and refresh its yanked crypto transitive dependency for
+auditing. Do not commit those generated lockfile changes; release builds use
+the published Tzap release recorded in the lock.
 
 The fixes start from the releases already resolved in ZManager's lockfile.
 AFF4 now requests the same ZIP 0.2 reader as archive-core, so both share
