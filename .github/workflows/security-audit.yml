@@ -24,13 +24,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Development and security CI consume the sibling checkout so fixes can
+      # be audited before a crates.io release. Release workflows deliberately
+      # remove this Cargo config patch and use the published TZAP version.
+      - name: Clone tzap
+        run: git clone https://github.com/tzap-org/tzap.git ../tzap
+
+      - name: Checkout pinned dependency forks
+        run: bash scripts/checkout-forensic-forks.sh
+
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
 
       - name: Install cargo-audit
         run: cargo +stable install cargo-audit --locked --version 0.22.2
 
-      # Audit the committed lockfile directly: no dependency resolution, builds,
-      # sibling checkouts, hosted-service access, or advisory exceptions.
+      - name: Resolve sibling Tzap dependency
+        run: |
+          if [[ "${{ matrix.lockfile }}" == "Cargo.lock" ]]; then
+            cargo update --package tzap-core
+          else
+            cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
+          fi
+
+      # The per-job lockfile now reflects the sibling Tzap checkout, matching
+      # local development. Release builds continue to use published crates.
       - name: Check vulnerabilities and yanked dependencies
         run: cargo audit --deny yanked --file "${{ matrix.lockfile }}"

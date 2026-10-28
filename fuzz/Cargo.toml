@@ -23,6 +23,7 @@ btrfs-core = { path = "../../btrfs-core/core" }
 dar-core = { path = "../../dar-core/core" }
 zfs-forensic-core = { path = "../../zfs-forensic-core/core" }
 zip-forensic-core = { path = "../../zip-forensic-core/core" }
+backhand = { path = "../../backhand/backhand" }
 
 [[bin]]
 name = "path_normalization"

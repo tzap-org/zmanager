@@ -7,6 +7,7 @@ copying dependency source into ZManager.
 
 | Sibling checkout | Fork | Package version | Change |
 | --- | --- | --- | --- |
+| `../backhand` | [frankmanzhu/backhand](https://github.com/frankmanzhu/backhand) | `backhand 0.25.5` | `zstd 0.14.3`, `zstd-safe 8.2.0` |
 | `../dar-core` | [frankmanzhu/dar-core](https://github.com/frankmanzhu/dar-core/tree/macos/integration-codec-security) | `dar-core 0.7.1` | `ruzstd 0.9.1`, current decoder import, Rust floor 1.87 |
 | `../btrfs-core` | [frankmanzhu/btrfs-core](https://github.com/frankmanzhu/btrfs-core/tree/macos/integration-codec-security) | `btrfs-core 0.1.4` | `ruzstd 0.9.1` |
 | `../zfs-forensic-core` | [frankmanzhu/zfs-forensic-core](https://github.com/frankmanzhu/zfs-forensic-core/tree/macos/integration-codec-security) | `zfs-forensic-core 0.1.2` | `ruzstd 0.9.1` |
@@ -17,6 +18,10 @@ copying dependency source into ZManager.
 [RUSTSEC-2026-0344](https://rustsec.org/advisories/RUSTSEC-2026-0344.html).
 ZIP 9 fixes RUSTSEC-2026-0367 through RUSTSEC-2026-0369. Both Rust floors remain
 below ZManager's existing 1.93 floor.
+
+Backhand 0.25.5 is built from the fork's upstream-compatible release line. Its
+zstd update removes the `zstd 0.13` / `zstd-safe 7` advisories while preserving
+the existing SquashFS API used by ZManager.
 
 ## Reproduce the tested checkouts
 
@@ -29,14 +34,23 @@ sibling checkouts.
 bash scripts/checkout-forensic-forks.sh
 cargo check --workspace --all-targets --locked
 cargo test --workspace
+cargo update --package tzap-core
+cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
 cargo audit --deny yanked --file Cargo.lock
 cargo audit --deny yanked --file fuzz/Cargo.lock
 ```
 
-The exact commit pins are in `forensic-forks.lock`. CI and release packaging use
-the same checkouts. The clone helper preserves existing development work and
-fails if an existing checkout is on a different commit. Alpine packaging mounts
-these siblings beside `/workspace` so Cargo resolves the same paths.
+The exact commit pins are in `forensic-forks.lock`. Build/test and release
+workflows use the same fork checkouts. Security Audit CI also clones `../tzap`
+and resolves a job-local lockfile against its sibling patch before auditing.
+The committed lockfiles continue to track published Tzap for release builds.
+The clone helper preserves existing development work and fails if an existing
+checkout is on a different commit. Alpine packaging mounts these siblings
+beside `/workspace` so Cargo resolves the same paths.
+
+The two `cargo update` commands switch only the local lockfiles to the patched
+`../tzap` sibling for auditing. Do not commit those generated lockfile changes;
+release builds use the published Tzap release recorded in the lock.
 
 The fixes start from the releases already resolved in ZManager's lockfile.
 AFF4 now requests the same ZIP 0.2 reader as archive-core, so both share

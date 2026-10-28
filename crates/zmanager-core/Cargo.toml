@@ -55,7 +55,7 @@ memchr = "2.7"
 zmanager-wim = { workspace = true }
 zmanager-unrar = { workspace = true }
 
-zstd = { version = "0.13.3", features = ["zstdmt"] }
+zstd = { version = "0.14.3", features = ["zstdmt"] }
 # SquashFS reader. `parallel` is on because the reader parallelizes block decode.
 # backhand's own `xz` and `lzo` features are deliberately OFF: `xz` pulls `liblzma`
 # (which declares `links = "lzma"` and collides with `lzma-sys`), while `lzo` pulls

@@ -1,4 +1,5 @@
 # Sibling checkout, fork URL, exact tested commit. No branch fallbacks.
+backhand https://github.com/frankmanzhu/backhand.git 3277340e9c6ccc61b4dae2d353dc229aad4b2008
 aff4 https://github.com/frankmanzhu/aff4.git 6f33d30179ecce9346953fdb3c657ce5b36f09e4
 btrfs-core https://github.com/frankmanzhu/btrfs-core.git 1fa4270c0e304323c1f2972359636cea30a8933d
 dar-core https://github.com/frankmanzhu/dar-core.git 5c2b42f41adffcadd01ffb20d644b26aaed1a0ff

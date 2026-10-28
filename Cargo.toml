@@ -43,10 +43,10 @@ zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.1.7" }
 
 # The TZAP 0.2.6 release carries `entry_metadata::projected_posix_mode`, so the
 # whole family (core plus the keywrap and signing plugins) is a plain crates.io
-# dependency here. Local development can track the ../tzap sibling ahead of
-# release via a [patch.crates-io] in .cargo/config.toml. The committed
-# Cargo.lock tracks the published dependency; CI, package preview, and release
-# builds drop the development patch before their locked builds.
+# dependency here. Local development and Security Audit CI can track ../tzap
+# changes via a [patch.crates-io] in .cargo/config.toml. The committed
+# Cargo.lock tracks the published dependency; build/test, package-preview, and
+# release workflows drop the development patch before their locked builds.
 
 # Temporary security updates for forensic readers whose published releases
 # still require vulnerable codec versions. See docs/FORENSIC_SECURITY_FORKS.md.
@@ -56,6 +56,7 @@ btrfs-core = { path = "../btrfs-core/core" }
 dar-core = { path = "../dar-core/core" }
 zfs-forensic-core = { path = "../zfs-forensic-core/core" }
 zip-forensic-core = { path = "../zip-forensic-core/core" }
+backhand = { path = "../backhand/backhand" }
 
 [profile.release]
 lto = "thin"
