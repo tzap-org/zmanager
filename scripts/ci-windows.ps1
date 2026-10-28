@@ -565,30 +565,49 @@ Write-Host "cmake:"
 cmake --version
 Write-Host ("INCLUDE=" + [Environment]::GetEnvironmentVariable("INCLUDE", "Process"))
 
-if ($AuditOfflinePackage) {
-    $archive = (Resolve-Path $AuditOfflinePackage).Path
-    # The audit workflow removes the development source patch. Resolve the
-    # published dependency while compiling, then reuse that lockfile offline.
-    Invoke-NativeLogged `
-        -Title "offline package identity harness compilation failed" `
-        -LogName "cargo-package-identity-$Target.log" `
-        -FilePath "cargo" `
-        -Arguments @("test", "--release", "--target", $Target, "-p", "zmanager-cli", "--no-default-features", "--test", "offline_tzap_cli", "--no-run")
-    Invoke-NativeLogged `
-        -Title "installed offline package identity workflows failed" `
-        -LogName "package-identity-$Target.log" `
-        -FilePath "python" `
-        -Arguments @(
-            "scripts/test-offline-package.py", $archive, "--workflow",
-            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-            "scripts/test-windows-package-identity.ps1", "-Target", $Target
+$cargoConfigPath = Join-Path $RepositoryRoot ".cargo\config.toml"
+$cargoConfigOriginal = [System.IO.File]::ReadAllBytes($cargoConfigPath)
+$cargoConfigText = [System.Text.Encoding]::UTF8.GetString($cargoConfigOriginal)
+$developmentPatchIndex = $cargoConfigText.IndexOf("[patch.crates-io]", [System.StringComparison]::Ordinal)
+try {
+    if ($developmentPatchIndex -ge 0) {
+        # Locked release/test builds must use the published crates tracked by
+        # Cargo.lock, rather than the local development patch in .cargo/config.
+        $configWithoutDevelopmentPatch = $cargoConfigText.Substring(0, $developmentPatchIndex)
+        [System.IO.File]::WriteAllText(
+            $cargoConfigPath,
+            $configWithoutDevelopmentPatch,
+            [System.Text.UTF8Encoding]::new($false)
         )
-} elseif ($Package) {
-    Invoke-CargoBuildRelease -TargetTriple $Target
-    New-ReleasePackage -TargetTriple $Target
-    Invoke-CargoBuildRelease -TargetTriple $Target -Full
-    New-FullReleasePackage -TargetTriple $Target
-} else {
-    Invoke-CargoTest -TargetTriple $Target
-    Invoke-CargoBuildRelease -TargetTriple $Target
+    }
+
+    if ($AuditOfflinePackage) {
+        $archive = (Resolve-Path $AuditOfflinePackage).Path
+        # The audit workflow removes the development source patch. Resolve the
+        # published dependency while compiling, then reuse that lockfile offline.
+        Invoke-NativeLogged `
+            -Title "offline package identity harness compilation failed" `
+            -LogName "cargo-package-identity-$Target.log" `
+            -FilePath "cargo" `
+            -Arguments @("test", "--release", "--target", $Target, "-p", "zmanager-cli", "--no-default-features", "--test", "offline_tzap_cli", "--no-run")
+        Invoke-NativeLogged `
+            -Title "installed offline package identity workflows failed" `
+            -LogName "package-identity-$Target.log" `
+            -FilePath "python" `
+            -Arguments @(
+                "scripts/test-offline-package.py", $archive, "--workflow",
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                "scripts/test-windows-package-identity.ps1", "-Target", $Target
+            )
+    } elseif ($Package) {
+        Invoke-CargoBuildRelease -TargetTriple $Target
+        New-ReleasePackage -TargetTriple $Target
+        Invoke-CargoBuildRelease -TargetTriple $Target -Full
+        New-FullReleasePackage -TargetTriple $Target
+    } else {
+        Invoke-CargoTest -TargetTriple $Target
+        Invoke-CargoBuildRelease -TargetTriple $Target
+    }
+} finally {
+    [System.IO.File]::WriteAllBytes($cargoConfigPath, $cargoConfigOriginal)
 }
