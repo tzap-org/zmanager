@@ -26,6 +26,7 @@ fn get_git_rev() -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=ZMANAGER_BUILD_REV");
 
     let rev = get_git_rev().unwrap_or_default();
     println!("cargo:rustc-env=ZMANAGER_BUILD_REV={rev}");

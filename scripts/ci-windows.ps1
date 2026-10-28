@@ -582,6 +582,7 @@ $cargoConfigPath = Join-Path $RepositoryRoot ".cargo\config.toml"
 $cargoConfigOriginal = [System.IO.File]::ReadAllBytes($cargoConfigPath)
 $cargoConfigText = [System.Text.Encoding]::UTF8.GetString($cargoConfigOriginal)
 $developmentPatchIndex = $cargoConfigText.IndexOf("[patch.crates-io]", [System.StringComparison]::Ordinal)
+$previousBuildRevision = [Environment]::GetEnvironmentVariable("ZMANAGER_BUILD_REV", "Process")
 try {
     if ($developmentPatchIndex -ge 0) {
         # Locked release/test builds must use the published crates tracked by
@@ -592,6 +593,14 @@ try {
             $configWithoutDevelopmentPatch,
             [System.Text.UTF8Encoding]::new($false)
         )
+    }
+
+    if ([string]::IsNullOrWhiteSpace($previousBuildRevision)) {
+        $buildRevision = & git -C $RepositoryRoot rev-parse --short HEAD
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($buildRevision)) {
+            throw "Could not determine the current Git revision for the build."
+        }
+        [Environment]::SetEnvironmentVariable("ZMANAGER_BUILD_REV", $buildRevision.Trim(), "Process")
     }
 
     if ($AuditOfflinePackage) {
@@ -623,4 +632,5 @@ try {
     }
 } finally {
     [System.IO.File]::WriteAllBytes($cargoConfigPath, $cargoConfigOriginal)
+    [Environment]::SetEnvironmentVariable("ZMANAGER_BUILD_REV", $previousBuildRevision, "Process")
 }
