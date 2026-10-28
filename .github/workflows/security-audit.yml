@@ -30,6 +30,18 @@ jobs:
       - name: Clone tzap
         run: git clone https://github.com/tzap-org/tzap.git ../tzap
 
+      - name: Clone localsend-rs
+        run: |
+          LOCALSEND_REV=$(cat localsend-rs-rev.txt 2>/dev/null || echo "main")
+          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
+          git -C ../localsend-rs checkout "$LOCALSEND_REV" || git -C ../localsend-rs checkout main
+
+      - name: Clone forensic-vfs-engine
+        run: |
+          FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
+          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
+          git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
+
       - name: Checkout pinned dependency forks
         run: bash scripts/checkout-forensic-forks.sh
 
