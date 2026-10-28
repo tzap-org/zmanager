@@ -21,7 +21,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RustToolchain = "1.98.1"
+$RustToolchain = "1.99.1"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -564,7 +564,7 @@ Invoke-NativeLogged `
     -Title "rustup toolchain install failed for $RustToolchain ($Target)" `
     -LogName "rustup-install-$RustToolchain-$Target.log" `
     -FilePath "rustup" `
-    -Arguments @("toolchain", "install", $RustToolchain, "--profile", "minimal", "--target", $Target)
+    -Arguments @("toolchain", "install", $RustToolchain, "--profile", "default", "--target", $Target)
 
 # Keep this override local to the build process. In particular, do not update
 # or change the user's global default toolchain during a project build.
