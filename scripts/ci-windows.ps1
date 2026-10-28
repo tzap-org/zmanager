@@ -21,6 +21,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$RustToolchain = "1.98.1"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -546,6 +547,16 @@ if ($clang) {
 
 Ensure-Vcpkg
 
+Invoke-NativeLogged `
+    -Title "rustup toolchain install failed for $RustToolchain ($Target)" `
+    -LogName "rustup-install-$RustToolchain-$Target.log" `
+    -FilePath "rustup" `
+    -Arguments @("toolchain", "install", $RustToolchain, "--profile", "minimal", "--target", $Target)
+
+# Keep this override local to the build process. In particular, do not update
+# or change the user's global default toolchain during a project build.
+[Environment]::SetEnvironmentVariable("RUSTUP_TOOLCHAIN", $RustToolchain, "Process")
+
 Write-Host "rustc:"
 rustc -Vv
 Write-Host "cargo:"
@@ -553,17 +564,6 @@ cargo -V
 Write-Host "cmake:"
 cmake --version
 Write-Host ("INCLUDE=" + [Environment]::GetEnvironmentVariable("INCLUDE", "Process"))
-
-Invoke-NativeLogged `
-    -Title "rustup toolchain install failed for $Target" `
-    -LogName "rustup-install-$Target.log" `
-    -FilePath "rustup" `
-    -Arguments @("toolchain", "install", "stable", "--profile", "minimal", "--target", $Target)
-Invoke-NativeLogged `
-    -Title "rustup default stable failed" `
-    -LogName "rustup-default.log" `
-    -FilePath "rustup" `
-    -Arguments @("default", "stable")
 
 if ($AuditOfflinePackage) {
     $archive = (Resolve-Path $AuditOfflinePackage).Path
