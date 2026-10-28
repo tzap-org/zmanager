@@ -64,11 +64,24 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Install cargo-audit
+        run: cargo +stable install cargo-audit --locked --version 0.22.2
+
       - name: Generate UniFFI bindings
         run: |
           REGEN_KOTLIN_DIR="$GITHUB_WORKSPACE/crates/zmanager-ffi/bindings/kotlin" \
           REGEN_SWIFT_DIR="$GITHUB_WORKSPACE/crates/zmanager-ffi/bindings/swift" \
             bash scripts/generate-uniffi-bindings.sh
+
+      # This workflow pushes directly with GITHUB_TOKEN, so the push may not
+      # trigger the normal push-based Security Audit workflow. Check the
+      # committed dependency graph before exposing regenerated bindings to
+      # downstream projects. Binding generation may rewrite Cargo.lock to use
+      # the local ../tzap development patch, so audit the checked-in lockfile.
+      - name: Audit Rust dependencies before publishing bindings
+        run: |
+          git show HEAD:Cargo.lock > "$RUNNER_TEMP/zmanager-Cargo.lock"
+          cargo audit --deny yanked --file "$RUNNER_TEMP/zmanager-Cargo.lock"
 
       - name: Commit and push regenerated bindings
         run: |
