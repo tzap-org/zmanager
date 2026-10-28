@@ -284,9 +284,15 @@ function Invoke-CargoTest {
     }
 
     $releaseDirectory = Join-Path $RepositoryRoot "target\$TargetTriple\release"
-    & (Join-Path $PSScriptRoot "test-windows-network-denial.ps1") `
-        -Binaries @((Join-Path $releaseDirectory "zm.exe"), (Join-Path $releaseDirectory "zmanager-cli.exe")) `
-        -TestCommand @("cargo", "test", "--locked", "--offline", "--target", $TargetTriple, "-p", "zmanager-cli", "--release", "--no-default-features")
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        & (Join-Path $PSScriptRoot "test-windows-network-denial.ps1") `
+            -Binaries @((Join-Path $releaseDirectory "zm.exe"), (Join-Path $releaseDirectory "zmanager-cli.exe")) `
+            -TestCommand @("cargo", "test", "--locked", "--offline", "--target", $TargetTriple, "-p", "zmanager-cli", "--release", "--no-default-features")
+    } else {
+        Write-Host "Skipping the Windows network-denial test: it requires an administrator session."
+    }
 }
 
 function Invoke-CargoBuildRelease {
