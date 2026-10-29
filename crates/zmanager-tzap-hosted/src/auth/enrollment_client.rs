@@ -564,6 +564,7 @@ fn reconcile_pending_enrollment(
     operation: &TzapPendingCertificateOperation,
 ) -> Result<Option<TzapEnrolledCertificateRecord>, TzapEnrollmentError> {
     let listed = list_certificates_for_request(client, session, request).map_err(|error| reconciliation_error("certificate list", error))?;
+    let expected_fingerprint = signing_key_public_fingerprint(signing_key)?;
     let mut candidate: Option<TzapEnrolledCertificateRecord> = None;
     for listed_certificate in listed {
         if listed_certificate.lifecycle_state.as_deref() != Some("active")
@@ -585,10 +586,15 @@ fn reconcile_pending_enrollment(
             || detail.certificate_sha256 != listed_certificate.certificate_sha256
             || detail.sign_device_id != listed_certificate.sign_device_id
             || detail.lifecycle_state.as_deref() != Some("active")
+            || detail.issuer_certificate_sha256 != listed_certificate.issuer_certificate_sha256
+            || detail.issuer_key_identifier != listed_certificate.issuer_key_identifier
         {
             continue;
         }
         let mut detail = detail;
+        if certificate_leaf_public_key_fingerprint(&detail.leaf_certificate_der)? != expected_fingerprint {
+            continue;
+        }
         let detail_metadata = detail.validate_for_key(validator, signing_key, client.now())?;
         if detail_metadata.public_org_id != request.org_id {
             continue;
@@ -664,6 +670,14 @@ fn get_certificate_for_request(
     } else {
         client.get_certificate(session, certificate_id)
     }
+}
+
+pub(crate) fn certificate_leaf_public_key_fingerprint(leaf_der: &[u8]) -> Result<String, TzapEnrollmentError> {
+    let key_der = openssl::x509::X509::from_der(leaf_der)
+        .and_then(|certificate| certificate.public_key())
+        .and_then(|key| key.public_key_to_der())
+        .map_err(|_| TzapEnrollmentError::InvalidField { field: "leaf_certificate_der" })?;
+    Ok(trust::sha256_identifier(&key_der))
 }
 
 impl TzapEnrollmentCertificatePayload {
@@ -1369,6 +1383,45 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_reconciliation_skips_active_same_scope_certificate_with_another_key() {
+        let fixture = EnrollmentFixture::new(None, None);
+        let other = EnrollmentFixture::new(None, None);
+        let mut unrelated = certificate_json(&other.signing_key, None);
+        unrelated["certificate_id"] = json!("cert_unrelated_key");
+        unrelated["status"] = json!("valid");
+        let mut issued = certificate_json(&fixture.signing_key, None);
+        issued["status"] = json!("valid");
+        let transport = FakeEnrollmentTransport::new(vec![
+            challenge_response(&fixture, ChallengeOverride::default()),
+            TzapAuthHttpResponse { status_code: 500, body: b"{}".to_vec(), headers: Vec::new() },
+            TzapAuthHttpResponse {
+                status_code: 200,
+                body: json!([certificate_summary_json(&unrelated, "valid"), certificate_summary_json(&issued, "valid"),]).to_string().into_bytes(),
+                headers: Vec::new(),
+            },
+            TzapAuthHttpResponse { status_code: 200, body: json!({"certificate": unrelated}).to_string().into_bytes(), headers: Vec::new() },
+            TzapAuthHttpResponse { status_code: 200, body: json!({"certificate": issued}).to_string().into_bytes(), headers: Vec::new() },
+        ]);
+        let client = TzapEnrollmentClient::new("https://staging.tzap.org", &transport).with_clock(|| 100);
+        let mut store = store_with_signing_key(&fixture.signing_key);
+
+        let recovered = enroll_device_certificate(
+            &client,
+            &AcceptingCertificateValidator,
+            &mut store,
+            &fixture.session,
+            &fixture.request,
+            &fixture.signing_key,
+            &fixture.csr_der,
+        )
+        .unwrap();
+
+        assert_eq!(recovered.certificate_id, "cert_123");
+        assert_eq!(store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap().enrolled_certificates.len(), 1);
+        assert_eq!(transport.requests().len(), 5, "reconciliation should inspect details, not resubmit enrollment");
+    }
+
+    #[test]
     fn enrollment_restart_recovers_durable_operation_before_challenge_creation() {
         let fixture = EnrollmentFixture::new(None, None);
         let first_transport = FakeEnrollmentTransport::new(vec![
@@ -1879,6 +1932,20 @@ mod tests {
             certificate["intermediate_chain_der"] = json!(chain.iter().map(|der| URL_SAFE_NO_PAD.encode(der)).collect::<Vec<_>>());
         }
         certificate
+    }
+
+    fn certificate_summary_json(certificate: &Value, status: &str) -> Value {
+        json!({
+            "certificate_id": certificate["certificate_id"],
+            "certificate_sha256": certificate["certificate_sha256"],
+            "issuer_certificate_sha256": certificate["issuer_certificate_sha256"],
+            "issuer_key_identifier": certificate["issuer_key_identifier"],
+            "sign_device_id": certificate["sign_device_id"],
+            "public_signer_id": "psign_0123456789ABCDEFGH",
+            "public_org_id": Value::Null,
+            "public_device_id": "pdev_0123456789ABCDEFGH",
+            "status": status,
+        })
     }
 
     fn denial_response(reason: &str) -> TzapAuthHttpResponse {

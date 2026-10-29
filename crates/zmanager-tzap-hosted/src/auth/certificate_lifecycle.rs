@@ -7,9 +7,9 @@ use crate::auth_client::{
 use crate::device_identity::{TzapDeviceCsrOptions, csr_fingerprint, generate_device_csr_from_private_key, generate_device_signing_key_and_csr};
 use crate::enrollment_client::{
     ENROLLMENT_CHALLENGE_CANONICALIZATION, ENROLLMENT_CHALLENGES_PATH, TzapEnrollmentCertificateValidator, TzapEnrollmentClient, TzapEnrollmentError,
-    TzapEnrollmentRequest, canonicalize_local_staging_server_json_bytes, csr_der_to_pem, enroll_device_certificate, parse_challenge_response,
-    parse_enrollment_response, requested_validity_days, require_enrollment_session, sign_p256_challenge, validate_signing_key_and_csr,
-    validate_stored_signing_key,
+    TzapEnrollmentRequest, canonicalize_local_staging_server_json_bytes, certificate_leaf_public_key_fingerprint, csr_der_to_pem, enroll_device_certificate,
+    parse_challenge_response, parse_enrollment_response, requested_validity_days, require_enrollment_session, sign_p256_challenge,
+    signing_key_public_fingerprint, validate_signing_key_and_csr, validate_stored_signing_key,
 };
 use crate::http_client::{require_success, send_json_request};
 use crate::jcs;
@@ -453,6 +453,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         let predecessor_was_superseded = listed_certificates
             .iter()
             .any(|listed| listed.certificate_id == request.previous_certificate_id && listed.revocation_category.as_deref() == Some("supersession"));
+        let expected_fingerprint = signing_key_public_fingerprint(signing_key)?;
         let mut predecessor_is_active = false;
         for listed in listed_certificates {
             if listed.certificate_id == request.previous_certificate_id && listed.certificate_sha256 == request.previous_certificate_sha256 {
@@ -500,7 +501,12 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                 || detail.certificate_sha256 != listed.certificate_sha256
                 || detail.lifecycle_state.as_deref() != Some("active")
                 || detail.sign_device_id != listed.sign_device_id
+                || detail.issuer_certificate_sha256 != listed.issuer_certificate_sha256
+                || detail.issuer_key_identifier != listed.issuer_key_identifier
             {
+                continue;
+            }
+            if certificate_leaf_public_key_fingerprint(&detail.leaf_certificate_der)? != expected_fingerprint {
                 continue;
             }
             let detail_metadata = detail.validate_for_key(validator, signing_key, self.now())?;
