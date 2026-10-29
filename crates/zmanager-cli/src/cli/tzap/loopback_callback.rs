@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HEADERS: usize = 48;
 const MAX_CONNECTIONS: usize = 128;
-const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(300);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 
 pub(super) struct LoopbackCallbackListener {
@@ -239,8 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn connection_io_timeout_is_at_least_one_minute() {
-        assert!(CONNECTION_IO_TIMEOUT >= Duration::from_secs(60));
+    fn connection_io_timeout_is_five_minutes_and_bounded_by_login_deadline() {
+        assert_eq!(CONNECTION_IO_TIMEOUT, Duration::from_secs(300));
     }
 
     #[test]
