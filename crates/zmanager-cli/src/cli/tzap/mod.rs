@@ -40,7 +40,7 @@ pub(crate) use contacts::contact_keygen_command;
 pub(crate) use device::device_command;
 pub(crate) use share::share_command;
 pub(crate) use sign::{sign_command, verify_command};
-pub(crate) use zmanager_tzap_hosted::keyring_store::NativeTzapLocalIdentityStore;
+pub(crate) use zmanager_tzap_hosted::keyring_store::{NativeTzapLocalIdentityStore, NativeTzapSecretStore};
 #[cfg(all(test, feature = "tzap-online"))]
 pub(crate) use {hosted::create_and_store_staging_enrollment_key, support::build_hosted_http_request};
 

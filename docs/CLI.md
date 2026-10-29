@@ -106,6 +106,33 @@ supplied by an untrusted sender does not establish who that sender is.
 
 Add `--encrypt` when creating an archive that also needs confidentiality.
 
+## Sign with a desktop-enrolled identity
+
+The CLI can use a hosted identity enrolled by ZManager Desktop on the same
+machine and OS user. The session and private key are read from the OS keyring;
+the public identity catalog must also be read from Desktop's `tzap-state`
+directory. On macOS, the standard Desktop state directory is:
+
+```sh
+STATE_DIR="$HOME/Library/Application Support/org.tzap-org.zmanager/tzap-state"
+```
+
+List the enrolled certificate and sign an archive with its default identity:
+
+```sh
+zm tzap certs --state-dir "$STATE_DIR"
+zm create signed.tzap project/ --format tzap --signing-identity --state-dir "$STATE_DIR"
+```
+
+The account key defaults to `default`; use `--account-key` on both commands
+only when Desktop uses another account key. On macOS, run these commands from
+an interactive terminal with stdin and stderr attached to it so native Keychain
+authorization can complete. Keychain access is per executable: allow only the
+CLI on the session and signing-key items, and keep **Ask for Keychain
+password** disabled to avoid a login-password prompt for each use. Rebuilding
+an ad-hoc CLI may require authorizing the new executable again. Do not bypass a
+macOS malware warning; resolve the security finding before running that build.
+
 ## Sign a JSON document
 
 `zm tzap sign` signs JSON documents, not `.tzap` archive files. It requires an

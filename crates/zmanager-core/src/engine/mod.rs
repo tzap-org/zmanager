@@ -34,8 +34,8 @@ pub mod tzap {
         TzapTestReport, TzapX509SignerInspection, TzapX509SigningOptions, TzapX509TrustAnchor, TzapX509TrustOptions, TzapX509VerificationReport,
         inspect_tzap_x509_public_no_key_signer, inspect_tzap_x509_signer, resolve_default_signing_certificate_id, summarize_tzap_public_display,
         summarize_tzap_public_metadata, test_tzap_with_optional_password_filter_and_x509_trust, tzap_bootstrap_sidecar_path,
-        tzap_x509_signing_options_from_inventory, verify_tzap_archive_public_no_key, verify_tzap_archive_public_no_key_with_signer_predicate,
-        verify_tzap_x509_public_no_key,
+        tzap_x509_signing_options_from_catalog, tzap_x509_signing_options_from_inventory, verify_tzap_archive_public_no_key,
+        verify_tzap_archive_public_no_key_with_signer_predicate, verify_tzap_x509_public_no_key,
     };
 }
 

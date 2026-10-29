@@ -192,6 +192,12 @@ pub(crate) fn parse_create_request(args: &[String], global: &mut GlobalOptions, 
                 request.tzap_signing_identity = Some(certificate_id);
                 index += 1;
             }
+            "--state-dir" => {
+                request.tzap_state_dir = Some(PathBuf::from(take_value(args, &mut index, arg)?));
+            }
+            "--account-key" => {
+                request.tzap_account_key = Some(take_value(args, &mut index, arg)?);
+            }
             "--sidecar" => {
                 request.tzap_sidecar = true;
                 index += 1;
@@ -239,14 +245,39 @@ pub(crate) fn parse_create_request(args: &[String], global: &mut GlobalOptions, 
 /// time-valid, not locally blocklisted, and free of a cached non-valid
 /// status); with more than one local signing key, the caller must
 /// disambiguate explicitly.
-fn resolve_tzap_signing_identity(certificate_id: Option<&str>) -> Result<zmanager_core::engine::TzapX509SigningOptions, String> {
+fn resolve_tzap_signing_identity(
+    certificate_id: Option<&str>,
+    state_dir: Option<&Path>,
+    account_key: Option<&str>,
+) -> Result<zmanager_core::engine::TzapX509SigningOptions, String> {
     use zmanager_core::engine::tzap::resolve_default_signing_certificate_id;
+    use zmanager_core::identity_catalog::TzapIdentityCatalogStore as _;
     use zmanager_core::local_identity_store::TzapLocalIdentityStore as _;
 
-    let state_dir = crate::cli::tzap::default_offline_tzap_state_dir();
-    let account_key = zmanager_core::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT;
-    let store = crate::cli::tzap::NativeTzapLocalIdentityStore::new(&state_dir, account_key).map_err(|error| error.to_string())?;
+    let default_state_dir;
+    let state_dir = if let Some(state_dir) = state_dir {
+        state_dir
+    } else {
+        default_state_dir = crate::cli::tzap::default_offline_tzap_state_dir();
+        &default_state_dir
+    };
+    let account_key = account_key.unwrap_or(zmanager_core::local_identity_store::DEFAULT_IDENTITY_INVENTORY_ACCOUNT);
     let now_unix_seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_secs());
+
+    let catalog_store = zmanager_core::identity_catalog::FileTzapIdentityCatalogStore::new(state_dir);
+    if catalog_store.load_catalog(account_key).map_err(|error| error.to_string())?.is_some() {
+        let secret_store = crate::cli::tzap::NativeTzapSecretStore::new(account_key).map_err(|error| error.to_string())?;
+        return zmanager_core::engine::tzap::tzap_x509_signing_options_from_catalog(
+            &catalog_store,
+            &secret_store,
+            account_key,
+            certificate_id,
+            now_unix_seconds,
+        )
+        .map(Into::into);
+    }
+
+    let store = crate::cli::tzap::NativeTzapLocalIdentityStore::new(state_dir, account_key).map_err(|error| error.to_string())?;
 
     let certificate_id = if let Some(certificate_id) = certificate_id {
         certificate_id.to_owned()
@@ -444,13 +475,15 @@ fn build_engine_create_options(
                         signing_chain: request.tzap_signing_chain.clone(),
                     })
                 }
-                (None, Some(certificate_id)) => match resolve_tzap_signing_identity(certificate_id.as_deref()) {
-                    Ok(options) => Some(options),
-                    Err(error) => {
-                        print_error_line(global, format_args!("create failed: {error}"));
-                        return Err(ExitCode::FAILURE);
+                (None, Some(certificate_id)) => {
+                    match resolve_tzap_signing_identity(certificate_id.as_deref(), request.tzap_state_dir.as_deref(), request.tzap_account_key.as_deref()) {
+                        Ok(options) => Some(options),
+                        Err(error) => {
+                            print_error_line(global, format_args!("create failed: {error}"));
+                            return Err(ExitCode::FAILURE);
+                        }
                     }
-                },
+                }
                 (None, None) => None,
             };
             zmanager_core::engine::CreateOptions::Tzap(zmanager_core::engine::TzapCreateOptions {
@@ -605,6 +638,10 @@ fn create_stream(
 }
 #[allow(clippy::too_many_lines)]
 pub(crate) fn validate_create_options(format: ArchiveFormat, request: &CreateRequest) -> Result<(), String> {
+    if (request.tzap_state_dir.is_some() || request.tzap_account_key.is_some()) && request.tzap_signing_identity.is_none() {
+        return Err("--state-dir and --account-key require --signing-identity".to_owned());
+    }
+
     if request.tzap_recipient_cert.is_some() {
         if format != ArchiveFormat::Tzap {
             return Err("recipient certificates are supported only for TZAP archives".to_owned());

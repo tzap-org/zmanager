@@ -166,6 +166,8 @@ Output and safety:
       --signing-identity [id]    Sign TZAP RootAuth with a local enrolled certificate;
                                   uses the single active one when id is omitted
                                   (mutually exclusive with --signing-cert)
+      --state-dir <dir>          Read the local identity catalog for --signing-identity
+      --account-key <key>        Local identity account key; default is default
       --sidecar                  Emit TZAP bootstrap recovery sidecar (.sidecar) file
       --no-sidecar               Disable TZAP bootstrap recovery sidecar (default)
   TZAP without a password uses tzap's unencrypted mode.
@@ -1165,6 +1167,8 @@ const CREATE_OPTIONS: &[&str] = &[
     "--signing-private-key",
     "--signing-chain",
     "--signing-identity",
+    "--state-dir",
+    "--account-key",
     "--dry-run",
     "-T",
     "--test-after",

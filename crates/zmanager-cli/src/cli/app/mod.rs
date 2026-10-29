@@ -387,6 +387,12 @@ pub(crate) struct CreateRequest {
     /// flags above.
     #[allow(clippy::option_option)]
     pub(crate) tzap_signing_identity: Option<Option<String>>,
+    /// Optional shared desktop identity catalog directory used by
+    /// `--signing-identity`; defaults to the CLI TZAP state directory.
+    pub(crate) tzap_state_dir: Option<PathBuf>,
+    /// Optional account key used with `--signing-identity`; defaults to
+    /// the standard local identity account.
+    pub(crate) tzap_account_key: Option<String>,
     pub(crate) tzap_sidecar: bool,
 }
 
@@ -424,6 +430,8 @@ impl Default for CreateRequest {
             tzap_signing_private_key: None,
             tzap_signing_chain: Vec::new(),
             tzap_signing_identity: None,
+            tzap_state_dir: None,
+            tzap_account_key: None,
             tzap_sidecar: false,
         }
     }

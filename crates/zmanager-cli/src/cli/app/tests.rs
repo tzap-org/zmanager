@@ -184,6 +184,32 @@ fn create_parser_accepts_signing_identity_with_explicit_certificate_id() {
 }
 
 #[test]
+fn create_parser_accepts_shared_identity_state_dir() {
+    let mut request = CreateRequest::default();
+    let mut global = GlobalOptions::default();
+    let args =
+        strings(["signed.tzap", "src", "--format", "tzap", "--signing-identity", "--state-dir", "/desktop/tzap-state", "--account-key", "desktop-account"]);
+
+    assert!(parse_create_request(&args, &mut global, &mut request).is_ok());
+    assert_eq!(request.tzap_state_dir, Some(PathBuf::from("/desktop/tzap-state")));
+    assert_eq!(request.tzap_account_key.as_deref(), Some("desktop-account"));
+}
+
+#[test]
+fn create_validation_requires_signing_identity_for_shared_state_options() {
+    let request = CreateRequest {
+        archive: "signed.tzap".to_owned(),
+        sources: vec![PathBuf::from("src")],
+        tzap_state_dir: Some(PathBuf::from("/desktop/tzap-state")),
+        ..CreateRequest::default()
+    };
+
+    let error = validate_create_options(ArchiveFormat::Tzap, &request).unwrap_err();
+
+    assert!(error.contains("require --signing-identity"));
+}
+
+#[test]
 fn create_validation_rejects_signing_identity_combined_with_signing_cert() {
     let request = CreateRequest {
         archive: "signed.tzap".to_owned(),
