@@ -213,17 +213,26 @@ pub(super) fn http_json_request(
     let response_body = response.bytes().map_err(|error| format!("could not read hosted HTTPS response: {error}"))?.to_vec();
 
     #[cfg(feature = "staging-e2e-fault-injection")]
-    if (200..300).contains(&status_code)
+    let crash_after_issuance_commit = (200..300).contains(&status_code)
         && method == "POST"
-        && std::env::var("ZM_STAGING_E2E_CRASH_AFTER_ENROLLMENT_COMMIT").ok().as_deref() == Some("1")
         && reqwest::Url::parse(url).is_ok_and(|parsed| {
-            parsed.scheme() == "https"
-                && parsed.host_str() == Some("staging.tzap.org")
-                && parsed.path() == zmanager_tzap_hosted::enrollment_client::ENROLL_CERTIFICATES_PATH
-        })
-    {
+            if parsed.scheme() != "https" || parsed.host_str() != Some("staging.tzap.org") {
+                return false;
+            }
+            let path = parsed.path();
+            let enrollment_fault = std::env::var("ZM_STAGING_E2E_CRASH_AFTER_ENROLLMENT_COMMIT").ok().as_deref() == Some("1")
+                && path == zmanager_tzap_hosted::enrollment_client::ENROLL_CERTIFICATES_PATH;
+            let renewal_fault = std::env::var("ZM_STAGING_E2E_CRASH_AFTER_RENEWAL_COMMIT").ok().as_deref() == Some("1")
+                && path.strip_prefix("/v1/certificates/").is_some_and(|suffix| {
+                    let mut parts = suffix.split('/');
+                    parts.next().is_some_and(|certificate_id| !certificate_id.is_empty()) && parts.next() == Some("renew") && parts.next().is_none()
+                });
+            enrollment_fault || renewal_fault
+        });
+    #[cfg(feature = "staging-e2e-fault-injection")]
+    if crash_after_issuance_commit {
         // This process-level exit deliberately leaves the already-persisted
-        // operation journal behind, simulating a lost reply plus process crash.
+        // enrollment/renewal journal behind, simulating a lost reply and crash.
         std::process::exit(86);
     }
 

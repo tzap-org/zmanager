@@ -21,6 +21,7 @@ const stateDir = process.env.ZM_STAGING_STATE_DIR ? resolve(process.env.ZM_STAGI
 mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 const account = process.env.ZM_STAGING_ACCOUNT_KEY || `staging-e2e-${platform()}-${randomUUID()}`;
 const crashAfterEnrollmentCommit = process.env.ZM_STAGING_CRASH_AFTER_ENROLLMENT !== '0';
+const crashAfterRenewalCommit = process.env.ZM_STAGING_CRASH_AFTER_RENEWAL === '1';
 const report = { target, platform: platform(), account_key: account, work_dir: work, state_dir: stateDir, checks: [], completed: false };
 let stage = 'preflight';
 let browser;
@@ -197,14 +198,45 @@ try {
 
   stage = 'server-issued-device-certificate';
   const enrolled = cli(['auth', 'cert', 'enroll', '--service-base-url', STAGING, '--trusted-root-cert', rootPath]);
-  const certificate = enrolled.certificate;
+  let certificate = enrolled.certificate;
   check(certificate?.certificate_id && certificate.state === 'active', 'CLI did not store an active server certificate');
   report.certificate_id = certificate.certificate_id;
   report.certificate_sha256 = certificate.certificate_sha256;
   report.public_device_id = certificate.public_device_id;
   assertNoSecretFiles();
-  pass('new-cli-process-recovers-committed-staging-enrollment-from-journal');
+  pass(crashAfterEnrollmentCommit
+    ? 'new-cli-process-recovers-committed-staging-enrollment-from-journal'
+    : 'new-cli-process-reuses-active-staging-enrollment');
   assertNoSecretFiles();
+
+  if (crashAfterRenewalCommit) {
+    check(!crashAfterEnrollmentCommit, 'Set ZM_STAGING_CRASH_AFTER_ENROLLMENT=0 when testing renewal recovery');
+    stage = 'staging-renewal-response-lost-after-server-commit';
+    const predecessor = certificate;
+    const renew = ['auth', 'cert', 'renew', '--certificate-id', predecessor.certificate_id, '--service-base-url', STAGING, '--trusted-root-cert', rootPath];
+    cli(renew, {
+      expectExitCode: 86,
+      env: { ZM_STAGING_E2E_CRASH_AFTER_RENEWAL_COMMIT: '1' },
+    });
+    pass('staging-renewal-response-lost-after-server-commit');
+    const recovered = cli(renew);
+    certificate = recovered.certificate;
+    check(
+      certificate?.state === 'active'
+        && certificate.certificate_id !== predecessor.certificate_id
+        && certificate.signing_key_id === predecessor.signing_key_id
+        && certificate.public_device_id === predecessor.public_device_id,
+      'Restarted CLI did not install the same-key server renewal',
+    );
+    report.renewal = {
+      predecessor_certificate_id: predecessor.certificate_id,
+      replacement_certificate_id: certificate.certificate_id,
+      signing_key_id: certificate.signing_key_id,
+    };
+    report.certificate_id = certificate.certificate_id;
+    report.certificate_sha256 = certificate.certificate_sha256;
+    pass('new-cli-process-recovers-committed-staging-renewal-with-same-key');
+  }
 
   stage = 'sign-offline-and-live-verify';
   const document = join(work, 'document.json');

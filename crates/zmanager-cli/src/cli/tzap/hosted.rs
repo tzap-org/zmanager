@@ -314,15 +314,16 @@ pub(super) fn run_hosted_cert_renew(options: &HostedCertOptions, global: &Global
             } else {
                 return Err(HostedCertOperationError::Message(format!("signing key {} not found", previous_certificate.signing_key_id)));
             };
-            let csr_der = match zmanager_core::device_identity::generate_device_csr_from_private_key(
-                &signing_key.private_key_der,
-                &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
-            ) {
-                Ok(csr) => csr,
-                Err(error) => return Err(HostedCertOperationError::Message(format!("cannot generate CSR: {error}"))),
-            };
+            let org_id = options.org_id.clone().or_else(|| session.selected_org_id.clone());
             let now_unix_seconds = current_unix_seconds();
-            let login_base_url = zmanager_tzap_hosted::auth_client::LOGIN_TZAP_BASE_URL;
+            let enrollment_request = zmanager_tzap_hosted::enrollment_client::TzapEnrollmentRequest {
+                account_key: options.context.account_key.clone(),
+                org_id: org_id.clone(),
+                requested_validity_seconds: options.requested_validity_seconds,
+                now_unix_seconds,
+            };
+            let login_base_url =
+                session.provenance.as_ref().map_or(zmanager_tzap_hosted::auth_client::LOGIN_TZAP_BASE_URL, |provenance| provenance.account_origin.as_str());
             let transport = CliHttpJsonTransport;
             let lifecycle =
                 zmanager_tzap_hosted::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(service_base_url, login_base_url, &transport);
@@ -331,7 +332,31 @@ pub(super) fn run_hosted_cert_renew(options: &HostedCertOptions, global: &Global
                 trusted_root_der,
                 options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
             };
-            let org_id = options.org_id.clone().or_else(|| session.selected_org_id.clone());
+            if let Some(operation) = inventory.pending_certificate_operations.iter().find(|operation| {
+                operation.kind == zmanager_core::local_identity_store::TzapCertificateOperationKind::Renewal && operation.signing_key_id == signing_key.key_id
+            }) {
+                if operation.predecessor_certificate_id.as_deref() != Some(certificate_id) {
+                    return Err(HostedCertOperationError::Message(
+                        "a pending renewal exists for this signing key but targets a different certificate".to_owned(),
+                    ));
+                }
+                match lifecycle.resume_pending_renewal(&validator, identity_store, session, &enrollment_request, &signing_key) {
+                    Ok(Some(certificate)) => return Ok(certificate),
+                    Ok(None) => {
+                        return Err(HostedCertOperationError::Operation(
+                            zmanager_tzap_hosted::certificate_lifecycle::TzapCertificateLifecycleError::CertificateOperationPending.to_string(),
+                        ));
+                    }
+                    Err(error) => return Err(HostedCertOperationError::Operation(error.to_string())),
+                }
+            }
+            let csr_der = match zmanager_core::device_identity::generate_device_csr_from_private_key(
+                &signing_key.private_key_der,
+                &zmanager_core::device_identity::TzapDeviceCsrOptions::default(),
+            ) {
+                Ok(csr) => csr,
+                Err(error) => return Err(HostedCertOperationError::Message(format!("cannot generate CSR: {error}"))),
+            };
             let renewal_request = zmanager_tzap_hosted::certificate_lifecycle::TzapRenewalRequest {
                 account_key: options.context.account_key.clone(),
                 previous_certificate_id: previous_certificate.certificate_id,
@@ -343,7 +368,7 @@ pub(super) fn run_hosted_cert_renew(options: &HostedCertOptions, global: &Global
                 server_grace_seconds: zmanager_tzap_hosted::certificate_lifecycle::RENEWAL_GRACE_MAX_SECONDS,
             };
             lifecycle
-                .renew_certificate(&validator, identity_store, session, &renewal_request, &signing_key, &signing_key, &csr_der)
+                .renew_certificate_with_reconciliation(&validator, identity_store, session, &renewal_request, &signing_key, &signing_key, &csr_der)
                 .map_err(|error| HostedCertOperationError::Operation(error.to_string()))
         },
     )
