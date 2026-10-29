@@ -229,6 +229,26 @@ fn issue_local_certificate(
     })
 }
 
+/// Signature-valid wire fixtures shared by hosted enrollment/lifecycle tests.
+/// The issuing CA is disposable and never a hosted trust anchor.
+#[cfg(test)]
+pub(crate) fn test_enrollment_certificate_json(signing_key: &TzapDeviceSigningKeyRecord, certificate_id: &str, now_unix_seconds: u64) -> Value {
+    let record = issue_local_certificate(signing_key, certificate_id.to_owned(), now_unix_seconds).unwrap();
+    json!({
+        "certificate_id": record.certificate_id,
+        "leaf_certificate_der": URL_SAFE_NO_PAD.encode(record.leaf_certificate_der),
+        "intermediate_chain_der": record.intermediate_chain_der.iter().map(|der| URL_SAFE_NO_PAD.encode(der)).collect::<Vec<_>>(),
+        "issuer_certificate_sha256": record.issuer_certificate_sha256,
+        "issuer_key_identifier": record.issuer_key_identifier,
+        "serial_number": record.serial_number,
+        "certificate_sha256": record.certificate_sha256,
+        "not_before_unix_seconds": record.not_before_unix_seconds,
+        "not_after_unix_seconds": record.not_after_unix_seconds,
+        "sign_device_id": record.sign_device_id,
+        "login_organization_device_id": Value::Null,
+    })
+}
+
 #[derive(Debug)]
 struct IssuedChain {
     leaf_der: Vec<u8>,
@@ -477,6 +497,8 @@ mod tests {
 
     fn session(audience: &str, expires_at_unix_seconds: u64) -> TzapSessionRecord {
         TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: audience.to_owned(),
             access_token: TzapBearerToken::new("local-test-token").expect("test token should be valid"),
             expires_at_unix_seconds,

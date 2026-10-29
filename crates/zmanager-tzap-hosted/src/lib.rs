@@ -11,6 +11,7 @@
 // leave clippy noise in the new product boundary.
 #![allow(clippy::missing_errors_doc)]
 
+mod clock;
 mod hex;
 mod json_util;
 mod wire_profile;
@@ -27,6 +28,12 @@ pub(crate) fn write_atomic_secret_file(path: &std::path::Path, bytes: &[u8]) -> 
 
 #[path = "auth/auth_client.rs"]
 pub mod auth_client;
+#[path = "auth/auth_flow_store.rs"]
+pub mod auth_flow_store;
+#[path = "auth/session_provenance.rs"]
+pub mod session_provenance;
+#[path = "auth/browser_callback.rs"]
+pub mod browser_callback;
 #[path = "auth/backup_client.rs"]
 pub mod backup_client;
 #[path = "auth/certificate_lifecycle.rs"]

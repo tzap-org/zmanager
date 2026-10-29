@@ -202,6 +202,48 @@ pub struct TzapPublicSigningIdentityRecord {
     pub lifecycle: String,
 }
 
+/// Certificate rows are versions of a key in a public identity scope. Neither
+/// the row id nor a legacy inventory id is evidence of a different key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TzapSigningKeyIdentity {
+    pub public_key_fingerprint: String,
+    signer_id: Option<String>,
+    org_id: Option<String>,
+    device_id: Option<String>,
+}
+
+impl TzapPublicSigningIdentityRecord {
+    /// Checks public input before any access to the native secret store. This
+    /// is structural validation; enrollment separately verifies trust/profile.
+    pub(crate) fn certificate_parts(&self) -> Result<(&Vec<u8>, &[Vec<u8>]), TzapIdentityCatalogError> {
+        use x509_parser::prelude::{FromDer as _, X509Certificate};
+
+        let error = || TzapIdentityCatalogError::InvalidCatalog { field: "certificate_chain_der" };
+        let (leaf, chain) = self.certificate_chain_der.split_first().ok_or_else(error)?;
+        for der in &self.certificate_chain_der {
+            let (remaining, _) = X509Certificate::from_der(der).map_err(|_| error())?;
+            if !remaining.is_empty() {
+                return Err(error());
+            }
+        }
+        Ok((leaf, chain))
+    }
+
+    pub(crate) fn certificate_key_identity(&self) -> Result<TzapSigningKeyIdentity, TzapIdentityCatalogError> {
+        let (leaf, _) = self.certificate_parts()?;
+        let public_key_der = openssl::x509::X509::from_der(leaf)
+            .and_then(|certificate| certificate.public_key())
+            .and_then(|key| key.public_key_to_der())
+            .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "certificate_chain_der" })?;
+        Ok(TzapSigningKeyIdentity {
+            public_key_fingerprint: crate::trust::sha256_identifier(&public_key_der),
+            signer_id: self.public_signer_id.clone(),
+            org_id: self.public_org_id.clone(),
+            device_id: self.public_device_id.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct TzapPublicRecipientKeyRecord {

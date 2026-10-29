@@ -1,7 +1,7 @@
 //! Native OS keyring storage for the CLI's TZAP identity and session state.
 
 use keyring::{Entry, Error as KeyringError};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -15,8 +15,7 @@ use zmanager_core::local_identity_store::{
 };
 use zmanager_core::secrets::SecretBytes;
 
-use crate::auth_client::{TzapAuthError, TzapBearerToken, TzapSessionRecord, TzapSessionStore};
-use crate::trust::TzapIdentityAssurance;
+use crate::auth_client::{TzapAuthError, TzapSessionRecord, TzapSessionStore};
 
 const SERVICE_NAME: &str = "org.tzap.zmanager.identity";
 const SESSION_PURPOSE: &str = "session";
@@ -47,12 +46,6 @@ fn invalidate_cached_secret(key: &str) {
     if let Ok(mut cache) = secret_cache().lock() {
         cache.remove(key);
     }
-}
-
-#[must_use]
-#[cfg(all(feature = "keyring", not(test)))]
-pub(crate) fn pending_auth_reference() -> TzapSecretRef {
-    TzapSecretRef::parse("secret_pending_auth").unwrap_or_else(|_| TzapSecretRef::generate())
 }
 
 /// Keyring-backed store shared by CLI identity and hosted-auth state.
@@ -190,6 +183,14 @@ impl Default for NativeTzapSecretStore {
 }
 
 impl NativeTzapSecretStore {
+    /// Mutable auth-flow records must observe updates from other processes.
+    /// Immutable signing-key reads can continue using the process cache.
+    pub(crate) fn resolve_fresh(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<SecretBytes, TzapSecretStoreError> {
+        let secret = self.entry(purpose, reference)?.get_secret().map(SecretBytes::from).map_err(|error| map_keyring_error(&error, reference))?;
+        cache_secret(self.material_cache_key(purpose, reference), &secret);
+        Ok(secret)
+    }
+
     pub fn new(account_scope: impl Into<String>) -> Result<Self, TzapSecretStoreError> {
         let account_scope = account_scope.into();
         if account_scope.is_empty()
@@ -220,10 +221,6 @@ impl NativeTzapSecretStore {
     fn material_cache_key(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> String {
         format!("material:{}:{}:{}", self.account_scope, purpose.as_str(), reference.as_str())
     }
-
-    fn session_cache_key(&self, account_key: &str) -> String {
-        format!("session:{}:{account_key}", self.account_scope)
-    }
 }
 
 impl TzapSecretMaterialStore for NativeTzapSecretStore {
@@ -251,9 +248,7 @@ impl TzapSecretMaterialStore for NativeTzapSecretStore {
         if let Some(secret) = cached_secret(&cache_key) {
             return Ok(secret);
         }
-        let secret = self.entry(purpose, reference)?.get_secret().map(SecretBytes::from).map_err(|error| map_keyring_error(&error, reference))?;
-        cache_secret(cache_key, &secret);
-        Ok(secret)
+        self.resolve_fresh(purpose, reference)
     }
 
     fn delete(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<(), TzapSecretStoreError> {
@@ -270,53 +265,28 @@ impl TzapSecretMaterialStore for NativeTzapSecretStore {
 
 impl TzapSessionStore for NativeTzapSecretStore {
     fn save_session(&mut self, account_key: &str, session: TzapSessionRecord) -> Result<(), TzapAuthError> {
-        let value = json!({
-            "audience": session.audience,
-            "access_token": session.access_token.expose(),
-            "expires_at_unix_seconds": session.expires_at_unix_seconds,
-            "identity_assurance": session.identity_assurance.as_str(),
-            "selected_org_id": session.selected_org_id,
-            "login_session_id": session.login_session_id,
-        });
+        session.require_hosted_provenance()?;
+        let value = session.to_secure_json();
         let bytes = serde_json::to_vec(&value).map_err(|error| TzapAuthError::Storage { message: error.to_string() })?;
         self.session_entry(account_key)?
             .set_secret(&bytes)
             .map_err(|_| TzapAuthError::Storage { message: "could not save TZAP session to the OS keyring".to_owned() })?;
-        cache_secret(self.session_cache_key(account_key), &SecretBytes::from(bytes));
         Ok(())
     }
 
     fn load_session(&self, account_key: &str) -> Option<TzapSessionRecord> {
-        let cache_key = self.session_cache_key(account_key);
-        let bytes = if let Some(bytes) = cached_secret(&cache_key) {
-            bytes
-        } else {
-            let bytes = SecretBytes::from(self.session_entry(account_key).ok()?.get_secret().ok()?);
-            cache_secret(cache_key, &bytes);
-            bytes
-        };
-        let value: Value = serde_json::from_slice(bytes.expose_secret()).ok()?;
-        let audience = value.get("audience")?.as_str()?.to_owned();
-        let access_token = TzapBearerToken::new(value.get("access_token")?.as_str()?).ok()?;
-        let expires_at_unix_seconds = value.get("expires_at_unix_seconds")?.as_u64()?;
-        let identity_assurance = TzapIdentityAssurance::parse(value.get("identity_assurance")?.as_str()?)?;
-        Some(TzapSessionRecord {
-            audience,
-            access_token,
-            expires_at_unix_seconds,
-            identity_assurance,
-            selected_org_id: value.get("selected_org_id").and_then(Value::as_str).map(str::to_owned),
-            login_session_id: value.get("login_session_id").and_then(Value::as_str).map(str::to_owned),
-        })
+        // Sessions are mutable shared records. A process-local cache can
+        // retain a token after Desktop replaces or forgets that session.
+        let bytes = self.session_entry(account_key).ok()?.get_secret().ok()?;
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        let session = TzapSessionRecord::from_secure_json(&value).ok()?;
+        session.require_hosted_provenance().ok()?;
+        Some(session)
     }
 
     fn clear_session(&mut self, account_key: &str) -> Result<(), TzapAuthError> {
-        let cache_key = self.session_cache_key(account_key);
         match self.session_entry(account_key)?.delete_credential() {
-            Ok(()) | Err(KeyringError::NoEntry) => {
-                invalidate_cached_secret(&cache_key);
-                Ok(())
-            }
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
             Err(_) => Err(TzapAuthError::Storage { message: "could not clear TZAP session from the OS keyring".to_owned() }),
         }
     }

@@ -46,10 +46,12 @@ pub enum TzapHostedAuthEnvironment {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapHostedAuthLaunchConfig {
+    pub environment: TzapHostedAuthEnvironment,
     pub client_id: String,
     pub redirect_uri: String,
     pub hosted_auth_base_url: String,
     pub hosted_account_base_url: String,
+    pub hosted_signing_base_url: String,
     pub requested_audience: String,
     pub selected_org_id: Option<String>,
 }
@@ -63,10 +65,12 @@ impl TzapHostedAuthLaunchConfig {
             TzapHostedAuthEnvironment::Prod => (PROD_HOSTED_AUTH_BASE_URL, PROD_HOSTED_ACCOUNT_BASE_URL),
         };
         Self {
+            environment,
             client_id: client_id.into(),
             redirect_uri: redirect_uri.into(),
             hosted_auth_base_url: hosted_auth_base_url.to_owned(),
             hosted_account_base_url: hosted_account_base_url.to_owned(),
+            hosted_signing_base_url: if environment == TzapHostedAuthEnvironment::Prod { SIGN_TZAP_BASE_URL } else { hosted_account_base_url }.to_owned(),
             requested_audience: SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             selected_org_id: None,
         }
@@ -78,7 +82,60 @@ impl TzapHostedAuthLaunchConfig {
         validate_non_empty_config("hosted_auth_base_url", &self.hosted_auth_base_url)?;
         validate_non_empty_config("hosted_account_base_url", &self.hosted_account_base_url)?;
         validate_non_empty_config("requested_audience", &self.requested_audience)?;
+        let allow_local = self.environment == TzapHostedAuthEnvironment::Local;
+        validate_hosted_endpoint(&self.hosted_auth_base_url, "hosted_auth_base_url", allow_local)?;
+        validate_hosted_endpoint(&self.hosted_account_base_url, "hosted_account_base_url", allow_local)?;
+        validate_hosted_endpoint(&self.hosted_signing_base_url, "hosted_signing_base_url", allow_local)?;
+        for endpoint in [&self.hosted_auth_base_url, &self.hosted_account_base_url, &self.hosted_signing_base_url] {
+            let origin = url::Url::parse(endpoint).map_err(|_| TzapAuthError::InvalidConfig { field: "environment" })?.origin().ascii_serialization();
+            let known_environment = match origin.as_str() {
+                STAGING_HOSTED_AUTH_BASE_URL => Some(TzapHostedAuthEnvironment::Staging),
+                PROD_HOSTED_AUTH_BASE_URL | PROD_HOSTED_ACCOUNT_BASE_URL | SIGN_TZAP_BASE_URL => Some(TzapHostedAuthEnvironment::Prod),
+                _ => None,
+            };
+            if known_environment.is_some_and(|known| known != self.environment) {
+                return Err(TzapAuthError::InvalidConfig { field: "environment" });
+            }
+        }
         Ok(())
+    }
+
+    pub fn validate_for_environment(&self, environment: TzapHostedAuthEnvironment) -> Result<(), TzapAuthError> {
+        self.validate()?;
+        if environment != self.environment {
+            return Err(TzapAuthError::InvalidConfig { field: "environment" });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn to_binding_json(&self) -> Value {
+        serde_json::json!({
+            "environment": crate::session_provenance::environment_name(self.environment),
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "auth_base_url": self.hosted_auth_base_url,
+            "account_base_url": self.hosted_account_base_url,
+            "signing_base_url": self.hosted_signing_base_url,
+            "requested_audience": self.requested_audience,
+            "selected_org_id": self.selected_org_id,
+        })
+    }
+
+    pub fn from_binding_json(value: &Value) -> Result<Self, TzapAuthError> {
+        let object = object_at(value, "launch")?;
+        let config = Self {
+            environment: crate::session_provenance::parse_environment(&required_string_field(object, "launch", "environment")?)?,
+            client_id: required_string_field(object, "launch", "client_id")?,
+            redirect_uri: required_string_field(object, "launch", "redirect_uri")?,
+            hosted_auth_base_url: required_string_field(object, "launch", "auth_base_url")?,
+            hosted_account_base_url: required_string_field(object, "launch", "account_base_url")?,
+            hosted_signing_base_url: required_string_field(object, "launch", "signing_base_url")?,
+            requested_audience: required_string_field(object, "launch", "requested_audience")?,
+            selected_org_id: optional_string_field(object, "launch", "selected_org_id")?,
+        };
+        config.validate_for_environment(config.environment)?;
+        Ok(config)
     }
 
     pub fn launch_url(&self, pending: &TzapPendingAuthState) -> Result<String, TzapAuthError> {
@@ -247,13 +304,24 @@ impl TzapOAuthStateTracker {
         self.pending.remove(state).ok_or(TzapAuthError::UnknownState)
     }
 
-    pub fn consume_handoff(
-        &mut self,
-        callback: &TzapHostedAuthCallback,
-        now_unix_seconds: u64,
-        handoff_lifetime_seconds: u64,
-    ) -> Result<TzapPendingAuthState, TzapAuthError> {
-        reject_url_session_material(callback.callback_url.as_deref())?;
+    /// Checks the saved binding before a network exchange can expose the PKCE
+    /// verifier. Validation itself never consumes the pending handoff.
+    pub fn validate_handoff(&self, callback: &TzapHostedAuthCallback, now_unix_seconds: u64, handoff_lifetime_seconds: u64) -> Result<(), TzapAuthError> {
+        self.validate_handoff_binding(callback)?;
+        let pending = self.pending.get(&callback.state).ok_or(TzapAuthError::UnknownState)?;
+        let expires_at = pending.created_at_unix_seconds.saturating_add(handoff_lifetime_seconds);
+        if now_unix_seconds < pending.created_at_unix_seconds || now_unix_seconds >= expires_at {
+            return Err(TzapAuthError::ExpiredHandoff);
+        }
+        Ok(())
+    }
+
+    /// Checks only the immutable binding. A durable session commit may be
+    /// recovered after pending expiry, without repeating the exchange.
+    pub fn validate_handoff_binding(&self, callback: &TzapHostedAuthCallback) -> Result<(), TzapAuthError> {
+        if let Some(url) = &callback.callback_url {
+            crate::browser_callback::validate_callback_binding(url, &callback.redirect_uri, &callback.state)?;
+        }
         validate_oauth_state(&callback.state)?;
         let pending = self.pending.get(&callback.state).ok_or(TzapAuthError::UnknownState)?;
         if pending.redirect_uri != callback.redirect_uri {
@@ -262,10 +330,16 @@ impl TzapOAuthStateTracker {
         if pending.pkce.verifier != callback.pkce_verifier {
             return Err(TzapAuthError::PkceVerifierMismatch);
         }
-        let expires_at = pending.created_at_unix_seconds.saturating_add(handoff_lifetime_seconds);
-        if now_unix_seconds > expires_at {
-            return Err(TzapAuthError::ExpiredHandoff);
-        }
+        Ok(())
+    }
+
+    pub fn consume_handoff(
+        &mut self,
+        callback: &TzapHostedAuthCallback,
+        now_unix_seconds: u64,
+        handoff_lifetime_seconds: u64,
+    ) -> Result<TzapPendingAuthState, TzapAuthError> {
+        self.validate_handoff(callback, now_unix_seconds, handoff_lifetime_seconds)?;
         self.consume(&callback.state)
     }
 }
@@ -299,19 +373,54 @@ pub fn complete_hosted_auth_handoff_for_audience(
     now_unix_seconds: u64,
     expected_audience: &str,
 ) -> Result<TzapSessionRecord, TzapAuthError> {
+    complete_hosted_handoff_inner(tracker, session_store, account_key, callback, now_unix_seconds, expected_audience, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn complete_bound_hosted_auth_handoff(
+    tracker: &mut TzapOAuthStateTracker,
+    session_store: &mut impl TzapSessionStore,
+    account_key: &str,
+    callback: &TzapHostedAuthCallback,
+    now_unix_seconds: u64,
+    expected_audience: &str,
+    provenance: crate::session_provenance::TzapSessionProvenance,
+) -> Result<TzapSessionRecord, TzapAuthError> {
+    complete_hosted_handoff_inner(tracker, session_store, account_key, callback, now_unix_seconds, expected_audience, Some(provenance))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_hosted_handoff_inner(
+    tracker: &mut TzapOAuthStateTracker,
+    session_store: &mut impl TzapSessionStore,
+    account_key: &str,
+    callback: &TzapHostedAuthCallback,
+    now_unix_seconds: u64,
+    expected_audience: &str,
+    provenance: Option<crate::session_provenance::TzapSessionProvenance>,
+) -> Result<TzapSessionRecord, TzapAuthError> {
     if !matches!(expected_audience, SESSION_AUDIENCE_SIGN_TZAP | SESSION_AUDIENCE_LOGIN_TZAP) {
         return Err(TzapAuthError::InvalidConfig { field: "expected_audience" });
     }
     tracker.consume_handoff(callback, now_unix_seconds, AUTH_HANDOFF_LIFETIME_SECONDS)?;
     let relay = TzapAuthRelayCompletion::from_json_bytes(&callback.relay_body)?;
-    let session = relay.into_session();
+    let mut session = relay.into_session();
     session.require_audience(expected_audience)?;
+    if session.is_expired_at(now_unix_seconds) {
+        return Err(TzapAuthError::SessionExpired);
+    }
+    if let Some(provenance) = provenance {
+        session.bind_provenance(provenance)?;
+    }
     session_store.save_session(account_key, session.clone())?;
     Ok(session)
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct TzapBearerToken(String);
+pub struct TzapBearerToken {
+    value: String,
+    provenance: Option<crate::session_provenance::TzapSessionProvenance>,
+}
 
 impl TzapBearerToken {
     pub fn new(value: impl Into<String>) -> Result<Self, TzapAuthError> {
@@ -319,12 +428,18 @@ impl TzapBearerToken {
         if value.is_empty() {
             return Err(TzapAuthError::EmptyToken);
         }
-        Ok(Self(value))
+        Ok(Self { value, provenance: None })
     }
 
     #[must_use]
     pub fn expose(&self) -> &str {
-        &self.0
+        &self.value
+    }
+
+    /// Enforces the destination of a token restored from a bound session.
+    /// Bare tokens remain available to explicit low-level protocol callers.
+    pub fn require_destination(&self, destination: &str) -> Result<(), TzapAuthError> {
+        self.provenance.as_ref().map_or(Ok(()), |binding| binding.require_destination(destination))
     }
 }
 
@@ -336,6 +451,8 @@ impl fmt::Debug for TzapBearerToken {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapSessionRecord {
+    pub user_id: Option<String>,
+    pub provenance: Option<crate::session_provenance::TzapSessionProvenance>,
     pub audience: String,
     pub access_token: TzapBearerToken,
     pub expires_at_unix_seconds: u64,
@@ -345,6 +462,47 @@ pub struct TzapSessionRecord {
 }
 
 impl TzapSessionRecord {
+    pub fn bind_provenance(&mut self, provenance: crate::session_provenance::TzapSessionProvenance) -> Result<(), TzapAuthError> {
+        crate::session_provenance::validate_opaque_id(self.user_id.as_deref().ok_or(TzapAuthError::MissingSessionProvenance)?)?;
+        provenance.validate()?;
+        self.access_token.provenance = Some(provenance.clone());
+        self.provenance = Some(provenance);
+        Ok(())
+    }
+
+    pub fn require_hosted_provenance(&self) -> Result<&crate::session_provenance::TzapSessionProvenance, TzapAuthError> {
+        let provenance = self.provenance.as_ref().ok_or(TzapAuthError::MissingSessionProvenance)?;
+        crate::session_provenance::validate_opaque_id(self.user_id.as_deref().ok_or(TzapAuthError::MissingSessionProvenance)?)?;
+        provenance.validate()?;
+        if self.access_token.provenance.as_ref() != Some(provenance) {
+            return Err(TzapAuthError::InvalidSessionProvenance);
+        }
+        Ok(provenance)
+    }
+
+    pub fn require_signing_origin(&self, base_url: &str) -> Result<(), TzapAuthError> {
+        self.require_hosted_provenance()?.require_signing_origin(base_url)
+    }
+
+    /// Contains the bearer token; use only at native/wrapped storage boundaries.
+    #[must_use]
+    pub fn to_secure_json(&self) -> Value {
+        serde_json::json!({
+            "audience": self.audience,
+            "access_token": self.access_token.expose(),
+            "expires_at_unix_seconds": self.expires_at_unix_seconds,
+            "identity_assurance": self.identity_assurance.as_str(),
+            "selected_org_id": self.selected_org_id,
+            "login_session_id": self.login_session_id,
+            "user_id": self.user_id,
+            "provenance": self.provenance.as_ref().map(crate::session_provenance::TzapSessionProvenance::to_json),
+        })
+    }
+
+    pub fn from_secure_json(value: &Value) -> Result<Self, TzapAuthError> {
+        parse_session_record(value)
+    }
+
     #[must_use]
     pub fn is_expired_at(&self, now_unix_seconds: u64) -> bool {
         now_unix_seconds >= self.expires_at_unix_seconds
@@ -488,6 +646,7 @@ pub trait TzapAuthHttpTransport {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapCurrentUser {
+    pub user_id: Option<String>,
     pub display_name: String,
     pub public_signer_id: Option<String>,
     pub assurance_level: Option<trust::TzapIdentityAssurance>,
@@ -504,6 +663,7 @@ impl TzapCurrentUser {
         reject_raw_provider_material(value)?;
         let object = object_at(value, "$")?;
         Ok(Self {
+            user_id: optional_string_field(object, "$", "user_id")?,
             display_name: required_string_field(object, "$", "display_name")?,
             public_signer_id: optional_string_field(object, "$", "public_signer_id")?,
             assurance_level: match object.get("assurance_level") {
@@ -531,7 +691,11 @@ pub fn fetch_current_user_for_audience(
     session.require_audience(expected_audience)?;
     let response = send_json_request(transport, TzapAuthHttpMethod::Get, account_base_url, CURRENT_USER_PATH, Some(session.access_token.clone()), None)?;
     let response = require_success(response, |status_code, _| TzapAuthError::HttpStatus { status_code })?;
-    TzapCurrentUser::from_json_bytes(&response.body)
+    let user = TzapCurrentUser::from_json_bytes(&response.body)?;
+    if session.user_id.is_some() && session.user_id != user.user_id {
+        return Err(TzapAuthError::SessionPrincipalMismatch);
+    }
+    Ok(user)
 }
 
 pub trait TzapSessionStore {
@@ -594,6 +758,13 @@ pub enum TzapAuthError {
     CancelledHandoff,
     FailedHandoff,
     InvalidHandoffStatus,
+    InvalidHandoffCode,
+    InvalidCallbackUrl,
+    MissingSessionProvenance,
+    InvalidSessionProvenance,
+    SessionOriginMismatch,
+    SessionPrincipalMismatch,
+    SessionExpired,
     SessionTokenInCallbackUrl,
     RawProviderMaterial,
     EmptyToken,
@@ -653,6 +824,13 @@ impl fmt::Display for TzapAuthError {
             Self::FailedHandoff => write!(f, "hosted auth handoff failed"),
             Self::InvalidHandoffStatus => write!(f, "hosted auth handoff status is invalid"),
             Self::SessionTokenInCallbackUrl => write!(f, "hosted auth callback URL must not contain session tokens"),
+            Self::InvalidHandoffCode => write!(f, "hosted auth handoff code is invalid"),
+            Self::InvalidCallbackUrl => write!(f, "hosted auth callback URL is invalid"),
+            Self::MissingSessionProvenance => write!(f, "saved session has no trusted issuer/account binding; sign in again"),
+            Self::InvalidSessionProvenance => write!(f, "hosted session binding is invalid; sign in again"),
+            Self::SessionOriginMismatch => write!(f, "hosted session does not authorize this service origin"),
+            Self::SessionPrincipalMismatch => write!(f, "authenticated account does not match the saved session"),
+            Self::SessionExpired => write!(f, "hosted session is expired"),
             Self::RawProviderMaterial => write!(f, "hosted auth handoff must not contain raw provider material"),
             Self::EmptyToken => write!(f, "session token is empty"),
             Self::Cancelled => write!(f, "hosted auth request was cancelled"),
@@ -688,7 +866,7 @@ pub fn validate_pkce_verifier(verifier: &str) -> Result<(), TzapAuthError> {
 }
 
 pub fn validate_oauth_state(state: &str) -> Result<(), TzapAuthError> {
-    if state.len() < PKCE_VERIFIER_MIN_LENGTH || !state.bytes().all(is_pkce_unreserved) {
+    if !(PKCE_VERIFIER_MIN_LENGTH..=PKCE_VERIFIER_MAX_LENGTH).contains(&state.len()) || !state.bytes().all(is_pkce_unreserved) {
         return Err(TzapAuthError::InvalidState);
     }
     Ok(())
@@ -698,45 +876,52 @@ fn validate_non_empty_config(field: &'static str, value: &str) -> Result<(), Tza
     if value.is_empty() { Err(TzapAuthError::InvalidConfig { field }) } else { Ok(()) }
 }
 
+fn validate_hosted_endpoint(value: &str, field: &'static str, allow_local_http: bool) -> Result<(), TzapAuthError> {
+    let invalid = || TzapAuthError::InvalidConfig { field };
+    if value.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace()) {
+        return Err(invalid());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| invalid())?;
+    let local = match parsed.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    };
+    if parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+        || !(parsed.scheme() == "https" || (allow_local_http && local && parsed.scheme() == "http"))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn parse_session_record(value: &Value) -> Result<TzapSessionRecord, TzapAuthError> {
     let object = object_at(value, "session")?;
-    Ok(TzapSessionRecord {
+    let mut session = TzapSessionRecord {
+        user_id: optional_string_field(object, "session", "user_id")?,
+        provenance: None,
         audience: required_string_field(object, "session", "audience")?,
         access_token: TzapBearerToken::new(required_string_field(object, "session", "access_token")?)?,
         expires_at_unix_seconds: required_u64_field(object, "session", "expires_at_unix_seconds")?,
         identity_assurance: parse_assurance_level(object, "session", "identity_assurance")?,
         selected_org_id: optional_string_field(object, "session", "selected_org_id")?,
         login_session_id: optional_string_field(object, "session", "login_session_id")?,
-    })
+    };
+    if let Some(value) = value.get("provenance").filter(|value| !value.is_null()) {
+        session.bind_provenance(crate::session_provenance::TzapSessionProvenance::from_json(value)?)?;
+    }
+    Ok(session)
 }
 
 fn parse_assurance_level(object: &Map<String, Value>, path: &'static str, field: &'static str) -> Result<trust::TzapIdentityAssurance, TzapAuthError> {
     let value = required_string_field(object, path, field)?;
     trust::TzapIdentityAssurance::parse(&value).ok_or(TzapAuthError::InvalidAssuranceLevel { value })
-}
-
-fn reject_url_session_material(callback_url: Option<&str>) -> Result<(), TzapAuthError> {
-    let Some(callback_url) = callback_url else {
-        return Ok(());
-    };
-    let (before_fragment, fragment) = callback_url.split_once('#').map_or((callback_url, None), |(before, fragment)| (before, Some(fragment)));
-    let query = before_fragment.split_once('?').map(|(_, query)| query);
-    reject_url_session_material_parameters(query)?;
-    reject_url_session_material_parameters(fragment)?;
-    Ok(())
-}
-
-fn reject_url_session_material_parameters(parameter_text: Option<&str>) -> Result<(), TzapAuthError> {
-    let Some(parameter_text) = parameter_text else {
-        return Ok(());
-    };
-    for parameter in parameter_text.split('&') {
-        let key = parameter.split_once('=').map_or(parameter, |(key, _)| key);
-        if matches!(key, "relay_body" | "access_token" | "session_token" | "id_token" | "refresh_token") {
-            return Err(TzapAuthError::SessionTokenInCallbackUrl);
-        }
-    }
-    Ok(())
 }
 
 fn reject_raw_provider_material(value: &Value) -> Result<(), TzapAuthError> {
@@ -924,6 +1109,43 @@ mod tests {
     }
 
     #[test]
+    fn hosted_launch_config_requires_pinned_https_or_explicit_local_loopback_http() {
+        for bad in [
+            "http://staging.tzap.org",
+            "https://fixture@staging.tzap.org",
+            "https://staging.tzap.org?fixture=only",
+            "https://staging.tzap.org#fixture",
+            "https://staging.tzap.org/another-service",
+            "https://staging.tzap.org\n",
+        ] {
+            let mut config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Staging, "zmanager-cli", "tzap://auth/callback");
+            config.hosted_auth_base_url = bad.to_owned();
+            assert!(config.validate_for_environment(TzapHostedAuthEnvironment::Staging).is_err());
+        }
+        let config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Local, "zmanager-cli", "tzap://auth/callback");
+        assert!(config.validate_for_environment(TzapHostedAuthEnvironment::Local).is_ok());
+        assert!(config.validate_for_environment(TzapHostedAuthEnvironment::Staging).is_err());
+        assert!(config.validate_for_environment(TzapHostedAuthEnvironment::Prod).is_err());
+    }
+
+    #[test]
+    fn a_frozen_login_cannot_mix_known_staging_and_production_services() {
+        for field in ["auth", "account", "signing"] {
+            let mut config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Staging, "zmanager-cli", "tzap://auth/callback");
+            match field {
+                "auth" => config.hosted_auth_base_url = super::PROD_HOSTED_AUTH_BASE_URL.to_owned(),
+                "account" => config.hosted_account_base_url = super::PROD_HOSTED_ACCOUNT_BASE_URL.to_owned(),
+                "signing" => config.hosted_signing_base_url = SIGN_TZAP_BASE_URL.to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(matches!(config.validate(), Err(TzapAuthError::InvalidConfig { field: "environment" })));
+        }
+        let mut config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Prod, "zmanager-cli", "tzap://auth/callback");
+        config.hosted_signing_base_url = super::STAGING_HOSTED_AUTH_BASE_URL.to_owned();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn hosted_auth_launch_url_supports_the_allow_listed_login_audience() {
         let pending = pending_auth_state();
         let mut config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Prod, "zmanager-desktop", pending.redirect_uri.clone());
@@ -988,6 +1210,21 @@ mod tests {
     }
 
     #[test]
+    fn handoff_preflight_preserves_state_and_rejects_future_or_exactly_expired_pending_auth() {
+        let pending = pending_auth_state();
+        let callback = hosted_auth_callback(&pending, relay_success_body());
+        let mut tracker = TzapOAuthStateTracker::new();
+        tracker.insert_pending(pending.clone()).unwrap();
+        for now in [pending.created_at_unix_seconds - 1, pending.created_at_unix_seconds + AUTH_HANDOFF_LIFETIME_SECONDS] {
+            assert!(matches!(tracker.validate_handoff(&callback, now, AUTH_HANDOFF_LIFETIME_SECONDS), Err(TzapAuthError::ExpiredHandoff)));
+        }
+        assert!(tracker.validate_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS).is_ok());
+        assert!(tracker.validate_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS).is_ok());
+        assert_eq!(tracker.consume_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS).unwrap(), pending);
+        assert!(matches!(tracker.consume_handoff(&callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS), Err(TzapAuthError::UnknownState)));
+    }
+
+    #[test]
     fn hosted_auth_handoff_accepts_session_from_relay_body_only() {
         let pending = pending_auth_state();
         let mut tracker = TzapOAuthStateTracker::new();
@@ -1049,7 +1286,7 @@ mod tests {
         tracker.insert_pending(pending.clone()).unwrap();
         let mut fragment_callback = hosted_auth_callback(&pending, relay_success_body());
         fragment_callback.callback_url = Some("zmanager://auth/callback?state=ok#access_token=never&relay_body=never".to_owned());
-        assert!(matches!(tracker.consume_handoff(&fragment_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS), Err(TzapAuthError::SessionTokenInCallbackUrl)));
+        assert!(matches!(tracker.consume_handoff(&fragment_callback, 101, AUTH_HANDOFF_LIFETIME_SECONDS), Err(TzapAuthError::InvalidCallbackUrl)));
 
         let mut tracker = TzapOAuthStateTracker::new();
         tracker.insert_pending(pending.clone()).unwrap();
@@ -1076,12 +1313,49 @@ mod tests {
     }
 
     #[test]
+    fn bound_completion_requires_the_server_principal_and_an_unexpired_session_before_storage() {
+        let pending = pending_auth_state();
+        let config = TzapHostedAuthLaunchConfig::for_environment(TzapHostedAuthEnvironment::Staging, "zmanager-cli", &pending.redirect_uri);
+        let provenance = crate::session_provenance::TzapSessionProvenance::from_launch(&config, "fixture-flow").unwrap();
+        for scenario in ["missing-principal", "expired", "valid"] {
+            let mut tracker = TzapOAuthStateTracker::new();
+            tracker.insert_pending(pending.clone()).unwrap();
+            let mut session = relay_session_json();
+            if scenario != "missing-principal" {
+                session["user_id"] = json!("user_fixture_one");
+            }
+            if scenario == "expired" {
+                session["expires_at_unix_seconds"] = json!(101);
+            }
+            let callback = hosted_auth_callback(&pending, json!({"status": "ok", "session": session}).to_string().into_bytes());
+            let mut store = InMemoryTzapSessionStore::new();
+            let result =
+                super::complete_bound_hosted_auth_handoff(&mut tracker, &mut store, "default", &callback, 101, SESSION_AUDIENCE_SIGN_TZAP, provenance.clone());
+            match scenario {
+                "missing-principal" => assert!(matches!(result, Err(TzapAuthError::MissingSessionProvenance))),
+                "expired" => assert!(matches!(result, Err(TzapAuthError::SessionExpired))),
+                "valid" => {
+                    let saved = store.load_session("default").unwrap();
+                    assert_eq!(result.unwrap(), saved);
+                    assert_eq!(saved.user_id.as_deref(), Some("user_fixture_one"));
+                    assert_eq!(saved.require_hosted_provenance().unwrap(), &provenance);
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+            assert!(store.load_session("default").is_none());
+        }
+    }
+
+    #[test]
     fn session_store_keeps_tokens_redacted_and_enforces_audience() {
         let token = TzapBearerToken::new("secret-token").unwrap();
         assert_eq!(format!("{token:?}"), "TzapBearerToken(<redacted>)");
         assert_eq!(token.expose(), "secret-token");
 
         let session = TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             access_token: token,
             expires_at_unix_seconds: 200,
@@ -1114,6 +1388,8 @@ mod tests {
     #[test]
     fn current_user_fetch_uses_injected_transport_and_redacted_token() {
         let session = TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             access_token: TzapBearerToken::new("secret-token").unwrap(),
             expires_at_unix_seconds: 200,
@@ -1174,7 +1450,7 @@ mod tests {
             state: pending.state.clone(),
             redirect_uri: pending.redirect_uri.clone(),
             pkce_verifier: pending.pkce.verifier.clone(),
-            callback_url: Some(format!("{}?state={}", pending.redirect_uri, pending.state)),
+            callback_url: Some(pending.redirect_uri.clone()),
             relay_body,
         }
     }
@@ -1258,6 +1534,8 @@ mod tests {
     #[test]
     fn auth_client_retries_on_500_and_429_errors() {
         let session = TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             access_token: TzapBearerToken::new("secret-token").unwrap(),
             expires_at_unix_seconds: 200,
@@ -1290,6 +1568,8 @@ mod tests {
     #[test]
     fn auth_client_handles_offline_timeout_gracefully() {
         let session = TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             access_token: TzapBearerToken::new("secret-token").unwrap(),
             expires_at_unix_seconds: 200,

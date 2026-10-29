@@ -6335,6 +6335,7 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "time",
+ "url",
  "x509-parser",
  "zmanager-core",
 ]

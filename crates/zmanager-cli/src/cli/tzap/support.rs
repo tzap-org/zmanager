@@ -1,7 +1,5 @@
 #![cfg_attr(not(feature = "tzap-online"), allow(dead_code, unused_imports))]
 
-#[cfg(feature = "tzap-online")]
-use super::AUTH_SESSION_EXCHANGE_PATH;
 use super::TzapCliContext;
 use crate::cli::options::{GlobalOptions, parse_global_option, take_value};
 use crate::cli::usage::{command_usage_error, json_escape, json_optional_string, print_error_line};
@@ -159,73 +157,6 @@ pub(super) fn write_json_file(path: &Path, value: &Value) -> io::Result<()> {
 }
 
 #[cfg(feature = "tzap-online")]
-pub(super) fn callback_url_parameter(callback_url: &str, key: &str) -> Option<String> {
-    let (_, query) = callback_url.split_once('?')?;
-    let query = query.split_once('#').map_or(query, |(query, _)| query);
-    for parameter in query.split('&') {
-        let (parameter_key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
-        if percent_decode_url_component(parameter_key).ok().as_deref() == Some(key) {
-            return percent_decode_url_component(value).ok();
-        }
-    }
-    None
-}
-
-#[cfg(feature = "tzap-online")]
-pub(super) fn exchange_handoff_code(
-    auth_base_url: &str,
-    client_id: &str,
-    redirect_uri: &str,
-    state: &str,
-    pkce_verifier: &str,
-    handoff_code: &str,
-) -> Result<Vec<u8>, String> {
-    let url = format!("{}{}", auth_base_url.trim_end_matches('/'), AUTH_SESSION_EXCHANGE_PATH);
-    let exchange = http_post_json(
-        &url,
-        &json!({
-            "handoff_code": handoff_code,
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "code_verifier": pkce_verifier,
-            "required_audience": zmanager_tzap_hosted::auth_client::SESSION_AUDIENCE_SIGN_TZAP,
-        }),
-    )?;
-    let session_token = json_string_field(&exchange, "session_token")?;
-    let session_id = json_string_field(&exchange, "session_id")?;
-    let audience = json_string_field(&exchange, "audience").unwrap_or_else(|_| zmanager_tzap_hosted::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
-    let expires_at_unix_seconds = exchange
-        .get("expires_at_unix_seconds")
-        .and_then(Value::as_u64)
-        .map_or_else(|| json_string_field(&exchange, "expires_at").and_then(|expires_at| rfc3339_utc_to_unix_seconds(&expires_at)), Ok)?;
-    let identity_assurance = json_string_field(&exchange, "identity_assurance")
-        .or_else(|_| json_string_field(&exchange, "identity_assurance_level"))
-        .unwrap_or_else(|_| zmanager_core::trust::TzapIdentityAssurance::OauthVerifiedEmail.as_str().to_owned());
-    serde_json::to_vec(&json!({
-        "status": "ok",
-        "session": {
-            "audience": audience,
-            "access_token": session_token,
-            "expires_at_unix_seconds": expires_at_unix_seconds,
-            "identity_assurance": identity_assurance,
-            "selected_org_id": exchange.get("selected_org_id").cloned().unwrap_or(Value::Null),
-            "login_session_id": session_id,
-        }
-    }))
-    .map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "tzap-online")]
-pub(super) fn http_post_json(url: &str, body: &Value) -> Result<Value, String> {
-    let response = http_json_request("POST", url, None, Some(body), &[], &zmanager_tzap_hosted::auth_client::TzapAuthRequestOptions::default())?;
-    if !(200..=299).contains(&response.status_code) {
-        return Err(format!("hosted auth exchange failed with HTTP {}", response.status_code));
-    }
-    serde_json::from_slice(&response.body).map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "tzap-online")]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CliHttpJsonTransport;
 
@@ -304,100 +235,6 @@ pub(crate) fn build_hosted_http_request(
         request = request.json(body);
     }
     request.build().map_err(|error| format!("invalid hosted HTTPS request: {error}"))
-}
-
-pub(super) fn percent_decode_url_component(value: &str) -> Result<String, String> {
-    let bytes = value.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).map_err(|error| error.to_string())?;
-                output.push(u8::from_str_radix(hex, 16).map_err(|error| error.to_string())?);
-                index += 3;
-            }
-            b'+' => {
-                output.push(b' ');
-                index += 1;
-            }
-            byte => {
-                output.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8(output).map_err(|error| error.to_string())
-}
-
-pub(super) fn rfc3339_utc_to_unix_seconds(value: &str) -> Result<u64, String> {
-    let without_z = value.strip_suffix('Z').ok_or_else(|| "expires_at must be a UTC RFC3339 timestamp".to_owned())?;
-    let (date, time) = without_z.split_once('T').ok_or_else(|| "expires_at must include a date and time".to_owned())?;
-    let mut date_parts = date.split('-');
-    let year = parse_i64_part(date_parts.next(), "year")?;
-    let month = parse_i64_part(date_parts.next(), "month")?;
-    let day = parse_i64_part(date_parts.next(), "day")?;
-    if date_parts.next().is_some() {
-        return Err("expires_at has too many date components".to_owned());
-    }
-    if !(1..=12).contains(&month) {
-        return Err(format!("expires_at month {month} is out of range"));
-    }
-    let month_length = days_in_month(year, month);
-    if !(1..=month_length).contains(&day) {
-        return Err(format!("expires_at day {day} is out of range"));
-    }
-    let time = time.split_once('.').map_or(time, |(whole, _)| whole);
-    let mut time_parts = time.split(':');
-    let hour = parse_i64_part(time_parts.next(), "hour")?;
-    let minute = parse_i64_part(time_parts.next(), "minute")?;
-    let second = parse_i64_part(time_parts.next(), "second")?;
-    if time_parts.next().is_some() {
-        return Err("expires_at has too many time components".to_owned());
-    }
-    if !(0..=23).contains(&hour) {
-        return Err(format!("expires_at hour {hour} is out of range"));
-    }
-    if !(0..=59).contains(&minute) {
-        return Err(format!("expires_at minute {minute} is out of range"));
-    }
-    if !(0..=59).contains(&second) {
-        return Err(format!("expires_at second {second} is out of range"));
-    }
-    let days = days_from_civil(year, month, day);
-    let seconds = days
-        .checked_mul(86_400)
-        .and_then(|value| value.checked_add(hour * 3_600 + minute * 60 + second))
-        .ok_or_else(|| "expires_at is out of range".to_owned())?;
-    u64::try_from(seconds).map_err(|_| "expires_at is before the Unix epoch".to_owned())
-}
-
-pub(super) fn days_in_month(year: i64, month: i64) -> i64 {
-    match month {
-        2 => 28 + i64::from((year % 4 == 0 && year % 100 != 0) || year % 400 == 0),
-        4 | 6 | 9 | 11 => 30,
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        // Callers validate `month` is in 1..=12 before calling.
-        _ => panic!("invalid month {month}: expected 1-12"),
-    }
-}
-
-pub(super) fn parse_i64_part(value: Option<&str>, field: &str) -> Result<i64, String> {
-    value.ok_or_else(|| format!("expires_at is missing {field}"))?.parse::<i64>().map_err(|error| error.to_string())
-}
-
-pub(super) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let month_prime = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-pub(super) fn json_string_field(value: &Value, field: &'static str) -> Result<String, String> {
-    value.get(field).and_then(Value::as_str).map(str::to_owned).ok_or_else(|| format!("missing or invalid field: {field}"))
 }
 
 /// Builds a `tzap_service` JSON request carrying the CLI context (CR-113:

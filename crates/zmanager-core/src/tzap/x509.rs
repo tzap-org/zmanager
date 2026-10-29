@@ -164,27 +164,7 @@ pub fn tzap_x509_signing_options_from_catalog(
             .find(|identity| identity.certificate_id.as_deref() == Some(certificate_id))
             .ok_or_else(|| format!("certificate not found: {certificate_id}"))?
     } else {
-        let mut key_ids = catalog
-            .signing_identities
-            .iter()
-            .filter(|identity| identity.certificate_id.is_some())
-            .map(|identity| identity.legacy_key_id.as_deref().unwrap_or(&identity.id))
-            .collect::<Vec<_>>();
-        key_ids.sort_unstable();
-        key_ids.dedup();
-        let signing_key_id = match key_ids.as_slice() {
-            [] => return Err("no local certificate found for --signing-identity; enroll one with `zm auth cert enroll` or the desktop/mobile app".to_owned()),
-            [signing_key_id] => *signing_key_id,
-            _ => return Err("more than one local signing key; disambiguate with --signing-identity <certificate-id> (see `zm tzap certs`)".to_owned()),
-        };
-        catalog
-            .signing_identities
-            .iter()
-            .filter(|identity| identity.certificate_id.is_some())
-            .filter(|identity| identity.legacy_key_id.as_deref().unwrap_or(&identity.id) == signing_key_id)
-            .filter(|identity| catalog_identity_is_usable(identity, &catalog, now_unix_seconds))
-            .max_by_key(|identity| identity.not_before_unix_seconds.unwrap_or_default())
-            .ok_or_else(|| format!("no usable certificate found for signing key: {signing_key_id}"))?
+        select_catalog_signing_identity(&catalog, now_unix_seconds)?
     };
 
     if selected.lifecycle != "active" {
@@ -206,11 +186,67 @@ pub fn tzap_x509_signing_options_from_catalog(
     if catalog.status_cache.iter().any(|status| status.lookup_id == certificate_sha256 && status.status != "valid") {
         return Err("certificate status blocks signing".to_owned());
     }
+    let (signing_certificate, signing_chain) = selected.certificate_parts().map_err(|error| error.to_string())?;
+    let expected_key = selected.certificate_key_identity().map_err(|error| error.to_string())?;
     let signing_private_key = secret_store.resolve(TzapSecretPurpose::SigningKey, &selected.signing_key_ref).map_err(|error| error.to_string())?;
-    let mut certificate_chain_der = selected.certificate_chain_der.clone();
-    let signing_certificate = certificate_chain_der.drain(..1).next().unwrap_or_default();
+    let actual_key = crate::identity_migration::public_key_fingerprint_from_private_key(&signing_private_key).map_err(|error| error.to_string())?;
+    if actual_key != expected_key.public_key_fingerprint {
+        return Err("certificate public key does not match its signing key".to_owned());
+    }
 
-    Ok(TzapX509SigningOptions::InMemory { signing_certificate, signing_private_key, signing_chain: certificate_chain_der })
+    Ok(TzapX509SigningOptions::InMemory { signing_certificate: signing_certificate.clone(), signing_private_key, signing_chain: signing_chain.to_vec() })
+}
+
+fn select_catalog_signing_identity(
+    catalog: &crate::identity_catalog::TzapIdentityCatalog,
+    now_unix_seconds: u64,
+) -> Result<&crate::identity_catalog::TzapPublicSigningIdentityRecord, String> {
+    let mut candidates = Vec::new();
+    let mut reference_keys = std::collections::HashMap::new();
+    let mut legacy_keys = std::collections::HashMap::new();
+    for identity in catalog.signing_identities.iter().filter(|identity| identity.certificate_id.is_some()) {
+        if !catalog_identity_is_usable(identity, catalog, now_unix_seconds) {
+            continue;
+        }
+        // Bad historical entries cannot block a valid unrelated identity.
+        let Ok(key) = identity.certificate_key_identity() else { continue };
+        if reference_keys.insert(&identity.signing_key_ref, key.public_key_fingerprint.clone()).is_some_and(|previous| previous != key.public_key_fingerprint)
+            || identity.legacy_key_id.as_ref().is_some_and(|legacy| {
+                legacy_keys.insert(legacy, key.public_key_fingerprint.clone()).is_some_and(|previous| previous != key.public_key_fingerprint)
+            })
+        {
+            return Err("conflicting public keys for a signing key reference".to_owned());
+        }
+        candidates.push((key, identity));
+    }
+    let mut keys = candidates.iter().map(|(key, _)| key).collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    let preferred_key = catalog
+        .default_signing_identity_id
+        .as_ref()
+        .map(|id| {
+            let identity =
+                catalog.signing_identities.iter().find(|identity| &identity.id == id).ok_or_else(|| "preferred signing identity is missing".to_owned())?;
+            identity.certificate_key_identity().map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let signing_key = match (preferred_key.as_ref(), keys.as_slice()) {
+        (Some(key), _) => key,
+        (None, []) => {
+            return Err("no usable local certificate found for --signing-identity; enroll one with `zm auth cert enroll` or the desktop/mobile app".to_owned());
+        }
+        (None, [key]) => *key,
+        _ => return Err("more than one local signing key; disambiguate with --signing-identity <certificate-id> (see `zm tzap certs`)".to_owned()),
+    };
+    candidates
+        .iter()
+        .filter(|(key, _)| key == signing_key)
+        .map(|(_, identity)| *identity)
+        .max_by(|left, right| {
+            (left.not_before_unix_seconds, &left.certificate_sha256, &left.id).cmp(&(right.not_before_unix_seconds, &right.certificate_sha256, &right.id))
+        })
+        .ok_or_else(|| "no usable certificate found for the preferred signing key".to_owned())
 }
 
 fn catalog_identity_is_usable(
@@ -1491,52 +1527,195 @@ mod tests {
             TzapSecretMaterialStore, TzapSecretPurpose, TzapSecretRef,
         };
         use crate::secrets::SecretBytes;
+        use crate::x509_fixture;
+        use openssl::pkey::{PKey, Private};
 
         #[test]
         fn resolves_only_the_selected_signing_key_from_the_catalog() {
+            let key = x509_fixture::p256_private_key();
             let selected_ref = TzapSecretRef::parse("secret_selected").unwrap();
             let unrelated_ref = TzapSecretRef::parse("secret_unrelated").unwrap();
-            let mut catalog = crate::identity_catalog::TzapIdentityCatalog::empty();
-            let mut unrelated = identity("unrelated", "cert-unrelated", "key-unrelated", unrelated_ref);
+            let selected = identity("selected", &key, selected_ref.clone());
+            let expected_chain = selected.certificate_chain_der.clone();
+            let mut unrelated = identity("unrelated", &x509_fixture::p256_private_key(), unrelated_ref);
             unrelated.certificate_id = None;
-            catalog.signing_identities = vec![identity("selected", "cert-selected", "key-selected", selected_ref.clone()), unrelated];
-            let mut catalog_store = InMemoryTzapIdentityCatalogStore::new();
-            catalog_store.save_catalog("default", None, catalog).unwrap();
-
-            let mut secret_store = InMemoryTzapSecretMaterialStore::new();
-            secret_store.put_at(TzapSecretPurpose::SigningKey, &selected_ref, SecretBytes::from(b"selected-key".to_vec())).unwrap();
+            let catalog_store = catalog(vec![selected, unrelated]);
+            let secret_store = secrets(&key, &[selected_ref]);
 
             let options = tzap_x509_signing_options_from_catalog(&catalog_store, &secret_store, "default", None, 200).unwrap();
             let TzapX509SigningOptions::InMemory { signing_certificate, signing_private_key, signing_chain } = options else {
                 panic!("catalog identity should resolve to in-memory signing material");
             };
-            assert_eq!(signing_certificate, [1, 2, 3]);
-            assert_eq!(signing_private_key.expose_secret(), b"selected-key");
-            assert_eq!(signing_chain, [vec![4, 5, 6]]);
+            assert_eq!(signing_certificate, expected_chain[0]);
+            assert_eq!(signing_private_key.expose_secret(), key.private_key_to_der().unwrap());
+            assert_eq!(signing_chain, expected_chain[1..]);
         }
 
-        fn identity(id: &str, certificate_id: &str, key_id: &str, signing_key_ref: TzapSecretRef) -> TzapPublicSigningIdentityRecord {
+        #[test]
+        fn callback_design_empty_chain_returns_error_before_secret_access() {
+            let key = x509_fixture::p256_private_key();
+            let reference = TzapSecretRef::parse("secret_selected").unwrap();
+            let mut record = identity("empty", &key, reference.clone());
+            record.certificate_chain_der.clear();
+            let store = catalog(vec![record]);
+            for secrets in [secrets(&key, &[reference]), InMemoryTzapSecretMaterialStore::new()] {
+                let error = tzap_x509_signing_options_from_catalog(&store, &secrets, "default", Some("empty"), 200).unwrap_err();
+                assert!(error.contains("certificate_chain_der"), "{error}");
+            }
+        }
+
+        #[test]
+        fn callback_design_malformed_der_is_rejected_before_secret_access() {
+            let mut record = identity("malformed", &x509_fixture::p256_private_key(), TzapSecretRef::generate());
+            record.certificate_chain_der[0] = vec![1, 2, 3];
+            let error =
+                tzap_x509_signing_options_from_catalog(&catalog(vec![record]), &InMemoryTzapSecretMaterialStore::new(), "default", Some("malformed"), 200)
+                    .unwrap_err();
+            assert!(error.contains("certificate_chain_der"), "{error}");
+        }
+
+        #[test]
+        fn callback_design_same_key_renewals_without_legacy_ids_select_newest() {
+            let key = x509_fixture::p256_private_key();
+            let reference = TzapSecretRef::generate();
+            let mut old = identity("old", &key, reference.clone());
+            let mut renewed = identity("renewed", &key, reference.clone());
+            old.legacy_key_id = None;
+            renewed.legacy_key_id = None;
+            renewed.not_before_unix_seconds = Some(150);
+            let expected = renewed.certificate_chain_der[0].clone();
+            let secret_store = secrets(&key, &[reference]);
+            for records in [vec![old.clone(), renewed.clone()], vec![renewed, old]] {
+                let options = tzap_x509_signing_options_from_catalog(&catalog(records), &secret_store, "default", None, 200).unwrap();
+                assert!(matches!(options, TzapX509SigningOptions::InMemory { signing_certificate, .. } if signing_certificate == expected));
+            }
+        }
+
+        #[test]
+        fn callback_design_equal_public_keys_with_different_secret_refs_are_one_key() {
+            let key = x509_fixture::p256_private_key();
+            let references = [TzapSecretRef::generate(), TzapSecretRef::generate()];
+            let mut old = identity("old", &key, references[0].clone());
+            let mut renewed = identity("renewed", &key, references[1].clone());
+            old.legacy_key_id = None;
+            renewed.legacy_key_id = None;
+            renewed.not_before_unix_seconds = Some(150);
+            assert!(tzap_x509_signing_options_from_catalog(&catalog(vec![old, renewed]), &secrets(&key, &references), "default", None, 200).is_ok());
+        }
+
+        #[test]
+        fn callback_design_unusable_other_key_does_not_create_ambiguity() {
+            let key = x509_fixture::p256_private_key();
+            let reference = TzapSecretRef::generate();
+            let good = identity("good", &key, reference.clone());
+            let mut expired = identity("expired", &x509_fixture::p256_private_key(), TzapSecretRef::generate());
+            expired.not_after_unix_seconds = Some(199);
+            assert!(tzap_x509_signing_options_from_catalog(&catalog(vec![good, expired]), &secrets(&key, &[reference]), "default", None, 200).is_ok());
+        }
+
+        #[test]
+        fn callback_design_different_usable_keys_still_require_selection() {
+            let records = vec![
+                identity("one", &x509_fixture::p256_private_key(), TzapSecretRef::generate()),
+                identity("two", &x509_fixture::p256_private_key(), TzapSecretRef::generate()),
+            ];
+            let error = tzap_x509_signing_options_from_catalog(&catalog(records), &InMemoryTzapSecretMaterialStore::new(), "default", None, 200).unwrap_err();
+            assert!(error.contains("more than one local signing key"), "{error}");
+        }
+
+        #[test]
+        fn callback_design_selected_leaf_must_match_private_key() {
+            let reference = TzapSecretRef::generate();
+            let record = identity("selected", &x509_fixture::p256_private_key(), reference.clone());
+            let wrong_key = x509_fixture::p256_private_key();
+            assert!(
+                tzap_x509_signing_options_from_catalog(&catalog(vec![record]), &secrets(&wrong_key, &[reference]), "default", Some("selected"), 200).is_err()
+            );
+        }
+
+        #[test]
+        fn corrupt_default_does_not_silently_select_a_different_key() {
+            let key = x509_fixture::p256_private_key();
+            let reference = TzapSecretRef::generate();
+            let mut broken = identity("broken", &x509_fixture::p256_private_key(), TzapSecretRef::generate());
+            broken.certificate_chain_der.clear();
+            let mut value = crate::identity_catalog::TzapIdentityCatalog::empty();
+            value.default_signing_identity_id = Some("broken".to_owned());
+            value.signing_identities = vec![broken, identity("good", &key, reference.clone())];
+            let mut store = InMemoryTzapIdentityCatalogStore::new();
+            store.save_catalog("default", None, value).unwrap();
+            let error = tzap_x509_signing_options_from_catalog(&store, &secrets(&key, &[reference]), "default", None, 200).unwrap_err();
+            assert!(error.contains("certificate_chain_der"), "{error}");
+        }
+
+        #[test]
+        fn conflicting_public_keys_under_one_secret_reference_are_rejected() {
+            let reference = TzapSecretRef::generate();
+            let records =
+                vec![identity("one", &x509_fixture::p256_private_key(), reference.clone()), identity("two", &x509_fixture::p256_private_key(), reference)];
+            let error = tzap_x509_signing_options_from_catalog(&catalog(records), &InMemoryTzapSecretMaterialStore::new(), "default", None, 200).unwrap_err();
+            assert!(error.contains("conflicting public keys"), "{error}");
+        }
+
+        #[test]
+        fn equal_timestamp_renewals_choose_the_same_certificate_in_either_order() {
+            let key = x509_fixture::p256_private_key();
+            let reference = TzapSecretRef::generate();
+            let first = identity("first", &key, reference.clone());
+            let second = identity("second", &key, reference.clone());
+            let expected = [&first, &second].into_iter().max_by_key(|record| &record.certificate_sha256).unwrap().certificate_chain_der[0].clone();
+            let secret_store = secrets(&key, &[reference]);
+            for records in [vec![first.clone(), second.clone()], vec![second, first]] {
+                let result = tzap_x509_signing_options_from_catalog(&catalog(records), &secret_store, "default", None, 200).unwrap();
+                assert!(matches!(result, TzapX509SigningOptions::InMemory { signing_certificate, .. } if signing_certificate == expected));
+            }
+        }
+
+        fn catalog(records: Vec<TzapPublicSigningIdentityRecord>) -> InMemoryTzapIdentityCatalogStore {
+            let mut value = crate::identity_catalog::TzapIdentityCatalog::empty();
+            value.signing_identities = records;
+            let mut store = InMemoryTzapIdentityCatalogStore::new();
+            store.save_catalog("default", None, value).unwrap();
+            store
+        }
+
+        fn secrets(key: &PKey<Private>, references: &[TzapSecretRef]) -> InMemoryTzapSecretMaterialStore {
+            let mut store = InMemoryTzapSecretMaterialStore::new();
+            for reference in references {
+                store.put_at(TzapSecretPurpose::SigningKey, reference, SecretBytes::from(key.private_key_to_der().unwrap())).unwrap();
+            }
+            store
+        }
+
+        fn identity(id: &str, key: &PKey<Private>, signing_key_ref: TzapSecretRef) -> TzapPublicSigningIdentityRecord {
+            let root_key = x509_fixture::p256_private_key();
+            let root = x509_fixture::root_certificate(&root_key);
+            let issuer_key = x509_fixture::p256_private_key();
+            let issuer = x509_fixture::intermediate_certificate(&issuer_key, &root, &root_key, &root);
+            let leaf = x509_fixture::leaf_certificate(key, &issuer, &issuer_key, &issuer, Default::default());
+            let leaf_der = leaf.to_der().unwrap();
+            let issuer_der = issuer.to_der().unwrap();
             TzapPublicSigningIdentityRecord {
                 id: id.to_owned(),
                 local_alias: None,
-                certificate_id: Some(certificate_id.to_owned()),
-                certificate_sha256: Some(format!("sha256:{certificate_id}")),
-                issuer_certificate_sha256: Some(format!("sha256:issuer-{certificate_id}")),
+                certificate_id: Some(id.to_owned()),
+                certificate_sha256: Some(crate::trust::sha256_identifier(&leaf_der)),
+                issuer_certificate_sha256: Some(crate::trust::sha256_identifier(&issuer_der)),
                 issuer_key_identifier: Some("AQIDBA".to_owned()),
-                serial_number: Some("01".to_owned()),
-                certificate_chain_der: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                serial_number: Some("2A".to_owned()),
+                certificate_chain_der: vec![leaf_der, issuer_der, root.to_der().unwrap()],
                 not_before_unix_seconds: Some(100),
                 not_after_unix_seconds: Some(300),
                 renewal_grace_period_days: None,
                 renewal_recommended_within_days: None,
-                public_signer_id: Some("signer".to_owned()),
-                public_org_id: None,
-                public_device_id: Some("device".to_owned()),
+                public_signer_id: Some("psign_0123456789ABCDEFGH".to_owned()),
+                public_org_id: Some("porg_0123456789ABCDEFGH".to_owned()),
+                public_device_id: Some("pdev_0123456789ABCDEFGH".to_owned()),
                 assurance_level: Some("oauth_verified_email".to_owned()),
                 sign_device_id: Some("sign-device".to_owned()),
                 sign_device_routing: None,
                 signing_key_created_at_unix_seconds: None,
-                legacy_key_id: Some(key_id.to_owned()),
+                legacy_key_id: Some(crate::trust::sha256_identifier(&key.public_key_to_der().unwrap())),
                 metadata_version: Some(1),
                 policy_oid: None,
                 signing_key_ref,

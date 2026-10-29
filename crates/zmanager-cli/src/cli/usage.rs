@@ -432,12 +432,18 @@ Options:
       --environment <name>       Select a hosted service environment (local|staging|prod)
       --auth-base-url <url>      Override the hosted auth service base URL
       --account-base-url <url>   Override the hosted account service base URL
+      --signing-base-url <url>   Select the signing service for this login
       --client-id <id>           Override the OAuth client id
       --redirect-uri <url>       Override the OAuth callback redirect URI
       --provider <name>          Require a specific login provider integration
       --org-id <id>              Require a specific login organization
       --state-dir <dir>          Read and write local auth/session state from dir
       --account-key <key>        Local account inventory key; default is default
+      --restart                  Restart an abandoned pending login (auth login)
+      --stdin                    Read one callback URL privately (auth callback)
+      --callback-url <url>       Complete a callback URL (prefer --stdin)
+      --state <state>           Complete with a separate state and handoff code
+      --handoff-code <code>      One-time code paired with --state
       --json                     Emit machine-readable JSON (status, account, and sign in/out)
 
 `zm auth` commands manage your identity and certificate enrollment. Once

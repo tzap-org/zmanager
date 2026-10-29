@@ -33,12 +33,22 @@ pub struct CertificateFixture {
 
 #[must_use]
 pub fn certificate_fixture(config: ChainConfig) -> CertificateFixture {
+    certificate_fixture_with_validity(config, None)
+}
+
+/// Builds a matching chain/key fixture at an injected test clock.
+#[must_use]
+pub fn certificate_fixture_at(config: ChainConfig, not_before: i64, not_after: i64) -> CertificateFixture {
+    certificate_fixture_with_validity(config, Some((not_before, not_after)))
+}
+
+fn certificate_fixture_with_validity(config: ChainConfig, validity: Option<(i64, i64)>) -> CertificateFixture {
     let root_key = p256_private_key();
     let platform_key = p256_private_key();
     let leaf_key = p256_private_key();
-    let root = root_certificate(&root_key);
-    let platform = intermediate_certificate(&platform_key, root.as_ref(), root_key.as_ref(), root.as_ref());
-    let leaf = leaf_certificate(&leaf_key, platform.as_ref(), platform_key.as_ref(), platform.as_ref(), config);
+    let root = root_certificate_with_validity(&root_key, validity);
+    let platform = intermediate_certificate_with_validity(&platform_key, root.as_ref(), root_key.as_ref(), root.as_ref(), validity);
+    let leaf = leaf_certificate_with_validity(&leaf_key, platform.as_ref(), platform_key.as_ref(), platform.as_ref(), config, validity);
     let root_der = root.to_der().unwrap();
     CertificateFixture {
         chain_der: vec![leaf.to_der().unwrap(), platform.to_der().unwrap(), root_der.clone()],
@@ -49,7 +59,11 @@ pub fn certificate_fixture(config: ChainConfig) -> CertificateFixture {
 }
 
 pub fn root_certificate(key: &PKeyRef<Private>) -> X509 {
-    let mut builder = base_certificate_builder("TZAP Test Root", key, None);
+    root_certificate_with_validity(key, None)
+}
+
+fn root_certificate_with_validity(key: &PKeyRef<Private>, validity: Option<(i64, i64)>) -> X509 {
+    let mut builder = base_certificate_builder_with_validity("TZAP Test Root", key, None, validity);
     builder.append_extension(BasicConstraints::new().critical().ca().pathlen(2).build().unwrap()).unwrap();
     builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
     append_subject_key_identifier(&mut builder, None);
@@ -58,7 +72,17 @@ pub fn root_certificate(key: &PKeyRef<Private>) -> X509 {
 }
 
 pub fn intermediate_certificate(key: &PKeyRef<Private>, issuer_cert: &X509Ref, issuer_key: &PKeyRef<Private>, aki_source: &X509Ref) -> X509 {
-    let mut builder = base_certificate_builder("TZAP Platform Intermediate", key, Some(issuer_cert));
+    intermediate_certificate_with_validity(key, issuer_cert, issuer_key, aki_source, None)
+}
+
+fn intermediate_certificate_with_validity(
+    key: &PKeyRef<Private>,
+    issuer_cert: &X509Ref,
+    issuer_key: &PKeyRef<Private>,
+    aki_source: &X509Ref,
+    validity: Option<(i64, i64)>,
+) -> X509 {
+    let mut builder = base_certificate_builder_with_validity("TZAP Platform Intermediate", key, Some(issuer_cert), validity);
     builder.append_extension(BasicConstraints::new().critical().ca().pathlen(0).build().unwrap()).unwrap();
     builder.append_extension(KeyUsage::new().critical().key_cert_sign().crl_sign().build().unwrap()).unwrap();
     append_subject_key_identifier(&mut builder, None);
@@ -70,8 +94,18 @@ pub fn intermediate_certificate(key: &PKeyRef<Private>, issuer_cert: &X509Ref, i
 }
 
 pub fn leaf_certificate(key: &PKeyRef<Private>, issuer_cert: &X509Ref, issuer_key: &PKeyRef<Private>, aki_source: &X509Ref, config: ChainConfig) -> X509 {
-    let mut builder = base_certificate_builder("TZAP Test Signer", key, Some(issuer_cert));
-    builder.set_not_after(&Asn1Time::days_from_now(90).unwrap()).unwrap();
+    leaf_certificate_with_validity(key, issuer_cert, issuer_key, aki_source, config, None)
+}
+
+fn leaf_certificate_with_validity(
+    key: &PKeyRef<Private>,
+    issuer_cert: &X509Ref,
+    issuer_key: &PKeyRef<Private>,
+    aki_source: &X509Ref,
+    config: ChainConfig,
+    validity: Option<(i64, i64)>,
+) -> X509 {
+    let mut builder = base_certificate_builder_with_validity("TZAP Test Signer", key, Some(issuer_cert), validity);
     builder.append_extension(BasicConstraints::new().critical().build().unwrap()).unwrap();
     builder.append_extension(KeyUsage::new().critical().digital_signature().build().unwrap()).unwrap();
     builder.append_extension(leaf_eku()).unwrap();
@@ -85,6 +119,15 @@ pub fn leaf_certificate(key: &PKeyRef<Private>, issuer_cert: &X509Ref, issuer_ke
 }
 
 pub fn base_certificate_builder(common_name: &str, key: &PKeyRef<Private>, issuer: Option<&X509Ref>) -> openssl::x509::X509Builder {
+    base_certificate_builder_with_validity(common_name, key, issuer, None)
+}
+
+fn base_certificate_builder_with_validity(
+    common_name: &str,
+    key: &PKeyRef<Private>,
+    issuer: Option<&X509Ref>,
+    validity: Option<(i64, i64)>,
+) -> openssl::x509::X509Builder {
     let mut name = openssl::x509::X509NameBuilder::new().unwrap();
     name.append_entry_by_text("CN", common_name).unwrap();
     let name = name.build();
@@ -98,8 +141,12 @@ pub fn base_certificate_builder(common_name: &str, key: &PKeyRef<Private>, issue
         builder.set_issuer_name(&name).unwrap();
     }
     builder.set_pubkey(key).unwrap();
-    builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
-    builder.set_not_after(&Asn1Time::days_from_now(90).unwrap()).unwrap();
+    let (not_before, not_after) = validity.map_or_else(
+        || (Asn1Time::days_from_now(0).unwrap(), Asn1Time::days_from_now(90).unwrap()),
+        |(before, after)| (Asn1Time::from_unix(before).unwrap(), Asn1Time::from_unix(after).unwrap()),
+    );
+    builder.set_not_before(&not_before).unwrap();
+    builder.set_not_after(&not_after).unwrap();
     builder
 }
 

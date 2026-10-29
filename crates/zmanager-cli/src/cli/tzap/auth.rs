@@ -1,12 +1,11 @@
 use super::support::{
-    callback_url_parameter, exchange_handoff_code, parse_environment_option, parse_tzap_context_args, parse_tzap_context_option, print_session_summary_json,
-    print_stable_tzap_error, read_bytes_argument, service_envelope, service_request,
+    parse_environment_option, parse_tzap_context_args, parse_tzap_context_option, print_session_summary_json, print_stable_tzap_error, service_envelope,
+    service_request,
 };
-use super::{AUTH_PENDING_FILE, AuthEndpointOptions, DEFAULT_TZAP_CLIENT_ID, TzapCliContext};
+use super::{AuthEndpointOptions, TzapCliContext};
 use crate::cli::options::{GlobalOptions, parse_global_option, take_value};
 use crate::cli::usage::{AUTH_MENU_HELP, command_usage_error, json_escape, print_error_line, print_help_stdout, print_success_line};
 use serde_json::{Value, json};
-use std::fs;
 use std::process::ExitCode;
 use zmanager_tzap_hosted::tzap_service::{
     tzap_auth_account_url_json, tzap_auth_callback_json, tzap_auth_forget_json, tzap_auth_login_json, tzap_auth_status_json,
@@ -39,6 +38,7 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
     let mut context = TzapCliContext::default();
     let mut endpoints = AuthEndpointOptions::default();
     let mut print_url = false;
+    let mut restart = false;
     let mut index = 0usize;
     while index < args.len() {
         match parse_global_option(args, &mut index, &mut global) {
@@ -52,6 +52,10 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
             Err(code) => return code,
         }
         match args[index].as_str() {
+            "--restart" => {
+                restart = true;
+                index += 1;
+            }
             "--print-url" => {
                 print_url = true;
                 index += 1;
@@ -69,6 +73,12 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
             }
             "--account-base-url" => {
                 endpoints.account_base_url = Some(match take_value(args, &mut index, "--account-base-url") {
+                    Ok(value) => value,
+                    Err(error) => return command_usage_error("auth", &error, &global),
+                });
+            }
+            "--signing-base-url" => {
+                endpoints.signing_base_url = Some(match take_value(args, &mut index, "--signing-base-url") {
                     Ok(value) => value,
                     Err(error) => return command_usage_error("auth", &error, &global),
                 });
@@ -111,11 +121,13 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
                 zmanager_tzap_hosted::auth_client::TzapHostedAuthEnvironment::Staging => "staging",
                 zmanager_tzap_hosted::auth_client::TzapHostedAuthEnvironment::Prod => "prod",
             },
+            "restart": restart,
             "client_id": endpoints.client_id,
             "redirect_uri": endpoints.redirect_uri,
             "provider_id": endpoints.provider_id,
             "auth_base_url": endpoints.auth_base_url,
             "account_base_url": endpoints.account_base_url,
+            "signing_base_url": endpoints.signing_base_url,
             "org_id": endpoints.org_id,
         }),
     );
@@ -155,16 +167,21 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
 pub(super) fn open_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(url).status().map(|_| ())
+        browser_launcher_result(std::process::Command::new("open").arg(url).status()?)
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd").args(["/c", "start", "", url]).status().map(|_| ())
+        super::windows_browser::open(url)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        std::process::Command::new("xdg-open").arg(url).status().map(|_| ())
+        browser_launcher_result(std::process::Command::new("xdg-open").arg(url).status()?)
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn browser_launcher_result(status: std::process::ExitStatus) -> std::io::Result<()> {
+    if status.success() { Ok(()) } else { Err(std::io::Error::other("browser launcher returned an unsuccessful exit status")) }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -174,9 +191,10 @@ pub(super) fn auth_callback_command(args: &[String], mut global: GlobalOptions) 
     let mut redirect_uri = None;
     let mut callback_url = None;
     let mut handoff_code = None;
-    let mut relay_body_path = None;
     let mut auth_base_url = None;
     let mut client_id = None;
+    let mut stdin_input = false;
+    let mut seen_inputs = std::collections::HashSet::new();
     let mut index = 0usize;
     while index < args.len() {
         match parse_global_option(args, &mut index, &mut global) {
@@ -189,7 +207,15 @@ pub(super) fn auth_callback_command(args: &[String], mut global: GlobalOptions) 
             Ok(false) => {}
             Err(code) => return code,
         }
-        match args[index].as_str() {
+        let option = args[index].as_str();
+        if matches!(option, "--state" | "--handoff-code" | "--callback-url" | "--stdin") && !seen_inputs.insert(option) {
+            return command_usage_error("auth", "callback input options must not be repeated", &global);
+        }
+        match option {
+            "--stdin" => {
+                stdin_input = true;
+                index += 1;
+            }
             "--state" => {
                 state = Some(match take_value(args, &mut index, "--state") {
                     Ok(value) => value,
@@ -226,68 +252,36 @@ pub(super) fn auth_callback_command(args: &[String], mut global: GlobalOptions) 
                     Err(error) => return command_usage_error("auth", &error, &global),
                 });
             }
-            "--relay-body" => {
-                relay_body_path = Some(match take_value(args, &mut index, "--relay-body") {
-                    Ok(value) => value,
-                    Err(error) => return command_usage_error("auth", &error, &global),
-                });
-            }
             other => {
                 return command_usage_error("auth", &format!("unknown auth option: {other}"), &global);
             }
         }
     }
-    let pending = match zmanager_tzap_hosted::tzap_service_auth::load_pending_auth(&context.state_dir) {
-        Ok(pending) => pending,
-        Err(error) => {
-            print_error_line(&global, format_args!("auth callback failed: {error}"));
-            return ExitCode::FAILURE;
-        }
-    };
-    let pending_metadata = zmanager_tzap_hosted::tzap_service_auth::load_pending_auth_metadata(&context.state_dir);
-    if state.is_none() {
-        state = callback_url.as_deref().and_then(|url| callback_url_parameter(url, "state"));
+    if (stdin_input && (callback_url.is_some() || state.is_some() || handoff_code.is_some()))
+        || (callback_url.is_some() && (state.is_some() || handoff_code.is_some()))
+    {
+        return command_usage_error("auth", "use one callback input: --stdin, --callback-url, or --state with --handoff-code", &global);
     }
-    if handoff_code.is_none() {
-        handoff_code = callback_url.as_deref().and_then(|url| callback_url_parameter(url, "handoff_code"));
-    }
-    let Some(state) = state else {
-        return command_usage_error("auth", "missing --state or callback URL state", &global);
-    };
-    let redirect_uri = redirect_uri.unwrap_or_else(|| pending.redirect_uri.clone());
-    let pkce_verifier = pending.pkce.verifier.clone();
-    // The handoff-code exchange is a CLI convenience pre-step that produces
-    // the relay body the JSON service's callback consumes (the FFI
-    // consumers perform this exchange themselves).
-    let relay_body = if let Some(relay_body_path) = relay_body_path {
-        match read_bytes_argument(&relay_body_path) {
-            Ok(bytes) => bytes,
+    if stdin_input {
+        callback_url = Some(match read_callback_stdin() {
+            Ok(url) => url,
             Err(error) => {
                 print_error_line(&global, format_args!("auth callback failed: {error}"));
                 return ExitCode::FAILURE;
             }
-        }
-    } else if let Some(handoff_code) = handoff_code {
-        let exchange_base_url =
-            auth_base_url.or(pending_metadata.auth_base_url).unwrap_or_else(|| zmanager_tzap_hosted::auth_client::LOCAL_HOSTED_AUTH_BASE_URL.to_owned());
-        let exchange_client_id = client_id.or(pending_metadata.client_id).unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
-        match exchange_handoff_code(&exchange_base_url, &exchange_client_id, &redirect_uri, &state, &pkce_verifier, &handoff_code) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                print_stable_tzap_error("auth_callback", &error, &global);
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        return command_usage_error("auth", "missing --relay-body or handoff code", &global);
-    };
+        });
+    } else if callback_url.is_none() && (state.is_none() || handoff_code.is_none()) {
+        return command_usage_error("auth", "use --stdin, --callback-url, or --state with --handoff-code", &global);
+    }
     let request = service_request(
         &context,
         json!({
             "state": state,
             "redirect_uri": redirect_uri,
             "callback_url": callback_url,
-            "relay_body": String::from_utf8_lossy(&relay_body),
+            "handoff_code": handoff_code,
+            "auth_base_url": auth_base_url,
+            "client_id": client_id,
         }),
     );
     let response = match service_envelope(&tzap_auth_callback_json(&request.to_string())) {
@@ -297,13 +291,75 @@ pub(super) fn auth_callback_command(args: &[String], mut global: GlobalOptions) 
             return ExitCode::FAILURE;
         }
     };
-    let _ = fs::remove_file(context.state_dir.join(AUTH_PENDING_FILE));
+    if response.get("cleanup_warning").and_then(Value::as_str).is_some() {
+        eprintln!("note: authentication was saved, but pending sign-in cleanup needs a retry; use --restart when starting another login");
+    }
     if let Some(session) = response.get("session") {
         print_session_summary_json(session, &global);
         ExitCode::SUCCESS
     } else {
         print_stable_tzap_error("auth_callback", "service response is missing the session", &global);
         ExitCode::FAILURE
+    }
+}
+
+fn read_callback_stdin() -> Result<String, String> {
+    use std::io::IsTerminal as _;
+    if std::io::stdin().is_terminal() {
+        let value = rpassword::prompt_password("Paste callback: ").map_err(|_| "could not read callback from terminal".to_owned())?;
+        if value.len() > zmanager_tzap_hosted::browser_callback::MAX_CALLBACK_URL_BYTES {
+            return Err("callback input is too long".to_owned());
+        }
+        Ok(value)
+    } else {
+        read_callback_line(std::io::stdin().lock())
+    }
+}
+
+fn read_callback_line(reader: impl std::io::Read) -> Result<String, String> {
+    use std::io::BufRead as _;
+    let limit = zmanager_tzap_hosted::browser_callback::MAX_CALLBACK_URL_BYTES;
+    let mut bytes = Vec::new();
+    std::io::BufReader::new(reader.take((limit + 3) as u64)).read_until(b'\n', &mut bytes).map_err(|_| "could not read callback input".to_owned())?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.is_empty() || bytes.len() > limit {
+        return Err("callback input is empty or too long".to_owned());
+    }
+    String::from_utf8(bytes).map_err(|_| "callback input must be UTF-8".to_owned())
+}
+
+#[cfg(test)]
+mod callback_input_tests {
+    use super::*;
+
+    #[test]
+    fn callback_pipe_input_is_bounded_and_does_not_echo_input_in_errors() {
+        let limit = zmanager_tzap_hosted::browser_callback::MAX_CALLBACK_URL_BYTES;
+        assert_eq!(read_callback_line(&b"fixture-callback\r\nignored-second-line"[..]).unwrap(), "fixture-callback");
+        assert_eq!(read_callback_line(&b"fixture-callback"[..]).unwrap(), "fixture-callback");
+        assert!(read_callback_line(&b""[..]).is_err());
+        assert!(read_callback_line(&[0xff][..]).is_err());
+        let error = read_callback_line(&vec![b'x'; limit + 100][..]).unwrap_err();
+        assert_eq!(error, "callback input is empty or too long");
+    }
+
+    #[test]
+    fn mixed_or_duplicate_inputs_fail_before_secure_store_access() {
+        for args in [
+            vec!["--stdin", "--callback-url", "fixture"],
+            vec!["--callback-url", "fixture", "--state", "fixture"],
+            vec!["--callback-url", "fixture", "--handoff-code", "fixture"],
+            vec!["--state", "fixture", "--state", "fixture"],
+            vec!["--stdin", "--stdin"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(auth_callback_command(&args, GlobalOptions::default()), ExitCode::from(2));
+        }
     }
 }
 

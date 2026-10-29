@@ -44,6 +44,9 @@ pub(crate) fn send_json_request_with_headers<T: TzapAuthHttpTransport>(
     options: TzapAuthRequestOptions,
 ) -> Result<TzapAuthHttpResponse, TzapAuthError> {
     let request = TzapAuthHttpRequest { method, url: format!("{}{}", trim_trailing_slash(base_url), path), bearer_token, body, options, headers };
+    if let Some(token) = &request.bearer_token {
+        token.require_destination(&request.url)?;
+    }
     let mut attempts = 0_u8;
     loop {
         if request.options.cancellation.as_ref().is_some_and(TzapAuthCancellation::is_cancelled) {

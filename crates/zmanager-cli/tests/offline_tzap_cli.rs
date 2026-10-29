@@ -154,6 +154,8 @@ fn offline_document_sign_verify_contacts_and_share() {
     // Provision a TEST identity directly. No Full CLI, auth session file, or
     // network service is involved. Users must already have an enrolled identity.
     let session = TzapSessionRecord {
+        user_id: None,
+        provenance: None,
         audience: "sign.tzap.org".to_owned(),
         access_token: TzapBearerToken::new("test-only-local-fixture").unwrap(),
         expires_at_unix_seconds: now + 3600,
@@ -425,6 +427,8 @@ fn certificate_discovery_does_not_require_private_keys() {
     let mut store = FileTzapLocalIdentityStore::new(&state);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let session = TzapSessionRecord {
+        user_id: None,
+        provenance: None,
         audience: "sign.tzap.org".to_owned(),
         access_token: TzapBearerToken::new("test-only-local-fixture").unwrap(),
         expires_at_unix_seconds: now + 3600,

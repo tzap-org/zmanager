@@ -19,12 +19,10 @@ use openssl::x509::extension::{BasicConstraints, KeyUsage};
 use openssl::x509::{X509, X509NameBuilder};
 use serde_json::{Value, json};
 
+use crate::auth_flow_store::TzapAuthSlot;
 use crate::trust;
-#[cfg(feature = "reqwest-transport")]
-use crate::tzap_service_auth::load_pending_auth_metadata;
 use crate::tzap_service_auth::{
-    TzapFfiSessionStore, clear_pending_auth, current_unix_seconds, default_tzap_state_dir, load_pending_auth, parse_auth_environment, save_pending_auth,
-    session_summary_json, session_summary_json_at,
+    TzapFfiSessionStore, current_unix_seconds, default_tzap_state_dir, parse_auth_environment, session_summary_json, session_summary_json_at,
 };
 
 use crate::auth_client::TzapSessionStore;
@@ -52,7 +50,7 @@ const SELF_SIGNED_IDENTITY_RSA_BITS: u32 = 3072;
 const SELF_SIGNED_IDENTITY_VALID_DAYS: u32 = 3_650;
 const SELF_SIGNED_IDENTITY_SERIAL_BITS: i32 = 159;
 const DEFAULT_TZAP_CLIENT_ID: &str = "zmanager-cli";
-const DEFAULT_TZAP_REDIRECT_URI: &str = "zmanager://auth/callback";
+const DEFAULT_TZAP_REDIRECT_URI: &str = "tzap://auth/callback";
 const DEFAULT_TZAP_PROVIDER_ID: &str = "hosted";
 const DEFAULT_TZAP_ACCOUNT_KEY: &str = "default";
 const OP_CERT_ENROLL: &str = "cert_enroll";
@@ -173,6 +171,9 @@ where
         let Some(session) = session_store.load_session(&context.account_key) else {
             return Err(MISSING_TZAP_SESSION.to_owned());
         };
+        if session.provenance.is_some() {
+            return Err("hosted enrollment must use the authenticated signing service".to_owned());
+        }
         let mut identity_store = new_identity_store(&context.state_dir, &context.account_key)?;
         let options = crate::local_tzap_service::TzapLocalServiceOptions {
             account_key: context.account_key,
@@ -723,13 +724,21 @@ pub fn tzap_auth_login_json(request_json: &str) -> String {
         if let Some(account_base_url) = request_string(&request, "account_base_url")? {
             config.hosted_account_base_url = account_base_url;
         }
+        if let Some(signing_base_url) = request_string(&request, "signing_base_url")? {
+            config.hosted_signing_base_url = signing_base_url;
+        }
         config.selected_org_id = request_string(&request, "org_id")?;
         config.requested_audience = requested_audience;
-        // Persist the login metadata too (CR-113): the callback's
-        // handoff-code exchange needs `client_id`/`auth_base_url` without
-        // the caller repeating the login options.
-        save_pending_auth(&context.state_dir, &pending, &config).map_err(|error| error.to_string())?;
+        config.validate_for_environment(environment).map_err(|error| error.to_string())?;
         let launch_url = config.launch_url(&pending).map_err(|error| error.to_string())?;
+        let application = request_string(&request, "application")?.unwrap_or_else(|| "cli".to_owned());
+        let slot = TzapAuthSlot::acquire(&context.state_dir, &context.account_key, &application)?;
+        let restart = match request.get("restart") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return Err("restart must be a boolean".to_owned()),
+        };
+        slot.create(&pending, &config, restart, now_unix_seconds)?;
         Ok(json!({
             "ok": true,
             "status": "pending",
@@ -752,81 +761,104 @@ pub fn tzap_auth_callback_json(request_json: &str) -> String {
             return Err("relay_body is not supported; use handoff_code".to_owned());
         }
         let context = TzapFfiContext::from_request(&request)?;
-        let pending = load_pending_auth(&context.state_dir)?;
-        let state = required_request_string(&request, "state")?;
-        let redirect_uri = request_string(&request, "redirect_uri")?.unwrap_or_else(|| DEFAULT_TZAP_REDIRECT_URI.into());
-        let session_handoff_payload = hosted_auth_session_handoff_payload(&request, &context.state_dir, &pending, &redirect_uri, &state)?;
-        let callback = crate::auth_client::TzapHostedAuthCallback {
-            state,
+        let application = request_string(&request, "application")?.unwrap_or_else(|| "cli".to_owned());
+        let slot = TzapAuthSlot::acquire(&context.state_dir, &context.account_key, &application)?;
+        let mut flow = slot.load()?;
+        let pending = flow.pending.clone();
+        let callback_url = request_string(&request, "callback_url")?;
+        let fields = if let Some(url) = callback_url.as_deref().filter(|url| url.contains('?')) {
+            if request_string(&request, "state")?.is_some() || request_string(&request, "handoff_code")?.is_some() {
+                return Err("callback URL cannot be combined with separate state or handoff_code fields".to_owned());
+            }
+            crate::browser_callback::parse_browser_callback(url, &pending.redirect_uri).map_err(|error| error.to_string())?
+        } else {
+            crate::browser_callback::TzapBrowserCallback {
+                state: required_request_string(&request, "state")?,
+                handoff_code: required_request_string(&request, "handoff_code")?,
+            }
+        };
+        crate::browser_callback::validate_handoff_code(&fields.handoff_code).map_err(|error| error.to_string())?;
+        let redirect_uri = request_string(&request, "redirect_uri")?.unwrap_or_else(|| pending.redirect_uri.clone());
+        let mut callback = crate::auth_client::TzapHostedAuthCallback {
+            state: fields.state,
             redirect_uri,
             pkce_verifier: pending.pkce.verifier.clone(),
-            callback_url: request_string(&request, "callback_url")?,
-            relay_body: session_handoff_payload,
+            callback_url,
+            relay_body: Vec::new(),
         };
         let mut tracker = crate::auth_client::TzapOAuthStateTracker::new();
-        tracker.insert_pending(pending).map_err(|error| error.to_string())?;
-        let mut session_store = TzapFfiSessionStore::new(&context.state_dir);
-        #[cfg(feature = "reqwest-transport")]
-        let requested_audience =
-            load_pending_auth_metadata(&context.state_dir).requested_audience.unwrap_or_else(|| crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned());
-        #[cfg(not(feature = "reqwest-transport"))]
-        let requested_audience = crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned();
+        tracker.insert_pending(pending.clone()).map_err(|error| error.to_string())?;
+        tracker.validate_handoff_binding(&callback).map_err(|error| error.to_string())?;
+        let requested_audience = flow.config.requested_audience.clone();
         if !matches!(requested_audience.as_str(), crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
             return Err("unsupported hosted session audience".to_owned());
         }
-        let session = crate::auth_client::complete_hosted_auth_handoff_for_audience(
-            &mut tracker,
-            &mut session_store,
-            &context.account_key,
-            &callback,
-            request_u64(&request, "now_unix_seconds")?.unwrap_or_else(current_unix_seconds),
-            &requested_audience,
-        )
-        .map_err(|error| error.to_string())?;
-        clear_pending_auth(&context.state_dir).map_err(|error| error.to_string())?;
+        if request_string(&request, "auth_base_url")?.is_some_and(|base| base != flow.config.hosted_auth_base_url)
+            || request_string(&request, "client_id")?.is_some_and(|client| client != flow.config.client_id)
+        {
+            return Err("callback auth endpoint and client must match the saved login; restart login to change them".to_owned());
+        }
+        let mut session_store = TzapFfiSessionStore::new(&context.state_dir);
+        let now = request_u64(&request, "now_unix_seconds")?.unwrap_or_else(current_unix_seconds);
+        let session = if let Some(session) = slot.recover_committed_session(&flow, &session_store, now)? {
+            session
+        } else {
+            tracker.validate_handoff(&callback, now, crate::auth_client::AUTH_HANDOFF_LIFETIME_SECONDS).map_err(|error| error.to_string())?;
+            if !cfg!(feature = "reqwest-transport") {
+                return Err("handoff-code exchange is unavailable in this build".to_owned());
+            }
+            let provenance = crate::session_provenance::TzapSessionProvenance::from_launch(&flow.config, &flow.flow_id).map_err(|error| error.to_string())?;
+            slot.begin_exchange(&mut flow)?;
+            callback.relay_body = hosted_auth_session_handoff_payload(&flow.config, &pending, &callback.redirect_uri, &callback.state, &fields.handoff_code)?;
+            crate::auth_client::complete_bound_hosted_auth_handoff(
+                &mut tracker,
+                &mut session_store,
+                &context.account_key,
+                &callback,
+                request_u64(&request, "now_unix_seconds")?.unwrap_or_else(current_unix_seconds),
+                &requested_audience,
+                provenance,
+            )
+            .map_err(|error| error.to_string())?
+        };
+        // Once saved, cleanup failures cannot turn a committed auth result
+        // back into a failed exchange. Both remaining phases prohibit replay.
+        let cleanup_warning = slot.mark_persisted(&mut flow).and_then(|()| slot.clear(&flow)).err();
         Ok(json!({
             "ok": true,
             "authenticated": true,
             "session": session_summary_json(&session),
+            "cleanup_warning": cleanup_warning,
         }))
     })
 }
 
 #[cfg(feature = "reqwest-transport")]
 fn hosted_auth_session_handoff_payload(
-    request: &Value,
-    state_dir: &Path,
+    config: &crate::auth_client::TzapHostedAuthLaunchConfig,
     pending: &crate::auth_client::TzapPendingAuthState,
     redirect_uri: &str,
     state: &str,
+    handoff_code: &str,
 ) -> Result<Vec<u8>, String> {
-    let handoff_code = required_request_string(request, "handoff_code")?;
-    let metadata = load_pending_auth_metadata(state_dir);
-    let auth_base_url =
-        request_string(request, "auth_base_url")?.or(metadata.auth_base_url).ok_or_else(|| "missing auth_base_url for handoff exchange".to_owned())?;
-    let client_id = request_string(request, "client_id")?.or(metadata.client_id).unwrap_or_else(|| DEFAULT_TZAP_CLIENT_ID.to_owned());
-    let requested_audience = metadata.requested_audience.as_deref().unwrap_or(crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP);
-    if !matches!(requested_audience, crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP | crate::auth_client::SESSION_AUDIENCE_LOGIN_TZAP) {
-        return Err("unsupported hosted session audience".to_owned());
-    }
     crate::reqwest_transport::exchange_handoff_code_for_audience(
-        &auth_base_url,
-        &client_id,
+        &config.hosted_auth_base_url,
+        &config.client_id,
         redirect_uri,
         state,
         &pending.pkce.verifier,
-        &handoff_code,
-        requested_audience,
+        handoff_code,
+        &config.requested_audience,
     )
 }
 
 #[cfg(not(feature = "reqwest-transport"))]
 fn hosted_auth_session_handoff_payload(
-    _request: &Value,
-    _state_dir: &Path,
+    _config: &crate::auth_client::TzapHostedAuthLaunchConfig,
     _pending: &crate::auth_client::TzapPendingAuthState,
     _redirect_uri: &str,
     _state: &str,
+    _handoff_code: &str,
 ) -> Result<Vec<u8>, String> {
     Err("handoff-code exchange is unavailable in this build".to_owned())
 }
@@ -855,9 +887,13 @@ pub fn tzap_auth_status_json(request_json: &str) -> String {
 pub fn tzap_auth_forget_json(request_json: &str) -> String {
     with_json_request(request_json, |request| {
         let context = TzapFfiContext::from_request(&request)?;
+        let application = request_string(&request, "application")?.unwrap_or_else(|| "cli".to_owned());
+        let slot = TzapAuthSlot::acquire(&context.state_dir, &context.account_key, &application)?;
+        if let Some(flow) = slot.load_optional()? {
+            slot.clear(&flow)?;
+        }
         let mut store = TzapFfiSessionStore::new(&context.state_dir);
         store.clear_session(&context.account_key).map_err(|error| error.to_string())?;
-        clear_pending_auth(&context.state_dir).map_err(|error| error.to_string())?;
         Ok(json!({
             "ok": true,
             "forgotten": true,
@@ -1466,6 +1502,8 @@ mod tests {
         let login_response: Value = serde_json::from_str(&tzap_auth_login_json(&login_request.to_string())).unwrap();
         assert_eq!(login_response["ok"], true);
         assert!(login_response["launch_url"].as_str().unwrap().contains("audience=login.tzap.org"));
+        let cleanup: Value = serde_json::from_str(&tzap_auth_forget_json(&login_request.to_string())).unwrap();
+        assert_eq!(cleanup["ok"], true);
 
         let invalid_audience_request = json!({
             "state_dir": state_dir,
@@ -1510,6 +1548,244 @@ mod tests {
         });
         let forget_response: Value = serde_json::from_str(&tzap_auth_forget_json(&forget_request.to_string())).unwrap();
         assert_eq!(forget_response["ok"], true);
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[cfg(feature = "reqwest-transport")]
+    #[test]
+    fn hosted_auth_callback_invalid_bindings_never_send_the_verifier_to_exchange() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        let _hosted_auth_state = lock_hosted_auth_state();
+        for scenario in [
+            "state",
+            "redirect",
+            "expiry",
+            "future",
+            "url-token",
+            "issuer",
+            "client",
+            "encoded-token",
+            "duplicate",
+            "url-state",
+            "url-redirect",
+            "url-fragment",
+            "mixed",
+            "code",
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(AtomicUsize::new(0));
+            let stopped = Arc::new(AtomicBool::new(false));
+            let count = requests.clone();
+            let stop = stopped.clone();
+            let server = std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            stream.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+                            let mut buffer = [0; 1024];
+                            let _ = stream.read(&mut buffer);
+                            let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(1)),
+                        Err(error) => panic!("exchange fixture failed: {error}"),
+                    }
+                }
+            });
+            let temp = test_temp_dir("auth-binding-preflight");
+            let begin: Value = serde_json::from_str(&tzap_auth_login_json(
+                &json!({
+                    "state_dir": temp, "account_key": "guard-test", "environment": "local", "auth_base_url": base,
+                    "client_id": "guard-test-client", "redirect_uri": "tzap://auth/callback", "now_unix_seconds": 100,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+            let mut callback = json!({
+                "state_dir": temp, "account_key": "guard-test", "state": begin["state"],
+                "redirect_uri": "tzap://auth/callback", "handoff_code": "tzap_handoff_fixture_code_only", "now_unix_seconds": 101,
+            });
+            match scenario {
+                "state" => callback["state"] = json!("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq"),
+                "redirect" => callback["redirect_uri"] = json!("tzap://wrong/callback"),
+                "expiry" => callback["now_unix_seconds"] = json!(701),
+                "future" => callback["now_unix_seconds"] = json!(99),
+                "url-token" => callback["callback_url"] = json!("tzap://auth/callback?access_token=fixture-token-only"),
+                "issuer" => callback["auth_base_url"] = json!(format!("{base}/another-issuer")),
+                "client" => callback["client_id"] = json!("another-client"),
+                "code" => callback["handoff_code"] = json!("fixture-code%2520invalid"),
+                "encoded-token" | "duplicate" | "url-state" | "url-redirect" | "url-fragment" | "mixed" => {
+                    let state = begin["state"].as_str().unwrap();
+                    let url = format!("tzap://auth/callback?state={state}&handoff_code=tzap_handoff_fixture_only");
+                    callback["callback_url"] = json!(match scenario {
+                        "encoded-token" => format!("{url}&%61ccess_token=fixture_only"),
+                        "duplicate" => format!("{url}&st%61te={state}"),
+                        "url-state" => url.replace(state, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq"),
+                        "url-redirect" => url.replace("auth/callback", "wrong/callback"),
+                        "url-fragment" => format!("{url}#"),
+                        "mixed" => url,
+                        _ => unreachable!(),
+                    });
+                    if scenario != "mixed" {
+                        callback.as_object_mut().unwrap().remove("state");
+                        callback.as_object_mut().unwrap().remove("handoff_code");
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let result: Value = serde_json::from_str(&tzap_auth_callback_json(&callback.to_string())).unwrap();
+            stopped.store(true, Ordering::SeqCst);
+            server.join().unwrap();
+            let pending = TzapAuthSlot::acquire(&temp, "guard-test", "cli").unwrap().load().unwrap().pending;
+            let _ = tzap_auth_forget_json(&json!({"state_dir": temp, "account_key": "guard-test"}).to_string());
+            let _ = fs::remove_dir_all(&temp);
+            assert_eq!(result["ok"], false, "{scenario}");
+            assert_eq!(requests.load(Ordering::SeqCst), 0, "{scenario} must fail before HTTP exchange");
+            assert_eq!(pending.state, begin["state"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn hosted_auth_pending_accounts_and_contexts_are_isolated_without_importing_legacy_files() {
+        let _hosted_auth_state = lock_hosted_auth_state();
+        let temp = test_temp_dir("auth-context-isolation");
+        let first_dir = temp.join("one");
+        let second_dir = temp.join("two");
+        fs::create_dir_all(&first_dir).unwrap();
+        let legacy = br#"{"pkce_verifier":"legacy-fixture-must-never-be-imported"}"#;
+        fs::write(first_dir.join("auth-pending.json"), legacy).unwrap();
+        let first = json!({"state_dir": first_dir, "account_key": "isolated-one", "environment": "staging", "now_unix_seconds": 100});
+        let second = json!({"state_dir": second_dir, "account_key": "isolated-two", "environment": "staging", "now_unix_seconds": 100});
+        let first_result: Value = serde_json::from_str(&tzap_auth_login_json(&first.to_string())).unwrap();
+        let second_result: Value = serde_json::from_str(&tzap_auth_login_json(&second.to_string())).unwrap();
+        assert_eq!(first_result["ok"], true);
+        assert_eq!(second_result["ok"], true);
+        assert_ne!(first_result["state"], second_result["state"]);
+        let wrong_context = json!({"state_dir": second_dir, "account_key": "isolated-one", "environment": "staging", "now_unix_seconds": 101});
+        let third: Value = serde_json::from_str(&tzap_auth_login_json(&wrong_context.to_string())).unwrap();
+        assert_eq!(third["ok"], false);
+        assert!(third["message"].as_str().unwrap().contains("pending_login_exists"));
+        let wrong_cleanup: Value = serde_json::from_str(&tzap_auth_forget_json(&wrong_context.to_string())).unwrap();
+        assert_eq!(wrong_cleanup["ok"], false);
+        let second_cleanup: Value = serde_json::from_str(&tzap_auth_forget_json(&second.to_string())).unwrap();
+        assert_eq!(second_cleanup["ok"], true);
+        let preserved = TzapAuthSlot::acquire(&first_dir, "isolated-one", "cli").unwrap().load().unwrap();
+        assert_eq!(preserved.pending.state, first_result["state"].as_str().unwrap());
+        let first_cleanup: Value = serde_json::from_str(&tzap_auth_forget_json(&first.to_string())).unwrap();
+        assert_eq!(first_cleanup["ok"], true);
+        assert_eq!(fs::read(first_dir.join("auth-pending.json")).unwrap(), legacy);
+        assert!(!second_dir.join("auth-pending.json").exists());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn auth_commit_survives_a_crash_before_pending_cleanup_without_reexchanging_expired_handoff() {
+        let _hosted_auth_state = lock_hosted_auth_state();
+        let temp = test_temp_dir("auth-commit-recovery");
+        let login = json!({"state_dir": temp, "account_key": "commit-recovery", "environment": "staging", "now_unix_seconds": 100});
+        let begin: Value = serde_json::from_str(&tzap_auth_login_json(&login.to_string())).unwrap();
+        assert_eq!(begin["ok"], true);
+        let slot = TzapAuthSlot::acquire(&temp, "commit-recovery", "cli").unwrap();
+        let mut flow = slot.load().unwrap();
+        slot.begin_exchange(&mut flow).unwrap();
+        let mut session = crate::auth_client::TzapSessionRecord {
+            user_id: Some("user_fixture_one".to_owned()),
+            provenance: None,
+            audience: "sign.tzap.org".to_owned(),
+            access_token: crate::auth_client::TzapBearerToken::new("fixture-committed-token-never-printed").unwrap(),
+            expires_at_unix_seconds: 9_999_999_999,
+            identity_assurance: crate::trust::TzapIdentityAssurance::OauthVerifiedEmail,
+            selected_org_id: None,
+            login_session_id: Some("fixture-committed-session".to_owned()),
+        };
+        session.bind_provenance(crate::session_provenance::TzapSessionProvenance::from_launch(&flow.config, &flow.flow_id).unwrap()).unwrap();
+        TzapFfiSessionStore::new(&temp).save_session("commit-recovery", session).unwrap();
+        // No phase update or pending deletion: restart at the exact crash gap.
+        drop(slot);
+        let request = json!({
+            "state_dir": temp, "account_key": "commit-recovery", "now_unix_seconds": 1000,
+            "state": begin["state"], "handoff_code": "fixture-code-already-used",
+        });
+        let completion = tzap_auth_callback_json(&request.to_string());
+        let result: Value = serde_json::from_str(&completion).unwrap();
+        // This also runs without reqwest-transport. Success proves recovery
+        // never enters the network exchange path or requires a live server.
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["authenticated"], true);
+        assert!(!completion.contains("fixture-committed-token-never-printed"));
+        assert!(TzapAuthSlot::acquire(&temp, "commit-recovery", "cli").unwrap().load().is_err());
+        let _ = tzap_auth_forget_json(&login.to_string());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[cfg(feature = "reqwest-transport")]
+    #[test]
+    fn hosted_auth_code_exchange_uses_saved_binding_and_returns_only_redacted_session_data() {
+        use std::io::{Read as _, Write as _};
+        let _hosted_auth_state = lock_hosted_auth_state();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        const TOKEN: &str = "fixture-session-token-never-returned-to-cli";
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let mut request = Vec::new();
+            let body = loop {
+                let mut chunk = [0; 1024];
+                let read = stream.read(&mut chunk).unwrap();
+                assert!(read > 0 && request.len() < 16384);
+                request.extend_from_slice(&chunk[..read]);
+                if let Some(boundary) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..boundary]).unwrap();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("content-length")).map(|(_, value)| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= boundary + 4 + length {
+                        break serde_json::from_slice::<Value>(&request[boundary + 4..boundary + 4 + length]).unwrap();
+                    }
+                }
+            };
+            let response = json!({"session_token": TOKEN, "session_id": "fixture-session", "audience": "sign.tzap.org", "expires_at": "2099-01-01T00:00:00Z", "user_id": "fixture-user"}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response)
+                .unwrap();
+            body
+        });
+        let temp = test_temp_dir("auth-code-exchange");
+        let begin: Value = serde_json::from_str(&tzap_auth_login_json(
+            &json!({
+                "state_dir": temp, "account_key": "exchange-test", "environment": "local", "auth_base_url": base,
+                "client_id": "zmanager-cli", "redirect_uri": "tzap://auth/callback", "now_unix_seconds": 100,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+        let challenge = TzapAuthSlot::acquire(&temp, "exchange-test", "cli").unwrap().load().unwrap().pending.pkce.challenge;
+        let callback = json!({"state_dir": temp, "account_key": "exchange-test", "callback_url": format!("tzap://auth/callback?state={}&handoff_code=tzap_handoff_fixture_only", begin["state"].as_str().unwrap()), "now_unix_seconds": 101});
+        let response = tzap_auth_callback_json(&callback.to_string());
+        let exchange = server.join().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&response).unwrap()["ok"], true);
+        assert_eq!(exchange["client_id"], "zmanager-cli");
+        assert_eq!(exchange["redirect_uri"], "tzap://auth/callback");
+        assert_eq!(exchange["state"], begin["state"]);
+        assert_eq!(exchange["required_audience"], "sign.tzap.org");
+        let verifier = exchange["code_verifier"].as_str().unwrap();
+        assert!(crate::auth_client::pkce_s256_challenge(verifier) == challenge);
+        assert!(!response.contains(TOKEN) && !response.contains(verifier));
+        assert!(TzapAuthSlot::acquire(&temp, "exchange-test", "cli").unwrap().load().is_err());
+        let replay: Value = serde_json::from_str(&tzap_auth_callback_json(&callback.to_string())).unwrap();
+        assert_eq!(replay["ok"], false);
+        let status: Value = serde_json::from_str(&tzap_auth_status_json(&json!({"state_dir": temp, "account_key": "exchange-test"}).to_string())).unwrap();
+        assert_eq!(status["authenticated"], true);
+        let _ = tzap_auth_forget_json(&json!({"state_dir": temp, "account_key": "exchange-test"}).to_string());
         let _ = fs::remove_dir_all(temp);
     }
 }

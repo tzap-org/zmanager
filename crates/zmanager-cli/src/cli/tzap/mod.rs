@@ -23,6 +23,8 @@ mod hosted;
 mod share;
 mod sign;
 mod support;
+#[cfg(all(feature = "tzap-online", target_os = "windows"))]
+mod windows_browser;
 #[cfg(test)]
 mod tests;
 
@@ -52,10 +54,6 @@ pub(super) const DEFAULT_TZAP_CLIENT_ID: &str = "zmanager-cli";
 pub(crate) const DEFAULT_TZAP_REDIRECT_URI: &str = "tzap://auth/callback";
 #[cfg(feature = "tzap-online")]
 pub(super) const DEFAULT_TZAP_PROVIDER_ID: &str = "hosted";
-#[cfg(feature = "tzap-online")]
-pub(super) const AUTH_PENDING_FILE: &str = "auth-pending.json";
-#[cfg(feature = "tzap-online")]
-pub(super) const AUTH_SESSION_EXCHANGE_PATH: &str = "/auth/session/exchange";
 #[cfg(feature = "tzap-online")]
 pub(super) const MISSING_TZAP_SESSION: &str = "no local TZAP session";
 /// The sign server requires a recent admin MFA step-up on the *calling session* before it will
@@ -101,6 +99,7 @@ pub(super) struct AuthEndpointOptions {
     pub(super) environment: zmanager_tzap_hosted::auth_client::TzapHostedAuthEnvironment,
     pub(super) auth_base_url: Option<String>,
     pub(super) account_base_url: Option<String>,
+    pub(super) signing_base_url: Option<String>,
     pub(super) client_id: String,
     pub(super) redirect_uri: String,
     pub(super) provider_id: String,
@@ -114,6 +113,7 @@ impl Default for AuthEndpointOptions {
             environment: zmanager_tzap_hosted::auth_client::TzapHostedAuthEnvironment::Prod,
             auth_base_url: None,
             account_base_url: None,
+            signing_base_url: None,
             client_id: DEFAULT_TZAP_CLIENT_ID.to_owned(),
             redirect_uri: DEFAULT_TZAP_REDIRECT_URI.to_owned(),
             provider_id: DEFAULT_TZAP_PROVIDER_ID.to_owned(),

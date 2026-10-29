@@ -299,6 +299,8 @@ mod tests {
 
     fn test_session() -> TzapSessionRecord {
         TzapSessionRecord {
+            user_id: None,
+            provenance: None,
             audience: crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP.to_owned(),
             access_token: crate::auth_client::TzapBearerToken::new("test-token").unwrap(),
             expires_at_unix_seconds: 9_999_999_999,

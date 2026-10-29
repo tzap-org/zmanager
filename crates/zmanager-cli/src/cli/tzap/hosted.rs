@@ -129,6 +129,10 @@ where
         print_stable_tzap_error(operation, MISSING_TZAP_SESSION, global);
         return ExitCode::FAILURE;
     };
+    if let Err(error) = session.require_signing_origin(service_base_url) {
+        print_stable_tzap_error(operation, &error.to_string(), global);
+        return ExitCode::FAILURE;
+    }
     let mut trusted_root_sha256 = Vec::new();
     let trusted_root_der = match zmanager_core::trust::load_custom_root_certificate_files(&options.trusted_root_cert_paths, &mut trusted_root_sha256) {
         Ok(roots) => roots,

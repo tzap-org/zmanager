@@ -15,6 +15,9 @@ pub struct ReqwestTransport;
 
 impl TzapAuthHttpTransport for ReqwestTransport {
     fn send(&self, request: &TzapAuthHttpRequest) -> Result<TzapAuthHttpResponse, TzapAuthError> {
+        if let Some(token) = &request.bearer_token {
+            token.require_destination(&request.url)?;
+        }
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(request.options.connect_timeout)
             .timeout(request.options.request_timeout)
@@ -150,7 +153,9 @@ pub fn exchange_handoff_code_for_audience(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "auth exchange response is missing session_id".to_owned())?;
-    let audience = exchange.get("audience").and_then(Value::as_str).unwrap_or(crate::auth_client::SESSION_AUDIENCE_SIGN_TZAP);
+    let user_id = exchange.get("user_id").and_then(Value::as_str).ok_or_else(|| "auth exchange response is missing user_id".to_owned())?;
+    crate::session_provenance::validate_opaque_id(user_id).map_err(|error| error.to_string())?;
+    let audience = exchange.get("audience").and_then(Value::as_str).ok_or_else(|| "auth exchange response is missing audience".to_owned())?;
     let expires_at_unix_seconds = exchange
         .get("expires_at_unix_seconds")
         .and_then(Value::as_u64)
@@ -169,6 +174,7 @@ pub fn exchange_handoff_code_for_audience(
     serde_json::to_vec(&json!({
         "status": "ok",
         "session": {
+            "user_id": user_id,
             "audience": audience,
             "access_token": session_token,
             "expires_at_unix_seconds": expires_at_unix_seconds,

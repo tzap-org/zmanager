@@ -1051,6 +1051,11 @@ mod tests {
         // private keys against their fingerprints on write, so the fixture
         // needs real generated keys.
         let signing_key = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
+        let private_key = openssl::pkey::PKey::private_key_from_der(signing_key.private_key_der.expose_secret()).unwrap();
+        let issuer_key = crate::x509_fixture::p256_private_key();
+        let issuer = crate::x509_fixture::root_certificate(&issuer_key);
+        let leaf = crate::x509_fixture::leaf_certificate(&private_key, &issuer, &issuer_key, &issuer, Default::default()).to_der().unwrap();
+        let issuer_der = issuer.to_der().unwrap();
         let recipient_key = generate_recipient_encryption_key().unwrap();
         TzapLocalIdentityInventory {
             device_signing_keys: vec![TzapDeviceSigningKeyRecord {
@@ -1071,12 +1076,12 @@ mod tests {
             }],
             enrolled_certificates: vec![TzapEnrolledCertificateRecord {
                 certificate_id: "cert-personal-1".to_owned(),
-                certificate_sha256: canonical_sha(0x03),
-                issuer_certificate_sha256: canonical_sha(0x04),
+                certificate_sha256: trust::sha256_identifier(&leaf),
+                issuer_certificate_sha256: trust::sha256_identifier(&issuer_der),
                 issuer_key_identifier: "AQIDBA".to_owned(),
                 serial_number: "01ABCDEF".to_owned(),
-                leaf_certificate_der: vec![0x30, 0x04],
-                intermediate_chain_der: vec![vec![0x30, 0x05]],
+                leaf_certificate_der: leaf.clone(),
+                intermediate_chain_der: vec![issuer_der],
                 not_before_unix_seconds: 100,
                 not_after_unix_seconds: 200,
                 renewal_grace_period_days: None,
@@ -1088,7 +1093,7 @@ mod tests {
                 state: TzapLocalCertificateState::Active,
             }],
             certificate_status_cache: vec![TzapCertificateStatusCacheRecord {
-                certificate_sha256: canonical_sha(0x03),
+                certificate_sha256: trust::sha256_identifier(&leaf),
                 status: TzapCertificateStatus::Valid,
                 this_update_unix_seconds: 120,
                 next_update_unix_seconds: 180,
