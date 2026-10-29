@@ -161,18 +161,19 @@ try {
   invalid.searchParams.set('state', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq');
   cli(['auth', 'callback', '--stdin'], { input: `${invalid}\n`, expectFailure: true });
   const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, allowFailureJson: true });
+  const provisioningPending = typeof authenticated.error === 'string' && authenticated.error.startsWith('certificate issuance outcome is still being reconciled');
   report.callback_result = {
     authenticated: authenticated.authenticated === true,
     expired: typeof authenticated.expired === 'boolean' ? authenticated.expired : null,
     signing_ready: authenticated.signing_ready === true,
-    provisioning_pending: authenticated.error === 'certificate issuance outcome is still being reconciled',
+    provisioning_pending: provisioningPending,
     status: typeof authenticated.status === 'string' ? authenticated.status : null,
     stage: typeof authenticated.stage === 'string' ? authenticated.stage : null,
     cli_exit_status: authenticated.cli_exit_status ?? 0,
   };
   check(
     authenticated.authenticated === true && authenticated.expired !== true &&
-      (authenticated.signing_ready === true || authenticated.error === 'certificate issuance outcome is still being reconciled'),
+      (authenticated.signing_ready === true || provisioningPending),
     `CLI did not save an active session or reach a recoverable signing state (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
   );
   cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, expectFailure: true });
