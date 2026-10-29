@@ -7,7 +7,7 @@
 use crate::contact_snapshot::TzapContactTombstone;
 pub use crate::identity_migration::{FileTzapSecretMaterialStore, load_inventory_from_catalog, store_inventory_as_catalog};
 pub use crate::identity_migration::{PendingMutation, TzapLegacyMigrationReport, migrate_legacy_inventory};
-use crate::local_identity_store::{TzapLocalIdentityStoreError, TzapSignDeviceRouting};
+use crate::local_identity_store::{TzapHostedDeviceBinding, TzapLocalIdentityStoreError, TzapPendingCertificateOperation, TzapSignDeviceRouting};
 use crate::secrets::SecretBytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
@@ -198,6 +198,10 @@ pub struct TzapPublicSigningIdentityRecord {
     pub metadata_version: Option<u64>,
     #[serde(default)]
     pub policy_oid: Option<String>,
+    /// Authenticated owner/environment/device scope for hosted keys. An absent
+    /// binding makes the referenced key ineligible for hosted provisioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_binding: Option<TzapHostedDeviceBinding>,
     pub signing_key_ref: TzapSecretRef,
     pub lifecycle: String,
 }
@@ -210,6 +214,7 @@ pub(crate) struct TzapSigningKeyIdentity {
     signer_id: Option<String>,
     org_id: Option<String>,
     device_id: Option<String>,
+    hosted_binding: Option<TzapHostedDeviceBinding>,
 }
 
 impl TzapPublicSigningIdentityRecord {
@@ -240,6 +245,11 @@ impl TzapPublicSigningIdentityRecord {
             signer_id: self.public_signer_id.clone(),
             org_id: self.public_org_id.clone(),
             device_id: self.public_device_id.clone(),
+            hosted_binding: self.hosted_binding.as_ref().map(|binding| {
+                let mut unsigned = binding.clone();
+                unsigned.binding_signature = None;
+                unsigned
+            }),
         })
     }
 }
@@ -317,6 +327,10 @@ pub struct TzapIdentityCatalog {
     pub status_cache: Vec<TzapPublicStatusCacheRecord>,
     pub emergency_blocklist: TzapPublicEmergencyBlocklist,
     pub pending_mutations: Vec<PendingMutation>,
+    /// Pending hosted issuance intents; these contain public correlation data
+    /// only and are copied back into the local inventory during hydration.
+    #[serde(default)]
+    pub pending_certificate_operations: Vec<TzapPendingCertificateOperation>,
 }
 
 impl TzapIdentityCatalog {
@@ -334,6 +348,7 @@ impl TzapIdentityCatalog {
             status_cache: Vec::new(),
             emergency_blocklist: TzapPublicEmergencyBlocklist::default(),
             pending_mutations: Vec::new(),
+            pending_certificate_operations: Vec::new(),
         }
     }
 
@@ -356,6 +371,9 @@ impl TzapIdentityCatalog {
             validate_non_empty("signing_identities.id", &record.id)?;
             validate_non_empty("signing_identities.signing_key_ref", record.signing_key_ref.as_str())?;
             validate_non_empty("signing_identities.lifecycle", &record.lifecycle)?;
+            if record.hosted_binding.as_ref().is_some_and(|binding| binding.validate().is_err()) {
+                return Err(TzapIdentityCatalogError::InvalidCatalog { field: "signing_identities.hosted_binding" });
+            }
         }
         for record in &self.recipient_keys {
             validate_non_empty("recipient_keys.id", &record.id)?;
@@ -716,6 +734,7 @@ mod tests {
                         private_key_der: signing.private_key_der.clone(),
                         created_at_unix_seconds: 1,
                         label: Some("Laptop".to_owned()),
+                        hosted_binding: None,
                     }],
                     recipient_encryption_keys: vec![TzapRecipientEncryptionKeyRecord {
                         key_id: "recipient-1".to_owned(),

@@ -23,6 +23,9 @@ pub struct TzapLocalIdentityInventory {
     pub certificate_status_cache: Vec<TzapCertificateStatusCacheRecord>,
     pub emergency_blocklist: TzapEmergencyBlocklistState,
     pub contacts: Vec<TzapContactRecord>,
+    /// Public journal entries for certificate requests whose result may have
+    /// reached the server without being committed to the local inventory.
+    pub pending_certificate_operations: Vec<TzapPendingCertificateOperation>,
     /// Tombstones for contacts removed on this device (design §8.3, §8.4).
     /// Read by `contact_snapshot::build_contact_snapshot` and merged into by
     /// `contact_snapshot::apply_contact_snapshot` so a removal survives a
@@ -41,6 +44,7 @@ impl TzapLocalIdentityInventory {
             certificate_status_cache: Vec::new(),
             emergency_blocklist: TzapEmergencyBlocklistState::default(),
             contacts: Vec::new(),
+            pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
         }
     }
@@ -50,11 +54,19 @@ impl TzapLocalIdentityInventory {
         validate_unique("recipient_encryption_keys.key_id", self.recipient_encryption_keys.iter().map(|record| record.key_id.as_str()))?;
         validate_unique("enrolled_certificates.certificate_sha256", self.enrolled_certificates.iter().map(|record| record.certificate_sha256.as_str()))?;
         validate_unique("contacts.contact_id", self.contacts.iter().map(|record| record.contact_id.as_str()))?;
+        validate_unique("pending_certificate_operations.operation_id", self.pending_certificate_operations.iter().map(|record| record.operation_id.as_str()))?;
+        validate_unique(
+            "pending_certificate_operations.signing_key_id",
+            self.pending_certificate_operations.iter().map(|record| record.signing_key_id.as_str()),
+        )?;
 
         for record in &self.device_signing_keys {
             validate_non_empty_id("device_signing_keys.key_id", &record.key_id)?;
             validate_sha256("device_signing_keys.public_key_fingerprint", &record.public_key_fingerprint)?;
             validate_secret_bytes("device_signing_keys.private_key_der", &record.private_key_der)?;
+            if let Some(binding) = &record.hosted_binding {
+                binding.validate()?;
+            }
         }
         for record in &self.recipient_encryption_keys {
             validate_non_empty_id("recipient_encryption_keys.key_id", &record.key_id)?;
@@ -75,6 +87,9 @@ impl TzapLocalIdentityInventory {
         self.emergency_blocklist.validate()?;
         for record in &self.contacts {
             record.validate()?;
+        }
+        for operation in &self.pending_certificate_operations {
+            operation.validate(self)?;
         }
 
         Ok(())
@@ -122,6 +137,183 @@ pub struct TzapDeviceSigningKeyRecord {
     pub private_key_der: SecretBytes,
     pub created_at_unix_seconds: u64,
     pub label: Option<String>,
+    /// Authenticated hosted ownership for an online device key. Labels are
+    /// display metadata and must never choose which hosted identity is reused.
+    pub hosted_binding: Option<TzapHostedDeviceBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TzapCertificateOperationKind {
+    Enrollment,
+    Renewal,
+}
+
+/// Restart-safe, non-secret intent for a server certificate issuance.
+///
+/// A request may be accepted by the server even if the response or the local
+/// catalog commit is lost. Keeping this marker beside the key lets the next
+/// login reconcile against the authenticated server inventory before retrying.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct TzapPendingCertificateOperation {
+    pub operation_id: String,
+    pub kind: TzapCertificateOperationKind,
+    pub signing_key_id: String,
+    pub public_key_fingerprint: String,
+    pub csr_sha256: String,
+    pub org_id: Option<String>,
+    pub requested_validity_seconds: u64,
+    pub created_at_unix_seconds: u64,
+    #[serde(default)]
+    pub previous_signing_key_id: Option<String>,
+    #[serde(default)]
+    pub renewal_policy: Option<String>,
+    #[serde(default)]
+    pub predecessor_certificate_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_certificate_sha256: Option<String>,
+}
+
+impl TzapPendingCertificateOperation {
+    fn validate(&self, inventory: &TzapLocalIdentityInventory) -> Result<(), TzapLocalIdentityStoreError> {
+        validate_non_empty_id("pending_certificate_operations.operation_id", &self.operation_id)?;
+        validate_non_empty_id("pending_certificate_operations.signing_key_id", &self.signing_key_id)?;
+        validate_sha256("pending_certificate_operations.public_key_fingerprint", &self.public_key_fingerprint)?;
+        validate_sha256("pending_certificate_operations.csr_sha256", &self.csr_sha256)?;
+        if self.requested_validity_seconds == 0 {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.requested_validity_seconds" });
+        }
+        let key = inventory.device_signing_keys.iter().find(|key| key.key_id == self.signing_key_id);
+        if key.is_none_or(|key| key.public_key_fingerprint != self.public_key_fingerprint) {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.signing_key" });
+        }
+        match &self.kind {
+            TzapCertificateOperationKind::Enrollment => {
+                if self.previous_signing_key_id.is_some()
+                    || self.renewal_policy.is_some()
+                    || self.predecessor_certificate_id.is_some()
+                    || self.predecessor_certificate_sha256.is_some()
+                {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.predecessor" });
+                }
+                if inventory
+                    .enrolled_certificates
+                    .iter()
+                    .any(|certificate| certificate.signing_key_id == self.signing_key_id && certificate.state == TzapLocalCertificateState::Active)
+                {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.enrollment_key" });
+                }
+            }
+            TzapCertificateOperationKind::Renewal => {
+                let Some(previous_signing_key_id) = self.previous_signing_key_id.as_ref() else {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.previous_signing_key" });
+                };
+                if !inventory.device_signing_keys.iter().any(|key| key.key_id == *previous_signing_key_id)
+                    || !matches!(self.renewal_policy.as_deref(), Some("same_key_required" | "key_rotation_allowed"))
+                {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.renewal_policy" });
+                }
+                let Some((certificate_id, certificate_sha256)) = self.predecessor_certificate_id.as_ref().zip(self.predecessor_certificate_sha256.as_ref())
+                else {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.predecessor" });
+                };
+                if !inventory.enrolled_certificates.iter().any(|certificate| {
+                    certificate.certificate_id == *certificate_id
+                        && certificate.certificate_sha256 == *certificate_sha256
+                        && certificate.signing_key_id == *previous_signing_key_id
+                        && certificate.state == TzapLocalCertificateState::RenewalPending
+                }) {
+                    return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.predecessor" });
+                }
+            }
+        }
+        if self.org_id.as_ref().is_some_and(String::is_empty) {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.org_id" });
+        }
+        Ok(())
+    }
+}
+
+/// Non-secret ownership/routing metadata bound to a hosted device key. The
+/// key itself remains in the OS secret store. A missing binding makes a key
+/// ineligible for hosted provisioning.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub struct TzapHostedDeviceBinding {
+    pub owner_user_id: String,
+    pub environment: String,
+    pub auth_origin: String,
+    pub signing_origin: String,
+    pub org_id: Option<String>,
+    /// Server-issued device identity, absent until the first validated
+    /// certificate is received and persisted.
+    #[serde(default)]
+    pub sign_device_id: Option<String>,
+    #[serde(default)]
+    pub public_device_id: Option<String>,
+    /// Signature over the binding, produced by the bound device key. This
+    /// detects edits to public catalog metadata during hydration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_signature: Option<String>,
+}
+
+impl TzapHostedDeviceBinding {
+    pub fn validate(&self) -> Result<(), TzapLocalIdentityStoreError> {
+        let valid_id =
+            |value: &str| !value.is_empty() && value.len() <= 256 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte));
+        if !valid_id(&self.owner_user_id) {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.owner_user_id" });
+        }
+        let expected = match self.environment.as_str() {
+            "staging" => ("https://staging.tzap.org", "https://staging.tzap.org"),
+            "prod" => ("https://login.tzap.org", "https://sign.tzap.org"),
+            _ => return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.environment" }),
+        };
+        if self.auth_origin != expected.0 || self.signing_origin != expected.1 {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.origins" });
+        }
+        if self.org_id.as_deref().is_some_and(|value| !valid_id(value)) {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.org_id" });
+        }
+        if self.sign_device_id.as_deref().is_some_and(|value| !valid_id(value))
+            || self.public_device_id.as_deref().is_some_and(|value| !is_valid_public_device_id(value))
+            || self.sign_device_id.is_some() != self.public_device_id.is_some()
+        {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.device_id" });
+        }
+        if self
+            .binding_signature
+            .as_deref()
+            .is_some_and(|value| URL_SAFE_NO_PAD.decode(value).map_or(true, |signature| signature.is_empty() || URL_SAFE_NO_PAD.encode(signature) != value))
+        {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.binding_signature" });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn same_scope(&self, other: &Self) -> bool {
+        self.owner_user_id == other.owner_user_id
+            && self.environment == other.environment
+            && self.auth_origin == other.auth_origin
+            && self.signing_origin == other.signing_origin
+            && self.org_id == other.org_id
+    }
+
+    pub fn bind_device(&mut self, sign_device_id: &str, public_device_id: &str) -> Result<(), TzapLocalIdentityStoreError> {
+        let mut candidate = self.clone();
+        candidate.sign_device_id = Some(sign_device_id.to_owned());
+        candidate.public_device_id = Some(public_device_id.to_owned());
+        candidate.validate()?;
+        if (self.sign_device_id.is_some() || self.public_device_id.is_some())
+            && (self.sign_device_id.as_deref() != Some(sign_device_id) || self.public_device_id.as_deref() != Some(public_device_id))
+        {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding.device_id" });
+        }
+        *self = candidate;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -138,6 +330,7 @@ pub struct TzapRecipientEncryptionKeyRecord {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TzapLocalCertificateState {
     Active,
+    RenewalPending,
     Revoked,
     Suspended,
     Expired,
@@ -148,6 +341,7 @@ impl TzapLocalCertificateState {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::RenewalPending => "renewal_pending",
             Self::Revoked => "revoked",
             Self::Suspended => "suspended",
             Self::Expired => "expired",
@@ -158,6 +352,7 @@ impl TzapLocalCertificateState {
     pub fn from_wire_value(value: &str) -> Option<Self> {
         match value {
             "active" => Some(Self::Active),
+            "renewal_pending" => Some(Self::RenewalPending),
             "revoked" => Some(Self::Revoked),
             "suspended" => Some(Self::Suspended),
             "expired" => Some(Self::Expired),
@@ -561,6 +756,7 @@ fn inventory_from_json(value: &Value) -> Result<TzapLocalIdentityInventory, Tzap
         certificate_status_cache: required_array(object, "certificate_status_cache")?.iter().map(status_cache_from_json).collect::<Result<Vec<_>, _>>()?,
         emergency_blocklist: emergency_blocklist_from_json(required_field(object, "emergency_blocklist")?)?,
         contacts: required_array(object, "contacts")?.iter().map(contact_from_json).collect::<Result<Vec<_>, _>>()?,
+        pending_certificate_operations: Vec::new(),
         // This legacy raw-file format predates tombstones entirely (read only
         // for the one-time migration to the catalog format), so there is
         // nothing to parse.
@@ -578,6 +774,11 @@ fn device_signing_key_from_json(value: &Value) -> Result<TzapDeviceSigningKeyRec
         private_key_der: SecretBytes::from(decode_base64url(required_string(object, "private_key_der")?, "private_key_der")?),
         created_at_unix_seconds: required_u64(object, "created_at_unix_seconds")?,
         label: optional_string(object, "label")?,
+        hosted_binding: object
+            .get("hosted_binding")
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value(value.clone()).map_err(|_| TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding" }))
+            .transpose()?,
     })
 }
 
@@ -772,9 +973,10 @@ fn validate_unique<'a>(field: &'static str, values: impl Iterator<Item = &'a str
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, FileTzapLocalIdentityStore, InMemoryTzapLocalIdentityStore, TzapCertificateStatusCacheRecord, TzapContactRecord,
-        TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord, TzapLocalCertificateState, TzapLocalIdentityInventory,
-        TzapLocalIdentityStore, TzapLocalIdentityStoreError, TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
+        DEFAULT_IDENTITY_INVENTORY_ACCOUNT, FileTzapLocalIdentityStore, InMemoryTzapLocalIdentityStore, TzapCertificateOperationKind,
+        TzapCertificateStatusCacheRecord, TzapContactRecord, TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord,
+        TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError, TzapPendingCertificateOperation,
+        TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
     };
     use crate::device_identity::{
         TzapDeviceCsrOptions, ensure_recipient_key_is_distinct_from_signing_key, generate_device_signing_key_and_csr, generate_recipient_encryption_key,
@@ -802,9 +1004,11 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_identity_store_round_trips_inventory() {
+    fn in_memory_identity_store_round_trips_pending_certificate_operation() {
         let mut store = InMemoryTzapLocalIdentityStore::new();
-        let inventory = valid_inventory();
+        let mut inventory = valid_inventory();
+        mark_pending_renewal(&mut inventory);
+        assert!(inventory.active_personal_sign_device_ids().is_empty(), "a pending predecessor cannot be advertised as sign-ready");
 
         store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory.clone()).unwrap();
 
@@ -831,6 +1035,7 @@ mod tests {
                 private_key_der: signing_key.private_key_der.clone(),
                 created_at_unix_seconds: 100,
                 label: Some("Generated signing key".to_owned()),
+                hosted_binding: None,
             }],
             recipient_encryption_keys: vec![TzapRecipientEncryptionKeyRecord {
                 key_id: "generated-recipient-key".to_owned(),
@@ -845,6 +1050,7 @@ mod tests {
             certificate_status_cache: Vec::new(),
             emergency_blocklist: TzapEmergencyBlocklistState::default(),
             contacts: Vec::new(),
+            pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
         };
 
@@ -884,7 +1090,8 @@ mod tests {
     fn file_identity_store_writes_inventory_atomically() {
         let temp_dir = TestDir::new("atomic-inventory-write");
         let mut store = FileTzapLocalIdentityStore::new(temp_dir.path(""));
-        let inventory = valid_inventory();
+        let mut inventory = valid_inventory();
+        mark_pending_renewal(&mut inventory);
 
         // Saving twice (an overwrite) leaves a complete, loadable file and no
         // temporary sibling files behind.
@@ -1064,6 +1271,7 @@ mod tests {
                 private_key_der: signing_key.private_key_der,
                 created_at_unix_seconds: 100,
                 label: Some("MacBook".to_owned()),
+                hosted_binding: None,
             }],
             recipient_encryption_keys: vec![TzapRecipientEncryptionKeyRecord {
                 key_id: "recipient-key-1".to_owned(),
@@ -1120,8 +1328,31 @@ mod tests {
                 local_alias: Some("Ada -- work phone".to_owned()),
                 card: None,
             }],
+            pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
         }
+    }
+
+    fn mark_pending_renewal(inventory: &mut TzapLocalIdentityInventory) {
+        let predecessor = &mut inventory.enrolled_certificates[0];
+        predecessor.state = TzapLocalCertificateState::RenewalPending;
+        let predecessor_certificate_id = predecessor.certificate_id.clone();
+        let predecessor_certificate_sha256 = predecessor.certificate_sha256.clone();
+        let signing_key = &inventory.device_signing_keys[0];
+        inventory.pending_certificate_operations.push(TzapPendingCertificateOperation {
+            operation_id: "operation_test".to_owned(),
+            kind: TzapCertificateOperationKind::Renewal,
+            signing_key_id: signing_key.key_id.clone(),
+            public_key_fingerprint: signing_key.public_key_fingerprint.clone(),
+            csr_sha256: trust::sha256_identifier(b"csr fixture"),
+            org_id: None,
+            requested_validity_seconds: 86_400,
+            created_at_unix_seconds: 150,
+            previous_signing_key_id: Some(signing_key.key_id.clone()),
+            renewal_policy: Some("same_key_required".to_owned()),
+            predecessor_certificate_id: Some(predecessor_certificate_id),
+            predecessor_certificate_sha256: Some(predecessor_certificate_sha256),
+        });
     }
 
     fn public_metadata() -> TzapCertificatePublicMetadata {

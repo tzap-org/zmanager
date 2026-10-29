@@ -326,8 +326,10 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
     let mut store = harness.store_with_certificate_routing(TzapSignDeviceRouting::Personal);
     let same_key = PKey::private_key_from_der(harness.signing_key.private_key_der.expose_secret()).unwrap();
     let same_key_chain = renewal_chain_for_leaf_key(&harness.chain, &same_key);
-    let same_key_renewal_transport =
-        FakeTransport::new(vec![renewal_challenge_response(&harness, None), renewal_certificate_response("cert_renewed_same_key", &same_key_chain)]);
+    let same_key_renewal_transport = FakeTransport::new(vec![
+        renewal_challenge_response(&harness, None, &harness.signing_key, &harness.csr_der),
+        renewal_certificate_response("cert_renewed_same_key", &same_key_chain),
+    ]);
     let lifecycle = TzapCertificateLifecycleClient::new(SIGN_BASE_URL, LOGIN_BASE_URL, &same_key_renewal_transport).with_clock(|| FIXED_NOW);
     let renewed = lifecycle
         .renew_certificate(
@@ -350,6 +352,7 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
         private_key_der: rotated_material.private_key_der,
         created_at_unix_seconds: FIXED_NOW,
         label: Some("Rotated signing key".to_owned()),
+        hosted_binding: None,
     };
     let mut rotated_store = harness.store_with_certificate_routing(TzapSignDeviceRouting::Personal);
     let mut rotated_inventory = rotated_store.load_inventory(ACCOUNT_KEY).unwrap();
@@ -357,8 +360,10 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
     rotated_store.save_inventory(ACCOUNT_KEY, rotated_inventory).unwrap();
     let rotated_key = PKey::private_key_from_der(rotated_signing_key.private_key_der.expose_secret()).unwrap();
     let rotated_chain = renewal_chain_for_leaf_key(&harness.chain, &rotated_key);
-    let rotated_transport =
-        FakeTransport::new(vec![renewal_challenge_response(&harness, None), renewal_certificate_response("cert_renewed_rotated_key", &rotated_chain)]);
+    let rotated_transport = FakeTransport::new(vec![
+        renewal_challenge_response(&harness, None, &rotated_signing_key, &rotated_material.csr_der),
+        renewal_certificate_response("cert_renewed_rotated_key", &rotated_chain),
+    ]);
     let lifecycle = TzapCertificateLifecycleClient::new(SIGN_BASE_URL, LOGIN_BASE_URL, &rotated_transport).with_clock(|| FIXED_NOW);
     lifecycle
         .renew_certificate(
@@ -387,7 +392,7 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
 
     let mut store = harness.store_with_certificate_routing(TzapSignDeviceRouting::Personal);
     let renewal_target = trust::format_certificate_sha256(&[0x44; 32]);
-    let renewal_transport = FakeTransport::new(vec![renewal_challenge_response(&harness, Some(&renewal_target))]);
+    let renewal_transport = FakeTransport::new(vec![renewal_challenge_response(&harness, Some(&renewal_target), &harness.signing_key, &harness.csr_der)]);
     let lifecycle = TzapCertificateLifecycleClient::new(SIGN_BASE_URL, LOGIN_BASE_URL, &renewal_transport).with_clock(|| FIXED_NOW);
     let renewal_error = lifecycle
         .renew_certificate(
@@ -400,7 +405,10 @@ fn negative_status_renewal_revocation_and_blocklist_obligations_are_exercised() 
             &harness.csr_der,
         )
         .unwrap_err();
-    assert!(matches!(renewal_error, TzapCertificateLifecycleError::RenewalTargetMismatch));
+    assert!(matches!(
+        renewal_error,
+        TzapCertificateLifecycleError::Enrollment(TzapEnrollmentError::ChallengeMismatch { field: "renewal_of_certificate_sha256" })
+    ));
 
     let pending_retirement = TzapCertificateLifecycleClient::new(
         SIGN_BASE_URL,
@@ -467,6 +475,7 @@ impl PersonalHarness {
             private_key_der: signing_material.private_key_der,
             created_at_unix_seconds: FIXED_NOW,
             label: Some("Harness signing key".to_owned()),
+            hosted_binding: None,
         };
         let recipient_key = TzapRecipientEncryptionKeyRecord {
             key_id: "recipient-key-1".to_owned(),
@@ -684,17 +693,28 @@ fn renewal_certificate_response(certificate_id: &str, chain: &IssuedChain) -> Tz
     json_response(json!({"certificate": certificate_json(certificate_id, chain)}))
 }
 
-fn renewal_challenge_response(harness: &PersonalHarness, renewal_target_override: Option<&str>) -> TzapAuthHttpResponse {
+fn renewal_challenge_response(
+    harness: &PersonalHarness,
+    renewal_target_override: Option<&str>,
+    signing_key: &TzapDeviceSigningKeyRecord,
+    csr_der: &[u8],
+) -> TzapAuthHttpResponse {
     json_response(json!({
         "challenge_id": "chal_renewal_1",
         "challenge_payload": {
             "canonicalization": ENROLLMENT_CHALLENGE_CANONICALIZATION,
+            "audience": SESSION_AUDIENCE_SIGN_TZAP,
             "operation": "renew",
             "challenge_id": "chal_renewal_1",
             "certificate_id": "cert_personal_1",
             "renewal_of_certificate_sha256": renewal_target_override
                 .unwrap_or(&harness.chain.leaf_sha256),
+            "session_id": harness.sign_session.login_session_id,
+            "csr_sha256": csr_sha256(csr_der),
+            "device_public_key_fingerprint": signing_key.public_key_fingerprint,
+            "requested_validity_seconds": harness.enrollment_request.requested_validity_seconds,
             "org_id": Value::Null,
+            "expires_at_unix_seconds": FIXED_NOW + 300,
         }
     }))
 }

@@ -12,7 +12,8 @@ use crate::identity_catalog::{
 };
 use crate::local_identity_store::{
     TzapCertificateStatusCacheRecord, TzapContactRecord, TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord,
-    TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
+    TzapHostedDeviceBinding, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
+    TzapSignDeviceRouting,
 };
 use crate::secrets::SecretBytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -193,6 +194,8 @@ fn build_catalog_from_legacy(
         let backing_key = inventory.device_signing_keys.iter().find(|key| key.key_id == certificate.signing_key_id);
         let signing_key_created_at = backing_key.map(|key| key.created_at_unix_seconds);
         let signing_key_label = backing_key.and_then(|key| key.label.clone());
+        let hosted_binding =
+            backing_key.and_then(|key| key.hosted_binding.as_ref().map(|binding| sign_hosted_binding(binding, &key.private_key_der))).transpose()?;
         certificate_key_ids.insert(certificate.signing_key_id.clone());
         signing_identities.push(TzapPublicSigningIdentityRecord {
             id: certificate.certificate_id.clone(),
@@ -217,6 +220,7 @@ fn build_catalog_from_legacy(
             legacy_key_id: Some(certificate.signing_key_id.clone()),
             metadata_version: Some(certificate.public_metadata.version),
             policy_oid: Some(certificate.public_metadata.policy_oid.clone()),
+            hosted_binding,
             signing_key_ref,
             lifecycle: certificate.state.as_str().to_owned(),
         });
@@ -243,9 +247,10 @@ fn build_catalog_from_legacy(
                 sign_device_id: None,
                 sign_device_routing: None,
                 signing_key_created_at_unix_seconds: Some(key.created_at_unix_seconds),
-                legacy_key_id: None,
+                legacy_key_id: Some(key.key_id.clone()),
                 metadata_version: None,
                 policy_oid: None,
+                hosted_binding: key.hosted_binding.as_ref().map(|binding| sign_hosted_binding(binding, &key.private_key_der)).transpose()?,
                 signing_key_ref: signing_refs.get(&key.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.signing_refs" })?.clone(),
                 lifecycle: "pending".to_owned(),
             });
@@ -272,6 +277,7 @@ fn build_catalog_from_legacy(
     let mut catalog = TzapIdentityCatalog::empty();
     catalog.revision = 1;
     catalog.signing_identities = signing_identities;
+    catalog.pending_certificate_operations.clone_from(&inventory.pending_certificate_operations);
     // A fresh catalog has no prior user selection to preserve. Make the first
     // active certificate usable by default, matching the existing local and
     // imported-identity flows.
@@ -640,6 +646,7 @@ pub fn load_inventory_from_catalog(
 ) -> Result<Option<TzapLocalIdentityInventory>, TzapIdentityCatalogError> {
     let Some(catalog) = catalog_store.load_catalog(account_key)? else { return Ok(None) };
     let mut inventory = TzapLocalIdentityInventory::empty();
+    inventory.pending_certificate_operations.clone_from(&catalog.pending_certificate_operations);
     // Validate every issued public chain before touching any private material.
     // Key-only records deliberately have no certificate chain yet.
     for identity in &catalog.signing_identities {
@@ -649,7 +656,7 @@ pub fn load_inventory_from_catalog(
     }
     let mut resolved_keys = HashMap::new();
     let mut seen_keys = HashSet::new();
-    let mut key_aliases: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+    let mut key_aliases: HashMap<(String, Option<TzapHostedDeviceBinding>), std::collections::BTreeSet<String>> = HashMap::new();
     let mut legacy_keys = HashMap::new();
 
     for identity in &catalog.signing_identities {
@@ -660,22 +667,29 @@ pub fn load_inventory_from_catalog(
         }
         let (private_key_der, fingerprint) =
             resolved_keys.get(&identity.signing_key_ref).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "signing_key_ref" })?;
+        if let Some(binding) = &identity.hosted_binding {
+            let signature = binding.binding_signature.as_deref().ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+            verify_hosted_binding(binding, signature, private_key_der)?;
+        }
         if identity.certificate_id.is_some() && identity.certificate_key_identity()?.public_key_fingerprint != *fingerprint {
             return Err(TzapIdentityCatalogError::InvalidCatalog { field: "certificate_public_key_match" });
         }
         if let Some(legacy) = &identity.legacy_key_id {
-            if legacy.is_empty() || legacy_keys.insert(legacy.clone(), fingerprint.clone()).is_some_and(|previous| previous != *fingerprint) {
+            let scope = (fingerprint.clone(), binding_scope(identity.hosted_binding.as_ref()));
+            if legacy.is_empty() || legacy_keys.insert(legacy.clone(), scope.clone()).is_some_and(|previous| previous != scope) {
                 return Err(TzapIdentityCatalogError::InvalidCatalog { field: "legacy_key_id" });
             }
-            key_aliases.entry(fingerprint.clone()).or_default().insert(legacy.clone());
+            key_aliases.entry(scope).or_default().insert(legacy.clone());
         }
-        if seen_keys.insert(fingerprint.clone()) {
+        let key_scope = (fingerprint.clone(), binding_scope(identity.hosted_binding.as_ref()));
+        if seen_keys.insert(key_scope.clone()) {
             inventory.device_signing_keys.push(TzapDeviceSigningKeyRecord {
-                key_id: fingerprint.clone(),
+                key_id: inventory_key_id(fingerprint, identity.hosted_binding.as_ref()),
                 public_key_fingerprint: fingerprint.clone(),
                 private_key_der: private_key_der.clone(),
                 created_at_unix_seconds: identity.signing_key_created_at_unix_seconds.unwrap_or(0),
                 label: identity.local_alias.clone(),
+                hosted_binding: identity.hosted_binding.clone(),
             });
         }
         if let (
@@ -726,7 +740,7 @@ pub fn load_inventory_from_catalog(
                 },
                 sign_device_id: sign_device_id.clone(),
                 sign_device_routing: identity.sign_device_routing.clone().unwrap_or(TzapSignDeviceRouting::Personal),
-                signing_key_id: fingerprint.clone(),
+                signing_key_id: inventory_key_id(fingerprint, identity.hosted_binding.as_ref()),
                 state: TzapLocalCertificateState::from_wire_value(&identity.lifecycle)
                     .ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "lifecycle" })?,
             });
@@ -736,12 +750,18 @@ pub fn load_inventory_from_catalog(
     // Preserve an existing inventory id when available, but never use the
     // per-certificate catalog row id as an identity for the backing key.
     for key in &mut inventory.device_signing_keys {
-        if let Some(alias) = key_aliases.get(&key.public_key_fingerprint).and_then(|aliases| aliases.first()) {
+        if let Some(alias) =
+            key_aliases.get(&(key.public_key_fingerprint.clone(), binding_scope(key.hosted_binding.as_ref()))).and_then(|aliases| aliases.first())
+        {
             key.key_id.clone_from(alias);
         }
     }
     for certificate in &mut inventory.enrolled_certificates {
-        if let Some(alias) = key_aliases.get(&certificate.signing_key_id).and_then(|aliases| aliases.first()) {
+        let scope =
+            catalog.signing_identities.iter().find(|identity| identity.certificate_id.as_deref() == Some(certificate.certificate_id.as_str())).and_then(
+                |identity| identity.certificate_key_identity().ok().map(|key| (key.public_key_fingerprint, binding_scope(identity.hosted_binding.as_ref()))),
+            );
+        if let Some(alias) = scope.as_ref().and_then(|scope| key_aliases.get(scope)).and_then(|aliases| aliases.first()) {
             certificate.signing_key_id.clone_from(alias);
         }
     }
@@ -807,6 +827,57 @@ pub fn load_inventory_from_catalog(
     Ok(Some(inventory))
 }
 
+fn inventory_key_id(fingerprint: &str, binding: Option<&TzapHostedDeviceBinding>) -> String {
+    let Some(binding) = binding else { return fingerprint.to_owned() };
+    let encoded = serde_json::to_vec(&binding_scope(Some(binding))).unwrap_or_default();
+    let digest = Sha256::digest([b"zmanager-hosted-device-binding-v1\0".as_slice(), encoded.as_slice()].concat());
+    format!("{fingerprint}~{}", URL_SAFE_NO_PAD.encode(&digest[..12]))
+}
+
+fn binding_scope(binding: Option<&TzapHostedDeviceBinding>) -> Option<TzapHostedDeviceBinding> {
+    binding.map(|binding| {
+        let mut scope = binding.clone();
+        scope.binding_signature = None;
+        scope
+    })
+}
+
+fn hosted_binding_signing_payload(binding: &TzapHostedDeviceBinding) -> Result<Vec<u8>, TzapIdentityCatalogError> {
+    let unsigned = binding_scope(Some(binding)).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding" })?;
+    let encoded = serde_json::to_vec(&unsigned).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding" })?;
+    Ok([b"zmanager-hosted-device-binding-v1\0".as_slice(), encoded.as_slice()].concat())
+}
+
+fn sign_hosted_binding(binding: &TzapHostedDeviceBinding, private_key_der: &SecretBytes) -> Result<TzapHostedDeviceBinding, TzapIdentityCatalogError> {
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::sign::Signer;
+
+    let key =
+        PKey::private_key_from_der(private_key_der.expose_secret()).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_key" })?;
+    let mut signer = Signer::new(MessageDigest::sha256(), &key).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_key" })?;
+    signer.update(&hosted_binding_signing_payload(binding)?).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+    let signature = signer.sign_to_vec().map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+    let mut signed_binding = binding.clone();
+    signed_binding.binding_signature = Some(URL_SAFE_NO_PAD.encode(signature));
+    Ok(signed_binding)
+}
+
+fn verify_hosted_binding(binding: &TzapHostedDeviceBinding, signature: &str, private_key_der: &SecretBytes) -> Result<(), TzapIdentityCatalogError> {
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::sign::Verifier;
+
+    let key = PKey::private_key_from_der(private_key_der.expose_secret())
+        .and_then(|key| PKey::public_key_from_der(&key.public_key_to_der()?))
+        .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_key" })?;
+    let signature = URL_SAFE_NO_PAD.decode(signature).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+    let mut verifier =
+        Verifier::new(MessageDigest::sha256(), &key).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+    verifier.update(&hosted_binding_signing_payload(binding)?).map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" })?;
+    if verifier.verify(&signature).unwrap_or(false) { Ok(()) } else { Err(TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" }) }
+}
+
 fn verify_private_matches_public_key(private_key: &SecretBytes, public_key_der: &[u8]) -> Result<(), TzapIdentityCatalogError> {
     let key = openssl::pkey::PKey::private_key_from_der(private_key.expose_secret())
         .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
@@ -837,49 +908,90 @@ mod tests {
     }
 
     #[test]
-    fn callback_design_renewal_round_trip_keeps_one_key_with_or_without_legacy_ids() {
-        for legacy_ids in [true, false] {
-            let fixture = crate::x509_fixture::certificate_fixture(Default::default());
-            let reference = TzapSecretRef::generate();
-            let mut old = enrolled_identity("old", &fixture, reference.clone());
-            // Distinct certificate DER for the same leaf key, signed by a new issuer.
-            let issuer_key = crate::x509_fixture::p256_private_key();
-            let issuer = crate::x509_fixture::root_certificate(&issuer_key);
-            let renewed_leaf = crate::x509_fixture::leaf_certificate(&fixture.leaf_key, &issuer, &issuer_key, &issuer, Default::default());
-            let mut renewed = old.clone();
-            renewed.id = "renewed".to_owned();
-            renewed.certificate_id = Some("renewed".to_owned());
-            renewed.certificate_chain_der = vec![renewed_leaf.to_der().unwrap(), issuer.to_der().unwrap()];
-            renewed.certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[0]));
-            renewed.issuer_certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[1]));
-            old.lifecycle = "revoked".to_owned();
-            if !legacy_ids {
-                old.legacy_key_id = None;
-                renewed.legacy_key_id = None;
-            }
-            let mut catalog = TzapIdentityCatalog::empty();
-            catalog.signing_identities = vec![old, renewed];
-            let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
-            catalogs.save_catalog("default", None, catalog).unwrap();
-            let mut secrets = InMemoryTzapSecretMaterialStore::new();
-            secrets.put_at(TzapSecretPurpose::SigningKey, &reference, SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap())).unwrap();
+    fn catalog_hydration_rejects_an_edited_hosted_owner_binding() {
+        let fixture = crate::x509_fixture::certificate_fixture(Default::default());
+        let reference = TzapSecretRef::generate();
+        let private_key = SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap());
+        let binding = TzapHostedDeviceBinding {
+            owner_user_id: "user_original".to_owned(),
+            environment: "staging".to_owned(),
+            auth_origin: "https://staging.tzap.org".to_owned(),
+            signing_origin: "https://staging.tzap.org".to_owned(),
+            org_id: None,
+            sign_device_id: Some("sdev_0123456789ABCDEFGH".to_owned()),
+            public_device_id: Some("pdev_0123456789ABCDEFGH".to_owned()),
+            binding_signature: None,
+        };
+        let mut record = enrolled_identity("certificate", &fixture, reference.clone());
+        record.hosted_binding = Some(sign_hosted_binding(&binding, &private_key).unwrap());
+        record.hosted_binding.as_mut().unwrap().owner_user_id = "user_modified".to_owned();
+        let mut catalog = TzapIdentityCatalog::empty();
+        catalog.signing_identities.push(record);
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        catalogs.save_catalog("default", None, catalog).unwrap();
+        let mut secrets = InMemoryTzapSecretMaterialStore::new();
+        secrets.put_at(TzapSecretPurpose::SigningKey, &reference, private_key).unwrap();
 
-            let inventory = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
-            assert_eq!(inventory.device_signing_keys.len(), 1);
-            assert_eq!(inventory.enrolled_certificates.len(), 2);
-            inventory.validate().unwrap();
-            assert!(inventory.enrolled_certificates.iter().all(|certificate| certificate.signing_key_id == inventory.device_signing_keys[0].key_id));
-            store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 300).unwrap();
-            let stored = catalogs.load_catalog("default").unwrap().unwrap();
-            assert!(stored.signing_identities.iter().all(|identity| identity.signing_key_ref == reference), "round trip must keep the existing secret locator");
-            let reopened = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
-            assert_eq!(reopened.device_signing_keys.len(), 1);
-            reopened.validate().unwrap();
-        }
+        let error = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap_err();
+        assert!(matches!(error, TzapIdentityCatalogError::InvalidCatalog { field: "hosted_binding_signature" }), "{error}");
     }
 
     #[test]
-    fn callback_design_absent_legacy_ids_do_not_retarget_default_to_another_key() {
+    fn callback_design_renewal_round_trip_keeps_one_key() {
+        let fixture = crate::x509_fixture::certificate_fixture(Default::default());
+        let reference = TzapSecretRef::generate();
+        let mut old = enrolled_identity("old", &fixture, reference.clone());
+        let binding = TzapHostedDeviceBinding {
+            owner_user_id: "user_fixture_one".to_owned(),
+            environment: "staging".to_owned(),
+            auth_origin: "https://staging.tzap.org".to_owned(),
+            signing_origin: "https://staging.tzap.org".to_owned(),
+            org_id: None,
+            sign_device_id: Some("sdev_0123456789ABCDEFGH".to_owned()),
+            public_device_id: Some("pdev_0123456789ABCDEFGH".to_owned()),
+            binding_signature: None,
+        };
+        old.hosted_binding = Some(sign_hosted_binding(&binding, &SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap())).unwrap());
+        let hosted_binding = old.hosted_binding.clone();
+        // Distinct certificate DER for the same leaf key, signed by a new issuer.
+        let issuer_key = crate::x509_fixture::p256_private_key();
+        let issuer = crate::x509_fixture::root_certificate(&issuer_key);
+        let renewed_leaf = crate::x509_fixture::leaf_certificate(&fixture.leaf_key, &issuer, &issuer_key, &issuer, Default::default());
+        let mut renewed = old.clone();
+        renewed.id = "renewed".to_owned();
+        renewed.certificate_id = Some("renewed".to_owned());
+        renewed.certificate_chain_der = vec![renewed_leaf.to_der().unwrap(), issuer.to_der().unwrap()];
+        renewed.certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[0]));
+        renewed.issuer_certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[1]));
+        old.lifecycle = "revoked".to_owned();
+        old.legacy_key_id = None;
+        renewed.legacy_key_id = None;
+        let mut catalog = TzapIdentityCatalog::empty();
+        catalog.signing_identities = vec![old, renewed];
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        catalogs.save_catalog("default", None, catalog).unwrap();
+        let mut secrets = InMemoryTzapSecretMaterialStore::new();
+        secrets.put_at(TzapSecretPurpose::SigningKey, &reference, SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap())).unwrap();
+
+        let inventory = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
+        assert_eq!(inventory.device_signing_keys.len(), 1);
+        assert_eq!(inventory.enrolled_certificates.len(), 2);
+        assert_eq!(binding_scope(inventory.device_signing_keys[0].hosted_binding.as_ref()), binding_scope(hosted_binding.as_ref()));
+        assert!(inventory.device_signing_keys[0].hosted_binding.as_ref().unwrap().binding_signature.is_some());
+        inventory.validate().unwrap();
+        assert!(inventory.enrolled_certificates.iter().all(|certificate| certificate.signing_key_id == inventory.device_signing_keys[0].key_id));
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 300).unwrap();
+        let stored = catalogs.load_catalog("default").unwrap().unwrap();
+        assert!(stored.signing_identities.iter().all(|identity| identity.signing_key_ref == reference), "round trip must keep the existing secret locator");
+        let reopened = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
+        assert_eq!(reopened.device_signing_keys.len(), 1);
+        assert_eq!(binding_scope(reopened.device_signing_keys[0].hosted_binding.as_ref()), binding_scope(hosted_binding.as_ref()));
+        assert!(reopened.device_signing_keys[0].hosted_binding.as_ref().unwrap().binding_signature.is_some());
+        reopened.validate().unwrap();
+    }
+
+    #[test]
+    fn callback_design_distinct_key_does_not_inherit_default_from_revoked_identity() {
         let mut previous = signing_identity("old", "revoked", "old-key");
         previous.legacy_key_id = None;
         let mut different = signing_identity("different", "active", "different-key");
@@ -958,6 +1070,7 @@ mod tests {
             legacy_key_id: Some(key_id.to_owned()),
             metadata_version: Some(1),
             policy_oid: Some("policy".to_owned()),
+            hosted_binding: None,
             signing_key_ref: TzapSecretRef::generate(),
             lifecycle: lifecycle.to_owned(),
         }

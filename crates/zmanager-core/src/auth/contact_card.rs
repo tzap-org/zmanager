@@ -702,6 +702,7 @@ pub(crate) mod tests {
                     private_key_der: signing_material.private_key_der,
                     created_at_unix_seconds: 900,
                     label: Some("Signing".to_owned()),
+                    hosted_binding: None,
                 },
                 recipient_key: TzapRecipientEncryptionKeyRecord {
                     key_id: "recipient-key-1".to_owned(),

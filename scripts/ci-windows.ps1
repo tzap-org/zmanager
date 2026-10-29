@@ -27,6 +27,19 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
+$gitCommand = Get-Command git.exe -ErrorAction Stop
+$gitRoot = Split-Path (Split-Path $gitCommand.Source -Parent) -Parent
+$gitBash = Join-Path $gitRoot "bin\bash.exe"
+if (-not (Test-Path $gitBash)) {
+    throw "Git Bash was not found beside $($gitCommand.Source)"
+}
+$forensicCheckoutScript = Join-Path $RepositoryRoot "scripts\checkout-forensic-forks.sh"
+Write-Host "Checking forensic sibling checkouts against the repository pins"
+& $gitBash $forensicCheckoutScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Forensic sibling checkout verification failed"
+}
+
 function Import-VisualStudioEnvironment {
     param(
         [Parameter(Mandatory = $true)]

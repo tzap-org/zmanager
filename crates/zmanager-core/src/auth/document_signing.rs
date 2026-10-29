@@ -273,6 +273,7 @@ mod tests {
                     private_key_der: material.private_key_der,
                     created_at_unix_seconds: 100,
                     label: None,
+                    hosted_binding: None,
                 },
                 public_key_spki_der: material.public_key_spki_der,
             }
@@ -290,6 +291,7 @@ mod tests {
                 private_key_der: SecretBytes::from(self.signing_key.private_key_der.expose_secret().to_vec()),
                 created_at_unix_seconds: self.signing_key.created_at_unix_seconds,
                 label: None,
+                hosted_binding: self.signing_key.hosted_binding.clone(),
             });
             inventory.recipient_encryption_keys = Vec::<TzapRecipientEncryptionKeyRecord>::new();
             inventory.enrolled_certificates.push(certificate_record(state));

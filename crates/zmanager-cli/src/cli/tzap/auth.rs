@@ -1,3 +1,4 @@
+use super::loopback_callback::LoopbackCallbackListener;
 use super::support::{
     parse_environment_option, parse_tzap_context_args, parse_tzap_context_option, print_session_summary_json, print_stable_tzap_error, service_envelope,
     service_request,
@@ -7,6 +8,7 @@ use crate::cli::options::{GlobalOptions, parse_global_option, take_value};
 use crate::cli::usage::{AUTH_MENU_HELP, command_usage_error, json_escape, print_error_line, print_help_stdout, print_success_line};
 use serde_json::{Value, json};
 use std::process::ExitCode;
+use std::time::Duration;
 use zmanager_tzap_hosted::tzap_service::{
     tzap_auth_account_url_json, tzap_auth_callback_json, tzap_auth_forget_json, tzap_auth_login_json, tzap_auth_status_json,
 };
@@ -39,6 +41,11 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
     let mut endpoints = AuthEndpointOptions::default();
     let mut print_url = false;
     let mut restart = false;
+    let mut manual = false;
+    let mut wait = false;
+    let mut no_browser = false;
+    let mut timeout_seconds = 600u64;
+    let mut explicit_redirect_uri = false;
     let mut index = 0usize;
     while index < args.len() {
         match parse_global_option(args, &mut index, &mut global) {
@@ -55,6 +62,28 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
             "--restart" => {
                 restart = true;
                 index += 1;
+            }
+            "--manual" => {
+                manual = true;
+                index += 1;
+            }
+            "--wait" => {
+                wait = true;
+                index += 1;
+            }
+            "--no-browser" => {
+                no_browser = true;
+                index += 1;
+            }
+            "--timeout" => {
+                let value = match take_value(args, &mut index, "--timeout") {
+                    Ok(value) => value,
+                    Err(error) => return command_usage_error("auth", &error, &global),
+                };
+                timeout_seconds = match value.parse::<u64>() {
+                    Ok(value @ 1..=600) => value,
+                    _ => return command_usage_error("auth", "--timeout must be between 1 and 600 seconds", &global),
+                };
             }
             "--print-url" => {
                 print_url = true;
@@ -90,6 +119,7 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
                 };
             }
             "--redirect-uri" => {
+                explicit_redirect_uri = true;
                 endpoints.redirect_uri = match take_value(args, &mut index, "--redirect-uri") {
                     Ok(value) => value,
                     Err(error) => return command_usage_error("auth", &error, &global),
@@ -111,6 +141,28 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
                 return command_usage_error("auth", &format!("unknown auth option: {other}"), &global);
             }
         }
+    }
+
+    let interactive_wait = no_browser || wait || (!manual && !print_url && !global.json);
+    if manual && interactive_wait {
+        return command_usage_error("auth", "--manual cannot be combined with --wait or --no-browser", &global);
+    }
+    if interactive_wait && explicit_redirect_uri {
+        return command_usage_error("auth", "loopback sign-in cannot be combined with --redirect-uri; use --manual for a custom redirect", &global);
+    }
+    let callback_listener = if interactive_wait {
+        match LoopbackCallbackListener::bind() {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                print_error_line(&global, format_args!("auth login failed: could not start the local callback listener: {error}"));
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(listener) = callback_listener.as_ref() {
+        listener.redirect_uri().clone_into(&mut endpoints.redirect_uri);
     }
 
     let request = service_request(
@@ -141,7 +193,73 @@ pub(super) fn auth_login_command(args: &[String], mut global: GlobalOptions) -> 
     let url = response["launch_url"].as_str().unwrap_or_default().to_owned();
     let state = response["state"].as_str().unwrap_or_default().to_owned();
     let expires_at_unix_seconds = response["expires_at_unix_seconds"].as_u64().unwrap_or(0);
-    if global.json {
+    if let Some(listener) = callback_listener {
+        let suppress_browser = no_browser || print_url || (global.json && wait);
+        if suppress_browser {
+            eprintln!("Open this URL to continue sign-in:\n{url}");
+        } else if let Err(error) = open_browser(&url) {
+            eprintln!("Could not open a browser ({error}). Open this URL to continue sign-in:\n{url}");
+        }
+        if !global.quiet {
+            eprintln!("Opening sign-in; waiting for browser sign-in...");
+        }
+        let pending_callback = match listener.wait_for_callback(&state, Duration::from_secs(timeout_seconds)) {
+            Ok(callback) => callback,
+            Err(error) => {
+                print_stable_tzap_error("auth_login", &error.to_string(), &global);
+                return ExitCode::FAILURE;
+            }
+        };
+        drop(listener);
+        let callback_request = service_request(&context, json!({ "callback_url": pending_callback.callback_url() }));
+        let callback_response = match service_envelope(&tzap_auth_callback_json(&callback_request.to_string())) {
+            Ok(value) => value,
+            Err(message) => {
+                print_stable_tzap_error("auth_callback", &message, &global);
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = pending_callback.acknowledge() {
+            eprintln!("note: sign-in completed, but the browser confirmation page could not be sent ({error})");
+        }
+        return match super::hosted::ensure_hosted_cert_ready(&context, endpoints.org_id.as_deref()) {
+            Ok(()) => {
+                if global.json {
+                    println!(
+                        "{}",
+                        json!({
+                            "status": "ready",
+                            "authenticated": true,
+                            "signing_ready": true,
+                            "stage": "ready",
+                            "session": callback_response.get("session").cloned().unwrap_or(Value::Null),
+                        })
+                    );
+                } else {
+                    print_success_line(&global, format_args!("sign-in and device certificate setup complete"));
+                }
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                if global.json {
+                    println!(
+                        "{}",
+                        json!({
+                            "status": "authenticated",
+                            "authenticated": true,
+                            "signing_ready": false,
+                            "stage": "provisioning",
+                            "error": message,
+                            "session": callback_response.get("session").cloned().unwrap_or(Value::Null),
+                        })
+                    );
+                } else {
+                    print_error_line(&global, format_args!("signed in, but device certificate setup is incomplete: {message}"));
+                }
+                ExitCode::FAILURE
+            }
+        };
+    } else if global.json {
         println!(
             "{{\"status\":\"pending\",\"launch_url\":\"{}\",\"state\":\"{}\",\"expires_at_unix_seconds\":{}}}",
             json_escape(&url),
@@ -294,12 +412,48 @@ pub(super) fn auth_callback_command(args: &[String], mut global: GlobalOptions) 
     if response.get("cleanup_warning").and_then(Value::as_str).is_some() {
         eprintln!("note: authentication was saved, but pending sign-in cleanup needs a retry; use --restart when starting another login");
     }
-    if let Some(session) = response.get("session") {
-        print_session_summary_json(session, &global);
-        ExitCode::SUCCESS
-    } else {
+    let Some(session) = response.get("session") else {
         print_stable_tzap_error("auth_callback", "service response is missing the session", &global);
-        ExitCode::FAILURE
+        return ExitCode::FAILURE;
+    };
+    match super::hosted::ensure_hosted_cert_ready(&context, None) {
+        Ok(()) => {
+            if global.json {
+                println!(
+                    "{}",
+                    json!({
+                        "status": "ready",
+                        "authenticated": true,
+                        "expired": false,
+                        "signing_ready": true,
+                        "session": session,
+                    })
+                );
+            } else {
+                print_session_summary_json(session, &global);
+                print_success_line(&global, format_args!("device certificate setup complete"));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            if global.json {
+                println!(
+                    "{}",
+                    json!({
+                        "status": "authenticated",
+                        "authenticated": true,
+                        "expired": false,
+                        "signing_ready": false,
+                        "stage": "provisioning",
+                        "error": message,
+                        "session": session,
+                    })
+                );
+            } else {
+                print_error_line(&global, format_args!("signed in, but device certificate setup is incomplete: {message}"));
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 

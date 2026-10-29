@@ -20,13 +20,15 @@ mod contacts;
 mod device;
 #[cfg(feature = "tzap-online")]
 mod hosted;
+#[cfg(feature = "tzap-online")]
+mod loopback_callback;
 mod share;
 mod sign;
 mod support;
-#[cfg(all(feature = "tzap-online", target_os = "windows"))]
-mod windows_browser;
 #[cfg(test)]
 mod tests;
+#[cfg(all(feature = "tzap-online", target_os = "windows"))]
+mod windows_browser;
 
 #[cfg(feature = "tzap-online")]
 pub(crate) use auth::auth_command as hosted_auth_command;

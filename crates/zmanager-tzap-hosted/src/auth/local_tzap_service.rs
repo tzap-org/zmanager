@@ -197,6 +197,7 @@ fn ensure_device_signing_key(inventory: &mut TzapLocalIdentityInventory, now_uni
         private_key_der: material.private_key_der,
         created_at_unix_seconds: now_unix_seconds,
         label: Some("Local TZAP signing key".to_owned()),
+        hosted_binding: None,
     };
     inventory.device_signing_keys.push(record.clone());
     Ok(record)

@@ -17,6 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$ROOT"
+"$ROOT/scripts/checkout-forensic-forks.sh"
 mkdir -p "$OUT_DIR"
 OUT_ABS="$(cd "$OUT_DIR" && pwd)"
 

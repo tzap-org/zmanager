@@ -192,21 +192,99 @@ pub(super) fn run_hosted_cert_enroll(options: &HostedCertOptions, global: &Globa
                 requested_validity_seconds: options.requested_validity_seconds,
                 now_unix_seconds,
             };
-            let (signing_key, csr_der) = match create_and_store_staging_enrollment_key(identity_store, &request, now_unix_seconds) {
-                Ok(material) => material,
-                Err(error) => return Err(HostedCertOperationError::Message(error)),
-            };
             let transport = CliHttpJsonTransport;
-            let client = zmanager_tzap_hosted::enrollment_client::TzapEnrollmentClient::local_staging_server(service_base_url, &transport);
+            let enrollment = zmanager_tzap_hosted::enrollment_client::TzapEnrollmentClient::local_staging_server(service_base_url, &transport);
+            let login_base_url =
+                session.provenance.as_ref().map_or(zmanager_tzap_hosted::auth_client::LOGIN_TZAP_BASE_URL, |provenance| provenance.account_origin.as_str());
+            let lifecycle =
+                zmanager_tzap_hosted::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(service_base_url, login_base_url, &transport);
             let validator = CliTrustedEnrollmentCertificateValidator {
                 trusted_root_sha256,
                 trusted_root_der,
                 options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
             };
-            zmanager_tzap_hosted::enrollment_client::enroll_device_certificate(&client, &validator, identity_store, session, &request, &signing_key, &csr_der)
-                .map_err(|error| HostedCertOperationError::Operation(error.to_string()))
+            let label = staging_enrollment_key_label(request.org_id.as_deref());
+            zmanager_tzap_hosted::certificate_lifecycle::enroll_or_renew_device_certificate(
+                &enrollment,
+                &lifecycle,
+                &validator,
+                identity_store,
+                session,
+                &request,
+                &label,
+            )
+            .map_err(|error| HostedCertOperationError::Operation(error.to_string()))
         },
     )
+}
+
+/// Completes the post-login device enrollment and verifies that the signed
+/// certificate is durable and usable before reporting sign-in as complete.
+#[cfg(feature = "tzap-online")]
+pub(super) fn ensure_hosted_cert_ready(context: &TzapCliContext, requested_org_id: Option<&str>) -> Result<(), String> {
+    let session_store = zmanager_tzap_hosted::tzap_service_auth::TzapFfiSessionStore::new(&context.state_dir);
+    let session = session_store.load_session(&context.account_key).ok_or_else(|| MISSING_TZAP_SESSION.to_owned())?;
+    if session.audience != zmanager_tzap_hosted::auth_client::SESSION_AUDIENCE_SIGN_TZAP {
+        return Err("the authenticated session is not authorized for TZAP signing".to_owned());
+    }
+    let provenance = session.require_hosted_provenance().map_err(|error| error.to_string())?;
+    let service_base_url = provenance.signing_origin.as_str();
+    let (root_sha256, root_der) = match service_base_url {
+        zmanager_tzap_hosted::auth_client::SIGN_TZAP_BASE_URL => {
+            let roots = zmanager_core::trust::official_tzap_root_certificates_der();
+            (vec![zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS.current[0].to_owned()], vec![roots[0].clone()])
+        }
+        "https://staging.tzap.org" => {
+            let roots = zmanager_core::trust::official_tzap_root_certificates_der();
+            (vec![zmanager_core::trust::OFFICIAL_TZAP_ROOT_PINS.current[1].to_owned()], vec![roots[1].clone()])
+        }
+        _ => return Err("automatic certificate enrollment requires a recognized hosted signing environment".to_owned()),
+    };
+    session.require_signing_origin(service_base_url).map_err(|error| error.to_string())?;
+    let mut identity_store = NativeTzapLocalIdentityStore::new(&context.state_dir, &context.account_key).map_err(|error| error.to_string())?;
+    let now_unix_seconds = current_unix_seconds();
+    let request = zmanager_tzap_hosted::enrollment_client::TzapEnrollmentRequest {
+        account_key: context.account_key.clone(),
+        org_id: requested_org_id.map(str::to_owned).or_else(|| session.selected_org_id.clone()),
+        requested_validity_seconds: DEFAULT_TZAP_CERT_VALIDITY_SECONDS,
+        now_unix_seconds,
+    };
+    let transport = CliHttpJsonTransport;
+    let enrollment = zmanager_tzap_hosted::enrollment_client::TzapEnrollmentClient::local_staging_server(service_base_url, &transport);
+    let lifecycle = zmanager_tzap_hosted::certificate_lifecycle::TzapCertificateLifecycleClient::local_staging_server(
+        service_base_url,
+        provenance.account_origin.as_str(),
+        &transport,
+    );
+    let validator = CliTrustedEnrollmentCertificateValidator {
+        trusted_root_sha256: root_sha256,
+        trusted_root_der: root_der,
+        options: zmanager_core::trust::TzapCertificateProfileOptions::default(),
+    };
+    let label = staging_enrollment_key_label(request.org_id.as_deref());
+    let certificate = zmanager_tzap_hosted::certificate_lifecycle::enroll_or_renew_device_certificate(
+        &enrollment,
+        &lifecycle,
+        &validator,
+        &mut identity_store,
+        &session,
+        &request,
+        &label,
+    )
+    .map_err(|error| error.to_string())?;
+    let inventory = identity_store.load_inventory(&context.account_key).map_err(|error| format!("cannot verify persisted identity inventory: {error}"))?;
+    let persisted = inventory.enrolled_certificates.iter().any(|record| {
+        record.certificate_id == certificate.certificate_id
+            && record.signing_key_id == certificate.signing_key_id
+            && !record.leaf_certificate_der.is_empty()
+            && record.state == zmanager_core::local_identity_store::TzapLocalCertificateState::Active
+            && record.not_after_unix_seconds > now_unix_seconds
+    });
+    let key_present = inventory.device_signing_keys.iter().any(|record| record.key_id == certificate.signing_key_id);
+    if !persisted || !key_present {
+        return Err("certificate enrollment returned, but the certificate or signing key is not durably available".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "tzap-online")]
@@ -271,6 +349,7 @@ pub(super) fn run_hosted_cert_renew(options: &HostedCertOptions, global: &Global
     )
 }
 
+#[cfg(test)]
 pub(crate) fn create_and_store_staging_enrollment_key<S: TzapLocalIdentityStore>(
     store: &mut S,
     request: &zmanager_tzap_hosted::enrollment_client::TzapEnrollmentRequest,
@@ -298,6 +377,7 @@ pub(crate) fn create_and_store_staging_enrollment_key<S: TzapLocalIdentityStore>
         private_key_der: material.private_key_der,
         created_at_unix_seconds: now_unix_seconds,
         label: Some(label),
+        hosted_binding: None,
     };
     inventory.device_signing_keys.push(record.clone());
     store.save_inventory(&request.account_key, inventory).map_err(|error| error.to_string())?;

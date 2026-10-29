@@ -161,6 +161,7 @@ CHANGELOG
 }
 
 cd "$ROOT"
+"$ROOT/scripts/checkout-forensic-forks.sh"
 readonly DEB_ARCH="$(debian_arch_for_target "$TARGET")"
 readonly VERSION="$(workspace_version)"
 readonly DEB_VERSION="${VERSION}-${PACKAGE_REVISION}"

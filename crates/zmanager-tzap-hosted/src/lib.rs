@@ -30,12 +30,10 @@ pub(crate) fn write_atomic_secret_file(path: &std::path::Path, bytes: &[u8]) -> 
 pub mod auth_client;
 #[path = "auth/auth_flow_store.rs"]
 pub mod auth_flow_store;
-#[path = "auth/session_provenance.rs"]
-pub mod session_provenance;
-#[path = "auth/browser_callback.rs"]
-pub mod browser_callback;
 #[path = "auth/backup_client.rs"]
 pub mod backup_client;
+#[path = "auth/browser_callback.rs"]
+pub mod browser_callback;
 #[path = "auth/certificate_lifecycle.rs"]
 pub mod certificate_lifecycle;
 #[path = "auth/crl.rs"]
@@ -54,6 +52,8 @@ pub mod local_tzap_service;
 #[cfg(feature = "reqwest-transport")]
 #[path = "auth/reqwest_transport.rs"]
 pub mod reqwest_transport;
+#[path = "auth/session_provenance.rs"]
+pub mod session_provenance;
 #[path = "auth/status_client.rs"]
 pub mod status_client;
 #[path = "auth/tzap_service.rs"]

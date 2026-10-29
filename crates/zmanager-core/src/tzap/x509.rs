@@ -1718,6 +1718,7 @@ mod tests {
                 legacy_key_id: Some(crate::trust::sha256_identifier(&key.public_key_to_der().unwrap())),
                 metadata_version: Some(1),
                 policy_oid: None,
+                hosted_binding: None,
                 signing_key_ref,
                 lifecycle: "active".to_owned(),
             }

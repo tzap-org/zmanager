@@ -437,6 +437,10 @@ Options:
       --redirect-uri <url>       Override the OAuth callback redirect URI
       --provider <name>          Require a specific login provider integration
       --org-id <id>              Require a specific login organization
+      --manual                  Print a detached callback URL instead of waiting
+      --wait                    Wait for the loopback browser callback (also with --json)
+      --no-browser              Wait for the callback and print the login URL
+      --timeout <seconds>       Callback wait timeout (1-600; default 600)
       --state-dir <dir>          Read and write local auth/session state from dir
       --account-key <key>        Local account inventory key; default is default
       --restart                  Restart an abandoned pending login (auth login)

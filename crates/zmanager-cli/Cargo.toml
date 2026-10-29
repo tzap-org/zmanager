@@ -24,7 +24,7 @@ default = []
 # transport behind `reqwest-transport`, so the default build keeps local
 # signing/verification/certs (offline TZAP surface) while dropping reqwest
 # and the hosted (network) commands entirely.
-tzap-online = ["dep:reqwest", "zmanager-tzap-hosted/reqwest-transport"]
+tzap-online = ["dep:reqwest", "dep:httparse", "zmanager-tzap-hosted/reqwest-transport"]
 # Personal certificate/device revocation is disabled by default: the sign server requires a
 # recent admin MFA step-up on the calling session, and the CLI has no way to obtain one (no TOTP
 # prompt, and a step-up performed elsewhere belongs to a different session). Revocation lives in
@@ -37,6 +37,7 @@ anstream = "1.0.0"
 anstyle = "1.0.14"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls-vendored", "charset", "http2", "system-proxy"], optional = true }
 rpassword = "7.5.2"
+httparse = { version = "1.10.1", optional = true }
 serde_json = "1.0.140"
 zmanager-core = { workspace = true }
 zmanager-tzap-hosted = { workspace = true, features = ["keyring"] }
