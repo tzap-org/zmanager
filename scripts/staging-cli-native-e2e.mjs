@@ -99,6 +99,14 @@ function assertNoSecretFiles() {
     for (const value of privateValues) check(!value || !content.includes(value), 'Confidential input appeared in state metadata');
   }
 }
+function leafSpkiSha256(certificateId) {
+  const path = join(stateDir, `${account}.identity-catalog.json`);
+  const catalog = JSON.parse(readFileSync(path, 'utf8'));
+  const record = catalog.signing_identities.find(item => item.certificate_id === certificateId);
+  check(record && Array.isArray(record.certificate_chain_der) && record.certificate_chain_der[0]?.length > 0, 'Certificate leaf is missing from the local public catalog');
+  const leaf = new X509Certificate(Buffer.from(record.certificate_chain_der[0]));
+  return createHash('sha256').update(leaf.publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
+}
 
 try {
   const credentialsPath = process.env.ZM_STAGING_ENV_FILE;
@@ -219,6 +227,7 @@ try {
     check(!crashAfterEnrollmentCommit, 'Set ZM_STAGING_CRASH_AFTER_ENROLLMENT=0 when testing renewal recovery');
     stage = 'staging-renewal-response-lost-after-server-commit';
     const predecessor = certificate;
+    const predecessorSpkiSha256 = leafSpkiSha256(predecessor.certificate_id);
     const renew = ['auth', 'cert', 'renew', '--certificate-id', predecessor.certificate_id, '--service-base-url', STAGING, '--trusted-root-cert', rootPath];
     cli(renew, {
       expectExitCode: 86,
@@ -227,17 +236,18 @@ try {
     pass('staging-renewal-response-lost-after-server-commit');
     const recovered = cli(renew);
     certificate = recovered.certificate;
+    const replacementSpkiSha256 = leafSpkiSha256(certificate?.certificate_id);
     check(
       certificate?.state === 'active'
         && certificate.certificate_id !== predecessor.certificate_id
-        && certificate.signing_key_id === predecessor.signing_key_id
-        && certificate.public_device_id === predecessor.public_device_id,
+        && certificate.public_device_id === predecessor.public_device_id
+        && replacementSpkiSha256 === predecessorSpkiSha256,
       'Restarted CLI did not install the same-key server renewal',
     );
     report.renewal = {
       predecessor_certificate_id: predecessor.certificate_id,
       replacement_certificate_id: certificate.certificate_id,
-      signing_key_id: certificate.signing_key_id,
+      leaf_spki_sha256: replacementSpkiSha256,
     };
     report.certificate_id = certificate.certificate_id;
     report.certificate_sha256 = certificate.certificate_sha256;
