@@ -146,6 +146,7 @@ pub enum TzapEnrollmentError {
     Store(TzapLocalIdentityStoreError),
     InvalidJson(serde_json::Error),
     InvalidField { field: &'static str },
+    CertificateValidity { now: u64, not_before: u64, not_after: u64 },
     SessionOrgMismatch,
     SessionExpired,
     ChallengeMismatch { field: &'static str },
@@ -166,6 +167,10 @@ impl fmt::Display for TzapEnrollmentError {
             Self::Store(error) => write!(f, "enrollment store update failed: {error}"),
             Self::InvalidJson(error) => write!(f, "enrollment JSON is invalid: {error}"),
             Self::InvalidField { field } => write!(f, "enrollment field is invalid: {field}"),
+            Self::CertificateValidity { now, not_before, not_after } => write!(
+                f,
+                "issued certificate is outside its validity window at local time {now} (not before {not_before}, not after {not_after}); check the system clock and retry after the start time"
+            ),
             Self::SessionOrgMismatch => {
                 write!(f, "enrollment organization does not match selected session organization")
             }
@@ -638,6 +643,7 @@ fn reconciliation_error(stage: &'static str, error: TzapEnrollmentError) -> Tzap
         TzapEnrollmentError::InvalidJson(_) | TzapEnrollmentError::Auth(TzapAuthError::InvalidJson(_)) => "invalid_json",
         TzapEnrollmentError::CertificateChain(_) => "certificate_validation",
         TzapEnrollmentError::InvalidField { .. } => "invalid_field",
+        TzapEnrollmentError::CertificateValidity { .. } => "certificate_validity",
         TzapEnrollmentError::SessionOrgMismatch => "session_organization_mismatch",
         TzapEnrollmentError::SessionExpired => "session_expired",
         TzapEnrollmentError::ChallengeMismatch { .. } => "challenge_mismatch",
@@ -737,7 +743,7 @@ impl TzapEnrollmentCertificatePayload {
             return Err(TzapEnrollmentError::InvalidField { field: "not_after_unix_seconds" });
         }
         if now_unix_seconds < not_before || now_unix_seconds >= not_after {
-            return Err(TzapEnrollmentError::InvalidField { field: "certificate_validity" });
+            return Err(TzapEnrollmentError::CertificateValidity { now: now_unix_seconds, not_before, not_after });
         }
         Ok(())
     }
@@ -1273,6 +1279,15 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::{Value, json};
     use std::cell::RefCell;
+
+    #[test]
+    fn certificate_validity_error_reports_local_and_leaf_time_bounds() {
+        let error = TzapEnrollmentError::CertificateValidity { now: 100, not_before: 101, not_after: 200 };
+        assert_eq!(
+            error.to_string(),
+            "issued certificate is outside its validity window at local time 100 (not before 101, not after 200); check the system clock and retry after the start time"
+        );
+    }
 
     #[test]
     fn enrollment_validates_at_network_completion_instead_of_the_request_snapshot() {

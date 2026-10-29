@@ -1139,6 +1139,7 @@ fn is_reconcilable_renewal_failure(error: &TzapCertificateLifecycleError) -> boo
         | TzapCertificateLifecycleError::Enrollment(
             TzapEnrollmentError::InvalidJson(_)
             | TzapEnrollmentError::InvalidField { .. }
+            | TzapEnrollmentError::CertificateValidity { .. }
             | TzapEnrollmentError::CertificateChain(_)
             | TzapEnrollmentError::Denied(_),
         ) => true,
