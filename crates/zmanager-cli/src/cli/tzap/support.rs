@@ -211,6 +211,22 @@ pub(super) fn http_json_request(
     let response_headers =
         response.headers().iter().filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_owned(), value.to_owned()))).collect();
     let response_body = response.bytes().map_err(|error| format!("could not read hosted HTTPS response: {error}"))?.to_vec();
+
+    #[cfg(feature = "staging-e2e-fault-injection")]
+    if (200..300).contains(&status_code)
+        && method == "POST"
+        && std::env::var("ZM_STAGING_E2E_CRASH_AFTER_ENROLLMENT_COMMIT").ok().as_deref() == Some("1")
+        && reqwest::Url::parse(url).is_ok_and(|parsed| {
+            parsed.scheme() == "https"
+                && parsed.host_str() == Some("staging.tzap.org")
+                && parsed.path() == zmanager_tzap_hosted::enrollment_client::ENROLL_CERTIFICATES_PATH
+        })
+    {
+        // This process-level exit deliberately leaves the already-persisted
+        // operation journal behind, simulating a lost reply plus process crash.
+        std::process::exit(86);
+    }
+
     Ok(zmanager_tzap_hosted::auth_client::TzapAuthHttpResponse { status_code, body: response_body, headers: response_headers })
 }
 

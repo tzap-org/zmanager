@@ -450,6 +450,9 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         } else {
             enrollment_client.list_certificates(session)?
         };
+        let predecessor_was_superseded = listed_certificates
+            .iter()
+            .any(|listed| listed.certificate_id == request.previous_certificate_id && listed.revocation_category.as_deref() == Some("supersession"));
         let mut predecessor_is_active = false;
         for listed in listed_certificates {
             if listed.certificate_id == request.previous_certificate_id && listed.certificate_sha256 == request.previous_certificate_sha256 {
@@ -472,15 +475,16 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
                                     TzapSignDeviceRouting::Organization { login_organization_device_id, .. } => Some(login_organization_device_id.as_str()),
                                 };
                     }
+                } else if listed.revocation_category.as_deref() == Some("supersession") {
+                    // The server marks only renewal replacements as supersession.
                 }
                 continue;
             }
-            if listed.lifecycle_state.as_deref() != Some("active") || !matches_predecessor(&listed, request) {
-                continue;
-            }
-            let listed_chain = listed.certificate_chain_der();
-            let (_, listed_metadata) = validator.validate_and_complete_certificate_chain(&listed_chain).map_err(TzapCertificateLifecycleError::Enrollment)?;
-            if !matches_replacement_scope(&listed_metadata, &predecessor) {
+            if listed.lifecycle_state.as_deref() != Some("active")
+                || listed.public_device_id.as_deref() != Some(predecessor.public_metadata.public_device_id.as_str())
+                || listed.public_org_id.as_deref() != predecessor.public_metadata.public_org_id.as_deref()
+                || listed.public_signer_id.as_deref().is_some_and(|signer| signer != predecessor.public_metadata.public_signer_id)
+            {
                 continue;
             }
 
@@ -495,14 +499,17 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             if detail.certificate_id != listed.certificate_id
                 || detail.certificate_sha256 != listed.certificate_sha256
                 || detail.lifecycle_state.as_deref() != Some("active")
-                || !matches_predecessor(&detail, request)
+                || detail.sign_device_id != listed.sign_device_id
             {
                 continue;
             }
             let detail_metadata = detail.validate_for_key(validator, signing_key, self.now())?;
-            if detail_metadata != listed_metadata
-                || !matches_replacement_scope(&detail_metadata, &predecessor)
+            let explicit_predecessor = matches_predecessor(&detail, request)
+                || (listed.predecessor_certificate_id.as_deref() == Some(request.previous_certificate_id.as_str())
+                    && listed.predecessor_certificate_sha256.as_deref().is_none_or(|hash| hash == request.previous_certificate_sha256));
+            if !matches_replacement_scope(&detail_metadata, &predecessor)
                 || (request.renewal_policy == TzapRenewalPolicy::SameKeyRequired && detail.sign_device_id != predecessor.sign_device_id)
+                || (!explicit_predecessor && !predecessor_was_superseded)
             {
                 continue;
             }
@@ -1873,7 +1880,7 @@ mod tests {
         let transport = FakeLifecycleTransport::new(vec![
             renewal_challenge_response(&fixture, None),
             TzapAuthHttpResponse { status_code: 503, body: Vec::new(), headers: Vec::new() },
-            TzapAuthHttpResponse { status_code: 200, body: json!({"certificates": [reconciled.clone()]}).to_string().into_bytes(), headers: Vec::new() },
+            TzapAuthHttpResponse { status_code: 200, body: renewal_reconciliation_list(&reconciled).to_string().into_bytes(), headers: Vec::new() },
             TzapAuthHttpResponse { status_code: 200, body: json!({"certificate": reconciled}).to_string().into_bytes(), headers: Vec::new() },
         ]);
         let client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &transport).with_clock(|| 150);
@@ -1927,7 +1934,7 @@ mod tests {
 
         let replacement = reconciled_certificate_json(&fixture.signing_key);
         let recovery_transport = FakeLifecycleTransport::new(vec![
-            TzapAuthHttpResponse { status_code: 200, body: json!({"certificates": [replacement.clone()]}).to_string().into_bytes(), headers: Vec::new() },
+            TzapAuthHttpResponse { status_code: 200, body: renewal_reconciliation_list(&replacement).to_string().into_bytes(), headers: Vec::new() },
             TzapAuthHttpResponse { status_code: 200, body: json!({"certificate": replacement}).to_string().into_bytes(), headers: Vec::new() },
         ]);
         let recovery_client = TzapCertificateLifecycleClient::new("https://sign.tzap.org", "https://login.tzap.org", &recovery_transport).with_clock(|| 151);
@@ -2663,6 +2670,34 @@ mod tests {
         certificate["predecessor_certificate_sha256"] = json!(trust::format_certificate_sha256(&[0x03; 32]));
         certificate["status"] = json!("active");
         certificate
+    }
+
+    fn renewal_reconciliation_list(replacement: &Value) -> Value {
+        let metadata = public_metadata();
+        let previous = json!({
+            "certificate_id": "cert_old",
+            "certificate_sha256": trust::format_certificate_sha256(&[0x03; 32]),
+            "issuer_certificate_sha256": trust::format_certificate_sha256(&[0x04; 32]),
+            "issuer_key_identifier": "AQIDBA",
+            "sign_device_id": "sign-device-old",
+            "public_signer_id": metadata.public_signer_id,
+            "public_org_id": Value::Null,
+            "public_device_id": metadata.public_device_id,
+            "status": "revoked",
+            "revocation_category": "supersession",
+        });
+        let replacement = json!({
+            "certificate_id": replacement["certificate_id"],
+            "certificate_sha256": replacement["certificate_sha256"],
+            "issuer_certificate_sha256": replacement["issuer_certificate_sha256"],
+            "issuer_key_identifier": replacement["issuer_key_identifier"],
+            "sign_device_id": replacement["sign_device_id"],
+            "public_signer_id": metadata.public_signer_id,
+            "public_org_id": Value::Null,
+            "public_device_id": metadata.public_device_id,
+            "status": "valid",
+        });
+        json!([previous, replacement])
     }
 
     fn public_metadata() -> TzapCertificatePublicMetadata {

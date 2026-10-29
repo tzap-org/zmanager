@@ -17,10 +17,11 @@ const target = process.env.ZM_STAGING_BASE_URL || STAGING;
 if (target !== STAGING) throw new Error('Only the staging service is permitted');
 const binary = process.env.ZM_STAGING_BINARY || join(repo, 'target', 'debug', platform() === 'win32' ? 'zm.exe' : 'zm');
 const work = mkdtempSync(join(tmpdir(), 'zmanager-live-staging-'));
-const stateDir = join(work, 'state');
-mkdirSync(stateDir, { mode: 0o700 });
-const account = `staging-e2e-${platform()}-${randomUUID()}`;
-const report = { target, platform: platform(), account_key: account, work_dir: work, checks: [], completed: false };
+const stateDir = process.env.ZM_STAGING_STATE_DIR ? resolve(process.env.ZM_STAGING_STATE_DIR) : join(work, 'state');
+mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+const account = process.env.ZM_STAGING_ACCOUNT_KEY || `staging-e2e-${platform()}-${randomUUID()}`;
+const crashAfterEnrollmentCommit = process.env.ZM_STAGING_CRASH_AFTER_ENROLLMENT !== '0';
+const report = { target, platform: platform(), account_key: account, work_dir: work, state_dir: stateDir, checks: [], completed: false };
 let stage = 'preflight';
 let browser;
 let cleanupPending = false;
@@ -33,12 +34,16 @@ function pass(name) {
   report.checks.push(name);
   console.log(`PASS ${name}`);
 }
-function cli(args, { input, expectFailure = false, allowFailureJson = false, contextual = true } = {}) {
+function cli(args, { input, expectFailure = false, expectExitCode, allowFailureJson = false, contextual = true, env } = {}) {
   const command = [...args, ...(contextual ? ['--state-dir', stateDir, '--account-key', account] : []), '--json'];
-  const result = spawnSync(binary, command, { input, encoding: 'utf8', timeout: 120_000, windowsHide: true });
+  const result = spawnSync(binary, command, { input, encoding: 'utf8', timeout: 120_000, windowsHide: true, env: env ? { ...process.env, ...env } : process.env });
   const output = `${result.stdout || ''}${result.stderr || ''}`;
   for (const value of privateValues) check(!value || !output.includes(value), 'CLI output contained confidential input');
   check(!result.error, `${args.slice(0, 2).join(' ')} could not finish`);
+  if (expectExitCode !== undefined) {
+    check(result.status === expectExitCode, `${args.slice(0, 2).join(' ')} exited ${String(result.status)}, expected ${expectExitCode}`);
+    return { cli_exit_status: result.status };
+  }
   const expectedStatus = expectFailure ? result.status !== 0 : result.status === 0;
   if (!expectedStatus && !allowFailureJson) {
     let detail = output.trim().slice(0, 1200);
@@ -160,27 +165,35 @@ try {
   const invalid = new URL(callback);
   invalid.searchParams.set('state', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq');
   cli(['auth', 'callback', '--stdin'], { input: `${invalid}\n`, expectFailure: true });
-  const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, allowFailureJson: true });
-  const provisioningPending = typeof authenticated.error === 'string' && authenticated.error.startsWith('certificate issuance outcome is still being reconciled');
-  report.callback_result = {
-    authenticated: authenticated.authenticated === true,
-    expired: typeof authenticated.expired === 'boolean' ? authenticated.expired : null,
-    signing_ready: authenticated.signing_ready === true,
-    provisioning_pending: provisioningPending,
-    status: typeof authenticated.status === 'string' ? authenticated.status : null,
-    stage: typeof authenticated.stage === 'string' ? authenticated.stage : null,
-    cli_exit_status: authenticated.cli_exit_status ?? 0,
-  };
-  check(
-    authenticated.authenticated === true && authenticated.expired !== true &&
-      (authenticated.signing_ready === true || provisioningPending),
-    `CLI did not save an active session or reach a recoverable signing state (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
-  );
-  cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, expectFailure: true });
+  if (crashAfterEnrollmentCommit) {
+    const crashed = cli(['auth', 'callback', '--stdin'], {
+      input: `${callback}\n`,
+      expectExitCode: 86,
+      env: { ZM_STAGING_E2E_CRASH_AFTER_ENROLLMENT_COMMIT: '1' },
+    });
+    report.callback_result = { simulated_lost_response_exit_status: crashed.cli_exit_status };
+    pass('staging-enrollment-response-lost-after-server-commit');
+  } else {
+    const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, allowFailureJson: true });
+    report.callback_result = {
+      authenticated: authenticated.authenticated === true,
+      signing_ready: authenticated.signing_ready === true,
+      error: typeof authenticated.error === 'string' ? authenticated.error.slice(0, 500) : null,
+      recovered_existing_journal: true,
+    };
+    check(
+      authenticated.authenticated === true && authenticated.signing_ready === true,
+      `CLI did not recover the existing issuance journal during callback provisioning${report.callback_result.error ? `: ${report.callback_result.error}` : ''}`,
+    );
+    pass('existing-staging-issuance-journal-recovered');
+  }
   const status = cli(['auth', 'status']);
-  check(status.authenticated === true && status.expired === false, 'Native session did not survive CLI process restart');
+  check(status.authenticated === true && status.expired === false, 'Native session did not survive the provisioning process crash');
   assertNoSecretFiles();
-  pass('native-stdin-callback-invalid-state-replay-and-restart');
+  pass('native-session-survives-provisioning-process-crash');
+
+  cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, expectFailure: true });
+  pass('native-stdin-callback-invalid-state-and-replay-rejected');
 
   stage = 'server-issued-device-certificate';
   const enrolled = cli(['auth', 'cert', 'enroll', '--service-base-url', STAGING, '--trusted-root-cert', rootPath]);
@@ -190,7 +203,8 @@ try {
   report.certificate_sha256 = certificate.certificate_sha256;
   report.public_device_id = certificate.public_device_id;
   assertNoSecretFiles();
-  pass('server-certificate-validated-and-native-key-persisted');
+  pass('new-cli-process-recovers-committed-staging-enrollment-from-journal');
+  assertNoSecretFiles();
 
   stage = 'sign-offline-and-live-verify';
   const document = join(work, 'document.json');
