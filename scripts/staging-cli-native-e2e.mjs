@@ -108,6 +108,20 @@ function leafSpkiSha256(certificateId) {
   const leaf = new X509Certificate(Buffer.from(record.certificate_chain_der[0]));
   return createHash('sha256').update(leaf.publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
 }
+async function renewAfterServerCommitWhenNecessary(args) {
+  const result = cli(args, { allowFailureJson: true });
+  if (result.cli_exit_status === undefined) return result;
+  const notBefore = Number(result.error?.match(/not before (\d+), not after (\d+)/)?.[1]);
+  const now = Math.floor(Date.now() / 1000);
+  const waitMs = (notBefore - now + 1) * 1000;
+  check(Number.isSafeInteger(notBefore) && waitMs > 0 && waitMs <= 60_000,
+    `Renewal failed without a bounded not-yet-valid certificate window${result.error ? `: ${result.error.slice(0, 400)}` : ''}`);
+  report.renewal_valid_from_wait_seconds = Math.ceil(waitMs / 1000);
+  await new Promise(resolve => setTimeout(resolve, waitMs));
+  const retried = cli(args);
+  pass('new-cli-process-recovers-renewal-after-certificate-validity-start');
+  return retried;
+}
 
 try {
   const credentialsPath = process.env.ZM_STAGING_ENV_FILE;
@@ -244,7 +258,7 @@ try {
       });
       pass('staging-renewal-response-lost-after-server-commit');
     }
-    const recovered = cli(renew);
+    const recovered = await renewAfterServerCommitWhenNecessary(renew);
     certificate = recovered.certificate;
     const replacementSpkiSha256 = leafSpkiSha256(certificate?.certificate_id);
     check(
