@@ -22,6 +22,7 @@ mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 const account = process.env.ZM_STAGING_ACCOUNT_KEY || `staging-e2e-${platform()}-${randomUUID()}`;
 const crashAfterEnrollmentCommit = process.env.ZM_STAGING_CRASH_AFTER_ENROLLMENT !== '0';
 const crashAfterRenewalCommit = process.env.ZM_STAGING_CRASH_AFTER_RENEWAL === '1';
+const renewWithoutCrash = process.env.ZM_STAGING_RENEW_WITHOUT_CRASH === '1';
 const report = { target, platform: platform(), account_key: account, work_dir: work, state_dir: stateDir, checks: [], completed: false };
 let stage = 'preflight';
 let browser;
@@ -230,17 +231,19 @@ try {
     : 'new-cli-process-reuses-active-staging-enrollment');
   assertNoSecretFiles();
 
-  if (crashAfterRenewalCommit) {
+  if (crashAfterRenewalCommit || renewWithoutCrash) {
     check(!crashAfterEnrollmentCommit, 'Set ZM_STAGING_CRASH_AFTER_ENROLLMENT=0 when testing renewal recovery');
-    stage = 'staging-renewal-response-lost-after-server-commit';
+    stage = crashAfterRenewalCommit ? 'staging-renewal-response-lost-after-server-commit' : 'staging-renewal';
     const predecessor = certificate;
     const predecessorSpkiSha256 = leafSpkiSha256(predecessor.certificate_id);
     const renew = ['auth', 'cert', 'renew', '--certificate-id', predecessor.certificate_id, '--service-base-url', STAGING, '--trusted-root-cert', rootPath];
-    cli(renew, {
-      expectExitCode: 86,
-      env: { ZM_STAGING_E2E_CRASH_AFTER_RENEWAL_COMMIT: '1' },
-    });
-    pass('staging-renewal-response-lost-after-server-commit');
+    if (crashAfterRenewalCommit) {
+      cli(renew, {
+        expectExitCode: 86,
+        env: { ZM_STAGING_E2E_CRASH_AFTER_RENEWAL_COMMIT: '1' },
+      });
+      pass('staging-renewal-response-lost-after-server-commit');
+    }
     const recovered = cli(renew);
     certificate = recovered.certificate;
     const replacementSpkiSha256 = leafSpkiSha256(certificate?.certificate_id);
@@ -258,7 +261,9 @@ try {
     };
     report.certificate_id = certificate.certificate_id;
     report.certificate_sha256 = certificate.certificate_sha256;
-    pass('new-cli-process-recovers-committed-staging-renewal-with-same-key');
+    pass(crashAfterRenewalCommit
+      ? 'new-cli-process-recovers-committed-staging-renewal-with-same-key'
+      : 'staging-renewal-completes-with-same-key');
   }
 
   stage = 'sign-offline-and-live-verify';
