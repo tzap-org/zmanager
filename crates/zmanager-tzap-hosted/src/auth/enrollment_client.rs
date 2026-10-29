@@ -131,6 +131,7 @@ pub enum TzapEnrollmentError {
     HttpStatus { status_code: u16, body: Option<String> },
     CertificateChain(String),
     CertificateOperationPending,
+    CertificateOperationReconciliation { stage: &'static str, kind: &'static str, status_code: Option<u16> },
     Crypto(String),
     Canonicalization(String),
 }
@@ -161,6 +162,13 @@ impl fmt::Display for TzapEnrollmentError {
                 write!(f, "enrollment certificate chain rejected: {reason}")
             }
             Self::CertificateOperationPending => write!(f, "certificate issuance outcome is still being reconciled"),
+            Self::CertificateOperationReconciliation { stage, kind, status_code } => {
+                write!(f, "certificate issuance outcome is still being reconciled ({stage}: {kind}")?;
+                if let Some(status_code) = status_code {
+                    write!(f, " HTTP {status_code}")?;
+                }
+                f.write_str(")")
+            }
             Self::Crypto(reason) => write!(f, "enrollment crypto failed: {reason}"),
             Self::Canonicalization(reason) => {
                 write!(f, "enrollment canonicalization failed: {reason}")
@@ -410,13 +418,24 @@ pub fn enroll_device_certificate(
     csr_der: &[u8],
 ) -> Result<TzapEnrolledCertificateRecord, TzapEnrollmentError> {
     client.authorize_session(session)?;
-    let csr_sha256 = csr_fingerprint(csr_der);
     let inventory = store.load_inventory(&request.account_key)?;
     validate_stored_signing_key(&inventory, signing_key)?;
-    if let Some(pending) = inventory.pending_certificate_operations.iter().find(|operation| operation.signing_key_id == signing_key.key_id) {
-        if pending.kind != TzapCertificateOperationKind::Enrollment || pending.csr_sha256 != csr_sha256 || pending.org_id != request.org_id {
+    let pending_operation = inventory.pending_certificate_operations.iter().find(|operation| operation.signing_key_id == signing_key.key_id).cloned();
+    let csr_der = if let Some(pending) = &pending_operation {
+        if pending.kind != TzapCertificateOperationKind::Enrollment || pending.org_id != request.org_id {
             return Err(TzapEnrollmentError::CertificateOperationPending);
         }
+        let pending_csr = pending.csr_der.as_deref().unwrap_or(csr_der);
+        if csr_fingerprint(pending_csr) != pending.csr_sha256 {
+            return Err(TzapEnrollmentError::CertificateOperationPending);
+        }
+        validate_signing_key_and_csr(signing_key, pending_csr)?;
+        pending_csr
+    } else {
+        csr_der
+    };
+    let csr_sha256 = csr_fingerprint(csr_der);
+    if let Some(pending) = &pending_operation {
         if let Some(record) = reconcile_pending_enrollment(client, validator, store, session, request, signing_key, pending)? {
             return Ok(record);
         }
@@ -428,6 +447,7 @@ pub fn enroll_device_certificate(
         signing_key_id: signing_key.key_id.clone(),
         public_key_fingerprint: signing_key.public_key_fingerprint.clone(),
         csr_sha256,
+        csr_der: Some(csr_der.to_vec()),
         org_id: request.org_id.clone(),
         requested_validity_seconds: request.requested_validity_seconds,
         created_at_unix_seconds: client.now(),
@@ -484,7 +504,7 @@ fn reconcile_pending_enrollment(
     signing_key: &TzapDeviceSigningKeyRecord,
     operation: &TzapPendingCertificateOperation,
 ) -> Result<Option<TzapEnrolledCertificateRecord>, TzapEnrollmentError> {
-    let listed = list_certificates_for_request(client, session, request).map_err(|_| TzapEnrollmentError::CertificateOperationPending)?;
+    let listed = list_certificates_for_request(client, session, request).map_err(|error| reconciliation_error("certificate list", error))?;
     let expected_fingerprint = signing_key_public_fingerprint(signing_key)?;
     let mut candidate: Option<TzapEnrolledCertificateRecord> = None;
     for listed_certificate in listed {
@@ -510,7 +530,7 @@ fn reconcile_pending_enrollment(
             continue;
         }
         let detail = get_certificate_for_request(client, session, request, &listed_certificate.certificate_id)
-            .map_err(|_| TzapEnrollmentError::CertificateOperationPending)?;
+            .map_err(|error| reconciliation_error("certificate detail", error))?;
         if detail.certificate_id != listed_certificate.certificate_id
             || detail.certificate_sha256 != listed_certificate.certificate_sha256
             || detail.lifecycle_state.as_deref() != Some("active")
@@ -524,7 +544,11 @@ fn reconcile_pending_enrollment(
         }
         let recovered = detail.into_store_record(request, &signing_key.key_id, detail_metadata)?;
         if candidate.as_ref().is_some_and(|existing| existing.certificate_id != recovered.certificate_id) {
-            return Err(TzapEnrollmentError::CertificateOperationPending);
+            return Err(TzapEnrollmentError::CertificateOperationReconciliation {
+                stage: "certificate matching",
+                kind: "multiple active certificates match the device key and scope",
+                status_code: None,
+            });
         }
         candidate = Some(recovered);
     }
@@ -543,6 +567,25 @@ fn reconcile_pending_enrollment(
     inventory.pending_certificate_operations.retain(|pending| pending.operation_id != operation.operation_id);
     store.save_inventory(&request.account_key, inventory)?;
     Ok(None)
+}
+
+fn reconciliation_error(stage: &'static str, error: TzapEnrollmentError) -> TzapEnrollmentError {
+    let status_code = match &error {
+        TzapEnrollmentError::HttpStatus { status_code, .. } | TzapEnrollmentError::Auth(TzapAuthError::HttpStatus { status_code }) => Some(*status_code),
+        _ => None,
+    };
+    let kind = match error {
+        TzapEnrollmentError::Auth(TzapAuthError::Transport { .. }) => "auth_transport",
+        TzapEnrollmentError::Auth(TzapAuthError::Storage { .. }) | TzapEnrollmentError::Store(_) => "secure_storage",
+        TzapEnrollmentError::Auth(TzapAuthError::HttpStatus { .. }) | TzapEnrollmentError::HttpStatus { .. } => "http_status",
+        TzapEnrollmentError::InvalidJson(_) | TzapEnrollmentError::Auth(TzapAuthError::InvalidJson(_)) => "invalid_json",
+        TzapEnrollmentError::CertificateChain(_) => "certificate_validation",
+        TzapEnrollmentError::Crypto(_) => "crypto",
+        TzapEnrollmentError::Canonicalization(_) => "canonicalization",
+        TzapEnrollmentError::Denied(_) => "enrollment_denied",
+        _ => "response_or_auth_validation",
+    };
+    TzapEnrollmentError::CertificateOperationReconciliation { stage, kind, status_code }
 }
 
 fn list_certificates_for_request(
@@ -1251,7 +1294,13 @@ mod tests {
             &fixture.signing_key,
             &fixture.csr_der,
         );
-        assert!(matches!(first, Err(TzapEnrollmentError::CertificateOperationPending)));
+        assert!(
+            matches!(
+                &first,
+                Err(TzapEnrollmentError::CertificateOperationReconciliation { stage: "certificate list", kind: "http_status", status_code: Some(599) })
+            ),
+            "unexpected first enrollment result: {first:?}"
+        );
         let pending = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
         assert_eq!(pending.pending_certificate_operations.len(), 1);
 
@@ -1263,6 +1312,16 @@ mod tests {
         ]);
         let second_client = TzapEnrollmentClient::new("https://staging.tzap.org", &second_transport).with_clock(|| 100);
 
+        let retry_csr = crate::device_identity::generate_device_csr_from_private_key(
+            &fixture.signing_key.private_key_der,
+            &crate::device_identity::TzapDeviceCsrOptions::default(),
+        )
+        .unwrap();
+        assert_ne!(
+            crate::device_identity::csr_fingerprint(&retry_csr),
+            crate::device_identity::csr_fingerprint(&fixture.csr_der),
+            "ECDSA re-signing should exercise a different CSR encoding"
+        );
         let recovered = enroll_device_certificate(
             &second_client,
             &AcceptingCertificateValidator,
@@ -1270,7 +1329,7 @@ mod tests {
             &fixture.session,
             &fixture.request,
             &fixture.signing_key,
-            &fixture.csr_der,
+            &retry_csr,
         )
         .unwrap();
         let inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
@@ -1490,7 +1549,10 @@ mod tests {
         let error =
             enroll_device_certificate(&client, &validator, &mut store, &fixture.session, &fixture.request, &fixture.signing_key, &fixture.csr_der).unwrap_err();
 
-        assert!(matches!(error, TzapEnrollmentError::CertificateOperationPending));
+        assert!(matches!(
+            error,
+            TzapEnrollmentError::CertificateOperationReconciliation { stage: "certificate list", kind: "http_status", status_code: Some(599) }
+        ));
         let inventory = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
         assert!(inventory.enrolled_certificates.is_empty());
         assert_eq!(inventory.pending_certificate_operations.len(), 1);

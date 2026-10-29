@@ -290,6 +290,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
             signing_key_id: new_signing_key.key_id.clone(),
             public_key_fingerprint: new_signing_key.public_key_fingerprint.clone(),
             csr_sha256: csr_fingerprint(csr_der),
+            csr_der: Some(csr_der.to_vec()),
             org_id: request.org_id.clone(),
             requested_validity_seconds: request.requested_validity_seconds,
             created_at_unix_seconds: self.now(),

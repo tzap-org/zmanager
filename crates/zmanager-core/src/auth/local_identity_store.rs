@@ -162,6 +162,11 @@ pub struct TzapPendingCertificateOperation {
     pub signing_key_id: String,
     pub public_key_fingerprint: String,
     pub csr_sha256: String,
+    /// The public CSR is retained so restart recovery can reuse the exact
+    /// request bytes. Re-signing a CSR with the same ECDSA key may produce a
+    /// different signature and therefore a different CSR digest.
+    #[serde(default)]
+    pub csr_der: Option<Vec<u8>>,
     pub org_id: Option<String>,
     pub requested_validity_seconds: u64,
     pub created_at_unix_seconds: u64,
@@ -181,6 +186,11 @@ impl TzapPendingCertificateOperation {
         validate_non_empty_id("pending_certificate_operations.signing_key_id", &self.signing_key_id)?;
         validate_sha256("pending_certificate_operations.public_key_fingerprint", &self.public_key_fingerprint)?;
         validate_sha256("pending_certificate_operations.csr_sha256", &self.csr_sha256)?;
+        if let Some(csr_der) = &self.csr_der {
+            if csr_der.is_empty() || csr_der.len() > 16 * 1024 || crate::device_identity::csr_fingerprint(csr_der) != self.csr_sha256 {
+                return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.csr_der" });
+            }
+        }
         if self.requested_validity_seconds == 0 {
             return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.requested_validity_seconds" });
         }
@@ -979,7 +989,8 @@ mod tests {
         TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
     };
     use crate::device_identity::{
-        TzapDeviceCsrOptions, ensure_recipient_key_is_distinct_from_signing_key, generate_device_signing_key_and_csr, generate_recipient_encryption_key,
+        TzapDeviceCsrOptions, ensure_recipient_key_is_distinct_from_signing_key, generate_device_csr_from_private_key, generate_device_signing_key_and_csr,
+        generate_recipient_encryption_key,
     };
     use crate::secrets::SecretBytes;
     use crate::test_support::TestDir;
@@ -1339,12 +1350,14 @@ mod tests {
         let predecessor_certificate_id = predecessor.certificate_id.clone();
         let predecessor_certificate_sha256 = predecessor.certificate_sha256.clone();
         let signing_key = &inventory.device_signing_keys[0];
+        let csr_der = generate_device_csr_from_private_key(&signing_key.private_key_der, &TzapDeviceCsrOptions::default()).unwrap();
         inventory.pending_certificate_operations.push(TzapPendingCertificateOperation {
             operation_id: "operation_test".to_owned(),
             kind: TzapCertificateOperationKind::Renewal,
             signing_key_id: signing_key.key_id.clone(),
             public_key_fingerprint: signing_key.public_key_fingerprint.clone(),
-            csr_sha256: trust::sha256_identifier(b"csr fixture"),
+            csr_sha256: crate::device_identity::csr_fingerprint(&csr_der),
+            csr_der: Some(csr_der),
             org_id: None,
             requested_validity_seconds: 86_400,
             created_at_unix_seconds: 150,
