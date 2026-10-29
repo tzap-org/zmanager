@@ -42,6 +42,12 @@ function cli(args, { input, expectFailure = false, expectExitCode, allowFailureJ
   for (const value of privateValues) check(!value || !output.includes(value), 'CLI output contained confidential input');
   check(!result.error, `${args.slice(0, 2).join(' ')} could not finish`);
   if (expectExitCode !== undefined) {
+    if (result.status !== expectExitCode) {
+      let detail = output.trim().slice(0, 1200);
+      for (const value of privateValues) if (value) detail = detail.split(value).join('[redacted]');
+      detail = detail.replace(/"(access_token|refresh_token|pkce_verifier|handoff_code|private_key_der)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"');
+      throw new Error(`${args.slice(0, 2).join(' ')} exited ${String(result.status)}, expected ${expectExitCode}${detail ? `: ${detail}` : ''}`);
+    }
     check(result.status === expectExitCode, `${args.slice(0, 2).join(' ')} exited ${String(result.status)}, expected ${expectExitCode}`);
     return { cli_exit_status: result.status };
   }
