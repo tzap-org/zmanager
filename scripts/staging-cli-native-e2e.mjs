@@ -156,14 +156,14 @@ try {
   const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n` });
   report.callback_result = {
     authenticated: authenticated.authenticated === true,
-    expired: authenticated.expired === true,
+    expired: typeof authenticated.expired === 'boolean' ? authenticated.expired : null,
     signing_ready: authenticated.signing_ready === true,
     status: typeof authenticated.status === 'string' ? authenticated.status : null,
     stage: typeof authenticated.stage === 'string' ? authenticated.stage : null,
   };
   check(
-    authenticated.authenticated === true && authenticated.expired === false,
-    `CLI did not save an active native session (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
+    authenticated.authenticated === true && authenticated.expired !== true && authenticated.signing_ready === true,
+    `CLI did not save an active session and ready signing identity (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
   );
   cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, expectFailure: true });
   const status = cli(['auth', 'status']);
