@@ -1086,7 +1086,6 @@ fn validate_renewal_challenge(
     expect_string(object, "operation", RENEW_OPERATION)?;
     expect_string(object, "challenge_id", &challenge.challenge_id)?;
     expect_string(object, "renewal_of_certificate_sha256", &request.previous_certificate_sha256)?;
-    expect_string(object, "certificate_id", &request.previous_certificate_id)?;
     expect_optional_string(object, "org_id", request.org_id.as_deref())?;
     expect_optional_string(object, "session_id", session.login_session_id.as_deref())?;
     expect_string(object, "csr_sha256", &csr_fingerprint(csr_der))?;
@@ -1734,7 +1733,6 @@ mod tests {
                     "audience": SESSION_AUDIENCE_SIGN_TZAP,
                     "operation": RENEW_OPERATION,
                     "challenge_id": "renew-challenge-1",
-                    "certificate_id": "cert_old",
                     "renewal_of_certificate_sha256": body["renewal_of_certificate_sha256"],
                     "org_id": body["org_id"],
                     "session_id": session_id,
@@ -1838,7 +1836,6 @@ mod tests {
                     "audience": SESSION_AUDIENCE_SIGN_TZAP,
                     "operation": RENEW_OPERATION,
                     "challenge_id": "renew-challenge-1",
-                    "certificate_id": "cert_old",
                     "renewal_of_certificate_sha256": body["renewal_of_certificate_sha256"],
                     "org_id": body["org_id"],
                     "session_id": session_id,
@@ -2400,7 +2397,6 @@ mod tests {
                     "audience": SESSION_AUDIENCE_SIGN_TZAP,
                     "operation": RENEW_OPERATION,
                     "challenge_id": "renew-challenge-1",
-                    "certificate_id": "cert_old",
                     "renewal_of_certificate_sha256": body["renewal_of_certificate_sha256"],
                     "org_id": body["org_id"],
                     "session_id": session_id,
@@ -2626,7 +2622,6 @@ mod tests {
                     "audience": SESSION_AUDIENCE_SIGN_TZAP,
                     "operation": RENEW_OPERATION,
                     "challenge_id": "renew-challenge-1",
-                    "certificate_id": "cert_old",
                     "renewal_of_certificate_sha256": target,
                     "org_id": Value::Null,
                     "session_id": fixture.sign_session.login_session_id,
