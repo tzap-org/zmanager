@@ -116,7 +116,7 @@ dependencies = [
  "thiserror",
  "xts-mode",
  "zip",
- "zip-forensic-core",
+ "zip-forensic-core 0.1.0",
 ]
 
 [[package]]
@@ -286,7 +286,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror",
- "zip-forensic-core",
+ "zip-forensic-core 0.2.2",
 ]
 
 [[package]]
@@ -860,7 +860,7 @@ dependencies = [
  "flate2",
  "forensic-vfs",
  "lzo",
- "ruzstd",
+ "ruzstd 0.9.1",
  "thiserror",
 ]
 
@@ -1475,7 +1475,7 @@ dependencies = [
  "lz4_flex 0.11.6",
  "lzma-rs",
  "lzo",
- "ruzstd",
+ "ruzstd 0.9.1",
  "thiserror",
 ]
 
@@ -1973,7 +1973,7 @@ dependencies = [
  "forensic-vfs",
  "forensic-vfs-resolver",
  "hfsplus-forensic",
- "iso9660-forensic",
+ "iso9660-forensic 0.8.0 (git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d)",
  "luks-core",
  "ntfs-core",
  "qcow2-core",
@@ -2714,7 +2714,19 @@ version = "0.8.0"
 source = "git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27#2a2ab27221aa90f12549fcd2dc3b945d28518cec"
 dependencies = [
  "forensicnomicon",
- "iso9660-forensic-core",
+ "iso9660-forensic-core 0.1.0 (git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27)",
+ "safe-read 0.1.0",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "iso9660-forensic"
+version = "0.8.0"
+source = "git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d#2e8619d6cc39e4741bdc8c17812d76470a76c8ab"
+dependencies = [
+ "forensicnomicon",
+ "iso9660-forensic-core 0.1.0 (git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d)",
  "safe-read 0.1.0",
  "sha1 0.10.7",
  "sha2 0.10.9",
@@ -2725,6 +2737,18 @@ name = "iso9660-forensic-core"
 version = "0.1.0"
 source = "git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27#2a2ab27221aa90f12549fcd2dc3b945d28518cec"
 dependencies = [
+ "safe-read 0.1.0",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "thiserror",
+]
+
+[[package]]
+name = "iso9660-forensic-core"
+version = "0.1.0"
+source = "git+https://github.com/frankmanzhu/iso9660-forensic?rev=2e8619d#2e8619d6cc39e4741bdc8c17812d76470a76c8ab"
+dependencies = [
+ "forensic-vfs",
  "safe-read 0.1.0",
  "sha1 0.10.7",
  "sha2 0.10.9",
@@ -4033,6 +4057,15 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "ruzstd"
@@ -6148,7 +6181,7 @@ dependencies = [
  "flate2",
  "forensic-vfs",
  "lz4_flex 0.11.6",
- "ruzstd",
+ "ruzstd 0.9.1",
  "sha2 0.10.9",
  "thiserror",
 ]
@@ -6183,6 +6216,27 @@ dependencies = [
 
 [[package]]
 name = "zip-forensic-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd66ca0be2a86f374ac27bf8e9872246bed322d7ea894d617e2e4f6d4660151b"
+dependencies = [
+ "aes 0.8.4",
+ "bzip2-rs",
+ "constant_time_eq 0.3.1",
+ "crc32fast",
+ "ctr 0.9.2",
+ "deflate64",
+ "flate2",
+ "hmac 0.12.1",
+ "lzma-rs",
+ "pbkdf2 0.12.2",
+ "ruzstd 0.8.3",
+ "sha1 0.10.7",
+ "thiserror",
+]
+
+[[package]]
+name = "zip-forensic-core"
 version = "0.2.2"
 dependencies = [
  "aes 0.8.4",
@@ -6196,7 +6250,7 @@ dependencies = [
  "hmac 0.12.1",
  "lzma-rs",
  "pbkdf2 0.12.2",
- "ruzstd",
+ "ruzstd 0.9.1",
  "sha1 0.10.7",
  "thiserror",
 ]
@@ -6262,7 +6316,7 @@ dependencies = [
  "forensic-vfs",
  "forensic-vfs-engine",
  "hex",
- "iso9660-forensic",
+ "iso9660-forensic 0.8.0 (git+https://github.com/SecurityRonin/iso9660-forensic?rev=2a2ab27)",
  "libc",
  "lz4_flex 0.14.0",
  "lzma-rust2 0.16.5",
