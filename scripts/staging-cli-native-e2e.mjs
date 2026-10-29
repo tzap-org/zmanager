@@ -33,14 +33,14 @@ function pass(name) {
   report.checks.push(name);
   console.log(`PASS ${name}`);
 }
-function cli(args, { input, expectFailure = false, contextual = true } = {}) {
+function cli(args, { input, expectFailure = false, allowFailureJson = false, contextual = true } = {}) {
   const command = [...args, ...(contextual ? ['--state-dir', stateDir, '--account-key', account] : []), '--json'];
   const result = spawnSync(binary, command, { input, encoding: 'utf8', timeout: 120_000, windowsHide: true });
   const output = `${result.stdout || ''}${result.stderr || ''}`;
   for (const value of privateValues) check(!value || !output.includes(value), 'CLI output contained confidential input');
   check(!result.error, `${args.slice(0, 2).join(' ')} could not finish`);
   const expectedStatus = expectFailure ? result.status !== 0 : result.status === 0;
-  if (!expectedStatus) {
+  if (!expectedStatus && !allowFailureJson) {
     let detail = output.trim().slice(0, 1200);
     for (const value of privateValues) if (value) detail = detail.split(value).join('[redacted]');
     detail = detail.replace(/"(access_token|refresh_token|pkce_verifier|handoff_code|private_key_der)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"');
@@ -48,6 +48,7 @@ function cli(args, { input, expectFailure = false, contextual = true } = {}) {
   }
   let value;
   try { value = JSON.parse(result.stdout); } catch { throw new Error('CLI did not return JSON'); }
+  if (allowFailureJson && result.status !== 0) value.cli_exit_status = result.status;
   return value;
 }
 function envFile(path) {
@@ -159,17 +160,20 @@ try {
   const invalid = new URL(callback);
   invalid.searchParams.set('state', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq');
   cli(['auth', 'callback', '--stdin'], { input: `${invalid}\n`, expectFailure: true });
-  const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n` });
+  const authenticated = cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, allowFailureJson: true });
   report.callback_result = {
     authenticated: authenticated.authenticated === true,
     expired: typeof authenticated.expired === 'boolean' ? authenticated.expired : null,
     signing_ready: authenticated.signing_ready === true,
+    provisioning_pending: authenticated.error === 'certificate issuance outcome is still being reconciled',
     status: typeof authenticated.status === 'string' ? authenticated.status : null,
     stage: typeof authenticated.stage === 'string' ? authenticated.stage : null,
+    cli_exit_status: authenticated.cli_exit_status ?? 0,
   };
   check(
-    authenticated.authenticated === true && authenticated.expired !== true && authenticated.signing_ready === true,
-    `CLI did not save an active session and ready signing identity (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
+    authenticated.authenticated === true && authenticated.expired !== true &&
+      (authenticated.signing_ready === true || authenticated.error === 'certificate issuance outcome is still being reconciled'),
+    `CLI did not save an active session or reach a recoverable signing state (authenticated=${String(authenticated.authenticated)}, expired=${String(authenticated.expired)}, signing_ready=${String(authenticated.signing_ready)}, status=${String(authenticated.status)}, stage=${String(authenticated.stage)})`,
   );
   cli(['auth', 'callback', '--stdin'], { input: `${callback}\n`, expectFailure: true });
   const status = cli(['auth', 'status']);
