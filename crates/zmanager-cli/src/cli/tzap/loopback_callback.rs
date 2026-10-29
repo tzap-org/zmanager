@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HEADERS: usize = 48;
 const MAX_CONNECTIONS: usize = 128;
-const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(60);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 
 pub(super) struct LoopbackCallbackListener {
@@ -53,13 +53,13 @@ impl LoopbackCallbackListener {
                     if accepted > MAX_CONNECTIONS {
                         return Err(LoopbackError::TooManyConnections);
                     }
-                    let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
-                    let _ = stream.set_write_timeout(Some(CONNECTION_READ_TIMEOUT));
+                    let _ = stream.set_write_timeout(Some(CONNECTION_IO_TIMEOUT));
                     if !peer.ip().is_loopback() {
                         write_error_response(&mut stream, 403);
                         continue;
                     }
-                    let Ok(raw) = read_bounded_request(&mut stream) else {
+                    let request_deadline = (Instant::now() + CONNECTION_IO_TIMEOUT).min(deadline);
+                    let Ok(raw) = read_bounded_request(&mut stream, request_deadline) else {
                         write_error_response(&mut stream, 400);
                         continue;
                     };
@@ -127,7 +127,7 @@ fn authority(address: SocketAddr) -> String {
     }
 }
 
-fn read_bounded_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+fn read_bounded_request(stream: &mut TcpStream, deadline: Instant) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
     loop {
@@ -140,6 +140,11 @@ fn read_bounded_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
         if bytes.len() >= MAX_HEADER_BYTES {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "request headers exceed limit"));
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "request read deadline elapsed"));
+        }
+        stream.set_read_timeout(Some(remaining))?;
         let read = stream.read(&mut chunk)?;
         if read == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "incomplete request"));
@@ -234,6 +239,11 @@ mod tests {
     }
 
     #[test]
+    fn connection_io_timeout_is_at_least_one_minute() {
+        assert!(CONNECTION_IO_TIMEOUT >= Duration::from_secs(60));
+    }
+
+    #[test]
     fn accepts_exact_host_get_and_one_valid_callback() {
         let listener = LoopbackCallbackListener::bind().unwrap();
         let path = format!("/auth/callback?state={STATE}&handoff_code={CODE}");
@@ -268,5 +278,43 @@ mod tests {
     fn rejects_oversized_or_incomplete_http_requests() {
         assert!(parse_callback_request(&vec![b'x'; MAX_HEADER_BYTES + 1], "127.0.0.1:1", "http://127.0.0.1:1/auth/callback", STATE).is_err());
         assert!(parse_callback_request(b"GET /auth/callback?", "127.0.0.1:1", "http://127.0.0.1:1/auth/callback", STATE).is_err());
+    }
+
+    #[test]
+    fn slow_drip_request_cannot_reset_the_connection_read_deadline() {
+        use std::net::TcpStream;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            client.write_all(b"G").unwrap();
+            thread::sleep(Duration::from_millis(150));
+            let _ = client.write_all(b"E");
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let started = Instant::now();
+        let result = read_bounded_request(&mut stream, deadline);
+        assert!(matches!(result, Err(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)));
+        assert!(started.elapsed() < Duration::from_millis(400));
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn overall_login_deadline_caps_a_slow_connection() {
+        let callback_listener = LoopbackCallbackListener::bind().unwrap();
+        let address = callback_listener.listener.local_addr().unwrap();
+        let writer = thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            client.write_all(b"G").unwrap();
+            thread::sleep(Duration::from_millis(300));
+            let _ = client.write_all(b"ET /auth/callback HTTP/1.1\r\nHost: invalid\r\n\r\n");
+        });
+        let started = Instant::now();
+        let result = callback_listener.wait_for_callback(STATE, Duration::from_millis(100));
+        assert!(matches!(result, Err(LoopbackError::Timeout)));
+        assert!(started.elapsed() < Duration::from_millis(400));
+        writer.join().unwrap();
     }
 }
