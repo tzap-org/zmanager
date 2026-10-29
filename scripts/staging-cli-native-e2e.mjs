@@ -161,6 +161,13 @@ try {
   check(response.ok(), `Staging browser login returned HTTP ${response.status()}`);
   const completion = await response.json();
   check(typeof completion.handoff_code === 'string', 'Staging browser login did not issue a handoff');
+  const serverDate = Date.parse(response.headers()['date'] || new Date().toISOString());
+  const handoffExpiresAt = Date.parse(completion.handoff_expires_at);
+  const handoffTtlSeconds = (handoffExpiresAt - serverDate) / 1000;
+  check(Number.isFinite(handoffExpiresAt) && handoffTtlSeconds > 0 && handoffTtlSeconds <= 600,
+    'Staging returned an invalid or overlong handoff expiry');
+  report.handoff_expires_at = new Date(handoffExpiresAt).toISOString();
+  report.handoff_ttl_seconds = Math.round(handoffTtlSeconds);
   privateValues.push(completion.handoff_code);
   check(!forbiddenRequest, 'The staging browser attempted a non-staging request');
   const callback = new URL('tzap://auth/callback');
