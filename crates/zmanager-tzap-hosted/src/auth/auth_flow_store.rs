@@ -500,6 +500,37 @@ mod tests {
     }
 
     #[test]
+    fn desktop_restart_replaces_detached_cli_flow_without_stale_cli_cancel_erasing_it() {
+        let (root, pending, config) = fixture();
+        let lock_root = root.join("locks");
+        let cli = TzapAuthSlot::acquire_at(&lock_root, &root.join("cli-state"), "one", "cli").unwrap();
+        let cli_flow = cli.create(&pending, &config, false, 100).unwrap();
+        drop(cli);
+
+        let desktop = TzapAuthSlot::acquire_at(&lock_root, &root.join("desktop-state"), "one", "desktop").unwrap();
+        assert!(desktop.load().is_err(), "Desktop must not read the CLI verifier binding");
+        assert!(matches!(desktop.create(&pending, &config, false, 101), Err(error) if error.contains("pending_login_exists")));
+
+        let desktop_flow = desktop.create(&pending, &config, true, 101).unwrap();
+        assert_ne!(desktop_flow.flow_id, cli_flow.flow_id);
+        drop(desktop);
+
+        // A restarted CLI holding the old flow ID can neither clear nor
+        // replace the Desktop flow. Completion/cancellation must compare IDs.
+        let cli = TzapAuthSlot::acquire_at(&lock_root, &root.join("cli-state"), "one", "cli").unwrap();
+        assert!(cli.clear(&cli_flow).is_err());
+        assert!(matches!(cli.create(&pending, &config, false, 102), Err(error) if error.contains("pending_login_exists")));
+        drop(cli);
+
+        let desktop = TzapAuthSlot::acquire_at(&lock_root, &root.join("desktop-state"), "one", "desktop").unwrap();
+        let restored = desktop.load().unwrap();
+        assert_eq!(restored.flow_id, desktop_flow.flow_id);
+        desktop.clear(&restored).unwrap();
+        drop(desktop);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn wrong_context_and_modified_public_origin_cannot_read_verifier() {
         let (root, pending, config) = fixture();
         let lock_root = root.join("locks");
