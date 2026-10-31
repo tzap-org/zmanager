@@ -110,6 +110,21 @@ docker_args+=(
       expat-dev expat-static \
       nettle-dev nettle-static
 
+    # Docker runs this build as root, while bind-mounted checkouts retain the
+    # host runner ownership. Tell Git to trust only the mounted repositories
+    # so checkout-forensic-forks.sh can verify their pinned revisions.
+    git config --global --add safe.directory /workspace
+    git config --global --add safe.directory /localsend-rs
+    git config --global --add safe.directory /forensic-vfs-engine
+    while read -r checkout _; do
+      [ -z "$checkout" ] && continue
+      case "$checkout" in \#*) continue ;; esac
+      git config --global --add safe.directory "/$checkout"
+    done < /workspace/forensic-forks.lock
+    if [ -d /tzap ]; then
+      git config --global --add safe.directory /tzap
+    fi
+
     # The container runs /bin/sh (busybox ash) — use POSIX export, not bash-only declare
     TARGET_ENV=${TARGET//-/_}
     TARGET_ENV_UPPER=$(printf '%s' "$TARGET_ENV" | tr '[:lower:]' '[:upper:]')
