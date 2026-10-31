@@ -285,7 +285,7 @@ pub fn store_inventory_as_catalog(
         let mut reused_keys = HashSet::new();
         for identity in &existing.signing_identities {
             let Ok(public_key) = identity.certificate_id.as_ref().map(|_| identity.certificate_key_identity()).transpose() else {
-                // A damaged historical entry must not force callers to
+                // A damaged existing entry must not force callers to
                 // delete it (or its key) just to save an unrelated change.
                 // An explicit replacement of this id may repair it.
                 if !catalog.signing_identities.iter().any(|record| record.id == identity.id) {
@@ -319,6 +319,9 @@ pub fn store_inventory_as_catalog(
         }
         for key in &existing.recipient_keys {
             let Some(fresh) = recipient_refs.get(&key.id) else { continue };
+            let Some(key_record) = inventory.recipient_encryption_keys.iter().find(|record| record.key_id == key.id) else { continue };
+            let existing_material = secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
+            verify_private_matches_public_key(&existing_material, &key_record.public_key_der)?;
             let existing_ref = key.private_key_ref.clone();
             for record in &mut catalog.recipient_keys {
                 if &record.private_key_ref == fresh {
@@ -1006,6 +1009,28 @@ mod tests {
         assert_eq!(
             secrets.resolve(TzapSecretPurpose::RecipientKey, &original.recipient_keys[0].private_key_ref).unwrap().expose_secret(),
             inventory.recipient_encryption_keys[0].private_key_der.expose_secret()
+        );
+    }
+
+    #[test]
+    fn recipient_key_id_cannot_overwrite_existing_secret_with_different_key_material() {
+        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
+        let mut secrets = RecordingSecretStore::default();
+        let original_inventory = recipient_inventory(1);
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &original_inventory).unwrap();
+        let original_catalog = catalogs.load_catalog("default").unwrap().unwrap();
+        let original = &original_catalog.recipient_keys[0];
+        let original_material = secrets.resolve(TzapSecretPurpose::RecipientKey, &original.private_key_ref).unwrap();
+
+        let mut replacement = recipient_inventory(1);
+        replacement.recipient_encryption_keys[0].key_id.clone_from(&original.id);
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &replacement).is_err());
+
+        assert_eq!(catalogs.load_catalog("default").unwrap().unwrap(), original_catalog);
+        assert_eq!(
+            secrets.resolve(TzapSecretPurpose::RecipientKey, &original.private_key_ref).unwrap().expose_secret(),
+            original_material.expose_secret(),
+            "a failed replacement must not overwrite the secret referenced by the published catalog"
         );
     }
 

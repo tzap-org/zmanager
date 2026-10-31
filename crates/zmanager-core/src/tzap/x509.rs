@@ -144,8 +144,8 @@ pub fn tzap_x509_signing_options_from_inventory(
 }
 
 /// Resolves one certificate and its private key directly from the public
-/// identity catalog. Unlike loading a full legacy inventory, this touches
-/// only the selected signing key in the secret store, so a CLI operation
+/// identity catalog. Unlike hydrating the full inventory, this touches only
+/// the selected signing key in the secret store, so a CLI operation
 /// does not need access to unrelated identities or recipient keys.
 pub fn tzap_x509_signing_options_from_catalog(
     catalog_store: &impl crate::identity_catalog::TzapIdentityCatalogStore,
@@ -1575,7 +1575,7 @@ mod tests {
         }
 
         #[test]
-        fn callback_design_same_key_renewals_without_legacy_ids_select_newest() {
+        fn callback_design_same_key_renewals_without_inventory_ids_select_newest() {
             let key = x509_fixture::p256_private_key();
             let reference = TzapSecretRef::generate();
             let mut old = identity("old", &key, reference.clone());

@@ -109,9 +109,10 @@ fixture identity into its native secret store, so macOS need not authorize a
 second executable to read keys created by the CLI. Cleanup deletes only the
 fixture's random secret references.
 
-Certificate discovery reads the public catalogue directly. It no longer
-resolves private keys or requires Keychain authorization merely to list
-certificates. Legacy file inventories remain supported.
+Certificate discovery reads the public catalogue directly. It does not resolve
+private keys or require Keychain authorization merely to list certificates.
+The public catalogue is the only persisted identity metadata format; private
+keys remain in the configured secure secret store.
 
 The completion contract uses the executable built by Cargo and disables shell
 startup files. An older Full `zm` installed on PATH no longer changes offline
@@ -389,8 +390,8 @@ CI architecture jobs execute this new harness successfully.
 
 ## Identity commit failure regression
 
-Failure-injection tests reproduced orphaned private keys when the legacy
-inventory facade successfully wrote secrets but the catalogue commit failed,
+Failure-injection tests reproduced orphaned private keys when the inventory
+facade successfully wrote secrets but the catalogue commit failed,
 or when a later secret write failed. The facade now tracks newly written
 references and attempts rollback on error, preserving all existing references.
 It re-reads the public catalogue before cleanup and retains references that a
