@@ -199,7 +199,7 @@ plan_options=(
 identity_options=(
   '(-h --help)'{-h,--help}'[Show help]'
   '--state-dir[Store local identity state in a directory]:directory:_directories'
-  '--account-key[Select local account inventory]:key'
+  '--account-key[Select identity catalog account]:key'
   '--json[Emit machine-readable JSON]'
 )
 

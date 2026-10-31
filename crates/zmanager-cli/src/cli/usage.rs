@@ -442,7 +442,7 @@ Options:
       --no-browser              Wait for the callback and print the login URL
       --timeout <seconds>       Callback wait timeout (1-600; default 600)
       --state-dir <dir>          Read and write local auth/session state from dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --restart                  Restart an abandoned pending login (auth login)
       --stdin                    Read one callback URL privately (auth callback)
       --callback-url <url>       Complete a callback URL (prefer --stdin)
@@ -464,7 +464,7 @@ Usage:
 
 Options:
       --state-dir <dir>          Read local auth/session state from dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --json                     Emit machine-readable JSON
 ";
 
@@ -479,7 +479,7 @@ Usage:
 
 Options:
       --state-dir <dir>          Store local identity/session state in dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --certificate-id <id>      Certificate id for renew/revoke
       --service-base-url <url>   Enroll/renew through a hosted TZAP sign API instead of the local fake profile
       --trusted-root-cert <file> Trust a staging root PEM/DER certificate for hosted enrollment/renewal
@@ -490,7 +490,7 @@ Options:
 
 Enroll, renew, and revoke use the local fake TZAP service profile by default
 for deterministic harness runs. `zm tzap certs` reads the resulting local
-inventory read-only, in every build.
+catalog read-only, in every build.
 ";
 
 #[cfg(feature = "tzap-online")]
@@ -503,7 +503,7 @@ Usage:
 
 Options:
       --state-dir <dir>          Store local identity/session state in dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --device-id <id>           Sign device id for revoke
       --service-base-url <url>   Revoke through a hosted TZAP sign API (default: production)
       --json                     Emit machine-readable JSON
@@ -531,7 +531,7 @@ with --signing-identity or --signing-cert instead.
 
 Options:
       --state-dir <dir>          Store local identity state in dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --certificate-id <id>      Local enrolled certificate id
       --output <file>            Destination envelope JSON file
       --claimed-signing-time <text>
@@ -597,7 +597,7 @@ Run `zm tzap share --help` to archive files for accepted contacts.
 
 Options:
       --state-dir <dir>          Store local identity state in dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --label <name>             Local label for a newly generated recipient key
       --recipient-key-id <id>    Local recipient key id for export
       --certificate-id <id>      Local signing certificate id for export
@@ -633,7 +633,7 @@ CLI currently has no command to export them as a private-key file.
 
 Options:
       --state-dir <dir>          Store local identity state in dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --contact <id>             Accepted contact id; repeat for multiple recipients
       --certificate-id <id>      Active local certificate used for RootAuth signing
       --force                    Replace an existing output archive
@@ -648,7 +648,7 @@ Usage:
 
 Options:
       --state-dir <dir>          Read local identity state from dir
-      --account-key <key>        Local account inventory key; default is default
+      --account-key <key>        Identity catalog account key; default is default
       --json                     Emit machine-readable JSON
 
 Reads the local identity catalogue only — no network access. Use this to find

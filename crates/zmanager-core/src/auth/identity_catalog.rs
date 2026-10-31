@@ -279,7 +279,8 @@ pub struct TzapPublicContactRecord {
     pub recipient_public_key_der: Vec<u8>,
     pub trust_source: String,
     /// Origin of the stored contact, independent from its certificate trust
-    /// anchor.
+    /// anchor. Older schema-v1 catalogs predate this field.
+    #[serde(default)]
     pub source: String,
     pub verification_state: String,
     pub missing_status_caveat: bool,
@@ -320,11 +321,14 @@ pub struct TzapIdentityCatalog {
     pub recipient_keys: Vec<TzapPublicRecipientKeyRecord>,
     pub contacts: Vec<TzapPublicContactRecord>,
     /// See [`crate::local_identity_store::TzapLocalIdentityInventory::removed_contacts`].
+    #[serde(default)]
     pub removed_contacts: Vec<TzapContactTombstone>,
     pub status_cache: Vec<TzapPublicStatusCacheRecord>,
     pub emergency_blocklist: TzapPublicEmergencyBlocklist,
     /// Pending hosted issuance intents; these contain public correlation data
     /// only and are copied back into the local inventory during hydration.
+    /// Older schema-v1 catalogs predate this field.
+    #[serde(default)]
     pub pending_certificate_operations: Vec<TzapPendingCertificateOperation>,
 }
 
@@ -668,6 +672,38 @@ mod tests {
         assert!(!json.contains("private_key_der"));
         assert!(!json.contains("session_token"));
         catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn schema_v1_catalogs_default_fields_added_after_initial_release() {
+        let contact = TzapPublicContactRecord {
+            contact_id: "contact-1".to_owned(),
+            display_name: "Contact".to_owned(),
+            signing_certificate_sha256: "sha256:cert".to_owned(),
+            recipient_public_key_fingerprint: "sha256:key".to_owned(),
+            recipient_public_key_der: vec![1],
+            trust_source: "untrusted".to_owned(),
+            source: String::new(),
+            verification_state: "not_recorded".to_owned(),
+            missing_status_caveat: true,
+            contact_card_payload: serde_json::Value::Null,
+            accepted_at_unix_seconds: 1,
+            local_alias: None,
+            card: None,
+        };
+        let mut value = serde_json::to_value(TzapIdentityCatalog::empty()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("removed_contacts");
+        object.remove("pending_certificate_operations");
+        let contact = serde_json::to_value(contact).unwrap();
+        let contact =
+            contact.as_object().unwrap().iter().filter(|(key, _)| key.as_str() != "source").map(|(key, value)| (key.clone(), value.clone())).collect();
+        object.insert("contacts".to_owned(), serde_json::Value::Array(vec![serde_json::Value::Object(contact)]));
+
+        let decoded: TzapIdentityCatalog = serde_json::from_value(value).unwrap();
+        assert!(decoded.removed_contacts.is_empty());
+        assert!(decoded.pending_certificate_operations.is_empty());
+        assert_eq!(decoded.contacts[0].source, "");
     }
 
     #[test]

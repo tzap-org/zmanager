@@ -160,7 +160,7 @@ complete -c zm -n "__fish_seen_subcommand_from auth" -l handoff-code -r -d "One-
 complete -c zm -n "__fish_seen_subcommand_from auth" -l relay-body -r -d "Relay JSON file"
 
 complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share certs" -l state-dir -r -d "Store local state in directory"
-complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share certs" -l account-key -r -d "Local account inventory key"
+complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign contact share certs" -l account-key -r -d "Identity catalog account key"
 complete -c zm -n "__fish_seen_subcommand_from auth me cert device sign verify contact share certs" -l json -d "Emit machine-readable JSON"
 complete -c zm -n "__fish_seen_subcommand_from cert sign contact share" -l certificate-id -r -d "Certificate id"
 complete -c zm -n "__fish_seen_subcommand_from contact" -l label -r -d "Local recipient key label"
