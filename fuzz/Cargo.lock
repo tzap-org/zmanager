@@ -3789,14 +3789,14 @@ checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmanager-apple-archive"
-version = "2.1.7"
+version = "2.2.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "zmanager-core"
-version = "2.1.7"
+version = "2.2.0"
 dependencies = [
  "adler2",
  "argon2",
@@ -3857,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "2.1.7"
+version = "2.2.0"
 dependencies = [
  "cc",
  "zeroize",
@@ -3865,7 +3865,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-wim"
-version = "2.1.7"
+version = "2.2.0"
 dependencies = [
  "hex",
  "sha1 0.10.7",

@@ -51,6 +51,10 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
+      - name: Set build revision
+        shell: bash
+        run: echo "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
       - name: Clone localsend-rs
         shell: bash
         run: |

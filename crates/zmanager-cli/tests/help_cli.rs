@@ -18,6 +18,7 @@ const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../../.github/workflows/release.yml");
 const PACKAGE_PREVIEW_WORKFLOW: &str = include_str!("../../../.github/workflows/package-preview.yml");
 const PACKAGE_RELEASE_SH: &str = include_str!("../../../scripts/package-release.sh");
+const PACKAGE_RELEASE_ALPINE_SH: &str = include_str!("../../../scripts/package-release-alpine.sh");
 const PACKAGE_METADATA_SH: &str = include_str!("../../../scripts/generate-package-metadata.sh");
 const RELEASE_COMPATIBILITY_SH: &str = include_str!("../../../scripts/release-compatibility-check.sh");
 const THIRD_PARTY_NOTICE_GENERATOR: &str = include_str!("../../../scripts/generate-third-party-notices.py");
@@ -425,7 +426,7 @@ Require 'zm extract --restore ' 'content'
 Require 'zm tzap sign --output sp' "'space archive.zip'"
 Require 'zm tzap verify --custom-trust-root-cert sp' "'space archive.zip'"
 # A Full binary still exposes the online command and help topics.
-function global:zm { 'zm 2.1.7 (full, test)' }
+function global:zm { 'zm 2.2.0 (full, test)' }
 Require 'zm ' 'auth'
 Require 'zm help ' 'auth'
 Require 'zm auth ' 'login'
@@ -813,7 +814,7 @@ fn package_channel_metadata_uses_release_checksums() {
 
 #[test]
 fn release_validation_artifacts_are_declared() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "2.1.7");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "2.2.0");
 
     for required in ["*.deps.txt", "package-metadata.tar.gz", "SHA256SUMS", "sha256sum package-metadata.tar.gz >> SHA256SUMS"] {
         assert_contains(RELEASE_WORKFLOW, required);
@@ -826,6 +827,16 @@ fn release_validation_artifacts_are_declared() {
     for required in ["dumpbin /dependents", "zm-$TargetTriple.deps.txt"] {
         assert_contains(CI_WINDOWS_PS1, required);
     }
+}
+
+#[test]
+fn unix_packages_embed_the_checked_out_revision_after_cargo_config_rewrite() {
+    let revision_step = "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)";
+    for workflow in [RELEASE_WORKFLOW, PACKAGE_PREVIEW_WORKFLOW] {
+        assert_contains(workflow, revision_step);
+        assert!(workflow.find(revision_step).unwrap() < workflow.find("Use published tzap-core").unwrap());
+    }
+    assert_contains(PACKAGE_RELEASE_ALPINE_SH, "-e ZMANAGER_BUILD_REV");
 }
 
 #[test]

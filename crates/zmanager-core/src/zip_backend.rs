@@ -27,6 +27,10 @@ use zip::read::ZipFile;
 use zip::write::FullFileOptions;
 use zip::{AesMode, CompressionMethod, ZipArchive, ZipReadOptions, ZipWriter};
 
+/// Symlink payloads should be small path strings, not arbitrary expanded file
+/// data. Bound their allocation independently of regular-file extraction.
+const MAX_SYMLINK_TARGET_BYTES: u64 = 16 * 1024;
+
 /// ZIP compression methods exposed in v1.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum ZipCompression {
@@ -163,7 +167,7 @@ pub enum ZipBackendError {
     UnsupportedSplitZip { reason: String },
     /// Extraction safety rejected an entry.
     Safety(ExtractionSafetyError),
-    /// Symlink target was not valid UTF-8 for this v1 backend.
+    /// Symlink target was invalid UTF-8 or exceeded the supported size.
     InvalidSymlinkTarget { archive_path: String },
     /// Job was cancelled cooperatively.
     Cancelled,
@@ -185,7 +189,7 @@ impl fmt::Display for ZipBackendError {
             }
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::InvalidSymlinkTarget { archive_path } => {
-                write!(f, "symlink target is not valid UTF-8 for {archive_path}")
+                write!(f, "symlink target is invalid or too large for {archive_path}")
             }
             Self::Cancelled => write!(f, "job cancelled"),
         }
@@ -571,7 +575,7 @@ pub(crate) fn extract_zip_archive<R: Read + Seek>(
         let entry_size = file.size();
         let unix_mode = zip_entry_mode(&file);
         let modified_time = zip_entry_mtime(&file);
-        let kind = extraction_entry_kind(&mut file)?;
+        let kind = extraction_entry_kind(&mut file, cancellation)?;
         let entry = ExtractionEntry {
             archive_path: file.name().map_err(map_zip_error)?.into_owned(),
             kind,
@@ -900,15 +904,28 @@ fn zip_entry_mode<R: Read>(file: &ZipFile<'_, R>) -> Option<u32> {
         .map(|mode| if file.is_dir() && file.system() == zip::System::Unix { mode | ((file.external_attributes() >> 16) & STICKY_DIRECTORY_BIT) } else { mode })
 }
 
-fn extraction_entry_kind<R: Read>(file: &mut zip::read::ZipFile<'_, R>) -> Result<ExtractionEntryKind, ZipBackendError> {
+fn extraction_entry_kind<R: Read>(
+    file: &mut zip::read::ZipFile<'_, R>,
+    cancellation: Option<&CancellationToken>,
+) -> Result<ExtractionEntryKind, ZipBackendError> {
     if file.is_dir() {
         return Ok(ExtractionEntryKind::Directory);
     }
 
     if file.is_symlink() {
-        let mut target = String::new();
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(ZipBackendError::Cancelled);
+        }
         let archive_path = file.name().map_err(map_zip_error)?.into_owned();
-        file.read_to_string(&mut target).map_err(|_| ZipBackendError::InvalidSymlinkTarget { archive_path })?;
+        if file.size() > MAX_SYMLINK_TARGET_BYTES {
+            return Err(ZipBackendError::InvalidSymlinkTarget { archive_path });
+        }
+        let mut target = String::new();
+        let mut bounded = (&mut *file).take(MAX_SYMLINK_TARGET_BYTES + 1);
+        bounded.read_to_string(&mut target).map_err(|_| ZipBackendError::InvalidSymlinkTarget { archive_path: archive_path.clone() })?;
+        if target.len() as u64 > MAX_SYMLINK_TARGET_BYTES {
+            return Err(ZipBackendError::InvalidSymlinkTarget { archive_path });
+        }
         return Ok(ExtractionEntryKind::Symlink { target: PathBuf::from(target) });
     }
 
@@ -1981,6 +1998,20 @@ mod tests {
         let extracted_link = temp.path("out/project/link.txt");
         assert_eq!(fs::read_link(&extracted_link).unwrap(), Path::new("target.txt"));
         assert_eq!(fs::read_to_string(&extracted_link).unwrap(), "target");
+    }
+
+    #[test]
+    fn rejects_oversized_zip_symlink_targets_before_materializing_them() {
+        let temp = TestDir::new("rejects_oversized_zip_symlink_targets");
+        let archive = temp.path("archive.zip");
+        let target = "x".repeat((super::MAX_SYMLINK_TARGET_BYTES + 1) as usize);
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.add_symlink("oversized-link", target, FullFileOptions::default()).unwrap();
+        writer.finish().unwrap();
+
+        let error = extract_zip_fixture(&archive, temp.path("out"), ExtractionPolicy::default()).unwrap_err();
+        assert!(matches!(error, super::ZipBackendError::InvalidSymlinkTarget { archive_path } if archive_path == "oversized-link"));
+        assert!(!temp.path("out/oversized-link").exists());
     }
 
     #[cfg(unix)]

@@ -310,7 +310,7 @@ mod tests {
         fs::write(&path, bytes).unwrap();
         assert!(matches!(
             recover_file_inventory_writes(&fixture.catalogue, &mut fixture.secrets, "default"),
-            Err(TzapIdentityCatalogError::InvalidCatalog { .. })
+            Err(TzapIdentityCatalogError::InvalidCatalog { .. } | TzapIdentityCatalogError::Json(_))
         ));
         assert_eq!(fs::read(path).unwrap(), bytes);
     }

@@ -77,7 +77,16 @@ jobs:
           ./scripts/bump-version.sh "${{ inputs.version }}"
 
       - name: Verify workspace tests
-        run: cargo test --workspace
+        run: |
+          config_backup=$(mktemp)
+          cp .cargo/config.toml "$config_backup"
+          restore_cargo_config() {
+            cp "$config_backup" .cargo/config.toml
+            rm -f "$config_backup"
+          }
+          trap restore_cargo_config EXIT
+          python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); s=p.read_text(); marker="[patch.crates-io]"; assert marker in s; p.write_text(s.split(marker, 1)[0].rstrip() + "\n")'
+          cargo test --workspace --locked
 
       - name: Commit and push version bump
         run: |

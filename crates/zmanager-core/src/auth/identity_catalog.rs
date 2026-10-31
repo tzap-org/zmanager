@@ -23,7 +23,7 @@ use std::time::SystemTime;
 pub const PUBLIC_CATALOG_SCHEMA_VERSION: u64 = 1;
 pub const PUBLIC_CATALOG_FILE_SUFFIX: &str = ".identity-catalog.json";
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct TzapSecretRef(String);
 
@@ -43,7 +43,20 @@ impl TzapSecretRef {
 
     pub fn parse(value: impl Into<String>) -> Result<Self, TzapSecretStoreError> {
         let value = value.into();
-        if value.starts_with("secret_") && value.len() > "secret_".len() { Ok(Self(value)) } else { Err(TzapSecretStoreError::InvalidReference) }
+        let Some(payload) = value.strip_prefix("secret_") else {
+            return Err(TzapSecretStoreError::InvalidReference);
+        };
+        if payload.is_empty() || !payload.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
+            return Err(TzapSecretStoreError::InvalidReference);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl<'de> Deserialize<'de> for TzapSecretRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -655,6 +668,13 @@ mod tests {
         InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn secret_references_reject_path_syntax_in_parsing_and_catalog_json() {
+        assert!(TzapSecretRef::parse("secret_safe-Reference_1").is_ok());
+        assert_eq!(TzapSecretRef::parse("secret_../../outside"), Err(TzapSecretStoreError::InvalidReference));
+        assert!(serde_json::from_str::<TzapSecretRef>("\"secret_../../outside\"").is_err());
+    }
 
     #[test]
     fn catalog_io_errors_use_plain_language() {

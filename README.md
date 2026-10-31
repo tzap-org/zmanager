@@ -31,8 +31,8 @@ Each release ships two flavors:
 Normal release assets are named `zm-<target>`; Full assets are named
 `zm-full-<target>`.
 
-`zm --version` reports which flavor is installed (`zm 2.1.7 (full)` or
-`zm 2.1.7 (offline)`). For full installation details and checksum examples,
+`zm --version` reports which flavor is installed (`zm 2.2.0 (full)` or
+`zm 2.2.0 (offline)`). For full installation details and checksum examples,
 see [docs/INSTALL.md](docs/INSTALL.md).
 
 ### macOS

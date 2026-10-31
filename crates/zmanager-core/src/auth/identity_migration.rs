@@ -416,8 +416,11 @@ impl FileTzapSecretMaterialStore {
         Self { root: root.into(), account_key: account_key.to_owned() }
     }
 
-    fn secret_path(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> PathBuf {
-        self.root.join("secrets").join(&self.account_key).join(purpose.as_str()).join(reference.as_str())
+    fn secret_path(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<PathBuf, TzapSecretStoreError> {
+        if !crate::identity_catalog::validate_account_key(&self.account_key) {
+            return Err(TzapSecretStoreError::Denied);
+        }
+        Ok(self.root.join("secrets").join(&self.account_key).join(purpose.as_str()).join(reference.as_str()))
     }
 }
 
@@ -435,7 +438,7 @@ impl TzapSecretMaterialStore for FileTzapSecretMaterialStore {
         if material.is_empty() {
             return Err(TzapSecretStoreError::Corrupt);
         }
-        let path = self.secret_path(purpose, reference);
+        let path = self.secret_path(purpose, reference)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|_| TzapSecretStoreError::Denied)?;
         }
@@ -443,7 +446,7 @@ impl TzapSecretMaterialStore for FileTzapSecretMaterialStore {
     }
 
     fn resolve(&self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<SecretBytes, TzapSecretStoreError> {
-        let path = self.secret_path(purpose, reference);
+        let path = self.secret_path(purpose, reference)?;
         match fs::read(&path) {
             Ok(bytes) => Ok(SecretBytes::from(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Err(TzapSecretStoreError::Missing { reference: reference.clone() }),
@@ -452,7 +455,7 @@ impl TzapSecretMaterialStore for FileTzapSecretMaterialStore {
     }
 
     fn delete(&mut self, purpose: TzapSecretPurpose, reference: &TzapSecretRef) -> Result<(), TzapSecretStoreError> {
-        let path = self.secret_path(purpose, reference);
+        let path = self.secret_path(purpose, reference)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -892,6 +895,15 @@ fn verify_private_matches_public_key(private_key: &SecretBytes, public_key_der: 
 mod tests {
     use super::*;
     use crate::identity_catalog::{InMemoryTzapIdentityCatalogStore, InMemoryTzapSecretMaterialStore, TzapPublicRecipientKeyRecord};
+
+    #[test]
+    fn file_secret_store_rejects_path_traversal_account_keys() {
+        let mut store = FileTzapSecretMaterialStore::new("/tmp/zmanager-secret-path-test", "../outside");
+        let reference = TzapSecretRef::parse("secret_safe").unwrap();
+        assert_eq!(store.put_at(TzapSecretPurpose::SigningKey, &reference, SecretBytes::from(vec![1])), Err(TzapSecretStoreError::Denied));
+        assert_eq!(store.resolve(TzapSecretPurpose::SigningKey, &reference), Err(TzapSecretStoreError::Denied));
+        assert_eq!(store.delete(TzapSecretPurpose::SigningKey, &reference), Err(TzapSecretStoreError::Denied));
+    }
 
     #[test]
     fn callback_design_catalog_hydration_rejects_empty_chain_without_reading_secrets() {

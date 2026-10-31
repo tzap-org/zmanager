@@ -80,6 +80,7 @@ docker_args+=(
   -e CARGO_TARGET_DIR=/workspace/target
   -e HOST_UID="$(id -u)"
   -e HOST_GID="$(id -g)"
+  -e ZMANAGER_BUILD_REV
   -e ZM_USE_SYSTEM_MUSL_TOOLCHAIN=1
   "$IMAGE"
   /bin/sh -c '

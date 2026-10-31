@@ -43,6 +43,9 @@ if [ -f README.md ]; then
 fi
 
 if [ -f docs/INSTALL.md ]; then
+    sed -i.bak -E "s/(\`zm )[0-9]+\.[0-9]+\.[0-9]+( \(full\)\`)/\1${NEW_VERSION}\2/g" docs/INSTALL.md
+    sed -i.bak -E "s/(\`zm )[0-9]+\.[0-9]+\.[0-9]+( \(offline\)\`)/\1${NEW_VERSION}\2/g" docs/INSTALL.md
+    sed -i.bak -E "s/(TzapOrg\.ZManagerCLI\\\\)[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?/\1${NEW_VERSION}/g" docs/INSTALL.md
     sed -i.bak -E "s/(ZMANAGER_VERSION=v)[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?/\1${NEW_VERSION}/g" docs/INSTALL.md
     sed -i.bak -E "s/(releases\/download\/v)[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?/\1${NEW_VERSION}/g" docs/INSTALL.md
     sed -i.bak -E "s/^([[:space:]]*)v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?[[:space:]]*\\\\/\1v${NEW_VERSION} \\\\/g" docs/INSTALL.md
@@ -60,9 +63,22 @@ if [ -f RELEASE.md ]; then
 fi
 
 if [ -f crates/zmanager-cli/tests/help_cli.rs ]; then
+    sed -i.bak -E "s/(zm )[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?( \(full, test\))/\1${NEW_VERSION}\3/g" crates/zmanager-cli/tests/help_cli.rs
     sed -i.bak -E "s/(assert_eq!\(env!\(\"CARGO_PKG_VERSION\"\), \")[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\"\);)/\1${NEW_VERSION}\3/g" crates/zmanager-cli/tests/help_cli.rs
     rm -f crates/zmanager-cli/tests/help_cli.rs.bak
 fi
+
+# Generate Cargo.lock files against released crates. The local development
+# patch otherwise replaces the registry source entry for tzap-core with a path
+# package, which makes release workflows' locked builds diverge from the lock.
+CONFIG_BACKUP=$(mktemp)
+cp .cargo/config.toml "$CONFIG_BACKUP"
+restore_cargo_config() {
+    cp "$CONFIG_BACKUP" .cargo/config.toml
+    rm -f "$CONFIG_BACKUP"
+}
+trap restore_cargo_config EXIT
+python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); s=p.read_text(); marker="[patch.crates-io]"; assert marker in s; p.write_text(s.split(marker, 1)[0].rstrip() + "\n")'
 
 echo "==> Updating root Cargo.lock..."
 cargo check --workspace

@@ -20,14 +20,14 @@ a release or install elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v2.1.7 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
+  | ZMANAGER_VERSION=v2.2.0 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
 ```
 
 Use `sudo env` for system-wide locations:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | sudo env ZMANAGER_VERSION=v2.1.7 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | sudo env ZMANAGER_VERSION=v2.2.0 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 The default installs the **normal** build (reported as `offline`) — every archive command plus
@@ -41,8 +41,8 @@ curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
   | sh -s -- --full
 ```
 
-`zm --version` reports which flavor is installed: `zm 2.1.7 (full)` or
-`zm 2.1.7 (offline)`.
+`zm --version` reports which flavor is installed: `zm 2.2.0 (full)` or
+`zm 2.2.0 (offline)`.
 
 If no matching binary exists, the installer falls back to building from source.
 Source fallback requires `git`, Rust/Cargo, and the target platform's native
@@ -78,8 +78,8 @@ Verify checksums before installing.
 Unix:
 
 ```sh
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.1.7/SHA256SUMS
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.1.7/zm-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.2.0/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.2.0/zm-aarch64-apple-darwin.tar.gz
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
@@ -145,8 +145,8 @@ without installing extra runtime packages. The install script is the recommended
 path; use the manual flow when you want to inspect or stage the tarball yourself.
 
 ```sh
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.1.7/SHA256SUMS
-curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.1.7/zm-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.2.0/SHA256SUMS
+curl -LO https://github.com/tzap-org/zmanager/releases/download/v2.2.0/zm-x86_64-unknown-linux-musl.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf zm-x86_64-unknown-linux-musl.tar.gz
 ./zm --version
@@ -196,14 +196,14 @@ elsewhere:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | ZMANAGER_VERSION=v2.1.7 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
+  | ZMANAGER_VERSION=v2.2.0 ZMANAGER_INSTALL_DIR="$HOME/bin" sh
 ```
 
 Use `sudo env` for system-wide locations:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tzap-org/zmanager/main/install.sh \
-  | sudo env ZMANAGER_VERSION=v2.1.7 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
+  | sudo env ZMANAGER_VERSION=v2.2.0 ZMANAGER_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ## Preview Builds (developers)
@@ -256,8 +256,8 @@ generate it locally from release artifacts:
 
 ```sh
 scripts/generate-package-metadata.sh \
-  v2.1.7 \
-  https://github.com/tzap-org/zmanager/releases/download/v2.1.7 \
+  v2.2.0 \
+  https://github.com/tzap-org/zmanager/releases/download/v2.2.0 \
   dist/SHA256SUMS \
   dist/package-metadata
 ```
@@ -282,7 +282,7 @@ IDs. After release metadata is generated, validate the manifests before submitti
 them to `microsoft/winget-pkgs`:
 
 ```powershell
-winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.1.7
+winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.2.0
 ```
 
 WinGet metadata is generated from the same `SHA256SUMS` file as the Homebrew
