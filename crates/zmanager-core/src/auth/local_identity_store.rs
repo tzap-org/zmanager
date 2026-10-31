@@ -12,8 +12,6 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const DEFAULT_IDENTITY_INVENTORY_ACCOUNT: &str = "default";
-pub const IDENTITY_INVENTORY_FILE_SUFFIX: &str = ".identity.json";
-const STORE_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TzapLocalIdentityInventory {
@@ -502,11 +500,11 @@ pub struct TzapContactRecord {
     /// Display name chosen by the importer, distinct from the card's own
     /// `display_name`/`device_label` (chosen by the sender). Display
     /// metadata only -- never signed, never fed back into verification.
-    /// `None` for a contact the importer has not renamed, and absent from
-    /// catalogs written before this field existed.
+    /// `None` for a contact the importer has not renamed.
     pub local_alias: Option<String>,
     /// Original signed contact card container, retained for snapshot export
-    /// and re-verification (design §8.3). `None` on legacy records.
+    /// and re-verification (design §8.3). `None` when the source card is not
+    /// retained.
     pub card: Option<Value>,
 }
 
@@ -544,53 +542,22 @@ pub struct FileTzapLocalIdentityStore {
     root: PathBuf,
 }
 
-fn current_unix_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
-}
-
 impl FileTzapLocalIdentityStore {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
-    }
-
-    fn inventory_path(&self, account_key: &str) -> Result<PathBuf, TzapLocalIdentityStoreError> {
-        validate_account_key(account_key)?;
-        Ok(self.root.join(format!("{account_key}{IDENTITY_INVENTORY_FILE_SUFFIX}")))
     }
 }
 
 impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
     fn load_inventory(&self, account_key: &str) -> Result<TzapLocalIdentityInventory, TzapLocalIdentityStoreError> {
         use crate::identity_catalog::{FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, load_inventory_from_catalog};
-        use crate::identity_write_journal::{recover_file_inventory_writes, store_file_inventory_as_catalog};
+        use crate::identity_write_journal::recover_file_inventory_writes;
 
         let catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
         let mut secret_store = FileTzapSecretMaterialStore::new(&self.root, account_key);
         recover_file_inventory_writes(&catalog_store, &mut secret_store, account_key)?;
-        if let Some(inventory) = load_inventory_from_catalog(&catalog_store, &secret_store, account_key)? {
-            return Ok(inventory);
-        }
-
-        // No catalog yet: migrate the legacy inventory file once, then treat
-        // the catalog as the only on-disk format.
-        let legacy_path = self.inventory_path(account_key)?;
-        if !legacy_path.exists() {
-            return Ok(TzapLocalIdentityInventory::empty());
-        }
-        let bytes = fs::read(&legacy_path)?;
-        let value: Value = serde_json::from_slice(&bytes)?;
-        let inventory = inventory_from_json(&value)?;
-        inventory.validate()?;
-        store_file_inventory_as_catalog(
-            &mut FileTzapIdentityCatalogStore::new(&self.root),
-            &mut FileTzapSecretMaterialStore::new(&self.root, account_key),
-            account_key,
-            &inventory,
-            current_unix_seconds(),
-        )?;
-        let _ = fs::remove_file(legacy_path);
-        Ok(inventory)
+        Ok(load_inventory_from_catalog(&catalog_store, &secret_store, account_key)?.unwrap_or_else(TzapLocalIdentityInventory::empty))
     }
 
     fn save_inventory(&mut self, account_key: &str, inventory: TzapLocalIdentityInventory) -> Result<(), TzapLocalIdentityStoreError> {
@@ -603,16 +570,14 @@ impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
             &mut FileTzapSecretMaterialStore::new(&self.root, account_key),
             account_key,
             &inventory,
-            current_unix_seconds(),
         )?;
-        let _ = fs::remove_file(self.inventory_path(account_key)?);
         Ok(())
     }
 
     fn clear_inventory(&mut self, account_key: &str) -> Result<(), TzapLocalIdentityStoreError> {
         use crate::identity_catalog::{FileTzapIdentityCatalogStore, TzapIdentityCatalogStore as _};
 
-        let path = self.inventory_path(account_key)?;
+        validate_account_key(account_key)?;
         let mut catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
         catalog_store.clear_catalog(account_key)?;
         let secrets_root = self.root.join("secrets").join(account_key);
@@ -621,11 +586,7 @@ impl TzapLocalIdentityStore for FileTzapLocalIdentityStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        Ok(())
     }
 }
 
@@ -668,10 +629,9 @@ pub enum TzapLocalIdentityStoreError {
     /// Filesystem I/O failed. Carries the full error (including the OS-level
     /// message) so failures are diagnosable without re-probing the path.
     Io(std::io::Error),
-    Json(String),
     /// The identity catalog (the facade's storage) rejected the operation.
     /// Boxed because the catalog error carries this error type in its
-    /// `Legacy` variant; an unboxed cycle would be infinitely sized.
+    /// `LocalStore` variant; an unboxed cycle would be infinitely sized.
     Catalog(Box<crate::identity_catalog::TzapIdentityCatalogError>),
 }
 
@@ -683,7 +643,6 @@ impl fmt::Display for TzapLocalIdentityStoreError {
                 write!(f, "local identity field {field} contains duplicate {value}")
             }
             Self::Io(error) => write!(f, "local identity store I/O failed: {error}"),
-            Self::Json(message) => write!(f, "local identity JSON is invalid: {message}"),
             Self::Catalog(error) => write!(f, "identity catalog operation failed: {error}"),
         }
     }
@@ -694,7 +653,7 @@ impl std::error::Error for TzapLocalIdentityStoreError {
         match self {
             Self::Io(error) => Some(error),
             Self::Catalog(error) => Some(error),
-            Self::InvalidField { .. } | Self::DuplicateRecord { .. } | Self::Json(_) => None,
+            Self::InvalidField { .. } | Self::DuplicateRecord { .. } => None,
         }
     }
 }
@@ -711,229 +670,11 @@ impl From<std::io::Error> for TzapLocalIdentityStoreError {
     }
 }
 
-impl From<serde_json::Error> for TzapLocalIdentityStoreError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Json(error.to_string())
-    }
-}
-
-// Thin typed wrappers over the shared json_util helpers: the extraction
-// logic lives in json_util; these exist so call sites keep concrete error
-// types and inference stays unambiguous.
-type JsonMap<'a> = &'a serde_json::Map<String, Value>;
-fn json_object<'a>(value: &'a Value, field: &'static str) -> Result<JsonMap<'a>, TzapLocalIdentityStoreError> {
-    crate::json_util::json_object(value, field)
-}
-fn required_field<'a>(object: JsonMap<'a>, field: &'static str) -> Result<&'a Value, TzapLocalIdentityStoreError> {
-    crate::json_util::required_field(object, field)
-}
-fn required_array<'a>(object: JsonMap<'a>, field: &'static str) -> Result<&'a Vec<Value>, TzapLocalIdentityStoreError> {
-    crate::json_util::required_array(object, field)
-}
-fn required_string(object: JsonMap<'_>, field: &'static str) -> Result<String, TzapLocalIdentityStoreError> {
-    crate::json_util::required_string(object, field)
-}
-fn required_string_value(value: &Value, field: &'static str) -> Result<String, TzapLocalIdentityStoreError> {
-    crate::json_util::required_string_value(value, field)
-}
-fn optional_string(object: JsonMap<'_>, field: &'static str) -> Result<Option<String>, TzapLocalIdentityStoreError> {
-    crate::json_util::optional_string(object, field)
-}
-fn required_u64(object: JsonMap<'_>, field: &'static str) -> Result<u64, TzapLocalIdentityStoreError> {
-    crate::json_util::required_u64(object, field)
-}
-fn required_bool(object: JsonMap<'_>, field: &'static str) -> Result<bool, TzapLocalIdentityStoreError> {
-    crate::json_util::required_bool(object, field)
-}
-fn optional_u64(object: JsonMap<'_>, field: &'static str) -> Result<Option<u64>, TzapLocalIdentityStoreError> {
-    crate::json_util::optional_u64(object, field)
-}
-
-fn inventory_from_json(value: &Value) -> Result<TzapLocalIdentityInventory, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "$")?;
-    let version = required_u64(object, "version")?;
-    if version != STORE_FORMAT_VERSION {
-        return Err(TzapLocalIdentityStoreError::InvalidField { field: "version" });
-    }
-
-    let inventory = TzapLocalIdentityInventory {
-        device_signing_keys: required_array(object, "device_signing_keys")?.iter().map(device_signing_key_from_json).collect::<Result<Vec<_>, _>>()?,
-        recipient_encryption_keys: required_array(object, "recipient_encryption_keys")?
-            .iter()
-            .map(recipient_encryption_key_from_json)
-            .collect::<Result<Vec<_>, _>>()?,
-        enrolled_certificates: required_array(object, "enrolled_certificates")?.iter().map(enrolled_certificate_from_json).collect::<Result<Vec<_>, _>>()?,
-        certificate_status_cache: required_array(object, "certificate_status_cache")?.iter().map(status_cache_from_json).collect::<Result<Vec<_>, _>>()?,
-        emergency_blocklist: emergency_blocklist_from_json(required_field(object, "emergency_blocklist")?)?,
-        contacts: required_array(object, "contacts")?.iter().map(contact_from_json).collect::<Result<Vec<_>, _>>()?,
-        pending_certificate_operations: Vec::new(),
-        // This legacy raw-file format predates tombstones entirely (read only
-        // for the one-time migration to the catalog format), so there is
-        // nothing to parse.
-        removed_contacts: Vec::new(),
-    };
-    inventory.validate()?;
-    Ok(inventory)
-}
-
-fn device_signing_key_from_json(value: &Value) -> Result<TzapDeviceSigningKeyRecord, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "device_signing_keys[]")?;
-    Ok(TzapDeviceSigningKeyRecord {
-        key_id: required_string(object, "key_id")?,
-        public_key_fingerprint: required_string(object, "public_key_fingerprint")?,
-        private_key_der: SecretBytes::from(decode_base64url(required_string(object, "private_key_der")?, "private_key_der")?),
-        created_at_unix_seconds: required_u64(object, "created_at_unix_seconds")?,
-        label: optional_string(object, "label")?,
-        hosted_binding: object
-            .get("hosted_binding")
-            .filter(|value| !value.is_null())
-            .map(|value| serde_json::from_value(value.clone()).map_err(|_| TzapLocalIdentityStoreError::InvalidField { field: "hosted_binding" }))
-            .transpose()?,
-    })
-}
-
-fn recipient_encryption_key_from_json(value: &Value) -> Result<TzapRecipientEncryptionKeyRecord, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "recipient_encryption_keys[]")?;
-    Ok(TzapRecipientEncryptionKeyRecord {
-        key_id: required_string(object, "key_id")?,
-        algorithm: required_string(object, "algorithm")?,
-        public_key_fingerprint: required_string(object, "public_key_fingerprint")?,
-        public_key_der: decode_base64url(required_string(object, "public_key_der")?, "public_key_der")?,
-        private_key_der: SecretBytes::from(decode_base64url(required_string(object, "private_key_der")?, "private_key_der")?),
-        created_at_unix_seconds: required_u64(object, "created_at_unix_seconds")?,
-        label: optional_string(object, "label")?,
-    })
-}
-
-fn enrolled_certificate_from_json(value: &Value) -> Result<TzapEnrolledCertificateRecord, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "enrolled_certificates[]")?;
-    Ok(TzapEnrolledCertificateRecord {
-        certificate_sha256: required_string(object, "certificate_sha256")?,
-        certificate_id: required_string(object, "certificate_id")?,
-        issuer_certificate_sha256: required_string(object, "issuer_certificate_sha256")?,
-        issuer_key_identifier: required_string(object, "issuer_key_identifier")?,
-        serial_number: required_string(object, "serial_number")?,
-        leaf_certificate_der: decode_base64url(required_string(object, "leaf_certificate_der")?, "leaf_certificate_der")?,
-        intermediate_chain_der: required_array(object, "intermediate_chain_der")?
-            .iter()
-            .map(|value| decode_base64url(required_string_value(value, "intermediate_chain_der[]")?, "intermediate_chain_der"))
-            .collect::<Result<Vec<_>, _>>()?,
-        not_before_unix_seconds: required_u64(object, "not_before_unix_seconds")?,
-        not_after_unix_seconds: required_u64(object, "not_after_unix_seconds")?,
-        // Absent on every record written before S1; this legacy raw-file
-        // format is read only for one-time migration, so there is nothing to
-        // backfill it from.
-        renewal_grace_period_days: optional_u64(object, "renewal_grace_period_days")?,
-        renewal_recommended_within_days: optional_u64(object, "renewal_recommended_within_days")?,
-        public_metadata: public_metadata_from_json(required_field(object, "public_metadata")?)?,
-        sign_device_id: required_string(object, "sign_device_id")?,
-        sign_device_routing: routing_from_json(required_field(object, "sign_device_routing")?)?,
-        signing_key_id: required_string(object, "signing_key_id")?,
-        state: TzapLocalCertificateState::from_wire_value(&required_string(object, "state")?)
-            .ok_or(TzapLocalIdentityStoreError::InvalidField { field: "state" })?,
-    })
-}
-
-fn status_cache_from_json(value: &Value) -> Result<TzapCertificateStatusCacheRecord, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "certificate_status_cache[]")?;
-    Ok(TzapCertificateStatusCacheRecord {
-        certificate_sha256: required_string(object, "certificate_sha256")?,
-        status: required_string(object, "status")?
-            .parse::<TzapCertificateStatus>()
-            .map_err(|()| TzapLocalIdentityStoreError::InvalidField { field: "status" })?,
-        this_update_unix_seconds: required_u64(object, "this_update_unix_seconds")?,
-        next_update_unix_seconds: required_u64(object, "next_update_unix_seconds")?,
-    })
-}
-
-fn emergency_blocklist_from_json(value: &Value) -> Result<TzapEmergencyBlocklistState, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "emergency_blocklist")?;
-    Ok(TzapEmergencyBlocklistState {
-        blocked_root_sha256: required_array(object, "blocked_root_sha256")?
-            .iter()
-            .map(|value| required_string_value(value, "blocked_root_sha256[]"))
-            .collect::<Result<Vec<_>, _>>()?,
-        blocked_issuer_sha256: required_array(object, "blocked_issuer_sha256")?
-            .iter()
-            .map(|value| required_string_value(value, "blocked_issuer_sha256[]"))
-            .collect::<Result<Vec<_>, _>>()?,
-        updated_at_unix_seconds: optional_u64(object, "updated_at_unix_seconds")?,
-    })
-}
-
-fn contact_from_json(value: &Value) -> Result<TzapContactRecord, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "contacts[]")?;
-    let trust_anchor_type = match object.get("trust_anchor_type") {
-        Some(Value::Null) | None => trust::TzapTrustAnchorType::Untrusted,
-        Some(_) => required_string(object, "trust_anchor_type")?
-            .parse::<trust::TzapTrustAnchorType>()
-            .map_err(|()| TzapLocalIdentityStoreError::InvalidField { field: "trust_anchor_type" })?,
-    };
-    let verification_state = match object.get("verification_state") {
-        // Records written before verification-state tracking existed have no
-        // field at all; defaulting to CryptographicallyIntactOffline would
-        // claim evidence of offline verification that never happened, so
-        // treat the state as unknown instead.
-        Some(Value::Null) | None => trust::TzapVerificationState::NotRecorded,
-        Some(_) => required_string(object, "verification_state")?
-            .parse::<trust::TzapVerificationState>()
-            .map_err(|()| TzapLocalIdentityStoreError::InvalidField { field: "verification_state" })?,
-    };
-    let missing_status_caveat = match object.get("missing_status_caveat") {
-        Some(Value::Null) | None => true,
-        Some(_) => required_bool(object, "missing_status_caveat")?,
-    };
-    Ok(TzapContactRecord {
-        contact_id: required_string(object, "contact_id")?,
-        display_name: required_string(object, "display_name")?,
-        signing_certificate_sha256: required_string(object, "signing_certificate_sha256")?,
-        recipient_public_key_fingerprint: required_string(object, "recipient_public_key_fingerprint")?,
-        trust_anchor_type,
-        source: optional_string(object, "source")?.unwrap_or_default(),
-        verification_state,
-        missing_status_caveat,
-        contact_card_payload: required_field(object, "contact_card_payload")?.clone(),
-        accepted_at_unix_seconds: required_u64(object, "accepted_at_unix_seconds")?,
-        local_alias: optional_string(object, "local_alias")?,
-        card: object.get("card").cloned(),
-    })
-}
-
-fn public_metadata_from_json(value: &Value) -> Result<TzapCertificatePublicMetadata, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "public_metadata")?;
-    Ok(TzapCertificatePublicMetadata {
-        version: required_u64(object, "version")?,
-        public_signer_id: required_string(object, "public_signer_id")?,
-        public_org_id: optional_string(object, "public_org_id")?,
-        public_device_id: required_string(object, "public_device_id")?,
-        assurance_level: trust::TzapIdentityAssurance::parse(&required_string(object, "assurance_level")?)
-            .ok_or(TzapLocalIdentityStoreError::InvalidField { field: "assurance_level" })?,
-        policy_oid: required_string(object, "policy_oid")?,
-    })
-}
-
-fn routing_from_json(value: &Value) -> Result<TzapSignDeviceRouting, TzapLocalIdentityStoreError> {
-    let object = json_object(value, "sign_device_routing")?;
-    match required_string(object, "kind")?.as_str() {
-        "personal" => Ok(TzapSignDeviceRouting::Personal),
-        "organization" => Ok(TzapSignDeviceRouting::Organization {
-            org_id: required_string(object, "org_id")?,
-            login_organization_device_id: required_string(object, "login_organization_device_id")?,
-        }),
-        _ => Err(TzapLocalIdentityStoreError::InvalidField { field: "sign_device_routing.kind" }),
-    }
-}
-
 fn validate_account_key(account_key: &str) -> Result<(), TzapLocalIdentityStoreError> {
     // Shared with the identity catalog so both stores accept the same
     // account keys: non-empty and free of path separators and traversal
     // markers, but otherwise unrestricted.
     if crate::identity_catalog::validate_account_key(account_key) { Ok(()) } else { Err(TzapLocalIdentityStoreError::InvalidField { field: "account_key" }) }
-}
-
-fn decode_base64url(value: String, field: &'static str) -> Result<Vec<u8>, TzapLocalIdentityStoreError> {
-    trust::validate_base64url_no_padding(&value).map_err(|_| TzapLocalIdentityStoreError::InvalidField { field })?;
-    URL_SAFE_NO_PAD.decode(value).map_err(|_| TzapLocalIdentityStoreError::InvalidField { field })
 }
 
 fn validate_public_metadata(metadata: &TzapCertificatePublicMetadata) -> Result<(), TzapLocalIdentityStoreError> {
@@ -1104,8 +845,8 @@ mod tests {
         let mut inventory = valid_inventory();
         mark_pending_renewal(&mut inventory);
 
-        // Saving twice (an overwrite) leaves a complete, loadable file and no
-        // temporary sibling files behind.
+        // Saving twice (an overwrite) leaves a complete, loadable catalog and
+        // no temporary sibling files behind.
         let expected = inventory.clone();
         store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
         store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, expected.clone()).unwrap();
@@ -1119,43 +860,6 @@ mod tests {
             .filter(|name| name.contains("tmp-"))
             .collect::<Vec<_>>();
         assert!(leftovers.is_empty(), "temporary sibling files should be cleaned up: {leftovers:?}");
-    }
-
-    #[test]
-    fn file_identity_store_rejects_corrupted_json() {
-        let temp_dir = TestDir::new("rejects-corrupted-json");
-        let store = FileTzapLocalIdentityStore::new(temp_dir.path(""));
-        let legacy_path = store.inventory_path(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap();
-
-        fs::write(&legacy_path, b"{ corrupted_json: ").unwrap();
-
-        let error = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap_err();
-        assert!(matches!(error, TzapLocalIdentityStoreError::Json(_)));
-    }
-
-    #[test]
-    fn legacy_contacts_without_verification_state_are_not_claimed_verified() {
-        let base = json!({
-            "contact_id": "contact-1",
-            "display_name": "Legacy Contact",
-            "signing_certificate_sha256": "a".repeat(64),
-            "recipient_public_key_fingerprint": "b".repeat(64),
-            "trust_anchor_type": "official_tzap",
-            "missing_status_caveat": false,
-            "contact_card_payload": "payload",
-            "accepted_at_unix_seconds": 100,
-        });
-
-        // A legacy record with no verification_state field at all must not
-        // be treated as cryptographically verified offline.
-        let legacy = super::contact_from_json(&base).unwrap();
-        assert_eq!(legacy.verification_state, trust::TzapVerificationState::NotRecorded);
-
-        // An explicitly recorded state still parses as before.
-        let mut recorded = base.clone();
-        recorded["verification_state"] = json!("cryptographically_intact_offline");
-        let contact = super::contact_from_json(&recorded).unwrap();
-        assert_eq!(contact.verification_state, trust::TzapVerificationState::CryptographicallyIntactOffline);
     }
 
     #[test]

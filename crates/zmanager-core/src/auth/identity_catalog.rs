@@ -1,12 +1,11 @@
 //! Public TZAP identity catalog and purpose-specific secret-store seams.
 //!
-//! The legacy [`crate::local_identity_store`] remains available for migration
-//! and compatibility. New readers should use this module so public metadata
-//! never requires hydrating private key bytes.
+//! [`crate::local_identity_store`] provides an inventory facade for operations
+//! that need private key bytes. Catalog readers can use this module to inspect
+//! public metadata without hydrating those secrets.
 
 use crate::contact_snapshot::TzapContactTombstone;
-pub use crate::identity_migration::{FileTzapSecretMaterialStore, load_inventory_from_catalog, store_inventory_as_catalog};
-pub use crate::identity_migration::{PendingMutation, TzapLegacyMigrationReport, migrate_legacy_inventory};
+pub use crate::identity_catalog_adapter::{FileTzapSecretMaterialStore, load_inventory_from_catalog, store_inventory_as_catalog};
 use crate::local_identity_store::{TzapHostedDeviceBinding, TzapLocalIdentityStoreError, TzapPendingCertificateOperation, TzapSignDeviceRouting};
 use crate::secrets::SecretBytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -178,49 +177,38 @@ pub struct TzapPublicSigningIdentityRecord {
     pub certificate_chain_der: Vec<Vec<u8>>,
     pub not_before_unix_seconds: Option<u64>,
     pub not_after_unix_seconds: Option<u64>,
-    /// S1 (mobile-tzap-archive-signing-tracker.md). Absent on catalogs written
-    /// before this field existed.
-    #[serde(default)]
+    /// S1 (mobile-tzap-archive-signing-tracker.md).
     pub renewal_grace_period_days: Option<u64>,
-    /// S1. Absent on catalogs written before this field existed.
-    #[serde(default)]
+    /// S1.
     pub renewal_recommended_within_days: Option<u64>,
     pub public_signer_id: Option<String>,
     pub public_org_id: Option<String>,
     pub public_device_id: Option<String>,
     pub assurance_level: Option<String>,
     pub sign_device_id: Option<String>,
-    /// Sign-device routing carried through from the legacy inventory so the
-    /// legacy facade can round-trip it losslessly. Absent on catalogs written
-    /// before this field existed.
-    #[serde(default)]
+    /// Sign-device routing carried through from the local inventory so the
+    /// inventory facade can round-trip it losslessly.
     pub sign_device_routing: Option<TzapSignDeviceRouting>,
-    /// Creation time of the underlying signing key, carried from the legacy
+    /// Creation time of the underlying signing key, carried from the local
     /// inventory for the same reason.
-    #[serde(default)]
     pub signing_key_created_at_unix_seconds: Option<u64>,
-    /// Legacy inventory key id backing this identity, when it came from the
-    /// legacy store. Lets the legacy facade reuse the same secret reference
-    /// across saves instead of churning refs. Absent on catalogs written
-    /// before this field existed.
-    #[serde(default)]
-    pub legacy_key_id: Option<String>,
-    /// Public-metadata fields the legacy inventory carries that the catalog
+    /// Inventory key id backing this identity. Lets the inventory facade reuse
+    /// the same secret reference across saves instead of churning refs.
+    pub inventory_key_id: Option<String>,
+    /// Public-metadata fields the local inventory carries that the catalog
     /// does not otherwise model; carried for lossless facade round-trips.
-    #[serde(default)]
     pub metadata_version: Option<u64>,
-    #[serde(default)]
     pub policy_oid: Option<String>,
     /// Authenticated owner/environment/device scope for hosted keys. An absent
     /// binding makes the referenced key ineligible for hosted provisioning.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hosted_binding: Option<TzapHostedDeviceBinding>,
     pub signing_key_ref: TzapSecretRef,
     pub lifecycle: String,
 }
 
 /// Certificate rows are versions of a key in a public identity scope. Neither
-/// the row id nor a legacy inventory id is evidence of a different key.
+/// the row id nor an inventory key id is evidence of a different key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TzapSigningKeyIdentity {
     pub public_key_fingerprint: String,
@@ -291,19 +279,16 @@ pub struct TzapPublicContactRecord {
     pub recipient_public_key_der: Vec<u8>,
     pub trust_source: String,
     /// Origin of the stored contact, independent from its certificate trust
-    /// anchor. This preserves desktop-only sources such as `phone_sync` when
-    /// the catalog is adapted through the shared inventory interface.
-    #[serde(default)]
+    /// anchor.
     pub source: String,
     pub verification_state: String,
     pub missing_status_caveat: bool,
     pub contact_card_payload: Value,
     pub accepted_at_unix_seconds: u64,
     /// See [`crate::local_identity_store::TzapContactRecord::local_alias`].
-    #[serde(default)]
     pub local_alias: Option<String>,
     /// See [`crate::local_identity_store::TzapContactRecord::card`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub card: Option<Value>,
 }
 
@@ -335,14 +320,11 @@ pub struct TzapIdentityCatalog {
     pub recipient_keys: Vec<TzapPublicRecipientKeyRecord>,
     pub contacts: Vec<TzapPublicContactRecord>,
     /// See [`crate::local_identity_store::TzapLocalIdentityInventory::removed_contacts`].
-    #[serde(default)]
     pub removed_contacts: Vec<TzapContactTombstone>,
     pub status_cache: Vec<TzapPublicStatusCacheRecord>,
     pub emergency_blocklist: TzapPublicEmergencyBlocklist,
-    pub pending_mutations: Vec<PendingMutation>,
     /// Pending hosted issuance intents; these contain public correlation data
     /// only and are copied back into the local inventory during hydration.
-    #[serde(default)]
     pub pending_certificate_operations: Vec<TzapPendingCertificateOperation>,
 }
 
@@ -360,7 +342,6 @@ impl TzapIdentityCatalog {
             removed_contacts: Vec::new(),
             status_cache: Vec::new(),
             emergency_blocklist: TzapPublicEmergencyBlocklist::default(),
-            pending_mutations: Vec::new(),
             pending_certificate_operations: Vec::new(),
         }
     }
@@ -543,7 +524,7 @@ pub enum TzapIdentityCatalogError {
     ConcurrentWrite,
     Io(io::ErrorKind),
     Json(String),
-    Legacy(TzapLocalIdentityStoreError),
+    LocalStore(TzapLocalIdentityStoreError),
     Secret(TzapSecretStoreError),
 }
 
@@ -560,8 +541,8 @@ impl fmt::Display for TzapIdentityCatalogError {
             Self::ConcurrentWrite => f.write_str("identity catalog is already being updated"),
             Self::Io(kind) => write!(f, "identity catalog I/O failed: {}", io::Error::from(*kind)),
             Self::Json(message) => write!(f, "identity catalog JSON is invalid: {message}"),
-            Self::Legacy(error) => write!(f, "legacy identity migration failed: {error}"),
-            Self::Secret(error) => write!(f, "secure secret migration failed: {error}"),
+            Self::LocalStore(error) => write!(f, "local identity store operation failed: {error}"),
+            Self::Secret(error) => write!(f, "secure secret store operation failed: {error}"),
         }
     }
 }
@@ -582,7 +563,7 @@ impl From<serde_json::Error> for TzapIdentityCatalogError {
 
 impl From<TzapLocalIdentityStoreError> for TzapIdentityCatalogError {
     fn from(error: TzapLocalIdentityStoreError) -> Self {
-        Self::Legacy(error)
+        Self::LocalStore(error)
     }
 }
 
@@ -663,11 +644,8 @@ fn validate_unique<'a>(field: &'static str, values: impl Iterator<Item = &'a str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_identity::{TzapDeviceCsrOptions, generate_device_signing_key_and_csr, generate_recipient_encryption_key};
-    use crate::local_identity_store::{
-        InMemoryTzapLocalIdentityStore, TzapDeviceSigningKeyRecord, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
-    };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::local_identity_store::TzapLocalIdentityInventory;
+    use std::time::SystemTime;
 
     #[test]
     fn secret_references_reject_path_syntax_in_parsing_and_catalog_json() {
@@ -740,63 +718,6 @@ mod tests {
     }
 
     #[test]
-    fn migration_moves_private_material_and_is_idempotent() {
-        let signing = generate_device_signing_key_and_csr(&TzapDeviceCsrOptions::default()).unwrap();
-        let recipient = generate_recipient_encryption_key().unwrap();
-        let mut legacy = InMemoryTzapLocalIdentityStore::new();
-        legacy
-            .save_inventory(
-                "default",
-                TzapLocalIdentityInventory {
-                    device_signing_keys: vec![TzapDeviceSigningKeyRecord {
-                        key_id: "signing-1".to_owned(),
-                        public_key_fingerprint: signing.public_key_fingerprint.clone(),
-                        private_key_der: signing.private_key_der.clone(),
-                        created_at_unix_seconds: 1,
-                        label: Some("Laptop".to_owned()),
-                        hosted_binding: None,
-                    }],
-                    recipient_encryption_keys: vec![TzapRecipientEncryptionKeyRecord {
-                        key_id: "recipient-1".to_owned(),
-                        algorithm: recipient.algorithm.to_owned(),
-                        public_key_fingerprint: recipient.public_key_fingerprint.clone(),
-                        public_key_der: recipient.public_key_spki_der.clone(),
-                        private_key_der: recipient.private_key_der.clone(),
-                        created_at_unix_seconds: 2,
-                        label: None,
-                    }],
-                    ..TzapLocalIdentityInventory::empty()
-                },
-            )
-            .unwrap();
-        let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
-        let mut secrets = InMemoryTzapSecretMaterialStore::new();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let report = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
-        assert!(report.migrated);
-        assert_eq!(report.signing_identity_count, 1);
-        assert_eq!(report.recipient_key_count, 1);
-        let second = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
-        assert!(!second.migrated);
-        let catalog = catalogs.load_catalog("default").unwrap().unwrap();
-        assert!(!serde_json::to_string(&catalog).unwrap().contains("private_key_der"));
-        let signing_ref = catalog.signing_identities[0].signing_key_ref.clone();
-        let recipient_ref = catalog.recipient_keys[0].private_key_ref.clone();
-        secrets.delete(TzapSecretPurpose::SigningKey, &signing_ref).unwrap();
-        secrets.delete(TzapSecretPurpose::RecipientKey, &recipient_ref).unwrap();
-        let mut interrupted = catalog.clone();
-        interrupted.pending_mutations.push(PendingMutation::LegacyMigration { started_at_unix_seconds: 1 });
-        let expected_revision = interrupted.revision;
-        interrupted.revision += 1;
-        catalogs.save_catalog("default", Some(expected_revision), interrupted).unwrap();
-        let recovered = migrate_legacy_inventory(&legacy, &mut catalogs, &mut secrets, "default", now).unwrap();
-        assert!(recovered.migrated);
-        assert!(secrets.resolve(TzapSecretPurpose::SigningKey, &signing_ref).is_ok());
-        assert!(secrets.resolve(TzapSecretPurpose::RecipientKey, &recipient_ref).is_ok());
-        assert!(catalogs.load_catalog("default").unwrap().unwrap().pending_mutations.is_empty());
-    }
-
-    #[test]
     fn catalog_round_trip_preserves_contact_source_without_treating_it_as_trust_anchor() {
         let inventory = TzapLocalIdentityInventory {
             contacts: vec![crate::local_identity_store::TzapContactRecord {
@@ -817,21 +738,12 @@ mod tests {
         };
         let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
-        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 20).unwrap();
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).unwrap();
 
         let catalog = catalogs.load_catalog("default").unwrap().unwrap();
         assert_eq!(catalog.contacts[0].trust_source, "official_tzap");
         assert_eq!(catalog.contacts[0].source, "phone_sync");
         let loaded = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
         assert_eq!(loaded.contacts[0].source, "phone_sync");
-
-        let mut legacy_catalog = catalog.clone();
-        legacy_catalog.contacts[0].trust_source = "phone_sync".to_owned();
-        legacy_catalog.contacts[0].source.clear();
-        let mut legacy_catalogs = InMemoryTzapIdentityCatalogStore::new();
-        legacy_catalogs.save_catalog("default", None, legacy_catalog).unwrap();
-        let migrated = load_inventory_from_catalog(&legacy_catalogs, &secrets, "default").unwrap().unwrap();
-        assert_eq!(migrated.contacts[0].trust_anchor_type, crate::trust::TzapTrustAnchorType::OfficialTzap);
-        assert_eq!(migrated.contacts[0].source, "phone_sync");
     }
 }

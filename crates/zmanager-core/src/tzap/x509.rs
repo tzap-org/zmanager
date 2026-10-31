@@ -189,7 +189,7 @@ pub fn tzap_x509_signing_options_from_catalog(
     let (signing_certificate, signing_chain) = selected.certificate_parts().map_err(|error| error.to_string())?;
     let expected_key = selected.certificate_key_identity().map_err(|error| error.to_string())?;
     let signing_private_key = secret_store.resolve(TzapSecretPurpose::SigningKey, &selected.signing_key_ref).map_err(|error| error.to_string())?;
-    let actual_key = crate::identity_migration::public_key_fingerprint_from_private_key(&signing_private_key).map_err(|error| error.to_string())?;
+    let actual_key = crate::identity_catalog_adapter::public_key_fingerprint_from_private_key(&signing_private_key).map_err(|error| error.to_string())?;
     if actual_key != expected_key.public_key_fingerprint {
         return Err("certificate public key does not match its signing key".to_owned());
     }
@@ -203,16 +203,16 @@ fn select_catalog_signing_identity(
 ) -> Result<&crate::identity_catalog::TzapPublicSigningIdentityRecord, String> {
     let mut candidates = Vec::new();
     let mut reference_keys = std::collections::HashMap::new();
-    let mut legacy_keys = std::collections::HashMap::new();
+    let mut inventory_keys = std::collections::HashMap::new();
     for identity in catalog.signing_identities.iter().filter(|identity| identity.certificate_id.is_some()) {
         if !catalog_identity_is_usable(identity, catalog, now_unix_seconds) {
             continue;
         }
-        // Bad historical entries cannot block a valid unrelated identity.
+        // A malformed unrelated identity cannot block a valid candidate.
         let Ok(key) = identity.certificate_key_identity() else { continue };
         if reference_keys.insert(&identity.signing_key_ref, key.public_key_fingerprint.clone()).is_some_and(|previous| previous != key.public_key_fingerprint)
-            || identity.legacy_key_id.as_ref().is_some_and(|legacy| {
-                legacy_keys.insert(legacy, key.public_key_fingerprint.clone()).is_some_and(|previous| previous != key.public_key_fingerprint)
+            || identity.inventory_key_id.as_ref().is_some_and(|inventory_key_id| {
+                inventory_keys.insert(inventory_key_id, key.public_key_fingerprint.clone()).is_some_and(|previous| previous != key.public_key_fingerprint)
             })
         {
             return Err("conflicting public keys for a signing key reference".to_owned());
@@ -1580,8 +1580,8 @@ mod tests {
             let reference = TzapSecretRef::generate();
             let mut old = identity("old", &key, reference.clone());
             let mut renewed = identity("renewed", &key, reference.clone());
-            old.legacy_key_id = None;
-            renewed.legacy_key_id = None;
+            old.inventory_key_id = None;
+            renewed.inventory_key_id = None;
             renewed.not_before_unix_seconds = Some(150);
             let expected = renewed.certificate_chain_der[0].clone();
             let secret_store = secrets(&key, &[reference]);
@@ -1597,8 +1597,8 @@ mod tests {
             let references = [TzapSecretRef::generate(), TzapSecretRef::generate()];
             let mut old = identity("old", &key, references[0].clone());
             let mut renewed = identity("renewed", &key, references[1].clone());
-            old.legacy_key_id = None;
-            renewed.legacy_key_id = None;
+            old.inventory_key_id = None;
+            renewed.inventory_key_id = None;
             renewed.not_before_unix_seconds = Some(150);
             assert!(tzap_x509_signing_options_from_catalog(&catalog(vec![old, renewed]), &secrets(&key, &references), "default", None, 200).is_ok());
         }
@@ -1715,7 +1715,7 @@ mod tests {
                 sign_device_id: Some("sign-device".to_owned()),
                 sign_device_routing: None,
                 signing_key_created_at_unix_seconds: None,
-                legacy_key_id: Some(crate::trust::sha256_identifier(&key.public_key_to_der().unwrap())),
+                inventory_key_id: Some(crate::trust::sha256_identifier(&key.public_key_to_der().unwrap())),
                 metadata_version: Some(1),
                 policy_oid: None,
                 hosted_binding: None,

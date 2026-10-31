@@ -1,9 +1,5 @@
-//! Legacy-inventory migration and the legacy facade over the catalog
-//! (CR-138).
-//!
-//! Extracted from the identity catalog: the migration transaction machinery,
-//! the catalog/legacy conversions used by the `TzapLocalIdentityStore`
-//! facade, and the file-backed secret store.
+//! Conversions between the local identity inventory and its public catalog,
+//! together with the file-backed secret store.
 
 use crate::identity_catalog::{
     TzapIdentityCatalog, TzapIdentityCatalogError, TzapIdentityCatalogStore, TzapPublicContactRecord, TzapPublicEmergencyBlocklist,
@@ -12,12 +8,10 @@ use crate::identity_catalog::{
 };
 use crate::local_identity_store::{
     TzapCertificateStatusCacheRecord, TzapContactRecord, TzapDeviceSigningKeyRecord, TzapEmergencyBlocklistState, TzapEnrolledCertificateRecord,
-    TzapHostedDeviceBinding, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapRecipientEncryptionKeyRecord,
-    TzapSignDeviceRouting,
+    TzapHostedDeviceBinding, TzapLocalCertificateState, TzapLocalIdentityInventory, TzapRecipientEncryptionKeyRecord, TzapSignDeviceRouting,
 };
 use crate::secrets::SecretBytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -25,154 +19,17 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-/// One crash-recoverable catalog transaction that was recorded before its
-/// side effects completed.
-///
-/// The wire format deliberately matches the historical string marker
-/// (`legacy-migration-<unix seconds>`), so catalogs written by older versions
-/// keep loading after an upgrade.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum PendingMutation {
-    /// A legacy inventory migration wrote its public catalog first and is
-    /// expected to finish copying secret material into the secure store.
-    LegacyMigration { started_at_unix_seconds: u64 },
-}
-
-impl PendingMutation {
-    fn wire_value(&self) -> String {
-        match self {
-            Self::LegacyMigration { started_at_unix_seconds } => {
-                format!("legacy-migration-{started_at_unix_seconds}")
-            }
-        }
-    }
-}
-
-impl Serialize for PendingMutation {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.wire_value())
-    }
-}
-
-impl<'de> Deserialize<'de> for PendingMutation {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        if let Some(started_at) = value.strip_prefix("legacy-migration-") {
-            let started_at_unix_seconds = started_at.parse().map_err(|_| serde::de::Error::custom("invalid legacy migration marker"))?;
-            Ok(Self::LegacyMigration { started_at_unix_seconds })
-        } else {
-            Err(serde::de::Error::custom(format!("unknown pending mutation marker: {value}")))
-        }
-    }
-}
-
-pub struct TzapLegacyMigrationReport {
-    pub migrated: bool,
-    pub signing_identity_count: usize,
-    pub recipient_key_count: usize,
-}
-
-/// Moves legacy private bytes into the injected secure store and writes only
-/// public metadata plus opaque references to the new catalog. A completed
-/// pre-existing catalog makes the operation a no-op; a catalog marked with a
-/// pending migration is resumed from the intact legacy inventory.
-pub fn migrate_legacy_inventory(
-    legacy_store: &impl TzapLocalIdentityStore,
-    catalog_store: &mut impl TzapIdentityCatalogStore,
-    secret_store: &mut impl TzapSecretMaterialStore,
-    account_key: &str,
-    now_unix_seconds: u64,
-) -> Result<TzapLegacyMigrationReport, TzapIdentityCatalogError> {
-    if let Some(catalog) = catalog_store.load_catalog(account_key)? {
-        if has_pending_legacy_migration(&catalog) {
-            return resume_pending_migration(legacy_store, catalog_store, secret_store, account_key, catalog);
-        }
-        return Ok(TzapLegacyMigrationReport {
-            migrated: false,
-            signing_identity_count: catalog.signing_identities.len(),
-            recipient_key_count: catalog.recipient_keys.len(),
-        });
-    }
-
-    let inventory = legacy_store.load_inventory(account_key)?;
-    let (catalog, signing_refs, recipient_refs) = build_catalog_from_legacy(&inventory, now_unix_seconds)?;
-    commit_migration(catalog_store, secret_store, account_key, catalog, &inventory, &signing_refs, &recipient_refs)?;
-
-    let catalog = catalog_store.load_catalog(account_key)?.ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.catalog" })?;
-    Ok(TzapLegacyMigrationReport {
-        migrated: true,
-        signing_identity_count: catalog.signing_identities.len(),
-        recipient_key_count: catalog.recipient_keys.len(),
-    })
-}
-
-fn has_pending_legacy_migration(catalog: &TzapIdentityCatalog) -> bool {
-    catalog.pending_mutations.iter().any(|mutation| matches!(mutation, PendingMutation::LegacyMigration { .. }))
-}
-
-/// Resumes a migration whose public catalog was committed but whose secret
-/// store writes did not finish before a crash.
-///
-/// A catalog is written before its secrets during migration. On a restart,
-/// retry the same references from the intact legacy file instead of creating
-/// a second set of orphaned keychain entries.
-fn resume_pending_migration(
-    legacy_store: &impl TzapLocalIdentityStore,
-    catalog_store: &mut impl TzapIdentityCatalogStore,
-    secret_store: &mut impl TzapSecretMaterialStore,
-    account_key: &str,
-    mut catalog: TzapIdentityCatalog,
-) -> Result<TzapLegacyMigrationReport, TzapIdentityCatalogError> {
-    let inventory = legacy_store.load_inventory(account_key)?;
-    let signing_by_id = inventory.device_signing_keys.iter().map(|record| (record.key_id.as_str(), &record.private_key_der)).collect::<HashMap<_, _>>();
-    let signing_by_certificate =
-        inventory.enrolled_certificates.iter().map(|record| (record.certificate_id.as_str(), record.signing_key_id.as_str())).collect::<HashMap<_, _>>();
-    for identity in &catalog.signing_identities {
-        if matches!(secret_store.resolve(TzapSecretPurpose::SigningKey, &identity.signing_key_ref), Err(TzapSecretStoreError::Missing { .. })) {
-            let key_id = signing_by_certificate.get(identity.id.as_str()).copied().unwrap_or(identity.id.as_str());
-            let material = signing_by_id.get(key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "legacy_migration.signing_key_ref" })?;
-            secret_store.put_at(TzapSecretPurpose::SigningKey, &identity.signing_key_ref, (*material).clone())?;
-        }
-    }
-    let recipient_by_id = inventory.recipient_encryption_keys.iter().map(|record| (record.key_id.as_str(), &record.private_key_der)).collect::<HashMap<_, _>>();
-    for key in &catalog.recipient_keys {
-        if matches!(secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref), Err(TzapSecretStoreError::Missing { .. })) {
-            let material =
-                recipient_by_id.get(key.id.as_str()).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "legacy_migration.recipient_key_ref" })?;
-            secret_store.put_at(TzapSecretPurpose::RecipientKey, &key.private_key_ref, (*material).clone())?;
-        }
-    }
-    for identity in &catalog.signing_identities {
-        secret_store.resolve(TzapSecretPurpose::SigningKey, &identity.signing_key_ref)?;
-    }
-    for key in &catalog.recipient_keys {
-        secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
-    }
-    catalog.pending_mutations.retain(|mutation| !matches!(mutation, PendingMutation::LegacyMigration { .. }));
-    let expected_revision = catalog.revision;
-    catalog.revision = catalog.revision.saturating_add(1);
-    catalog_store.save_catalog(account_key, Some(expected_revision), catalog.clone())?;
-    Ok(TzapLegacyMigrationReport {
-        migrated: true,
-        signing_identity_count: catalog.signing_identities.len(),
-        recipient_key_count: catalog.recipient_keys.len(),
-    })
-}
-
-/// Secret references produced while building a catalog, keyed by legacy
+/// Secret references produced while building a catalog, keyed by inventory
 /// record id.
 type SecretRefMap = HashMap<String, TzapSecretRef>;
 
-/// Builds the public catalog (and its secret references) from a legacy
-/// inventory without writing anything to either store.
+/// Builds the public catalog (and its secret references) from an inventory
+/// without writing anything to either store.
 ///
 /// Returns the catalog, the signing-key references, and the recipient-key
-/// references, all keyed by legacy record id.
+/// references, all keyed by inventory record id.
 #[allow(clippy::too_many_lines)]
-fn build_catalog_from_legacy(
-    inventory: &TzapLocalIdentityInventory,
-    now_unix_seconds: u64,
-) -> Result<(TzapIdentityCatalog, SecretRefMap, SecretRefMap), TzapIdentityCatalogError> {
+fn build_catalog_from_inventory(inventory: &TzapLocalIdentityInventory) -> Result<(TzapIdentityCatalog, SecretRefMap, SecretRefMap), TzapIdentityCatalogError> {
     let mut signing_refs = HashMap::new();
     let mut recipient_refs = HashMap::new();
     for record in &inventory.device_signing_keys {
@@ -217,7 +74,7 @@ fn build_catalog_from_legacy(
             sign_device_id: Some(certificate.sign_device_id.clone()),
             sign_device_routing: Some(certificate.sign_device_routing.clone()),
             signing_key_created_at_unix_seconds: signing_key_created_at,
-            legacy_key_id: Some(certificate.signing_key_id.clone()),
+            inventory_key_id: Some(certificate.signing_key_id.clone()),
             metadata_version: Some(certificate.public_metadata.version),
             policy_oid: Some(certificate.public_metadata.policy_oid.clone()),
             hosted_binding,
@@ -247,11 +104,11 @@ fn build_catalog_from_legacy(
                 sign_device_id: None,
                 sign_device_routing: None,
                 signing_key_created_at_unix_seconds: Some(key.created_at_unix_seconds),
-                legacy_key_id: Some(key.key_id.clone()),
+                inventory_key_id: Some(key.key_id.clone()),
                 metadata_version: None,
                 policy_oid: None,
                 hosted_binding: key.hosted_binding.as_ref().map(|binding| sign_hosted_binding(binding, &key.private_key_der)).transpose()?,
-                signing_key_ref: signing_refs.get(&key.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.signing_refs" })?.clone(),
+                signing_key_ref: signing_refs.get(&key.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "inventory.signing_refs" })?.clone(),
                 lifecycle: "pending".to_owned(),
             });
         }
@@ -267,7 +124,7 @@ fn build_catalog_from_legacy(
                 algorithm: key.algorithm.clone(),
                 public_key_der: key.public_key_der.clone(),
                 fingerprint: key.public_key_fingerprint.clone(),
-                private_key_ref: recipient_refs.get(&key.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.recipient_refs" })?.clone(),
+                private_key_ref: recipient_refs.get(&key.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "inventory.recipient_refs" })?.clone(),
                 lifecycle: "active".to_owned(),
                 created_at_unix_seconds: key.created_at_unix_seconds,
                 retired_at_unix_seconds: None,
@@ -326,56 +183,11 @@ fn build_catalog_from_legacy(
         blocked_issuer_sha256: inventory.emergency_blocklist.blocked_issuer_sha256.clone(),
         updated_at_unix_seconds: inventory.emergency_blocklist.updated_at_unix_seconds,
     };
-    catalog.pending_mutations.push(PendingMutation::LegacyMigration { started_at_unix_seconds: now_unix_seconds });
     catalog.validate()?;
     Ok((catalog, signing_refs, recipient_refs))
 }
 
-/// Commits a built catalog: writes the public intent first, copies every
-/// secret into the secure store under the recorded references, verifies the
-/// result, then clears the pending-migration marker.
-fn commit_migration(
-    catalog_store: &mut impl TzapIdentityCatalogStore,
-    secret_store: &mut impl TzapSecretMaterialStore,
-    account_key: &str,
-    catalog: TzapIdentityCatalog,
-    inventory: &TzapLocalIdentityInventory,
-    signing_refs: &HashMap<String, TzapSecretRef>,
-    recipient_refs: &HashMap<String, TzapSecretRef>,
-) -> Result<(), TzapIdentityCatalogError> {
-    // Commit the public intent first. The secret store writes below use
-    // these exact references, so startup can resume this transaction.
-    catalog_store.save_catalog(account_key, None, catalog)?;
-    for record in &inventory.device_signing_keys {
-        secret_store.put_at(
-            TzapSecretPurpose::SigningKey,
-            signing_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.signing_refs" })?,
-            record.private_key_der.clone(),
-        )?;
-    }
-    for record in &inventory.recipient_encryption_keys {
-        secret_store.put_at(
-            TzapSecretPurpose::RecipientKey,
-            recipient_refs.get(&record.key_id).ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.recipient_refs" })?,
-            record.private_key_der.clone(),
-        )?;
-    }
-    let mut committed = catalog_store.load_catalog(account_key)?.ok_or(TzapIdentityCatalogError::InvalidCatalog { field: "migration.catalog" })?;
-    for identity in &committed.signing_identities {
-        secret_store.resolve(TzapSecretPurpose::SigningKey, &identity.signing_key_ref)?;
-    }
-    for key in &committed.recipient_keys {
-        secret_store.resolve(TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
-    }
-    committed.pending_mutations.retain(|mutation| !matches!(mutation, PendingMutation::LegacyMigration { .. }));
-    let expected_revision = committed.revision;
-    committed.revision = committed.revision.saturating_add(1);
-    catalog_store.save_catalog(account_key, Some(expected_revision), committed)?;
-    Ok(())
-}
-
-/// Computes the `sha256:` public-key fingerprint of a private key, in the
-/// same form the legacy inventory stores on its key records.
+/// Computes the `sha256:` public-key fingerprint of a private key.
 pub(crate) fn public_key_fingerprint_from_private_key(private_key: &SecretBytes) -> Result<String, TzapIdentityCatalogError> {
     let key = openssl::pkey::PKey::private_key_from_der(private_key.expose_secret())
         .map_err(|_| TzapIdentityCatalogError::InvalidCatalog { field: "private_key_der" })?;
@@ -391,15 +203,7 @@ fn verify_private_matches_fingerprint(private_key: &SecretBytes, expected_finger
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Legacy facade
-//
-// The legacy `TzapLocalIdentityStore` API persists through the catalog and a
-// file-backed secret store, so the catalog is the only on-disk identity
-// format. The legacy JSON inventory file is read once for migration and
-// removed; the legacy record types remain the in-memory/wire model.
-
-/// File-backed secret store used by the legacy facade: one 0o600 file per
+/// File-backed secret store: one 0o600 file per
 /// secret under `{root}/secrets/{account_key}/{purpose}/{reference}`.
 ///
 /// `pub` (not `pub(crate)`) so `zmanager-mobile-core` can compose it inside
@@ -464,7 +268,7 @@ impl TzapSecretMaterialStore for FileTzapSecretMaterialStore {
     }
 }
 
-/// Persists a legacy inventory through the catalog, reusing existing secret
+/// Persists an inventory through the catalog, reusing existing secret
 /// references for keys that persist so refs stay stable across saves. Failed
 /// writes attempt to remove newly stored secrets without deleting published keys.
 pub fn store_inventory_as_catalog(
@@ -472,12 +276,8 @@ pub fn store_inventory_as_catalog(
     secret_store: &mut impl TzapSecretMaterialStore,
     account_key: &str,
     inventory: &TzapLocalIdentityInventory,
-    now_unix_seconds: u64,
 ) -> Result<(), TzapIdentityCatalogError> {
-    let (mut catalog, mut signing_refs, mut recipient_refs) = build_catalog_from_legacy(inventory, now_unix_seconds)?;
-    // The facade's normal writes are not migration transactions.
-    catalog.pending_mutations.retain(|mutation| !matches!(mutation, PendingMutation::LegacyMigration { .. }));
-
+    let (mut catalog, mut signing_refs, mut recipient_refs) = build_catalog_from_inventory(inventory)?;
     let existing = catalog_store.load_catalog(account_key)?;
     let mut obsolete_signing_refs = Vec::new();
     let mut obsolete_recipient_refs = Vec::new();
@@ -494,7 +294,7 @@ pub fn store_inventory_as_catalog(
                 continue;
             };
             let key_record = inventory.device_signing_keys.iter().find(|key| {
-                identity.legacy_key_id.as_deref() == Some(key.key_id.as_str())
+                identity.inventory_key_id.as_deref() == Some(key.key_id.as_str())
                     || public_key.as_ref().is_some_and(|public| public.public_key_fingerprint == key.public_key_fingerprint)
                     || (identity.certificate_id.is_none() && identity.id == key.key_id)
             });
@@ -610,9 +410,9 @@ fn store_catalog_secret(
     Ok(())
 }
 
-/// Keeps the catalog's selected signing identity stable across legacy-inventory
+/// Keeps the catalog's selected signing identity stable across inventory
 /// writes. A renewal replaces the active certificate while retaining the
-/// backing signing key, so a revoked default must migrate to the active
+/// backing signing key, so a revoked default must update to the active
 /// replacement with the same key and public scope.
 fn preserve_default_signing_identity(existing: Option<&TzapIdentityCatalog>, next: &mut TzapIdentityCatalog) {
     let Some(existing) = existing else { return };
@@ -639,7 +439,7 @@ fn preserve_default_signing_identity(existing: Option<&TzapIdentityCatalog>, nex
         .map(|candidate| candidate.id.clone());
 }
 
-/// Loads a legacy-shaped inventory from the catalog, hydrating private key
+/// Loads an inventory from the catalog, hydrating private key
 /// material from the secret store.
 #[allow(clippy::too_many_lines)]
 pub fn load_inventory_from_catalog(
@@ -660,7 +460,7 @@ pub fn load_inventory_from_catalog(
     let mut resolved_keys = HashMap::new();
     let mut seen_keys = HashSet::new();
     let mut key_aliases: HashMap<(String, Option<TzapHostedDeviceBinding>), std::collections::BTreeSet<String>> = HashMap::new();
-    let mut legacy_keys = HashMap::new();
+    let mut inventory_keys = HashMap::new();
 
     for identity in &catalog.signing_identities {
         if !resolved_keys.contains_key(&identity.signing_key_ref) {
@@ -677,12 +477,12 @@ pub fn load_inventory_from_catalog(
         if identity.certificate_id.is_some() && identity.certificate_key_identity()?.public_key_fingerprint != *fingerprint {
             return Err(TzapIdentityCatalogError::InvalidCatalog { field: "certificate_public_key_match" });
         }
-        if let Some(legacy) = &identity.legacy_key_id {
+        if let Some(inventory_key_id) = &identity.inventory_key_id {
             let scope = (fingerprint.clone(), binding_scope(identity.hosted_binding.as_ref()));
-            if legacy.is_empty() || legacy_keys.insert(legacy.clone(), scope.clone()).is_some_and(|previous| previous != scope) {
-                return Err(TzapIdentityCatalogError::InvalidCatalog { field: "legacy_key_id" });
+            if inventory_key_id.is_empty() || inventory_keys.insert(inventory_key_id.clone(), scope.clone()).is_some_and(|previous| previous != scope) {
+                return Err(TzapIdentityCatalogError::InvalidCatalog { field: "inventory_key_id" });
             }
-            key_aliases.entry(scope).or_default().insert(legacy.clone());
+            key_aliases.entry(scope).or_default().insert(inventory_key_id.clone());
         }
         let key_scope = (fingerprint.clone(), binding_scope(identity.hosted_binding.as_ref()));
         if seen_keys.insert(key_scope.clone()) {
@@ -783,21 +583,13 @@ pub fn load_inventory_from_catalog(
     }
 
     for contact in &catalog.contacts {
-        let (trust_source, source) = if contact.trust_source == "phone_sync" {
-            // Older desktop catalogs overloaded trust_source with the
-            // synchronization origin. Preserve those contacts while moving
-            // the origin into the dedicated source field.
-            ("official_tzap", if contact.source.is_empty() { "phone_sync" } else { contact.source.as_str() })
-        } else {
-            (contact.trust_source.as_str(), contact.source.as_str())
-        };
         inventory.contacts.push(TzapContactRecord {
             contact_id: contact.contact_id.clone(),
             display_name: contact.display_name.clone(),
             signing_certificate_sha256: contact.signing_certificate_sha256.clone(),
             recipient_public_key_fingerprint: contact.recipient_public_key_fingerprint.clone(),
-            trust_anchor_type: trust_source.parse().map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "contacts.trust_source" })?,
-            source: source.to_owned(),
+            trust_anchor_type: contact.trust_source.parse().map_err(|()| TzapIdentityCatalogError::InvalidCatalog { field: "contacts.trust_source" })?,
+            source: contact.source.clone(),
             verification_state: contact
                 .verification_state
                 .parse()
@@ -976,8 +768,8 @@ mod tests {
         renewed.certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[0]));
         renewed.issuer_certificate_sha256 = Some(crate::trust::sha256_identifier(&renewed.certificate_chain_der[1]));
         old.lifecycle = "revoked".to_owned();
-        old.legacy_key_id = None;
-        renewed.legacy_key_id = None;
+        old.inventory_key_id = None;
+        renewed.inventory_key_id = None;
         let mut catalog = TzapIdentityCatalog::empty();
         catalog.signing_identities = vec![old, renewed];
         let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
@@ -992,7 +784,7 @@ mod tests {
         assert!(inventory.device_signing_keys[0].hosted_binding.as_ref().unwrap().binding_signature.is_some());
         inventory.validate().unwrap();
         assert!(inventory.enrolled_certificates.iter().all(|certificate| certificate.signing_key_id == inventory.device_signing_keys[0].key_id));
-        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 300).unwrap();
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).unwrap();
         let stored = catalogs.load_catalog("default").unwrap().unwrap();
         assert!(stored.signing_identities.iter().all(|identity| identity.signing_key_ref == reference), "round trip must keep the existing secret locator");
         let reopened = load_inventory_from_catalog(&catalogs, &secrets, "default").unwrap().unwrap();
@@ -1005,9 +797,9 @@ mod tests {
     #[test]
     fn callback_design_distinct_key_does_not_inherit_default_from_revoked_identity() {
         let mut previous = signing_identity("old", "revoked", "old-key");
-        previous.legacy_key_id = None;
+        previous.inventory_key_id = None;
         let mut different = signing_identity("different", "active", "different-key");
-        different.legacy_key_id = None;
+        different.inventory_key_id = None;
         let mut existing = TzapIdentityCatalog::empty();
         existing.default_signing_identity_id = Some(previous.id.clone());
         existing.signing_identities.push(previous);
@@ -1029,7 +821,7 @@ mod tests {
         catalogs.save_catalog("default", None, catalog).unwrap();
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
         secrets.put_at(TzapSecretPurpose::SigningKey, &reference, SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap())).unwrap();
-        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(1), 300).unwrap();
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(1)).unwrap();
         let stored = catalogs.load_catalog("default").unwrap().unwrap();
         assert_eq!(stored.signing_identities, [bad]);
         assert_eq!(stored.recipient_keys.len(), 1);
@@ -1079,7 +871,7 @@ mod tests {
                 login_organization_device_id: "login-device-1".to_owned(),
             }),
             signing_key_created_at_unix_seconds: Some(1),
-            legacy_key_id: Some(key_id.to_owned()),
+            inventory_key_id: Some(key_id.to_owned()),
             metadata_version: Some(1),
             policy_oid: Some("policy".to_owned()),
             hosted_binding: None,
@@ -1182,10 +974,10 @@ mod tests {
         let mut catalogs = FailingCatalogStore { inner: InMemoryTzapIdentityCatalogStore::new(), commit_before_failure: false };
         let mut secrets = RecordingSecretStore::default();
         let inventory = recipient_inventory(2);
-        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).is_err());
         assert!(secrets.references.is_empty(), "a failed catalogue commit orphaned new private keys");
         assert!(catalogs.load_catalog("default").unwrap().is_none());
-        store_inventory_as_catalog(&mut catalogs.inner, &mut secrets, "default", &inventory, 3).unwrap();
+        store_inventory_as_catalog(&mut catalogs.inner, &mut secrets, "default", &inventory).unwrap();
         assert_eq!(secrets.references.len(), 2, "retry must not retain orphaned keys");
     }
 
@@ -1193,7 +985,7 @@ mod tests {
     fn failed_second_secret_write_removes_first_new_secret() {
         let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
         let mut secrets = RecordingSecretStore { fail_write: Some(2), ..RecordingSecretStore::default() };
-        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(2), 2).is_err());
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(2)).is_err());
         assert!(secrets.references.is_empty(), "a later secret-store failure orphaned an earlier key");
         assert!(catalogs.load_catalog("default").unwrap().is_none());
     }
@@ -1203,12 +995,12 @@ mod tests {
         let mut catalogs = InMemoryTzapIdentityCatalogStore::new();
         let mut secrets = RecordingSecretStore::default();
         let mut inventory = recipient_inventory(1);
-        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 1).unwrap();
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).unwrap();
         let original = catalogs.load_catalog("default").unwrap().unwrap();
         let original_refs = secrets.references.clone();
         inventory.recipient_encryption_keys.extend(recipient_inventory(1).recipient_encryption_keys);
         let mut catalogs = FailingCatalogStore { inner: catalogs, commit_before_failure: false };
-        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).is_err());
         assert_eq!(secrets.references, original_refs, "rollback must preserve existing references and remove only new keys");
         assert_eq!(catalogs.load_catalog("default").unwrap().unwrap(), original);
         assert_eq!(
@@ -1222,7 +1014,7 @@ mod tests {
         let mut catalogs = FailingCatalogStore { inner: InMemoryTzapIdentityCatalogStore::new(), commit_before_failure: true };
         let mut secrets = RecordingSecretStore::default();
         let inventory = recipient_inventory(1);
-        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory, 2).is_err());
+        assert!(store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).is_err());
         let published = catalogs.load_catalog("default").unwrap().unwrap();
         assert_eq!(secrets.references.len(), 1);
         assert_eq!(
@@ -1269,7 +1061,7 @@ mod tests {
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
         secrets.put_at(TzapSecretPurpose::RecipientKey, &old_reference, SecretBytes::from(vec![7])).unwrap();
 
-        let result = store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &TzapLocalIdentityInventory::empty(), 2);
+        let result = store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &TzapLocalIdentityInventory::empty());
 
         assert!(result.is_err());
         assert!(secrets.resolve(TzapSecretPurpose::RecipientKey, &old_reference).is_ok());

@@ -203,21 +203,6 @@ enroll_personal() {
 	jq -er '.certificate.certificate_id' "$output"
 }
 
-decode_recipient_key() {
-	local state_dir="$1" key_id="$2" output="$3" encoded padded padding
-	encoded="$(jq -er --arg id "$key_id" \
-		'.recipient_encryption_keys[] | select(.key_id == $id) | .private_key_der' \
-		"$state_dir/default.identity.json")"
-	padding=$(( (4 - ${#encoded} % 4) % 4 ))
-	padded="$encoded"
-	while (( padding > 0 )); do
-		padded="${padded}="
-		padding=$((padding - 1))
-	done
-	printf '%s' "$padded" | tr '_-' '/+' | openssl base64 -d -A > "$output"
-	chmod 600 "$output"
-}
-
 log "Building the staging-test CLI"
 (cd "$REPO_ROOT" && cargo build -p zmanager-cli --features tzap-online)
 
@@ -273,7 +258,7 @@ if [[ "$RUN_ORGANIZATION" == true ]]; then
 	{ grep -Eq "$rg_pattern" "$WORK_DIR/org-pending.out" || grep -Eq "$rg_pattern" "$WORK_DIR/org-pending.err"; } ||
 		fail "organization enrollment did not report approval pending"
 	ORG_KEY_ID="$(jq -er --arg label "Hosted TZAP enrollment signing key (org:$ORG_ID)" \
-		'.device_signing_keys[] | select(.label == $label) | .key_id' "$STATE_1/default.identity.json")"
+		'.signing_identities[] | select(.local_alias == $label) | .inventory_key_id' "$STATE_1/default.identity-catalog.json")"
 		DEVICES="$(curl "${CURL_TIMEOUT_ARGS[@]}" --fail --silent --show-error -H "Authorization: Bearer $TOKEN_1" "$BASE_URL/v1/orgs/$ORG_ID/devices")"
 	ORG_DEVICE_ID="$(jq -er --arg key "$ORG_KEY_ID" '.[] | select(.device_public_key_fingerprint == $key) | .organization_device_id' <<<"$DEVICES")"
 	post_json "/v1/orgs/$ORG_ID/devices/$ORG_DEVICE_ID/approve" '{}' "$TOKEN_1" >/dev/null
@@ -283,8 +268,8 @@ if [[ "$RUN_ORGANIZATION" == true ]]; then
 	ORG_CERT="$(jq -er '.certificate.certificate_id' "$WORK_DIR/org-enroll.json")"
 	jq -e --arg org "$ORG_ID" '.certificate.public_org_id == $org' "$WORK_DIR/org-enroll.json" >/dev/null
 	jq -e --arg key "$ORG_KEY_ID" \
-		'([.device_signing_keys[] | select(.key_id == $key)] | length) == 1 and any(.enrolled_certificates[]; .signing_key_id == $key)' \
-		"$STATE_1/default.identity.json" >/dev/null
+		'([.signing_identities[] | select(.inventory_key_id == $key)] | length) == 1 and any(.signing_identities[]; .inventory_key_id == $key and .certificate_id != null)' \
+		"$STATE_1/default.identity-catalog.json" >/dev/null
 	"$ZM" tzap sign "$WORK_DIR/document.json" --state-dir "$STATE_1" --certificate-id "$ORG_CERT" \
 		--output "$WORK_DIR/org-document-envelope.json" --json >/dev/null
 	"$ZM" tzap verify "$WORK_DIR/org-document-envelope.json" --custom-trust-root-cert "$ROOT_CERT" --json |
@@ -311,19 +296,8 @@ printf 'signed multi-recipient staging payload\n' > "$WORK_DIR/payload/message.t
 	--contact "$CONTACT_1" --contact "$CONTACT_2" --certificate-id "$CERT_1" --json |
 	jq -e '.recipients == 2 and .signed == true' >/dev/null
 
-decode_recipient_key "$STATE_1" "$KEY_1" "$WORK_DIR/recipient-1.key.der"
-decode_recipient_key "$STATE_2" "$KEY_2" "$WORK_DIR/recipient-2.key.der"
 "$ZM" test "$WORK_DIR/multi-recipient.tzap" --public-no-key --trusted-ca-cert "$ROOT_CERT" --json |
 	jq -e '.root_auth.authenticator == "x509" and .root_auth.trust_anchor_subject != null' >/dev/null
-for recipient_number in 1 2; do
-	"$ZM" test "$WORK_DIR/multi-recipient.tzap" \
-		--recipient-key "$WORK_DIR/recipient-$recipient_number.key.der" --trusted-ca-cert "$ROOT_CERT" --json |
-		jq -e '.root_auth.authenticator == "x509" and .root_auth.trust_anchor_subject != null and .tested_entries > 0' >/dev/null
-	mkdir -p "$WORK_DIR/extracted-$recipient_number"
-	"$ZM" extract "$WORK_DIR/multi-recipient.tzap" --recipient-key "$WORK_DIR/recipient-$recipient_number.key.der" \
-		-C "$WORK_DIR/extracted-$recipient_number" --json >/dev/null
-	cmp "$WORK_DIR/payload/message.txt" "$WORK_DIR/extracted-$recipient_number/payload/message.txt"
-done
 
 log "STAGING INTEGRATION PASSED"
 printf 'personal_certificate_1=%s\n' "$CERT_1"

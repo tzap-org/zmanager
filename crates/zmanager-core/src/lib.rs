@@ -77,8 +77,8 @@ pub mod document_signing;
 pub mod document_verification;
 #[path = "auth/identity_catalog.rs"]
 pub mod identity_catalog;
-#[path = "auth/identity_migration.rs"]
-pub mod identity_migration;
+#[path = "auth/identity_catalog_adapter.rs"]
+pub mod identity_catalog_adapter;
 #[path = "auth/identity_write_journal.rs"]
 pub mod identity_write_journal;
 #[path = "auth/jcs.rs"]
@@ -139,8 +139,8 @@ pub const ENGINE_NAME: &str = "zmanager-core";
 
 /// Atomically writes secret material with the platform's private-file policy.
 ///
-/// This small storage primitive is shared by offline identity migration and
-/// the hosted session store; it contains no hosted protocol behavior.
+/// This small storage primitive is shared by the identity catalog and the
+/// hosted session store; it contains no hosted protocol behavior.
 pub fn write_atomic_secret_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     atomic_file::write_atomic_secret_file(path, bytes)
 }

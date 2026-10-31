@@ -6,13 +6,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use zmanager_core::identity_catalog::{
-    FileTzapIdentityCatalogStore, FileTzapSecretMaterialStore, TzapIdentityCatalogStore, TzapSecretMaterialStore, TzapSecretPurpose, TzapSecretRef,
-    TzapSecretStoreError, load_inventory_from_catalog,
+    FileTzapIdentityCatalogStore, TzapIdentityCatalogStore, TzapSecretMaterialStore, TzapSecretPurpose, TzapSecretRef, TzapSecretStoreError,
+    load_inventory_from_catalog,
 };
 use zmanager_core::identity_write_journal::{recover_file_inventory_writes, store_file_inventory_as_catalog};
-use zmanager_core::local_identity_store::{
-    FileTzapLocalIdentityStore, IDENTITY_INVENTORY_FILE_SUFFIX, TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError,
-};
+use zmanager_core::local_identity_store::{TzapLocalIdentityInventory, TzapLocalIdentityStore, TzapLocalIdentityStoreError};
 use zmanager_core::secrets::SecretBytes;
 
 use crate::auth_client::{TzapAuthError, TzapSessionRecord, TzapSessionStore};
@@ -67,60 +65,7 @@ impl NativeTzapLocalIdentityStore {
     pub fn new(root: impl Into<PathBuf>, account_key: &str) -> Result<Self, TzapLocalIdentityStoreError> {
         NativeTzapSecretStore::new(account_key)
             .map_err(|error| TzapLocalIdentityStoreError::Catalog(Box::new(zmanager_core::identity_catalog::TzapIdentityCatalogError::Secret(error))))?;
-        let store = Self { root: root.into(), account_key: account_key.to_owned() };
-        store.migrate_legacy_private_material()?;
-        Ok(store)
-    }
-
-    fn migrate_legacy_private_material(&self) -> Result<(), TzapLocalIdentityStoreError> {
-        let catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
-        if catalog_store.load_catalog(&self.account_key)?.is_none() {
-            // Let the core migration convert the legacy inventory JSON into
-            // the public catalog, retaining its stable secret references.
-            let legacy_store = FileTzapLocalIdentityStore::new(&self.root);
-            let _ = legacy_store.load_inventory(&self.account_key)?;
-        }
-        let Some(catalog) = catalog_store.load_catalog(&self.account_key)? else {
-            return Ok(());
-        };
-        let legacy_store = FileTzapSecretMaterialStore::new(&self.root, &self.account_key);
-        let mut secure_store = self.secret_store()?;
-        for identity in &catalog.signing_identities {
-            Self::copy_legacy_secret_if_needed(&mut secure_store, &legacy_store, TzapSecretPurpose::SigningKey, &identity.signing_key_ref)?;
-        }
-        for key in &catalog.recipient_keys {
-            Self::copy_legacy_secret_if_needed(&mut secure_store, &legacy_store, TzapSecretPurpose::RecipientKey, &key.private_key_ref)?;
-        }
-        let legacy_secret_root = self.root.join("secrets").join(&self.account_key);
-        if legacy_secret_root.exists() {
-            std::fs::remove_dir_all(legacy_secret_root)?;
-        }
-        let legacy_inventory = self.root.join(format!("{}{}", self.account_key, IDENTITY_INVENTORY_FILE_SUFFIX));
-        match std::fs::remove_file(legacy_inventory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
-
-    fn copy_legacy_secret_if_needed(
-        secure_store: &mut NativeTzapSecretStore,
-        legacy_store: &FileTzapSecretMaterialStore,
-        purpose: TzapSecretPurpose,
-        reference: &TzapSecretRef,
-    ) -> Result<(), TzapLocalIdentityStoreError> {
-        match secure_store.resolve(purpose, reference) {
-            Ok(_) => return Ok(()),
-            Err(TzapSecretStoreError::Missing { .. }) => {}
-            Err(error) => return Err(TzapLocalIdentityStoreError::Catalog(Box::new(zmanager_core::identity_catalog::TzapIdentityCatalogError::Secret(error)))),
-        }
-        let material = legacy_store
-            .resolve(purpose, reference)
-            .map_err(|error| TzapLocalIdentityStoreError::Catalog(Box::new(zmanager_core::identity_catalog::TzapIdentityCatalogError::Secret(error))))?;
-        secure_store
-            .put_at(purpose, reference, material)
-            .map_err(|error| TzapLocalIdentityStoreError::Catalog(Box::new(zmanager_core::identity_catalog::TzapIdentityCatalogError::Secret(error))))
+        Ok(Self { root: root.into(), account_key: account_key.to_owned() })
     }
 
     fn check_account_key(&self, account_key: &str) -> Result<(), TzapLocalIdentityStoreError> {
@@ -147,7 +92,7 @@ impl TzapLocalIdentityStore for NativeTzapLocalIdentityStore {
         inventory.validate()?;
         let mut catalog_store = FileTzapIdentityCatalogStore::new(&self.root);
         let mut secret_store = self.secret_store()?;
-        store_file_inventory_as_catalog(&mut catalog_store, &mut secret_store, account_key, &inventory, current_unix_seconds())?;
+        store_file_inventory_as_catalog(&mut catalog_store, &mut secret_store, account_key, &inventory)?;
         Ok(())
     }
 
@@ -170,10 +115,6 @@ impl TzapLocalIdentityStore for NativeTzapLocalIdentityStore {
         catalog_store.clear_catalog(account_key)?;
         Ok(())
     }
-}
-
-fn current_unix_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
 impl Default for NativeTzapSecretStore {

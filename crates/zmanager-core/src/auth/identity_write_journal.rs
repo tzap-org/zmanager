@@ -3,7 +3,7 @@ use crate::identity_catalog::{
     FileTzapIdentityCatalogStore, TzapIdentityCatalogError, TzapIdentityCatalogStore as _, TzapSecretMaterialStore, TzapSecretPurpose, TzapSecretRef,
     TzapSecretStoreError,
 };
-use crate::identity_migration::store_inventory_as_catalog;
+use crate::identity_catalog_adapter::store_inventory_as_catalog;
 use crate::local_identity_store::TzapLocalIdentityInventory;
 use crate::secrets::SecretBytes;
 use std::collections::HashSet;
@@ -167,13 +167,12 @@ pub fn store_file_inventory_as_catalog(
     secrets: &mut impl TzapSecretMaterialStore,
     account: &str,
     inventory: &TzapLocalIdentityInventory,
-    now: u64,
 ) -> Result<(), TzapIdentityCatalogError> {
     let mut journal = PendingWrites::open(store, account)?;
     journal.recover(store, secrets, account)?;
     let published = published_references(store, account)?;
     let mut wrapped = JournaledSecrets { inner: secrets, journal: &mut journal, published, journal_error: None };
-    let result = store_inventory_as_catalog(store, &mut wrapped, account, inventory, now);
+    let result = store_inventory_as_catalog(store, &mut wrapped, account, inventory);
     if let Some(error) = wrapped.journal_error {
         return Err(error);
     }
@@ -257,7 +256,7 @@ mod tests {
             created_at_unix_seconds: 1,
             label: None,
         });
-        store_file_inventory_as_catalog(&mut fixture.catalogue, &mut fixture.secrets, "default", &inventory, 1).unwrap();
+        store_file_inventory_as_catalog(&mut fixture.catalogue, &mut fixture.secrets, "default", &inventory).unwrap();
         let published = fixture.catalogue.load_catalog("default").unwrap().unwrap();
         assert_eq!(published.recipient_keys.len(), 1);
         assert_eq!(

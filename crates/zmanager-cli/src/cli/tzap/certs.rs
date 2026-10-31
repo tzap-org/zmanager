@@ -3,7 +3,6 @@ use crate::cli::options::GlobalOptions;
 use crate::cli::usage::{CERTS_HELP, print_error_line, print_help_stdout, wants_help};
 use std::process::ExitCode;
 use zmanager_core::identity_catalog::{FileTzapIdentityCatalogStore, TzapIdentityCatalogStore as _};
-use zmanager_core::local_identity_store::{FileTzapLocalIdentityStore, TzapLocalIdentityStore as _};
 
 /// Reads the local TZAP certificate catalogue (`zm tzap certs`) — no
 /// network, so it stays available in the default offline build and is the
@@ -43,34 +42,21 @@ pub(crate) fn certs_command(args: &[String], mut global: GlobalOptions) -> ExitC
     ExitCode::SUCCESS
 }
 
-// Certificate discovery needs public metadata only. Loading the native inventory
-// resolves every private key and can prompt for Keychain access on macOS.
+// Certificate discovery reads public catalog metadata only; it does not touch
+// private-key material or prompt for Keychain access on macOS.
 fn local_certificates(state_dir: &std::path::Path, account_key: &str) -> Result<Vec<serde_json::Value>, String> {
-    if let Some(catalog) = FileTzapIdentityCatalogStore::new(state_dir).load_catalog(account_key).map_err(|error| error.to_string())? {
-        return Ok(catalog
-            .signing_identities
-            .iter()
-            .filter_map(|identity| {
-                Some(serde_json::json!({
-                    "certificate_id": identity.certificate_id.as_ref()?,
-                    "state": identity.lifecycle,
-                    "certificate_sha256": identity.certificate_sha256.as_ref()?,
-                }))
-            })
-            .collect());
-    }
-    // Preserve compatibility with inventories predating the public catalogue.
-    // This file-backed migration never accesses the OS keyring.
-    let inventory = FileTzapLocalIdentityStore::new(state_dir).load_inventory(account_key).map_err(|error| error.to_string())?;
-    Ok(inventory
-        .enrolled_certificates
+    let Some(catalog) = FileTzapIdentityCatalogStore::new(state_dir).load_catalog(account_key).map_err(|error| error.to_string())? else {
+        return Ok(Vec::new());
+    };
+    Ok(catalog
+        .signing_identities
         .iter()
-        .map(|certificate| {
-            serde_json::json!({
-                "certificate_id": certificate.certificate_id,
-                "state": certificate.state.as_str(),
-                "certificate_sha256": certificate.certificate_sha256,
-            })
+        .filter_map(|identity| {
+            Some(serde_json::json!({
+                "certificate_id": identity.certificate_id.as_ref()?,
+                "state": identity.lifecycle,
+                "certificate_sha256": identity.certificate_sha256.as_ref()?,
+            }))
         })
         .collect())
 }
