@@ -20,7 +20,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use openssl::pkey::{PKey, Private};
-use serde_json::{Map, Number, Value, json};
+use serde_json::{Map, Value, json};
 use std::fmt::{self, Write as _};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use x509_parser::prelude::{FromDer as _, X509Certificate};
@@ -350,12 +350,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapEnrollmentClient<'a, T> {
     ) -> Result<TzapEnrollmentCertificatePayload, TzapEnrollmentError> {
         self.authorize_session(session)?;
         validate_signing_key_and_csr(signing_key, csr_der)?;
-        let challenge_bytes = match self.wire_profile {
-            crate::wire_profile::TzapWireProfile::Spec => {
-                jcs::canonicalize_json_bytes(&challenge.payload).map_err(|error| TzapEnrollmentError::Canonicalization(format!("{error:?}")))?
-            }
-            crate::wire_profile::TzapWireProfile::LocalStagingServer => canonicalize_local_staging_server_json_bytes(&challenge.payload)?,
-        };
+        let challenge_bytes = jcs::canonicalize_json_bytes(&challenge.payload).map_err(|error| TzapEnrollmentError::Canonicalization(format!("{error:?}")))?;
         let signature = sign_challenge(signing_key, &challenge_bytes)?;
         let body = match self.wire_profile {
             crate::wire_profile::TzapWireProfile::Spec => json!({
@@ -1171,71 +1166,6 @@ pub(crate) fn certificate_validity_unix_seconds(der: &[u8]) -> Result<(u64, u64)
     Ok((not_before, not_after))
 }
 
-pub(crate) fn canonicalize_local_staging_server_json_bytes(value: &Value) -> Result<Vec<u8>, TzapEnrollmentError> {
-    let mut output = String::new();
-    write_local_staging_canonical_json(value, &mut output)?;
-    Ok(output.into_bytes())
-}
-
-fn write_local_staging_canonical_json(value: &Value, output: &mut String) -> Result<(), TzapEnrollmentError> {
-    match value {
-        Value::Null => output.push_str("null"),
-        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => output.push_str(&local_staging_canonical_number(value)),
-        Value::String(value) => {
-            output.push_str(&serde_json::to_string(value).map_err(|error| TzapEnrollmentError::Canonicalization(error.to_string()))?);
-        }
-        Value::Array(values) => {
-            output.push('[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                write_local_staging_canonical_json(value, output)?;
-            }
-            output.push(']');
-        }
-        Value::Object(object) => {
-            let mut keys = object.keys().collect::<Vec<_>>();
-            keys.sort();
-            output.push('{');
-            for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                output.push_str(&serde_json::to_string(key).map_err(|error| TzapEnrollmentError::Canonicalization(error.to_string()))?);
-                output.push(':');
-                write_local_staging_canonical_json(object.get(key).ok_or(TzapEnrollmentError::InvalidField { field: "challenge_payload" })?, output)?;
-            }
-            output.push('}');
-        }
-    }
-    Ok(())
-}
-
-fn local_staging_canonical_number(value: &Number) -> String {
-    if let Some(number) = value.as_u64() {
-        return local_staging_canonical_integer(&number.to_string());
-    }
-    if let Some(number) = value.as_i64() {
-        return if number < 0 {
-            format!("-{}", local_staging_canonical_integer(&number.unsigned_abs().to_string()))
-        } else {
-            local_staging_canonical_integer(&number.to_string())
-        };
-    }
-    value.to_string().replace('E', "e")
-}
-
-fn local_staging_canonical_integer(digits: &str) -> String {
-    if digits == "0" {
-        return "0".to_owned();
-    }
-    let trimmed = digits.trim_end_matches('0');
-    let zero_count = digits.len() - trimmed.len();
-    if zero_count == 0 { digits.to_owned() } else { format!("{trimmed}e+{zero_count}") }
-}
-
 fn expect_string(object: &Map<String, Value>, field: &'static str, expected: &str) -> Result<(), TzapEnrollmentError> {
     let actual = required_string::<TzapEnrollmentError>(object, field)?;
     if actual == expected { Ok(()) } else { Err(TzapEnrollmentError::ChallengeMismatch { field }) }
@@ -1562,10 +1492,12 @@ mod tests {
     }
 
     #[test]
-    fn local_staging_server_profile_uses_pem_wire_contract() {
-        let fixture = EnrollmentFixture::new(None, None);
-        let transport =
-            FakeEnrollmentTransport::new(vec![local_staging_challenge_response(&fixture), local_staging_certificate_response(&fixture.signing_key)]);
+    fn local_staging_server_profile_signs_a_730_day_challenge_with_jcs() {
+        let mut fixture = EnrollmentFixture::new(None, None);
+        fixture.request.requested_validity_seconds = 730 * super::SECONDS_PER_DAY;
+        let response = local_staging_challenge_response(&fixture);
+        let response_body: Value = serde_json::from_slice(&response.body).unwrap();
+        let transport = FakeEnrollmentTransport::new(vec![response, local_staging_certificate_response(&fixture.signing_key)]);
         let client = TzapEnrollmentClient::local_staging_server("http://localhost:8080", &transport).with_clock(|| 100);
         let validator = AcceptingCertificateValidator;
         let mut store = store_with_signing_key(&fixture.signing_key);
@@ -1577,11 +1509,16 @@ mod tests {
         let requests = transport.requests();
         let challenge_body = requests[0].body.as_ref().unwrap().as_object().unwrap();
         assert!(!challenge_body.contains_key("csr_der"));
-        assert_eq!(challenge_body["requested_validity_days"], json!(90));
+        assert_eq!(challenge_body["requested_validity_days"], json!(730));
 
         let enroll_body = requests[1].body.as_ref().unwrap().as_object().unwrap();
         assert!(enroll_body["csr_pem"].as_str().unwrap().contains("BEGIN CERTIFICATE REQUEST"));
-        assert!(enroll_body.contains_key("challenge_signature"));
+        let signature = URL_SAFE_NO_PAD.decode(enroll_body["challenge_signature"].as_str().unwrap()).unwrap();
+        let canonical = crate::jcs::canonicalize_json_bytes(&response_body["challenge_payload"]).unwrap();
+        assert!(std::str::from_utf8(&canonical).unwrap().contains(r#""requested_validity_days":730"#));
+        let key = openssl::pkey::PKey::private_key_from_der(fixture.signing_key.private_key_der.expose_secret()).unwrap();
+        let public_key = openssl::pkey::PKey::public_key_from_der(&key.public_key_to_der().unwrap()).unwrap();
+        assert!(crate::p256_signature::verify_p256_sha256_p1363(&public_key, &canonical, &signature).unwrap());
         assert!(!enroll_body.contains_key("challenge_signature_p1363"));
         assert_eq!(enroll_body["device_name"], DEFAULT_ENROLLMENT_DEVICE_NAME);
     }
@@ -1623,22 +1560,6 @@ mod tests {
         let error = client.request_enrollment_challenge(&fixture.session, &fixture.request, &fixture.signing_key, &fixture.csr_der).unwrap_err();
         assert!(matches!(error, TzapEnrollmentError::InvalidField { field: "issued_at" }));
         assert_eq!(transport.requests().len(), 1);
-    }
-
-    #[test]
-    fn local_staging_server_canonicalization_matches_current_server_numbers() {
-        let payload = json!({
-            "requested_validity_days": 90,
-            "version": 1,
-            "nested": {
-                "ten": 10,
-                "zero": 0
-            }
-        });
-
-        let canonical = super::canonicalize_local_staging_server_json_bytes(&payload).unwrap();
-
-        assert_eq!(String::from_utf8(canonical).unwrap(), r#"{"nested":{"ten":1e+1,"zero":0},"requested_validity_days":9e+1,"version":1}"#);
     }
 
     #[test]
@@ -1901,7 +1822,7 @@ mod tests {
             "csr_sha256": crate::device_identity::csr_fingerprint(&fixture.csr_der),
             "device_public_key_fingerprint": fixture.signing_key.public_key_fingerprint,
             "org_id": fixture.request.org_id,
-            "requested_validity_days": 90,
+            "requested_validity_days": super::requested_validity_days(fixture.request.requested_validity_seconds).unwrap(),
             "renewal_of_certificate_sha256": Value::Null,
             "nonce": "bG9jYWxfbm9uY2U",
             "issued_at": "1970-01-01T00:00:10Z",
