@@ -41,9 +41,8 @@ zmanager-ffi = { path = "crates/zmanager-ffi", version = "2.2.0" }
 zmanager-wim = { path = "crates/zmanager-wim", version = "2.2.0" }
 zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.2.0" }
 
-# The TZAP 0.2.7 release carries `entry_metadata::projected_posix_mode`, so the
-# whole family (core plus the keywrap and signing plugins) is a plain crates.io
-# dependency here. Local development and Security Audit CI can track ../tzap
+# The TZAP family (core plus the keywrap and signing plugins) uses crates.io
+# dependencies. Local development and Security Audit CI can track ../tzap
 # changes via a [patch.crates-io] in .cargo/config.toml. The committed
 # Cargo.lock tracks the published dependency; build/test, package-preview, and
 # release workflows drop the development patch before their locked builds.

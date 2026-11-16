@@ -542,9 +542,9 @@ dependencies = [
 
 [[package]]
 name = "cap-fs-ext"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d78e5a3368ae89b7cb68186411452b4b9fac8b41be9c19bf3f47c2d2c8e36e6b"
+checksum = "56ff379b70af8e08307a8f65e7040c7301cb4a572538ade16b4984f0da77847f"
 dependencies = [
  "cap-primitives",
  "cap-std",
@@ -554,9 +554,9 @@ dependencies = [
 
 [[package]]
 name = "cap-primitives"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
+checksum = "8b5f74729fd2f44701d1a8eb47e906cdb3ccd9ec0f02baad85a744b791940b18"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
@@ -572,9 +572,9 @@ dependencies = [
 
 [[package]]
 name = "cap-std"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+checksum = "c1ec78e242cfa2cfe276807ac2ecc00315a6c97786977414bcd1c3963b6c91b8"
 dependencies = [
  "cap-primitives",
  "io-extras",
@@ -3067,9 +3067,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "tzap-core"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97d85597a68b8a30ccf0ff42fe353671270e83e06d263efb15973989ddb9ae74"
+checksum = "786cd7e7ce776d24646a5bb9b7dbdd0148a59413c2c3614a4a5a6250281c2b16"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -3096,9 +3096,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-keywrap"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79832e407e4142e52942fe356e1e9bf8c8d35d2b31201e2d8b1736f94b0ca267"
+checksum = "246962797ad65887f1bf837a27bdb62967c59238a4bad29c6593e9090d1fbef1"
 dependencies = [
  "hpke",
  "openssl",
@@ -3109,9 +3109,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f0c435127592cade0295112d2c7a84b0674531d2b77660c1fa30de36d945a0e"
+checksum = "8c7f59d01d434d06ffc36fbe6ae1db5d825870f519f483fba9027165dafdf52a"
 dependencies = [
  "ed25519-dalek",
  "openssl",

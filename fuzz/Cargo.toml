@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-tzap-core = "0.2.7"
+tzap-core = "0.2.8"
 zip = "9.0.5"
 zmanager-core = { path = "../crates/zmanager-core" }
 

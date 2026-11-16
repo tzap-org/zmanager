@@ -78,10 +78,10 @@ function pinnedRoot() {
   if (process.env.ZM_STAGING_ROOT_CERT) return process.env.ZM_STAGING_ROOT_CERT;
   const sources = join(process.env.CARGO_HOME || join(homedir(), '.cargo'), 'registry', 'src');
   for (const directory of readdirSync(sources)) {
-    const path = join(sources, directory, 'tzap-plugin-signing-0.2.7', 'src', 'trust', 'tzap-staging-root-ca-2026.pem');
+    const path = join(sources, directory, 'tzap-plugin-signing-0.2.8', 'src', 'trust', 'tzap-staging-root-ca-2026.pem');
     if (existsSync(path)) return path;
   }
-  throw new Error('Published TZAP 0.2.7 staging root was not found');
+  throw new Error('Published TZAP 0.2.8 staging root was not found');
 }
 async function request(path) {
   const url = new URL(path, STAGING);
