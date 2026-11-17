@@ -318,6 +318,12 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Build pinned OpenSSL
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          openssl_dir="$(python3 scripts/build-openssl.py "$target")"
+          printf '%s\n' "OPENSSL_DIR=$openssl_dir" OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1 >> "$GITHUB_ENV"
+
       - name: Regenerate bindings into a scratch directory
         run: |
           REGEN_KOTLIN_DIR="$RUNNER_TEMP/uniffi-check/kotlin" \
