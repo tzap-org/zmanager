@@ -61,7 +61,7 @@ those crates unless an external OpenSSL installation is configured.
 3. Tag the CLI repository:
 
    ```sh
-   git tag v2.2.0
+   git tag v2.2.1
    git push origin main --tags
    ```
 
@@ -78,8 +78,8 @@ those crates unless an external OpenSSL installation is configured.
 
    ```sh
    scripts/generate-package-metadata.sh \
-     v2.2.0 \
-     https://github.com/tzap-org/zmanager/releases/download/v2.2.0 \
+     v2.2.1 \
+     https://github.com/tzap-org/zmanager/releases/download/v2.2.1 \
      dist/SHA256SUMS \
      dist/package-metadata
    ```
@@ -98,7 +98,7 @@ those crates unless an external OpenSSL installation is configured.
 7. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.2.0
+   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.2.1
    ```
 
 8. Validate the Linux static tarballs on Ubuntu 22.04 and 24.04:
@@ -115,6 +115,6 @@ do not hand-edit release asset hashes.
 
 ## Release Notes
 
-Use [docs/release-notes/2.2.0.md](docs/release-notes/2.2.0.md) as the release
-notes source for the `v2.2.0` GitHub release. Update the versioned file first
+Use [docs/release-notes/2.2.1.md](docs/release-notes/2.2.1.md) as the release
+notes source for the `v2.2.1` GitHub release. Update the versioned file first
 when preparing a later release.
