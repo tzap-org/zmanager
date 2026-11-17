@@ -240,7 +240,7 @@ jobs:
       - name: Test offline release with network denied (Linux)
         if: runner.os == 'Linux'
         run: >
-          sudo --preserve-env=HOME,PATH,RUSTUP_HOME,CARGO_HOME,DBUS_SESSION_BUS_ADDRESS,LANG,LC_ALL,ZMANAGER_TEST_SKIP_REPORT
+          sudo --preserve-env=HOME,PATH,RUSTUP_HOME,CARGO_HOME,DBUS_SESSION_BUS_ADDRESS,LANG,LC_ALL,ZMANAGER_TEST_SKIP_REPORT,OPENSSL_DIR,OPENSSL_STATIC,OPENSSL_NO_VENDOR
           unshare --net --setuid "$(id -u)" --setgid "$(id -g)" --
           python3 scripts/require-network-denial.py
           cargo test --offline --locked --release -p zmanager-cli --no-default-features
