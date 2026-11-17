@@ -28,32 +28,23 @@ the existing SquashFS API used by ZManager.
 From the ZManager repository:
 
 These augment the existing `tzap`, `localsend-rs`, and `forensic-vfs-engine`
-sibling checkouts.
+sibling checkouts. For the locked local builds below, temporarily remove the
+TZAP patch from `.cargo/config.toml` and restore it after the run.
 
 ```sh
 bash scripts/checkout-forensic-forks.sh
 cargo check --workspace --all-targets --locked
-cargo test --workspace
-cargo update --package tzap-core
-cargo update --package crypto-bigint
-cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
-cargo update --manifest-path fuzz/Cargo.toml --package crypto-bigint
-cargo audit --deny yanked --file Cargo.lock
-cargo audit --deny yanked --file fuzz/Cargo.lock
+cargo test --workspace --locked
+cargo audit --deny unsound --deny yanked --file Cargo.lock
+cargo audit --deny unsound --deny yanked --file fuzz/Cargo.lock
 ```
 
 The exact commit pins are in `forensic-forks.lock`. Build/test and release
-workflows use the same fork checkouts. Security Audit CI also clones `../tzap`
-and resolves a job-local lockfile against its sibling patch before auditing.
-The committed lockfiles continue to track published Tzap for release builds.
+workflows use the same fork checkouts. Security Audit CI scans both committed
+lockfiles, which track the published TZAP release.
 The clone helper preserves existing development work and fails if an existing
 checkout is on a different commit. Alpine packaging mounts these siblings
 beside `/workspace` so Cargo resolves the same paths.
-
-The `cargo update` commands switch only the local lockfiles to the patched
-`../tzap` sibling and refresh its yanked crypto transitive dependency for
-auditing. Do not commit those generated lockfile changes; release builds use
-the published Tzap release recorded in the lock.
 
 The fixes start from the releases already resolved in ZManager's lockfile.
 AFF4 now requests the same ZIP 0.2 reader as archive-core, so both share

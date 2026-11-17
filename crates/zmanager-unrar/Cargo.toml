@@ -13,6 +13,7 @@ build = "build.rs"
 path = "src/lib.rs"
 
 [dependencies]
+tempfile = "3"
 zeroize = "1.8.2"
 
 [build-dependencies]

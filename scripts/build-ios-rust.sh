@@ -50,8 +50,11 @@ EOF
 cargo_rustc_simulator_staticlib() {
   local target="$1"
   local arch="$2"
+  local openssl_dir
+  openssl_dir="$(python3 "$ROOT/scripts/build-openssl.py" "$target")"
 
-  CMAKE_OSX_ARCHITECTURES="$arch" \
+  OPENSSL_DIR="$openssl_dir" OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1 \
+    CMAKE_OSX_ARCHITECTURES="$arch" \
     CMAKE_OSX_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
     CMAKE_OSX_SYSROOT="$SIMULATOR_SDK_PATH" \
     CMAKE_TOOLCHAIN_FILE="$DEPENDENCY_TOOLCHAIN" \

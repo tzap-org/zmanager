@@ -17,6 +17,27 @@ https://github.com/tzap-org/homebrew-zmanager.git
 
 That naming lets users run `brew install tzap-org/zmanager/zmanager`.
 
+## Native OpenSSL
+
+The package scripts build and statically link OpenSSL 3.5.9 with TZAP's
+upstream RSA-PSS provider alias patch. `scripts/build-openssl.py` verifies the
+source and patch checksums and caches the patched libraries by target. It needs
+Python 3, Perl, Git, and the native build tools for the selected target.
+
+For a direct Unix Cargo build using that same version, use the published TZAP
+lockfile with the development override temporarily removed, then run:
+
+```sh
+target="$(rustc -vV | sed -n 's/^host: //p')"
+OPENSSL_DIR="$(python3 scripts/build-openssl.py "$target")"
+export OPENSSL_DIR OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1
+cargo build --locked -p zmanager-cli --bin zm
+```
+
+The environment override selects these native libraries for the published
+TZAP crates as well. Bare Cargo builds use the vendored source selected by
+those crates unless an external OpenSSL installation is configured.
+
 ## Release Checklist
 
 1. Run:

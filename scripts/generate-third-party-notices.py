@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -173,6 +174,25 @@ def collect_bundled_notices(workspace: Path, license_dir: Path, notice_path: Pat
         },
     ]
 
+    if (openssl_dir := os.environ.get("OPENSSL_DIR")) and (openssl_license := Path(openssl_dir) / "OPENSSL-LICENSE.txt").is_file():
+        version_header = (Path(openssl_dir) / "include/openssl/opensslv.h").read_text(encoding="utf-8")
+        openssl_version = re.search(r'^# *define +OPENSSL_VERSION_STR +"([^"]+)"$', version_header, re.MULTILINE)
+        if openssl_version is None:
+            raise ValueError(f"could not determine OpenSSL version from {openssl_dir}")
+        entries.append(
+            {
+                "name": "OpenSSL",
+                "version": openssl_version.group(1),
+                "source": "https://www.openssl-library.org/source/",
+                "license": "Apache-2.0",
+                "files": [openssl_license],
+                "notes": (
+                    "Statically linked from the checksum-pinned OpenSSL 3.5.9 release source "
+                    "with the checksum-pinned RSA-PSS provider alias patch."
+                ),
+            }
+        )
+
     for entry in entries:
         copied_files = []
         destination_root = license_dir / BUNDLED_LICENSE_DIR / entry["name"]
@@ -219,6 +239,8 @@ def collect_vcpkg_notices(license_dir: Path, notice_path: Path) -> list[dict]:
 
     notices = []
     for port in VCPKG_PORTS:
+        if port == "openssl" and os.environ.get("OPENSSL_NO_VENDOR") == "1" and os.environ.get("OPENSSL_DIR"):
+            continue
         copyright_file = root / "installed" / triplet / "share" / port / "copyright"
         if not copyright_file.is_file():
             continue
@@ -284,7 +306,7 @@ def render_notices(
             "## Native Package Manager Licenses",
             "",
             "Windows release builds use vcpkg static-library triplets for compression",
-            "and crypto libraries. When vcpkg metadata is available, this generator",
+            "libraries. When vcpkg metadata is available, this generator",
             "copies the relevant vcpkg `copyright` files into the release package.",
             "macOS and Linux runtime dependencies are documented separately in the",
             "`zm-<target>.deps.txt` files emitted by release packaging.",

@@ -45,10 +45,11 @@ time = { version = "0.3.47", features = ["parsing"] }
 x509-parser = "0.18.1"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = "0.2.8"
-tzap-plugin-keywrap = "0.2.8"
-tzap-plugin-signing = "0.2.8"
-zip = "9.0.5"
+tzap-core = "0.2.9"
+tzap-plugin-keywrap = "0.2.9"
+tzap-plugin-signing = "0.2.9"
+zip = "9.6.0"
+tempfile = "3"
 zeroize = "1.8.2"
 rayon = "1.10"
 memchr = "2.7"
@@ -87,7 +88,7 @@ zmanager-apple-archive = { workspace = true }
 libc = "0.2"
 
 [target.'cfg(unix)'.dev-dependencies]
-xattr = "1.6.1"
+xattr = "1.7.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

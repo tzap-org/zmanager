@@ -143,10 +143,6 @@ else
 fi
 
 configure_static_linux_target
-cargo build --locked --release --target "$TARGET" -p zmanager-cli --bin zm --no-default-features
-
-cp "target/$TARGET/release/$BINARY" "$STAGE/$BINARY"
-cp README.md LICENSE NOTICE "$STAGE/"
 PYTHON_BIN=${PYTHON:-}
 if [[ -z "$PYTHON_BIN" ]]; then
   if command -v python3 >/dev/null 2>&1; then
@@ -158,6 +154,13 @@ if [[ -z "$PYTHON_BIN" ]]; then
     exit 1
   fi
 fi
+OPENSSL_DIR="$("$PYTHON_BIN" scripts/build-openssl.py "$TARGET")"
+export OPENSSL_DIR OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1
+
+cargo build --locked --release --target "$TARGET" -p zmanager-cli --bin zm --no-default-features
+
+cp "target/$TARGET/release/$BINARY" "$STAGE/$BINARY"
+cp README.md LICENSE NOTICE "$STAGE/"
 "$PYTHON_BIN" scripts/generate-third-party-notices.py \
   --out-notices "$STAGE/THIRD_PARTY_NOTICES.md" \
   --license-dir "$STAGE/third-party-licenses" >/dev/null

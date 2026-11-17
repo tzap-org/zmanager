@@ -1777,7 +1777,8 @@ fn rar_error(path: &std::path::Path, error: &rar_backend::RarBackendError) -> Ar
         ErrorKind::WrongPassword
     } else {
         match error {
-            rar_backend::RarBackendError::Io { .. } => ErrorKind::Io,
+            rar_backend::RarBackendError::Io { .. } | rar_backend::RarBackendError::Unrar(zmanager_unrar::UnrarError::Output { .. }) => ErrorKind::Io,
+            rar_backend::RarBackendError::Unrar(zmanager_unrar::UnrarError::DecodedLimit { .. }) => ErrorKind::ResourceLimitExceeded,
             rar_backend::RarBackendError::Safety(source) => crate::engine::adapters::safety_error_kind(source),
             rar_backend::RarBackendError::Unrar(_)
             | rar_backend::RarBackendError::MissingLinkTarget { .. }
@@ -2409,6 +2410,7 @@ impl NativeReadAdapter for RarListAdapter {
             archive.options().password.as_deref(),
             |entry_path| test_options.selects(entry_path),
             test_options.cancellation.as_ref(),
+            archive.options().limits.max_decoded_bytes,
         )
         .map_err(|error| rar_error(path, &error))?;
         Ok(TestReport {
@@ -2486,9 +2488,15 @@ impl NativeReadAdapter for RarListAdapter {
     fn copy_to_writer(&self, archive: &NativeReadContext, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
         let path = archive.primary_path();
         let selector = archive.selected_entry_selector(entry_id)?;
-        let written_bytes =
-            rar_backend::copy_rar_entry_by_path_occurrence(path, archive.options().password.as_deref(), &selector.path, selector.occurrence, writer)
-                .map_err(|error| rar_error(path, &error))?;
+        let written_bytes = rar_backend::copy_rar_entry_by_path_occurrence(
+            path,
+            archive.options().password.as_deref(),
+            &selector.path,
+            selector.occurrence,
+            archive.options().limits.max_decoded_bytes,
+            writer,
+        )
+        .map_err(|error| rar_error(path, &error))?;
         Ok(CopyReport { written_bytes })
     }
 }

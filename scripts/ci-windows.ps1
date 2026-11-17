@@ -180,8 +180,7 @@ function Ensure-Vcpkg {
             "bzip2:$Triplet",
             "liblzma:$Triplet",
             "zstd:$Triplet",
-            "lz4:$Triplet",
-            "openssl:$Triplet"
+            "lz4:$Triplet"
         )
 
     [Environment]::SetEnvironmentVariable(
@@ -572,6 +571,21 @@ if ($clang) {
 }
 
 Ensure-Vcpkg
+
+$previousErrorAction = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    $opensslDir = & python (Join-Path $RepositoryRoot "scripts\build-openssl.py") $Target
+    $opensslStatus = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorAction
+}
+if ($opensslStatus -ne 0 -or [string]::IsNullOrWhiteSpace($opensslDir)) {
+    throw "Could not provision static OpenSSL for $Target"
+}
+$env:OPENSSL_DIR = $opensslDir
+$env:OPENSSL_STATIC = "1"
+$env:OPENSSL_NO_VENDOR = "1"
 
 Invoke-NativeLogged `
     -Title "rustup toolchain install failed for $RustToolchain ($Target)" `

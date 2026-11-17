@@ -9,18 +9,16 @@
 namespace {
 
 constexpr int ZMU_UNRAR_ABORTED = -1000;
-constexpr int ZMU_UNRAR_DESTINATION_TOO_LONG = -1001;
 constexpr std::uint64_t ZMU_UNRAR_MAX_LARGE_DICTIONARY_KB = 512ULL * 1024ULL;
 constexpr std::size_t ZMU_UNRAR_WIDE_BUFFER_CHARS = 32768;
 
-// Events reported through `ExtractEventCallback` while a selected entry is
-// being written. Returning a negative value from the callback aborts the
-// extraction.
+// Payload events are synchronous. Negative results abort decoding. A
+// positive ENTRY_DONE result closes the archive after the last selection.
 constexpr int ZMU_UNRAR_EVENT_DATA = 1;
 constexpr int ZMU_UNRAR_EVENT_ENTRY_DONE = 2;
 
 using ExtractEventCallback = int (*)(void *user, int event,
-                                     std::uint64_t value);
+                                     const void *data, std::size_t size);
 
 struct BridgeContext {
   const char *password;
@@ -33,11 +31,10 @@ using ListCallback = int (*)(void *user, const char *path, std::uint64_t size,
                             unsigned int redir_type, const char *redir_target,
                             std::uint32_t file_attr, std::uint64_t mtime);
 
-using ExtractCallback = int (*)(void *user, const char *path,
-                               std::uint64_t size, unsigned int flags,
-                               unsigned int redir_type, const char *redir_target,
-                               std::uint32_t file_attr, std::uint64_t mtime,
-                               char *destination, std::size_t destination_size);
+using ExtractCallback = int (*)(void *user, std::size_t index,
+                               const char *path, std::uint64_t size,
+                               unsigned int flags, unsigned int redir_type,
+                               bool solid_archive);
 
 struct HeaderBuffers {
   std::vector<wchar_t> file_name;
@@ -143,12 +140,12 @@ int CALLBACK unrar_callback(UINT msg, LPARAM user_data, LPARAM p1, LPARAM p2) {
   }
 
   if (msg == UCM_PROCESSDATA) {
-    // UnRAR reports every decoded chunk of an entry it is extracting (not of
-    // skipped entries). Returning -1 makes UnRAR stop with a user break, which
-    // is how cancellation interrupts a single large entry.
+    // RAR_TEST supplies decoded bytes and verifies the checksum without
+    // making filesystem writes. RAR_SKIP suppresses these callbacks.
     if (context != nullptr && context->event_callback != nullptr &&
         context->event_callback(context->user, ZMU_UNRAR_EVENT_DATA,
-                                static_cast<std::uint64_t>(p2)) < 0) {
+                                reinterpret_cast<const void *>(p1),
+                                static_cast<std::size_t>(p2)) < 0) {
       return -1;
     }
     return 1;
@@ -185,6 +182,7 @@ extern "C" int zmu_unrar_list(const char *archive, const char *password,
   BridgeContext context{password, user, nullptr};
   std::wstring archive_wide;
   RAROpenArchiveDataEx request = open_request(archive, &context, &archive_wide);
+  request.OpenMode = RAR_OM_LIST;
   HANDLE handle = RAROpenArchiveEx(&request);
   if (handle == nullptr) {
     return request.OpenResult == ERAR_SUCCESS ? ERAR_EOPEN : request.OpenResult;
@@ -250,47 +248,40 @@ extern "C" int zmu_unrar_extract(const char *archive, const char *password,
 
   HeaderBuffers buffers;
   int code = ERAR_SUCCESS;
+  std::size_t index = 0;
   while ((code = RARReadHeaderEx(handle, buffers.prepare())) == ERAR_SUCCESS) {
     const RARHeaderDataEx &header = buffers.header;
-    std::string path = file_name_utf8(header);
-    std::string redir_target = redir_name_utf8(header);
-    char destination[8192]{};
-    std::uint64_t mtime = ((std::uint64_t)header.MtimeHigh << 32) | header.MtimeLow;
-    int callback_code = callback(
-        user, path.c_str(), unpacked_size(header), header.Flags,
-        header.RedirType, redir_target.empty() ? nullptr : redir_target.c_str(),
-        header.FileAttr, mtime,
-        destination, sizeof(destination));
-    if (callback_code < 0) {
-      RARCloseArchive(handle);
-      return callback_code == -2 ? ZMU_UNRAR_DESTINATION_TOO_LONG
-                                 : ZMU_UNRAR_ABORTED;
-    }
-
-    int operation = callback_code == 1 ? RAR_EXTRACT : RAR_SKIP;
-    std::wstring destination_wide;
-    wchar_t *destination_arg = nullptr;
-    if (callback_code == 1) {
-      // `destination` came from Rust as UTF-8.  On Windows CharToWide treats
-      // it as the ANSI code page, which makes extraction fail for otherwise
-      // valid Unicode members such as `こんにちは.txt`.
-      if (!UtfToWide(destination, destination_wide) ||
-          destination_wide.empty()) {
+    int operation = RAR_SKIP;
+    if ((header.Flags & RHDF_SPLITBEFORE) == 0) {
+      std::string path = file_name_utf8(header);
+      int selected = callback(user, index++, path.c_str(), unpacked_size(header),
+                              header.Flags, header.RedirType,
+                              (request.Flags & ROADF_SOLID) != 0);
+      if (selected < 0) {
         RARCloseArchive(handle);
         return ZMU_UNRAR_ABORTED;
       }
-      destination_arg = const_cast<wchar_t *>(destination_wide.c_str());
+      if (selected > 0) {
+        // Native decoding may only process the regular file Rust selected.
+        if ((header.Flags & RHDF_DIRECTORY) != 0 ||
+            header.RedirType != FSREDIR_NONE) {
+          RARCloseArchive(handle);
+          return ERAR_BAD_DATA;
+        }
+        operation = RAR_TEST;
+      }
     }
-    int process_code =
-        RARProcessFileW(handle, operation, nullptr, destination_arg);
+    int process_code = RARProcessFileW(handle, operation, nullptr, nullptr);
     if (process_code != ERAR_SUCCESS) {
       RARCloseArchive(handle);
       return process_code;
     }
-    if (operation == RAR_EXTRACT && event_callback != nullptr &&
-        event_callback(user, ZMU_UNRAR_EVENT_ENTRY_DONE, 0) < 0) {
-      RARCloseArchive(handle);
-      return ZMU_UNRAR_ABORTED;
+    if (operation == RAR_TEST && event_callback != nullptr) {
+      int finished = event_callback(user, ZMU_UNRAR_EVENT_ENTRY_DONE, nullptr, 0);
+      if (finished != 0) {
+        int close_code = RARCloseArchive(handle);
+        return finished < 0 ? ZMU_UNRAR_ABORTED : close_code;
+      }
     }
   }
 

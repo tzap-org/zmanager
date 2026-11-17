@@ -58,7 +58,7 @@ jobs:
       # Workspace patches do not travel with crates.io packages. Fail before
       # publishing if removing those patches restores vulnerable dependencies.
       - name: Audit dependencies without workspace patches
-        run: cargo audit --deny yanked --file Cargo.lock
+        run: cargo audit --deny unsound --deny yanked --file Cargo.lock
 
       - name: Record publish preparation
         run: |

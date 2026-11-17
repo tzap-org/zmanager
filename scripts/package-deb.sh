@@ -173,6 +173,8 @@ require_tool dpkg-shlibdeps
 require_tool gzip
 readonly PYTHON_BIN="$(python_bin)"
 
+OPENSSL_DIR="$("$PYTHON_BIN" scripts/build-openssl.py "$TARGET")"
+export OPENSSL_DIR OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1
 cargo build --locked --release --target "$TARGET" -p zmanager-cli --bin "$BINARY_NAME"
 
 install -D -m 0755 "target/$TARGET/release/$BINARY_NAME" "$STAGE/usr/bin/$BINARY_NAME"

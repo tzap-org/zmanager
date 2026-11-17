@@ -6,12 +6,12 @@ use crate::safety::{
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Seek as _};
 use std::path::{Path, PathBuf};
-use zmanager_unrar::{MAX_LARGE_DICTIONARY_BYTES, RarEntryKind, UnrarError};
+use zmanager_unrar::{MAX_LARGE_DICTIONARY_BYTES, RarEntry, RarEntryKind, RarFileDestination, UnrarError};
 
 const LARGE_DICTIONARY_LIMIT_MIB: u64 = MAX_LARGE_DICTIONARY_BYTES / crate::MEBIBYTE_BYTES;
-const RAR_UNIX_MODE_MASK: u32 = 0o7777;
+const RAR_UNIX_MODE_MASK: u32 = 0o1777;
 const RAR_FILETIME_TICKS_PER_SECOND: u64 = 10_000_000;
 const RAR_FILETIME_NANOS_PER_TICK: u64 = 100;
 const WINDOWS_TO_UNIX_EPOCH_SECONDS: u64 = 11_644_473_600;
@@ -189,7 +189,7 @@ pub fn test_rar_with_password_filter(
     password: Option<&str>,
     selected: impl FnMut(&str) -> bool,
 ) -> Result<RarTestReport, RarBackendError> {
-    test_rar_with_cancellation(archive, password, selected, None)
+    test_rar_with_cancellation(archive, password, selected, None, Some(crate::safety::DEFAULT_MAX_EXTRACTED_BYTES))
 }
 
 /// Like [`test_rar_with_password_filter`], stopping with
@@ -200,23 +200,25 @@ pub(crate) fn test_rar_with_cancellation(
     password: Option<&str>,
     mut selected: impl FnMut(&str) -> bool,
     cancellation: Option<&CancellationToken>,
+    max_decoded_bytes: Option<u64>,
 ) -> Result<RarTestReport, RarBackendError> {
     let archive = archive.as_ref();
     let entries = zmanager_unrar::list_archive(archive, password)?;
-    let temporary = crate::temp_names::TemporaryDirectory::new("rar-test").map_err(|error| RarBackendError::Io { path: error.path, source: error.source })?;
-    let mut selections = BTreeMap::new();
+    let mut selections = Vec::new();
     let mut report = RarTestReport { tested_entries: 0, skipped_entries: 0, tested_bytes: 0, warnings: Vec::new() };
 
-    for (index, entry) in entries.into_iter().enumerate() {
-        reject_large_dictionary(&entry)?;
+    for entry in &entries {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(RarBackendError::Cancelled);
+        }
+        reject_large_dictionary(entry)?;
         if !selected(&entry.path) {
             report.skipped_entries += 1;
             continue;
         }
         match entry.kind {
             zmanager_unrar::RarEntryKind::File => {
-                let destination = temporary.path().join(format!("entry-{index}"));
-                selections.insert(entry.path, destination);
+                selections.push(entry);
                 report.tested_entries += 1;
                 report.tested_bytes = report.tested_bytes.saturating_add(entry.unpacked_size);
             }
@@ -232,27 +234,29 @@ pub(crate) fn test_rar_with_cancellation(
         }
     }
 
-    match cancellation {
-        Some(cancellation) => zmanager_unrar::extract_selected_with_observer(archive, password, &selections, &mut RarCancellationObserver(cancellation))?,
-        None => zmanager_unrar::extract_selected(archive, password, &selections)?,
-    }
+    let mut sink = RarVerificationSink { cancellation, writer: None };
+    zmanager_unrar::decode_files(archive, password, selections, max_decoded_bytes, &mut sink)?;
     Ok(report)
 }
 
-/// Stops an `UnRAR` run once the job is cancelled; reports no progress.
-struct RarCancellationObserver<'a>(&'a CancellationToken);
+struct RarVerificationSink<'a> {
+    cancellation: Option<&'a CancellationToken>,
+    writer: Option<&'a mut dyn io::Write>,
+}
 
-impl zmanager_unrar::ExtractObserver for RarCancellationObserver<'_> {
+impl zmanager_unrar::DecodeSink for RarVerificationSink<'_> {
     fn is_cancelled(&mut self) -> bool {
-        self.0.is_cancelled()
+        self.cancellation.is_some_and(CancellationToken::is_cancelled)
+    }
+
+    fn write_data(&mut self, _entry: &RarEntry, bytes: &[u8]) -> io::Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.write_all(bytes)?;
+        }
+        Ok(())
     }
 }
 
-/// Options for the single core RAR extraction implementation.
-///
-/// Every public extract entry point is a thin wrapper that builds this struct
-/// (listing the archive when the caller did not already do so) and delegates
-/// here, so the extraction pipeline has exactly one implementation.
 pub(crate) struct RarExtractOptions<'password, 'resolver, 'ctx_ref, 'context> {
     pub(crate) password: Option<&'password str>,
     pub(crate) overwrite_resolver: Option<&'resolver mut dyn OverwriteResolver>,
@@ -390,6 +394,7 @@ pub(crate) fn copy_rar_entry_by_path_occurrence(
     password: Option<&str>,
     entry_path: &str,
     occurrence: usize,
+    max_decoded_bytes: Option<u64>,
     output: &mut dyn io::Write,
 ) -> Result<u64, RarBackendError> {
     let archive = archive.as_ref();
@@ -407,13 +412,13 @@ pub(crate) fn copy_rar_entry_by_path_occurrence(
         });
     }
 
-    let temporary = crate::temp_names::TemporaryDirectory::new("rar-copy").map_err(|error| RarBackendError::Io { path: error.path, source: error.source })?;
-    let temporary_path = temporary.path().join("payload");
-    let mut selections = BTreeMap::new();
-    selections.insert(entry.path.clone(), temporary_path.clone());
-    zmanager_unrar::extract_selected(archive, password, &selections)?;
-    let mut decoded = fs::File::open(&temporary_path).map_err(|source| RarBackendError::Io { path: temporary_path.clone(), source })?;
-    io::copy(&mut decoded, output).map_err(|source| RarBackendError::Io { path: temporary_path, source })
+    // Verify the selected file before writing to a caller that cannot roll
+    // back. The decoder checks the byte limit before writing the payload.
+    let mut spool = tempfile::tempfile().map_err(|source| RarBackendError::Io { path: archive.to_path_buf(), source })?;
+    let mut sink = RarVerificationSink { cancellation: None, writer: Some(&mut spool) };
+    zmanager_unrar::decode_files(archive, password, [&entry], max_decoded_bytes, &mut sink)?;
+    spool.rewind().map_err(|source| RarBackendError::Io { path: archive.to_path_buf(), source })?;
+    io::copy(&mut spool, output).map_err(|source| RarBackendError::Io { path: archive.to_path_buf(), source })
 }
 
 /// The single core RAR extraction implementation used by every public entry
@@ -437,7 +442,7 @@ fn extract_rar_with_options<'password, 'resolver, 'ctx_ref, 'context>(
     let destination_root =
         crate::safety::prepare_destination_root(destination).map_err(|source| RarBackendError::Io { path: destination.to_path_buf(), source })?;
 
-    let PlannedRarExtraction { selections, metadata_map, deferred_links, deferred_dirs, deferred_progress, skipped_progress, replacements, mut report } =
+    let PlannedRarExtraction { selections, deferred_links, deferred_dirs, deferred_progress, skipped_progress, replacements, mut report } =
         plan_rar_entries(entries, &destination_root, policy, overwrite_resolver, cancellation.as_ref())?;
 
     if let Some(context) = context.as_deref_mut() {
@@ -453,18 +458,16 @@ fn extract_rar_with_options<'password, 'resolver, 'ctx_ref, 'context>(
     match (context.as_deref_mut(), cancellation) {
         (Some(context), Some(cancellation)) => {
             let mut observer = RarJobObserver { context, cancellation, entry_bytes: 0 };
-            zmanager_unrar::extract_selected_with_observer(archive, password, &selections, &mut observer)?;
+            zmanager_unrar::extract_files(archive, password, &selections, Some(&mut observer))?;
         }
-        _ => zmanager_unrar::extract_selected(archive, password, &selections)?,
+        _ => zmanager_unrar::extract_files(archive, password, &selections, None)?,
     }
 
     // Once every payload byte is on disk the extraction is finished even if
     // cancellation arrives now: stopping here would leave replaced files,
     // links, and directory metadata half-applied.
-    for (archive_path, dest_path) in &selections {
-        if let Some(&(file_attr, mtime)) = metadata_map.get(archive_path) {
-            apply_rar_metadata(dest_path, file_attr, mtime).map_err(|source| RarBackendError::Io { path: dest_path.clone(), source })?;
-        }
+    for file in selections.values() {
+        apply_rar_metadata(&file.path, file.entry.file_attr, file.entry.mtime).map_err(|source| RarBackendError::Io { path: file.path.clone(), source })?;
     }
     replacements.commit()?;
 
@@ -516,7 +519,7 @@ impl zmanager_unrar::ExtractObserver for RarJobObserver<'_, '_> {
 /// Existing destinations an extraction replaces, held reversibly until the
 /// whole extraction has succeeded.
 ///
-/// Regular files are written by `UnRAR` to a reserved temporary sibling and
+/// Regular files are decoded to a reserved temporary sibling and
 /// moved over their destination on commit. A directory entry that lands on an
 /// existing non-directory must create its directory before `UnRAR` runs, so
 /// that existing path is moved aside instead of deleted, and removed only on
@@ -547,12 +550,11 @@ impl PendingReplacements {
         RarBackendError::Io { path: final_path, source: io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a temporary RAR replacement path") }
     }
 
-    /// Reserves a temporary sibling of `final_path` for `UnRAR` to write.
+    /// Reserves a temporary sibling of `final_path` for the decoder to write.
     fn reserve(&mut self, final_path: PathBuf) -> Result<PathBuf, RarBackendError> {
         for attempt in 0..RAR_REPLACE_TEMP_ATTEMPTS {
             let temporary = self.sibling_name(&final_path, attempt);
-            // `create_new` claims the path so UnRAR overwrites a regular file
-            // this process created, never something already there.
+            // `create_new` claims the path for the staged replacement.
             match fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
                 Ok(_) => {
                     self.reserved += 1;
@@ -591,9 +593,17 @@ impl PendingReplacements {
     /// failure part way still lets `Drop` remove the remaining temporaries
     /// and restore the displaced originals.
     fn commit(mut self) -> Result<(), RarBackendError> {
-        while let Some((temporary, final_path)) = self.files.front() {
-            move_over_destination(temporary, final_path).map_err(|source| RarBackendError::Io { path: final_path.clone(), source })?;
+        while let Some((temporary, final_path)) = self.files.front().cloned() {
+            let displace = destination_blocks_replace(&final_path).map_err(|source| RarBackendError::Io { path: final_path.clone(), source })?;
+            if displace {
+                self.displace(final_path.clone())?;
+            }
+            fs::rename(&temporary, &final_path).map_err(|source| RarBackendError::Io { path: final_path, source })?;
             self.files.pop_front();
+            if displace {
+                let (aside, _) = self.displaced.pop().expect("replacement destination was displaced");
+                remove_destination(&aside)?;
+            }
         }
         while let Some((aside, _)) = self.displaced.pop() {
             remove_destination(&aside)?;
@@ -615,29 +625,21 @@ impl Drop for PendingReplacements {
     }
 }
 
-/// Renames `temporary` over `final_path`.
-///
-/// A rename already replaces an existing regular file atomically, so the
-/// destination is removed first only when a rename cannot replace it: a real
-/// directory, or (on Windows) a read-only file.
-fn move_over_destination(temporary: &Path, final_path: &Path) -> io::Result<()> {
-    let blocks_rename = match fs::symlink_metadata(final_path) {
+/// A rename can replace a regular file atomically. An existing directory
+/// or a Windows read-only file needs to be moved aside first.
+fn destination_blocks_replace(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
         Ok(metadata) => {
             let file_type = metadata.file_type();
-            (file_type.is_dir() && !file_type.is_symlink()) || (cfg!(windows) && !file_type.is_symlink() && metadata.permissions().readonly())
+            Ok((file_type.is_dir() && !file_type.is_symlink()) || (cfg!(windows) && !file_type.is_symlink() && metadata.permissions().readonly()))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error),
-    };
-    if blocks_rename {
-        remove_destination_for_replace(final_path)?;
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
-    fs::rename(temporary, final_path)
 }
 
 struct PlannedRarExtraction {
-    selections: BTreeMap<String, PathBuf>,
-    metadata_map: BTreeMap<String, (u32, u64)>,
+    selections: BTreeMap<usize, RarFileDestination>,
     deferred_links: Vec<DeferredLink>,
     deferred_dirs: Vec<(PathBuf, u32, u64)>,
     /// Directories and links: they are finished only after `UnRAR` returns,
@@ -654,7 +656,7 @@ struct PlannedRarExtraction {
 /// a failing entry cannot leave partially created directories behind.
 enum PlannedEntry {
     Directory { destination_path: PathBuf, replace_existing: bool, file_attr: u32, mtime: u64 },
-    File { archive_path: String, destination_path: PathBuf, replace_existing: bool, file_attr: u32, mtime: u64, size: u64 },
+    File { entry: RarEntry, destination_path: PathBuf, replace_existing: bool },
     Symlink { destination_path: PathBuf, replace_existing: bool, target: PathBuf, file_attr: u32, mtime: u64 },
     Hardlink { destination_path: PathBuf, replace_existing: bool, source_path: PathBuf, file_attr: u32, mtime: u64 },
     FileCopy { destination_path: PathBuf, replace_existing: bool, source_path: PathBuf, file_attr: u32, mtime: u64 },
@@ -680,7 +682,6 @@ fn plan_rar_entries(
     let mut plans = Vec::new();
     let mut extraction = PlannedRarExtraction {
         selections: BTreeMap::new(),
-        metadata_map: BTreeMap::new(),
         deferred_links: Vec::new(),
         deferred_dirs: Vec::new(),
         deferred_progress: Vec::new(),
@@ -764,14 +765,7 @@ fn plan_entry(
 ) -> Result<PlannedEntry, RarBackendError> {
     match entry.kind {
         RarEntryKind::Directory => Ok(PlannedEntry::Directory { destination_path, replace_existing, file_attr: entry.file_attr, mtime: entry.mtime }),
-        RarEntryKind::File => Ok(PlannedEntry::File {
-            archive_path: entry.path,
-            destination_path,
-            replace_existing,
-            file_attr: entry.file_attr,
-            mtime: entry.mtime,
-            size: entry.unpacked_size,
-        }),
+        RarEntryKind::File => Ok(PlannedEntry::File { entry, destination_path, replace_existing }),
         RarEntryKind::Symlink => {
             let target = link_target(&entry)?;
             Ok(PlannedEntry::Symlink { destination_path, replace_existing, target: PathBuf::from(target), file_attr: entry.file_attr, mtime: entry.mtime })
@@ -808,14 +802,13 @@ fn commit_planned_entry(plan: PlannedEntry, extraction: &mut PlannedRarExtractio
             extraction.deferred_dirs.push((destination_path, file_attr, mtime));
             extraction.report.written_entries += 1;
         }
-        PlannedEntry::File { archive_path, destination_path, replace_existing, file_attr, mtime, size } => {
+        PlannedEntry::File { entry, destination_path, replace_existing } => {
             if let Some(parent) = destination_path.parent() {
                 fs::create_dir_all(parent).map_err(|source| RarBackendError::Io { path: parent.to_path_buf(), source })?;
             }
             let destination_path = if replace_existing { extraction.replacements.reserve(destination_path)? } else { destination_path };
-            extraction.report.written_bytes += size;
-            extraction.metadata_map.insert(archive_path.clone(), (file_attr, mtime));
-            extraction.selections.insert(archive_path, destination_path);
+            extraction.report.written_bytes += entry.unpacked_size;
+            extraction.selections.insert(entry.index, RarFileDestination { entry, path: destination_path, replace_existing });
         }
         PlannedEntry::Symlink { destination_path, replace_existing, target, file_attr, mtime } => {
             extraction.deferred_links.push(DeferredLink { destination_path, replace_existing, kind: DeferredLinkKind::Symlink { target }, file_attr, mtime });
@@ -932,8 +925,9 @@ fn materialize_deferred_links(links: &[DeferredLink], report: &mut RarExtractRep
 }
 
 fn materialize_deferred_link(link: &DeferredLink, report: &mut RarExtractReport) -> Result<(), RarBackendError> {
+    let mut replacement = PendingReplacements::default();
     if link.replace_existing {
-        remove_destination(&link.destination_path)?;
+        replacement.displace(link.destination_path.clone())?;
     }
     if let Some(parent) = link.destination_path.parent() {
         fs::create_dir_all(parent).map_err(|source| RarBackendError::Io { path: parent.to_path_buf(), source })?;
@@ -955,6 +949,7 @@ fn materialize_deferred_link(link: &DeferredLink, report: &mut RarExtractReport)
 
     apply_rar_metadata(&link.destination_path, link.file_attr, link.mtime)
         .map_err(|source| RarBackendError::Io { path: link.destination_path.clone(), source })?;
+    replacement.commit()?;
 
     report.written_entries += 1;
     Ok(())
@@ -1301,6 +1296,20 @@ mod tests {
     }
 
     #[test]
+    fn failed_replacement_restores_an_existing_directory() {
+        let temp = TestDir::new("rar_replace_directory_failure");
+        let destination = temp.path("original");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("document.txt"), b"original").unwrap();
+        let mut replacements = super::PendingReplacements::default();
+        let staged = replacements.reserve(destination.clone()).unwrap();
+        fs::remove_file(staged).unwrap();
+
+        assert!(replacements.commit().is_err());
+        assert_eq!(fs::read(destination.join("document.txt")).unwrap(), b"original");
+    }
+
+    #[test]
     fn dropping_uncommitted_replacements_restores_displaced_paths() {
         let temp = TestDir::new("rar_displace_rollback");
         let root = temp.path("out");
@@ -1479,13 +1488,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rar_metadata_preserves_special_mode_bits_without_following_symlinks() {
+    fn rar_metadata_strips_privileged_mode_bits_without_following_symlinks() {
         use std::os::unix::fs::{PermissionsExt, symlink};
 
         let temp = TestDir::new("rar_metadata_modes");
         let directory = temp.path("sticky");
         fs::create_dir(&directory).unwrap();
-        apply_rar_metadata(&directory, 0o1750 << 16, 0).unwrap();
+        apply_rar_metadata(&directory, 0o7750 << 16, 0).unwrap();
         assert_eq!(fs::metadata(&directory).unwrap().permissions().mode() & 0o7777, 0o1750);
 
         let target = temp.path("target.txt");
@@ -1570,6 +1579,7 @@ mod tests {
         policy.limits.max_expanded_bytes = Some(100);
 
         let regular_file = |path: &str, size: u64| zmanager_unrar::RarEntry {
+            index: 0,
             path: path.to_owned(),
             unpacked_size: size,
             dictionary_size: 0,
@@ -1581,6 +1591,7 @@ mod tests {
             mtime: 0,
         };
         let file_copy = |path: &str, size: u64| zmanager_unrar::RarEntry {
+            index: 1,
             path: path.to_owned(),
             unpacked_size: size,
             dictionary_size: 0,
@@ -1608,6 +1619,7 @@ mod tests {
     fn unsupported_rar_special_entries_are_recorded_for_progress() {
         let destination = std::env::temp_dir().join(format!("zmanager-rar-special-progress-{}", std::process::id()));
         let entry = zmanager_unrar::RarEntry {
+            index: 0,
             path: "special.device".to_owned(),
             unpacked_size: 17,
             dictionary_size: 0,
@@ -1630,7 +1642,30 @@ mod tests {
     fn archive_test_stops_when_cancelled() {
         let token = CancellationToken::new();
         token.cancel();
-        let error = super::test_rar_with_cancellation(rar_fixture("basic.rar"), None, |_| true, Some(&token)).unwrap_err();
+        let error = super::test_rar_with_cancellation(rar_fixture("basic.rar"), None, |_| true, Some(&token), None).unwrap_err();
         assert!(matches!(error, RarBackendError::Cancelled), "{error}");
+    }
+
+    #[test]
+    fn test_and_copy_rar_respect_the_decoded_byte_limit() {
+        let archive = rar_fixture("basic.rar");
+        let entry = zmanager_unrar::list_archive(&archive, None)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == zmanager_unrar::RarEntryKind::File && entry.unpacked_size > 0)
+            .unwrap();
+        let limit = entry.unpacked_size - 1;
+        let report = super::test_rar_with_cancellation(&archive, None, |path| path == entry.path, None, Some(entry.unpacked_size)).unwrap();
+        assert_eq!(report.tested_bytes, entry.unpacked_size);
+        let test_error = super::test_rar_with_cancellation(&archive, None, |path| path == entry.path, None, Some(limit)).unwrap_err();
+        let mut output = Vec::new();
+        let copy_error = super::copy_rar_entry_by_path_occurrence(&archive, None, &entry.path, 0, Some(limit), &mut output).unwrap_err();
+        for error in [test_error, copy_error] {
+            assert!(matches!(error, RarBackendError::Unrar(zmanager_unrar::UnrarError::DecodedLimit { limit: actual }) if actual == limit));
+        }
+        assert_eq!(output, Vec::<u8>::new());
+        let copied = super::copy_rar_entry_by_path_occurrence(&archive, None, &entry.path, 0, Some(entry.unpacked_size), &mut output).unwrap();
+        assert_eq!(copied, entry.unpacked_size);
+        assert_eq!(output.len() as u64, copied);
     }
 }

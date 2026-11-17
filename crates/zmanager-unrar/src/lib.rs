@@ -12,8 +12,9 @@
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Mutex, PoisonError};
@@ -34,7 +35,6 @@ const ERAR_BAD_PASSWORD: c_int = 24;
 const ERAR_LARGE_DICT: c_int = 25;
 
 const ZMU_UNRAR_ABORTED: c_int = -1000;
-const ZMU_UNRAR_DESTINATION_TOO_LONG: c_int = -1001;
 
 const RAR4_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x00";
 const RAR5_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x01\x00";
@@ -66,9 +66,9 @@ const FSREDIR_FILECOPY: u32 = 5;
 
 type ListCallback = extern "C" fn(*mut c_void, *const c_char, u64, u64, c_uint, c_uint, *const c_char, u32, u64) -> c_int;
 
-type ExtractCallback = extern "C" fn(*mut c_void, *const c_char, u64, c_uint, c_uint, *const c_char, u32, u64, *mut c_char, usize) -> c_int;
+type ExtractCallback = extern "C" fn(*mut c_void, usize, *const c_char, u64, c_uint, c_uint, bool) -> c_int;
 
-type ExtractEventCallback = extern "C" fn(*mut c_void, c_int, u64) -> c_int;
+type ExtractEventCallback = extern "C" fn(*mut c_void, c_int, *const u8, usize) -> c_int;
 
 // Mirrors the `ZMU_UNRAR_EVENT_*` constants in the C++ bridge.
 const ZMU_UNRAR_EVENT_DATA: c_int = 1;
@@ -92,6 +92,8 @@ unsafe extern "C" {
 /// One RAR archive entry.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RarEntry {
+    /// Ordinal of the logical entry, excluding multipart continuation headers.
+    pub index: usize,
     /// Archive path reported by `UnRAR`.
     pub path: String,
     /// Uncompressed size in bytes.
@@ -144,6 +146,14 @@ pub enum UnrarError {
     InvalidDestination { path: PathBuf, reason: String },
     /// The extraction callback could not fit the selected destination path.
     DestinationTooLong { path: PathBuf },
+    /// Selected entry is missing, ambiguous, or changed since listing.
+    UnexpectedEntry { path: String },
+    /// Decoding would exceed the configured allowance.
+    DecodedLimit { limit: u64 },
+    /// Actual payload size did not match the selected entry's header.
+    DecodedSizeMismatch { path: String },
+    /// Writing the decoded payload failed.
+    Output { path: String, kind: io::ErrorKind, reason: String },
     /// Extraction was cancelled by the caller.
     Cancelled,
 }
@@ -165,6 +175,10 @@ impl fmt::Display for UnrarError {
             Self::DestinationTooLong { path } => {
                 write!(f, "RAR destination path is too long: {}", path.display())
             }
+            Self::UnexpectedEntry { path } => write!(f, "missing, ambiguous, or changed RAR file entry: {path}"),
+            Self::DecodedLimit { limit } => write!(f, "RAR decoding exceeds the configured {limit}-byte limit"),
+            Self::DecodedSizeMismatch { path } => write!(f, "decoded RAR file size does not match its header: {path}"),
+            Self::Output { path, reason, .. } => write!(f, "could not write decoded RAR file {path}: {reason}"),
             Self::Cancelled => write!(f, "RAR extraction was cancelled"),
         }
     }
@@ -213,7 +227,7 @@ pub fn list_archive(archive: impl AsRef<Path>, password: Option<&str>) -> Result
 /// Returns [`UnrarError`] when `UnRAR` cannot extract the archive or a selected
 /// destination cannot be passed to the C ABI.
 pub fn extract_selected(archive: impl AsRef<Path>, password: Option<&str>, selections: &BTreeMap<String, PathBuf>) -> Result<(), UnrarError> {
-    extract_selected_inner(archive.as_ref(), password, selections, None)
+    extract_paths(archive.as_ref(), password, selections, None)
 }
 
 /// Observes a selected-entry extraction.
@@ -249,54 +263,206 @@ pub trait ExtractObserver {
 /// Extracts selected RAR file entries to exact destination paths, reporting
 /// progress to and polling cancellation from `observer`.
 ///
-/// When the observer cancels inside an entry, `UnRAR` unwinds with a user
-/// break and deletes the partly written output file itself (its `File`
-/// destructor removes a newly created file that was never closed), so no
-/// truncated file is left behind. That relies on the C++ sources being built
-/// with stack unwinding enabled; see `build.rs`.
+/// A partially decoded file is discarded. Finished files remain available.
 ///
-/// The caller is responsible for validating archive paths and preparing
-/// destination parent directories before calling this function.
+/// The caller validates archive paths and prepares destination parents.
 ///
 /// # Errors
 ///
-/// Returns [`UnrarError`] when `UnRAR` cannot extract the archive, a selected
-/// destination cannot be passed to the C ABI, or the observer cancels.
+/// Returns an error if a path cannot be selected uniquely, decoding or writing
+/// fails, or the observer cancels.
 pub fn extract_selected_with_observer(
     archive: impl AsRef<Path>,
     password: Option<&str>,
     selections: &BTreeMap<String, PathBuf>,
     observer: &mut dyn ExtractObserver,
 ) -> Result<(), UnrarError> {
-    extract_selected_inner(archive.as_ref(), password, selections, Some(observer))
+    extract_paths(archive.as_ref(), password, selections, Some(observer))
 }
 
-fn extract_selected_inner(
-    archive_path: &Path,
+fn extract_paths(
+    archive: &Path,
     password: Option<&str>,
     selections: &BTreeMap<String, PathBuf>,
     observer: Option<&mut dyn ExtractObserver>,
 ) -> Result<(), UnrarError> {
-    let _operation_guard = UNRAR_OPERATION_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    validate_archive_prefix(archive_path)?;
-    let archive = path_to_cstring(archive_path)?;
-    let password = optional_password_to_c_buffer(password)?;
-    let mut context = ExtractContext { selections, error: None, observer, current: None };
+    let mut files = BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in list_archive(archive, password)? {
+        let Some(path) = selections.get(&entry.path) else { continue };
+        if entry.kind != RarEntryKind::File || !seen.insert(entry.path.clone()) {
+            return Err(UnrarError::UnexpectedEntry { path: entry.path });
+        }
+        files.insert(entry.index, RarFileDestination { entry, path: path.clone(), replace_existing: true });
+    }
+    if let Some(path) = selections.keys().find(|path| !seen.contains(*path)) {
+        return Err(UnrarError::UnexpectedEntry { path: path.clone() });
+    }
+    extract_files(archive, password, &files, observer)
+}
 
-    let code = unsafe {
-        zmu_unrar_extract(
-            archive.as_ptr(),
-            optional_c_buffer_ptr(password.as_ref()),
-            ptr::from_mut(&mut context).cast::<c_void>(),
-            extract_callback,
-            extract_event_callback,
-        )
-    };
+/// A regular archive member and its caller-validated destination.
+pub struct RarFileDestination {
+    /// The entry returned by listing.
+    pub entry: RarEntry,
+    /// Exact output path.
+    pub path: PathBuf,
+    /// Whether a completed file may replace an existing path.
+    pub replace_existing: bool,
+}
 
+/// Extracts exact regular-file entries and publishes each after checksum verification.
+///
+/// # Errors
+///
+/// Returns an error if a selection changed, decoding or writing fails, or
+/// the observer cancels.
+pub fn extract_files(
+    archive: &Path,
+    password: Option<&str>,
+    files: &BTreeMap<usize, RarFileDestination>,
+    observer: Option<&mut dyn ExtractObserver>,
+) -> Result<(), UnrarError> {
+    if let Some((_, file)) = files.iter().find(|(index, file)| **index != file.entry.index) {
+        return Err(UnrarError::UnexpectedEntry { path: file.entry.path.clone() });
+    }
+    let mut sink = FileSink { files, observer, output: None };
+    decode_files(archive, password, files.values().map(|file| &file.entry), None, &mut sink)
+}
+
+struct FileSink<'a, 'b> {
+    files: &'a BTreeMap<usize, RarFileDestination>,
+    observer: Option<&'b mut dyn ExtractObserver>,
+    output: Option<tempfile::NamedTempFile>,
+}
+
+impl DecodeSink for FileSink<'_, '_> {
+    fn is_cancelled(&mut self) -> bool {
+        self.observer.as_mut().is_some_and(|observer| observer.is_cancelled())
+    }
+
+    fn entry_started(&mut self, entry: &RarEntry) -> io::Result<()> {
+        let parent = self.files[&entry.index].path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        self.output = Some(tempfile::NamedTempFile::new_in(parent)?);
+        if let Some(observer) = self.observer.as_mut() {
+            observer.entry_started(&entry.path, entry.unpacked_size);
+        }
+        Ok(())
+    }
+
+    fn write_data(&mut self, entry: &RarEntry, bytes: &[u8]) -> io::Result<()> {
+        self.output.as_mut().expect("entry started").write_all(bytes)?;
+        if let Some(observer) = self.observer.as_mut() {
+            observer.bytes_written(&entry.path, bytes.len() as u64);
+        }
+        Ok(())
+    }
+
+    fn entry_finished(&mut self, entry: &RarEntry) -> io::Result<()> {
+        let output = self.output.take().expect("entry started");
+        let destination = &self.files[&entry.index];
+        if destination.replace_existing {
+            output.persist(&destination.path)?;
+        } else {
+            output.persist_noclobber(&destination.path)?;
+        }
+        if let Some(observer) = self.observer.as_mut() {
+            observer.entry_finished(&entry.path);
+        }
+        Ok(())
+    }
+}
+
+/// Receives checksummed regular-file payloads without giving native code
+/// filesystem destinations. Chunks arrive before checksum verification.
+pub trait DecodeSink {
+    /// Whether to stop at the next header or chunk.
+    fn is_cancelled(&mut self) -> bool {
+        false
+    }
+
+    /// Begins reading the selected entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sink cannot begin accepting the file.
+    fn entry_started(&mut self, _entry: &RarEntry) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Consumes a decoded chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if consuming the chunk fails.
+    fn write_data(&mut self, entry: &RarEntry, bytes: &[u8]) -> io::Result<()>;
+
+    /// Finishes the selected entry after successful checksum verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sink cannot finish writing the file.
+    fn entry_finished(&mut self, _entry: &RarEntry) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Decodes exact entries by ordinal and checks each header against the listing.
+///
+/// The optional byte limit covers selected files and declared sizes of
+/// preceding solid members the native decoder must process.
+///
+/// # Errors
+///
+/// Returns an error for a changed entry, failed decode, exceeded byte limit,
+/// cancellation, or sink write failure.
+pub fn decode_files<'a>(
+    archive_path: &Path,
+    password: Option<&str>,
+    entries: impl IntoIterator<Item = &'a RarEntry>,
+    limit: Option<u64>,
+    sink: &mut dyn DecodeSink,
+) -> Result<(), UnrarError> {
+    let mut selections = BTreeMap::new();
+    for entry in entries {
+        if entry.kind != RarEntryKind::File || selections.insert(entry.index, entry).is_some() {
+            return Err(UnrarError::UnexpectedEntry { path: entry.path.clone() });
+        }
+    }
+    if sink.is_cancelled() {
+        return Err(UnrarError::Cancelled);
+    }
+    if selections.is_empty() {
+        return Ok(());
+    }
+    let code;
+    let mut context = ExtractContext { selections, sink, current: None, error: None, panic: None, limit, charged: 0 };
+    {
+        let _operation_guard = UNRAR_OPERATION_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        validate_archive_prefix(archive_path)?;
+        let archive = path_to_cstring(archive_path)?;
+        let password = optional_password_to_c_buffer(password)?;
+        code = unsafe {
+            zmu_unrar_extract(
+                archive.as_ptr(),
+                optional_c_buffer_ptr(password.as_ref()),
+                ptr::from_mut(&mut context).cast::<c_void>(),
+                extract_callback,
+                extract_event_callback,
+            )
+        };
+    }
+    if let Some(panic) = context.panic {
+        std::panic::resume_unwind(panic);
+    }
     if let Some(error) = context.error {
         return Err(error);
     }
-    check_status(code)
+    check_status(code)?;
+    if let Some((_, entry)) = context.selections.first_key_value() {
+        return Err(UnrarError::UnexpectedEntry { path: entry.path.clone() });
+    }
+    Ok(())
 }
 
 struct ListContext {
@@ -305,22 +471,47 @@ struct ListContext {
 }
 
 struct ExtractContext<'a, 'b> {
-    selections: &'a BTreeMap<String, PathBuf>,
+    selections: BTreeMap<usize, &'a RarEntry>,
+    sink: &'b mut dyn DecodeSink,
+    current: Option<(&'a RarEntry, u64)>,
     error: Option<UnrarError>,
-    observer: Option<&'b mut dyn ExtractObserver>,
-    /// Archive path of the entry `UnRAR` is writing.
-    current: Option<String>,
+    panic: Option<Box<dyn std::any::Any + Send>>,
+    limit: Option<u64>,
+    charged: u64,
 }
 
 impl ExtractContext<'_, '_> {
-    /// Records cancellation and returns whether the operation must stop.
-    fn cancelled(&mut self) -> bool {
-        if self.observer.as_mut().is_some_and(|observer| observer.is_cancelled()) {
-            self.error = Some(UnrarError::Cancelled);
-            return true;
-        }
-        false
+    fn check_cancelled(&mut self) -> Result<(), UnrarError> {
+        if self.sink.is_cancelled() { Err(UnrarError::Cancelled) } else { Ok(()) }
     }
+
+    fn charge(&mut self, size: u64) -> Result<(), UnrarError> {
+        if let Some(limit) = self.limit {
+            if size > limit - self.charged {
+                return Err(UnrarError::DecodedLimit { limit });
+            }
+            self.charged += size;
+        }
+        Ok(())
+    }
+
+    fn callback(&mut self, action: impl FnOnce(&mut Self) -> Result<c_int, UnrarError>) -> c_int {
+        match catch_unwind(AssertUnwindSafe(|| action(self))) {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                self.error = Some(error);
+                -1
+            }
+            Err(panic) => {
+                self.panic = Some(panic);
+                -1
+            }
+        }
+    }
+}
+
+fn output_error(entry: &RarEntry, error: &io::Error) -> UnrarError {
+    UnrarError::Output { path: entry.path.clone(), kind: error.kind(), reason: error.to_string() }
 }
 
 extern "C" fn list_callback(
@@ -348,6 +539,7 @@ extern "C" fn list_callback(
     };
 
     context.entries.push(RarEntry {
+        index: context.entries.len(),
         path,
         unpacked_size,
         dictionary_size,
@@ -364,72 +556,63 @@ extern "C" fn list_callback(
 
 extern "C" fn extract_callback(
     user: *mut c_void,
+    index: usize,
     path: *const c_char,
     unpacked_size: u64,
-    _flags: c_uint,
-    _redir_type: c_uint,
-    _redir_target: *const c_char,
-    _file_attr: u32,
-    _mtime: u64,
-    destination: *mut c_char,
-    destination_size: usize,
+    flags: c_uint,
+    redir_type: c_uint,
+    solid_archive: bool,
 ) -> c_int {
     let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
-    if context.cancelled() {
-        return -1;
-    }
-    let Some(path) = c_path_to_string(path) else {
-        context.error = Some(UnrarError::InvalidEntryName);
-        return -1;
-    };
-    let Some(destination_path) = context.selections.get(&path) else {
-        return 0;
-    };
-
-    let destination_string = match destination_to_cstring(destination_path) {
-        Ok(destination) => destination,
-        Err(error) => {
-            context.error = Some(error);
-            return -1;
+    context.callback(|context| {
+        context.check_cancelled()?;
+        let kind = entry_kind(flags, redir_type);
+        let entry = context.selections.get(&index).copied();
+        if entry.is_some() || (solid_archive && kind == RarEntryKind::File) {
+            context.charge(unpacked_size)?;
         }
-    };
-    let bytes = destination_string.as_bytes_with_nul();
-    if bytes.len() > destination_size {
-        context.error = Some(UnrarError::DestinationTooLong { path: destination_path.clone() });
-        return -2;
-    }
-
-    unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), destination, bytes.len());
-    }
-    if let Some(observer) = context.observer.as_mut() {
-        observer.entry_started(&path, unpacked_size);
-    }
-    context.current = Some(path);
-    1
+        let Some(entry) = entry else { return Ok(0) };
+        let path = c_path_to_string(path).ok_or(UnrarError::InvalidEntryName)?;
+        if kind != RarEntryKind::File || path != entry.path || unpacked_size != entry.unpacked_size {
+            return Err(UnrarError::UnexpectedEntry { path: entry.path.clone() });
+        }
+        context.sink.entry_started(entry).map_err(|error| output_error(entry, &error))?;
+        context.current = Some((entry, 0));
+        Ok(1)
+    })
 }
 
-extern "C" fn extract_event_callback(user: *mut c_void, event: c_int, value: u64) -> c_int {
+extern "C" fn extract_event_callback(user: *mut c_void, event: c_int, data: *const u8, size: usize) -> c_int {
     let context = unsafe { &mut *user.cast::<ExtractContext<'_, '_>>() };
-    match event {
+    context.callback(|context| match event {
         ZMU_UNRAR_EVENT_DATA => {
-            if context.cancelled() {
-                return -1;
+            context.check_cancelled()?;
+            let (entry, written) = context.current.as_mut().expect("entry started");
+            if size as u64 > entry.unpacked_size - *written {
+                return Err(UnrarError::DecodedSizeMismatch { path: entry.path.clone() });
             }
-            if let (Some(observer), Some(path)) = (context.observer.as_mut(), context.current.as_ref()) {
-                observer.bytes_written(path, value);
+            if size != 0 {
+                if data.is_null() || size > isize::MAX as usize {
+                    return Err(UnrarError::DecodedSizeMismatch { path: entry.path.clone() });
+                }
+                // UnRAR owns the buffer for the duration of the callback.
+                let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+                context.sink.write_data(entry, bytes).map_err(|error| output_error(entry, &error))?;
             }
+            *written += size as u64;
+            Ok(0)
         }
         ZMU_UNRAR_EVENT_ENTRY_DONE => {
-            if let Some(path) = context.current.take()
-                && let Some(observer) = context.observer.as_mut()
-            {
-                observer.entry_finished(&path);
+            let (entry, written) = context.current.take().expect("entry started");
+            if written != entry.unpacked_size {
+                return Err(UnrarError::DecodedSizeMismatch { path: entry.path.clone() });
             }
+            context.sink.entry_finished(entry).map_err(|error| output_error(entry, &error))?;
+            context.selections.remove(&entry.index);
+            Ok(c_int::from(context.selections.is_empty()))
         }
-        _ => {}
-    }
-    0
+        _ => Ok(0),
+    })
 }
 
 fn entry_kind(flags: u32, redir_type: u32) -> RarEntryKind {
@@ -487,13 +670,6 @@ fn path_to_cstring(path: &Path) -> Result<CString, UnrarError> {
     CString::new(text).map_err(|source| UnrarError::InvalidPath { path: path.to_path_buf(), reason: source.to_string() })
 }
 
-fn destination_to_cstring(path: &Path) -> Result<CString, UnrarError> {
-    let Some(text) = path.to_str() else {
-        return Err(UnrarError::InvalidDestination { path: path.to_path_buf(), reason: "path is not valid UTF-8".to_owned() });
-    };
-    CString::new(text).map_err(|source| UnrarError::InvalidDestination { path: path.to_path_buf(), reason: source.to_string() })
-}
-
 fn optional_password_to_c_buffer(password: Option<&str>) -> Result<Option<Zeroizing<Vec<u8>>>, UnrarError> {
     password
         .filter(|password| !password.is_empty())
@@ -518,10 +694,6 @@ fn check_status(code: c_int) -> Result<(), UnrarError> {
         return Ok(());
     }
 
-    if code == ZMU_UNRAR_DESTINATION_TOO_LONG {
-        return Err(UnrarError::Status { code, message: "destination path too long" });
-    }
-
     Err(UnrarError::Status { code, message: status_message(code) })
 }
 
@@ -540,7 +712,6 @@ const fn status_message(code: c_int) -> &'static str {
         ERAR_BAD_PASSWORD => "bad password",
         ERAR_LARGE_DICT => "large dictionary exceeds configured limit",
         ZMU_UNRAR_ABORTED => "operation aborted",
-        ZMU_UNRAR_DESTINATION_TOO_LONG => "destination path too long",
         _ => "unknown error",
     }
 }
@@ -554,5 +725,41 @@ mod tests {
         assert!(large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES - 1));
         assert!(large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES));
         assert!(!large_dictionary_allowed_bytes(MAX_LARGE_DICTIONARY_BYTES + 1));
+    }
+
+    #[test]
+    fn native_selection_uses_the_requested_ordinal_and_regular_file_type() {
+        use super::{DecodeSink, ExtractContext, RHDF_DIRECTORY, RarEntry, RarEntryKind, UnrarError, extract_callback};
+        use std::{io, ptr};
+
+        struct Sink;
+
+        impl DecodeSink for Sink {
+            fn write_data(&mut self, _entry: &RarEntry, _bytes: &[u8]) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let entry = RarEntry {
+            index: 4,
+            path: "report.txt".to_owned(),
+            unpacked_size: 16,
+            dictionary_size: 0,
+            kind: RarEntryKind::File,
+            link_target: None,
+            encrypted: false,
+            solid: false,
+            file_attr: 0,
+            mtime: 0,
+        };
+        let name = std::ffi::CString::new(entry.path.as_str()).unwrap();
+        let mut sink = Sink;
+        let mut context =
+            ExtractContext { selections: [(entry.index, &entry)].into(), sink: &mut sink, current: None, error: None, panic: None, limit: None, charged: 0 };
+        let user = ptr::from_mut(&mut context).cast();
+        assert_eq!(extract_callback(user, entry.index + 1, name.as_ptr(), entry.unpacked_size, 0, 0, false), 0);
+        assert!(context.current.is_none());
+        assert_eq!(extract_callback(user, entry.index, name.as_ptr(), entry.unpacked_size, RHDF_DIRECTORY, 0, false), -1);
+        assert!(matches!(context.error, Some(UnrarError::UnexpectedEntry { .. })));
     }
 }

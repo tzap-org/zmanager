@@ -10,6 +10,9 @@ XCFRAMEWORK_DIR="$DIST/$FFI_NAME.xcframework"
 echo "Building zmanager-ffi for macOS..."
 cd "$CRATE_DIR"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+OPENSSL_DIR="$(python3 "$ROOT/scripts/build-openssl.py" "$TARGET")"
+export OPENSSL_DIR OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1
 cargo build --release
 
 echo "Cleaning previous Swift package artifacts..."

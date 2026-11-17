@@ -37,9 +37,10 @@ pub struct DetectedArchive {
 pub struct OpenLimits {
     /// Optional aggregate byte limit for the owned source/volume set.
     pub max_source_bytes: Option<u64>,
-    /// Maximum decoded bytes in temporary compressed TAR/CPIO intermediates.
-    /// Applies to listing and reading as well as extraction. Defaults to
-    /// 64 GiB; `None` disables this bound.
+    /// Maximum decoded bytes in temporary archive intermediates and bounded
+    /// decoders. Compressed TAR/CPIO applies it to every operation. RAR
+    /// applies it to verification and copying, including solid predecessors.
+    /// Defaults to 64 GiB. `None` disables this bound.
     pub max_decoded_bytes: Option<u64>,
 }
 

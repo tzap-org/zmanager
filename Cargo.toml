@@ -42,9 +42,9 @@ zmanager-wim = { path = "crates/zmanager-wim", version = "2.2.0" }
 zmanager-unrar = { path = "crates/zmanager-unrar", version = "2.2.0" }
 
 # The TZAP family (core plus the keywrap and signing plugins) uses crates.io
-# dependencies. Local development and Security Audit CI can track ../tzap
-# changes via a [patch.crates-io] in .cargo/config.toml. The committed
-# Cargo.lock tracks the published dependency; build/test, package-preview, and
+# dependencies. Local development can track ../tzap changes via a
+# [patch.crates-io] in .cargo/config.toml. The committed lockfiles track the
+# published dependency for Security Audit CI. Build/test, package-preview, and
 # release workflows drop the development patch before their locked builds.
 
 # Temporary security updates for forensic readers whose published releases

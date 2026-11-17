@@ -26,10 +26,6 @@ jobs:
         with:
           ref: main
 
-      - name: Clone tzap
-        shell: bash
-        run: git clone https://github.com/tzap-org/tzap.git ../tzap
-
       - name: Clone localsend-rs
         shell: bash
         run: |
@@ -67,6 +63,15 @@ jobs:
       - name: Install cargo-audit
         run: cargo +stable install cargo-audit --locked --version 0.22.2
 
+      - name: Use published tzap-core dependency
+        run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
+
+      - name: Build pinned OpenSSL
+        run: |
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          openssl_dir="$(python3 scripts/build-openssl.py "$target")"
+          printf '%s\n' "OPENSSL_DIR=$openssl_dir" OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1 >> "$GITHUB_ENV"
+
       - name: Generate UniFFI bindings
         run: |
           REGEN_KOTLIN_DIR="$GITHUB_WORKSPACE/crates/zmanager-ffi/bindings/kotlin" \
@@ -74,20 +79,12 @@ jobs:
             bash scripts/generate-uniffi-bindings.sh
 
       # This workflow pushes directly with GITHUB_TOKEN, so the push may not
-      # trigger the normal push-based Security Audit workflow. Resolve Tzap
-      # from the sibling checkout, matching Security Audit CI, so development
-      # changes can be audited before a crates.io release.
-      - name: Resolve sibling Tzap dependencies
-        run: |
-          cargo update --package tzap-core
-          cargo update --package crypto-bigint
-          cargo update --manifest-path fuzz/Cargo.toml --package tzap-core
-          cargo update --manifest-path fuzz/Cargo.toml --package crypto-bigint
-
+      # trigger the normal push-based Security Audit workflow.
       - name: Audit Rust dependencies before publishing bindings
         run: |
-          cargo audit --deny yanked --file Cargo.lock
-          cargo audit --deny yanked --file fuzz/Cargo.lock
+          git diff --exit-code -- Cargo.lock fuzz/Cargo.lock
+          cargo audit --deny unsound --deny yanked --file Cargo.lock
+          cargo audit --deny unsound --deny yanked --file fuzz/Cargo.lock
 
       - name: Commit and push regenerated bindings
         run: |

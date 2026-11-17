@@ -38,7 +38,7 @@ hosted-revocation = []
 [dependencies]
 anstream = "1.0.0"
 anstyle = "1.0.14"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls-vendored", "charset", "http2", "system-proxy"], optional = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls-vendored", "charset", "http2", "system-proxy"], optional = true }
 rpassword = "7.5.2"
 httparse = { version = "1.10.1", optional = true }
 serde_json = "1.0.140"
@@ -51,15 +51,15 @@ aff4 = { version = "0.2", features = ["test-helpers"] }
 flate2 = "1.1.9"
 sha2 = "0.10.9"
 tar = "0.4.45"
-zip = "9.0.5"
+zip = "9.6.0"
 zstd = "0.14.3"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
-xattr = "1.6.1"
+xattr = "1.7.0"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", features = ["fs", "process"] }
+rustix = { version = "1.1.6", features = ["fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
