@@ -12,7 +12,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tzap-core = "0.2.9"
-zip = "9.6.0"
+zip = "=9.6.1"
 zmanager-core = { path = "../crates/zmanager-core" }
 
 # Cargo does not inherit patches across workspace roots. Keep these aligned
