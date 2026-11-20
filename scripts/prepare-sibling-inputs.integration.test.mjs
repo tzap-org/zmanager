@@ -78,7 +78,7 @@ function localCloneEnvironment(fixture) {
   const shimDirectory = join(fixture.root, "git-shim");
   mkdirSync(shimDirectory);
   const gitName = process.platform === "win32" ? "git.exe" : "git";
-  const realGit = process.env.GIT_EXECUTABLE ?? process.env.PATH
+  const realGit = process.env.GIT_EXECUTABLE ?? process.env.REAL_GIT ?? process.env.PATH
     .split(delimiter)
     .map((directory) => join(directory, gitName))
     .find(existsSync);
