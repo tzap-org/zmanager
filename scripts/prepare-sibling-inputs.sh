@@ -38,8 +38,23 @@ fi
 if [[ "$mode" == release && "$catalog" != "$root/release-build-inputs.lock" ]]; then echo "Release mode must use the committed release-build-inputs.lock" >&2; exit 2; fi
 if [[ "$mode" == snapshot && "$catalog" == "$root/release-build-inputs.lock" ]]; then echo "Snapshot mode requires a CI snapshot lock via --lockfile" >&2; exit 2; fi
 mkdir -p "$(dirname "$report")"; release_tag="${ZMANAGER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"; printf 'name\trepository\tintegration_branch\tcheckout_branch\tcommit\tstate\tmode\trelease_tag\n' > "$report"
-desktop_branch="$(git -C "$root" branch --show-current 2>/dev/null || true)"; desktop_sha="$(git -C "$root" rev-parse HEAD)"; desktop_dirty="$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "$root")" "$(git -C "$root" remote get-url origin 2>/dev/null || true)" "-" "${desktop_branch:-DETACHED}" "$desktop_sha" "$([[ -n "$desktop_dirty" ]] && echo dirty || echo clean)" "$mode" "$release_tag" >> "$report"
+if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  desktop_branch="$(git -C "$root" branch --show-current 2>/dev/null || true)"
+  desktop_sha="$(git -C "$root" rev-parse HEAD)"
+  desktop_dirty="$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
+  desktop_origin="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+else
+  [[ "$mode" != local && "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "$root is not a Git checkout; CI snapshot metadata is unavailable" >&2; exit 1;
+  }
+  # Container jobs may receive the checked-out files without the host's .git
+  # directory. GitHub's event metadata still identifies the exact clean input.
+  desktop_branch=""
+  desktop_sha="$GITHUB_SHA"
+  desktop_dirty=""
+  desktop_origin="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}"
+fi
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "$root")" "$desktop_origin" "-" "${desktop_branch:-DETACHED}" "$desktop_sha" "$([[ -n "$desktop_dirty" ]] && echo dirty || echo clean)" "$mode" "$release_tag" >> "$report"
 while read -r name url branch sha extra; do
   [[ -z "${name:-}" || "$name" == \#* ]] && continue
   valid_entry "$name" "$url" "$branch" "$sha" "${extra:-}" || { echo "Invalid sibling input entry: $name $url ${branch:-} ${sha:-}" >&2; exit 1; }

@@ -127,6 +127,28 @@ test("CI resolver captures the configured branch head in a snapshot lock", (t) =
   assert.equal(entry, `tzap ${fixture.repoUrl} main ${fixture.revision}`);
 });
 
+test("snapshot mode reports the GitHub revision when a container checkout has no .git directory", (t) => {
+  const fixture = createFixture(t);
+  initCheckout(fixture);
+  rmSync(join(fixture.workspace, ".git"), { recursive: true, force: true });
+  const env = {
+    ...fixture.env,
+    GITHUB_SHA: fixture.revision,
+    GITHUB_REPOSITORY: "tzap-org/build-inputs-test",
+  };
+
+  runResolver(fixture, ["--mode", "snapshot"], env);
+
+  const desktopRow = readFileSync(join(fixture.workspace, "target", "build-inputs-report.tsv"), "utf8")
+    .split(/\r?\n/)[1]
+    .split("\t");
+  assert.equal(desktopRow[3], "DETACHED");
+  assert.equal(desktopRow[4], fixture.revision);
+  assert.equal(desktopRow[5], "clean");
+  assert.equal(desktopRow[6], "snapshot");
+  assert.equal(desktopRow[1], "https://github.com/tzap-org/build-inputs-test");
+});
+
 test("snapshot mode clones a missing sibling cleanly before checking out its pinned SHA", (t) => {
   // On Windows Git records the rewritten file:// URL as origin during clone,
   // which correctly fails the resolver's canonical-origin validation. The
