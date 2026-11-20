@@ -847,11 +847,19 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         "branches: [main]",
         "scripts/package-release.sh",
         "powershell -ExecutionPolicy Bypass -File scripts/ci-windows.ps1",
+        "actions/download-artifact@v7",
+        "name: ci-sibling-inputs",
+        "path: .build-inputs",
+        "name: Prepare frozen sibling snapshot",
         "actions/upload-artifact@v6",
+        "name: ci-sibling-inputs",
+        "path: target/ci-sibling-inputs.lock",
         "name: zm-preview-${{ matrix.target }}-offline",
         "path: dist/zm-${{ matrix.target }}.*",
         "name: zm-preview-${{ matrix.target }}-full",
         "path: dist/zm-full-${{ matrix.target }}.*",
+        "name: zm-preview-build-inputs-${{ matrix.target }}",
+        "path: target/build-inputs-report.tsv",
         "Linux tarballs are static single-binary artifacts.",
         "if-no-files-found: error",
         "retention-days: 14",
@@ -861,12 +869,12 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
     }
 
     for forbidden in
-        ["contents: write", "gh release create", "actions/download-artifact", "scripts/package-deb.sh", "dist/zmanager-cli_*.deb", "matrix.deb_arch"]
+        ["contents: write", "gh release create", "scripts/package-deb.sh", "dist/zmanager-cli_*.deb", "matrix.deb_arch"]
     {
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
 
-    assert_eq!(PACKAGE_PREVIEW_WORKFLOW.matches("actions/upload-artifact@v6").count(), 2);
+    assert_eq!(PACKAGE_PREVIEW_WORKFLOW.matches("actions/upload-artifact@v6").count(), 4);
 
     for required in ["--features", "New-FullReleasePackage", "zm-full-$TargetTriple.zip"] {
         assert_contains(CI_WINDOWS_PS1, required);
