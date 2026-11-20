@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -72,6 +73,28 @@ function setRemoteUrl(fixture, checkout) {
   git(checkout, "remote", "set-url", "origin", fixture.repoUrl);
 }
 
+function localCloneEnvironment(fixture) {
+  const shimDirectory = join(fixture.root, "git-shim");
+  mkdirSync(shimDirectory);
+  const realGit = command("which", ["git"]);
+  const shim = join(shimDirectory, "git");
+  writeFileSync(shim, `#!/bin/sh
+if [ "$1" = clone ]; then
+  "$REAL_GIT" "$@" || exit $?
+  for destination do :; done
+  "$REAL_GIT" -C "$destination" remote set-url origin "$CANONICAL_ORIGIN"
+else
+  exec "$REAL_GIT" "$@"
+fi
+`);
+  chmodSync(shim, 0o755);
+  return {
+    REAL_GIT: realGit,
+    CANONICAL_ORIGIN: fixture.repoUrl,
+    PATH: `${shimDirectory}:${process.env.PATH}`,
+  };
+}
+
 function initCheckout(fixture) {
   const checkout = join(fixture.parent, "tzap");
   command("git", ["clone", fixture.remote, checkout], { cwd: fixture.parent });
@@ -115,7 +138,7 @@ test("snapshot mode clones a missing sibling cleanly before checking out its pin
   const fixture = createFixture(t);
   const gitConfig = join(fixture.root, "gitconfig");
   git(fixture.root, "config", "--file", gitConfig, "--add", `url.file://${fixture.remote}.insteadOf`, fixture.repoUrl);
-  const env = { ...fixture.env, GIT_CONFIG_GLOBAL: gitConfig };
+  const env = { ...fixture.env, ...localCloneEnvironment(fixture), GIT_CONFIG_GLOBAL: gitConfig };
   const checkout = join(fixture.parent, "tzap");
 
   runResolver(fixture, ["--mode", "snapshot"], env);
