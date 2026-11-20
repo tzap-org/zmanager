@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
+      - name: Test sibling snapshot preparation
+        run: node --test scripts/prepare-sibling-inputs.integration.test.mjs
       - name: Resolve configured sibling branch heads
         run: bash scripts/prepare-sibling-inputs.sh --lockfile release-build-inputs.lock --resolve-ci target/ci-sibling-inputs.lock
       - uses: actions/upload-artifact@v6

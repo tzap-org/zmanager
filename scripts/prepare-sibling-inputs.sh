@@ -45,7 +45,7 @@ while read -r name url branch sha extra; do
   valid_entry "$name" "$url" "$branch" "$sha" "${extra:-}" || { echo "Invalid sibling input entry: $name $url ${branch:-} ${sha:-}" >&2; exit 1; }
   dir="$parent/$name"
   if [[ ! -e "$dir" ]]; then
-    if [[ "$mode" == local ]]; then git clone --single-branch --depth 1 --branch "$branch" "$url" "$dir"; else git clone --no-checkout "$url" "$dir"; fi
+    if [[ "$mode" == local ]]; then git clone --single-branch --depth 1 --branch "$branch" "$url" "$dir"; else git clone "$url" "$dir"; fi
   fi
   git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "$dir exists but is not a Git checkout" >&2; exit 1; }
   origin="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
