@@ -70,6 +70,7 @@ jobs:
           name: ci-sibling-inputs
           path: .build-inputs
       - name: Prepare frozen sibling snapshot
+        shell: bash
         run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
 
       - name: Use published tzap-core dependency
@@ -305,6 +306,7 @@ jobs:
           name: ci-sibling-inputs
           path: .build-inputs
       - name: Prepare frozen sibling snapshot
+        shell: bash
         run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
 
       - name: Install Linux dependencies
