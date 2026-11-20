@@ -868,9 +868,7 @@ fn package_preview_uploads_artifacts_without_publishing_release() {
         assert_contains(PACKAGE_PREVIEW_WORKFLOW, required);
     }
 
-    for forbidden in
-        ["contents: write", "gh release create", "scripts/package-deb.sh", "dist/zmanager-cli_*.deb", "matrix.deb_arch"]
-    {
+    for forbidden in ["contents: write", "gh release create", "scripts/package-deb.sh", "dist/zmanager-cli_*.deb", "matrix.deb_arch"] {
         assert_not_contains(PACKAGE_PREVIEW_WORKFLOW, forbidden);
     }
 
