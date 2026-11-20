@@ -18,6 +18,8 @@ permissions:
 
 env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
+  ZMANAGER_BUILD_MODE: release
+  ZMANAGER_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   package:
@@ -55,20 +57,12 @@ jobs:
         shell: bash
         run: echo "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
-      - name: Clone localsend-rs
+      - name: Check out locked sibling inputs
         shell: bash
         run: |
-          LOCALSEND_REV=$(cat localsend-rs-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
-          git -C ../localsend-rs checkout "$LOCALSEND_REV" || git -C ../localsend-rs checkout main
-
-      - name: Clone forensic-vfs-engine
-        shell: bash
-        run: |
-          FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
-          git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
-          bash scripts/checkout-forensic-forks.sh
+          bash scripts/prepare-sibling-inputs.sh --mode release
+          bash scripts/release-gate.sh verify-build
+          echo "ZMANAGER_RELEASE_INPUTS_VERIFIED=1" >> "$GITHUB_ENV"
 
       - name: Use published tzap-core (no sibling patch for releases)
         shell: bash
@@ -173,6 +167,12 @@ jobs:
         with:
           name: zm-${{ matrix.target }}
           path: dist/zm*${{ matrix.target }}.*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zm-build-inputs-${{ matrix.target }}
+          path: target/build-inputs-report.tsv
           if-no-files-found: error
 
   publish:

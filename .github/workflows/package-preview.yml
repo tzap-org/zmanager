@@ -9,7 +9,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - ".cargo/config.toml"
-      - "forensic-forks.lock"
+      - "release-build-inputs.lock"
       - "crates/**"
       - "packaging/**"
       - "scripts/**"
@@ -19,15 +19,31 @@ permissions:
 
 env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
+  ZMANAGER_BUILD_MODE: snapshot
+  ZMANAGER_BUILD_INPUTS_LOCK: .build-inputs/ci-sibling-inputs.lock
 
 concurrency:
   group: package-preview-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  resolve-sibling-inputs:
+    name: Resolve sibling snapshot
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve configured sibling branch heads
+        run: bash scripts/prepare-sibling-inputs.sh --lockfile release-build-inputs.lock --resolve-ci target/ci-sibling-inputs.lock
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ci-sibling-inputs
+          path: target/ci-sibling-inputs.lock
+          if-no-files-found: error
+
   package:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    needs: resolve-sibling-inputs
     strategy:
       fail-fast: false
       matrix:
@@ -54,28 +70,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-sibling-inputs
+          path: .build-inputs
+
+      - name: Prepare frozen sibling snapshot
+        run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
+
       - name: Set build revision
         shell: bash
         run: echo "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-
-      - name: Clone tzap
-        shell: bash
-        run: git clone https://github.com/tzap-org/tzap.git ../tzap
-
-      - name: Clone localsend-rs
-        shell: bash
-        run: |
-          LOCALSEND_REV=$(cat localsend-rs-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
-          git -C ../localsend-rs checkout "$LOCALSEND_REV" || git -C ../localsend-rs checkout main
-
-      - name: Clone forensic-vfs-engine
-        shell: bash
-        run: |
-          FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
-          git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
-          bash scripts/checkout-forensic-forks.sh
 
       - name: Use published tzap-core dependency
         run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
@@ -200,5 +205,12 @@ jobs:
         with:
           name: zm-preview-${{ matrix.target }}-full
           path: dist/zm-full-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zm-preview-build-inputs-${{ matrix.target }}
+          path: target/build-inputs-report.tsv
           if-no-files-found: error
           retention-days: 14

@@ -161,7 +161,15 @@ CHANGELOG
 }
 
 cd "$ROOT"
-"$ROOT/scripts/checkout-forensic-forks.sh"
+BUILD_MODE="${ZMANAGER_BUILD_MODE:-release}"
+prepare_args=(--mode "$BUILD_MODE")
+if [[ -n "${ZMANAGER_BUILD_INPUTS_LOCK:-}" ]]; then
+  prepare_args+=(--lockfile "$ZMANAGER_BUILD_INPUTS_LOCK")
+fi
+bash "$ROOT/scripts/prepare-sibling-inputs.sh" "${prepare_args[@]}"
+if [[ "$BUILD_MODE" == release && "${ZMANAGER_RELEASE_INPUTS_VERIFIED:-}" != 1 ]]; then
+  bash "$ROOT/scripts/release-gate.sh" verify-build
+fi
 readonly DEB_ARCH="$(debian_arch_for_target "$TARGET")"
 readonly VERSION="$(workspace_version)"
 readonly DEB_VERSION="${VERSION}-${PACKAGE_REVISION}"

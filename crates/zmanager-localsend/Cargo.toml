@@ -14,7 +14,7 @@ path = "src/lib.rs"
 # Fork of CrossCopy/localsend-rs (MIT) — see NOTICE / THIRD_PARTY_NOTICES.md.
 # Active co-development intentionally resolves the sibling checkout so desktop,
 # mobile, and CLI builds exercise the patched working tree. CI and release
-# workflows check out the exact revision recorded in localsend-rs-rev.txt.
+# workflows resolve the configured sibling branch for CI or use the release lock.
 localsend-rs = { path = "../../../localsend-rs", default-features = false, features = [
     "https",
 ] }

@@ -222,7 +222,7 @@ creation.
 ```sh
 git clone https://github.com/tzap-org/zmanager.git
 cd zmanager
-bash scripts/checkout-forensic-forks.sh
+bash scripts/ensure-sibling-repos.sh
 cargo build -p zmanager-cli --release
 ./target/release/zm --help
 ```

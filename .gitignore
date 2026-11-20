@@ -1,6 +1,7 @@
 # Rust build outputs
 /target/
 /fuzz/target/
+/.build-inputs/
 
 # Swift Package Manager build outputs
 .build/

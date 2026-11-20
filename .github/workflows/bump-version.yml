@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+env:
+  ZMANAGER_BUILD_MODE: snapshot
+  ZMANAGER_BUILD_INPUTS_LOCK: .build-inputs/ci-sibling-inputs.lock
+
 jobs:
   bump-version:
     name: Bump Version to ${{ inputs.version }}
@@ -18,21 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Clone tzap
-        run: git clone https://github.com/tzap-org/tzap.git ../tzap
+      - name: Resolve sibling branch snapshot
+        run: bash scripts/prepare-sibling-inputs.sh --lockfile release-build-inputs.lock --resolve-ci .build-inputs/ci-sibling-inputs.lock
 
-      - name: Clone localsend-rs
-        run: |
-          LOCALSEND_REV=$(cat localsend-rs-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
-          git -C ../localsend-rs checkout "$LOCALSEND_REV" || git -C ../localsend-rs checkout main
-
-      - name: Clone forensic-vfs-engine
-        run: |
-          FVE_REV=$(cat forensic-vfs-engine-rev.txt 2>/dev/null || echo "main")
-          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
-          git -C ../forensic-vfs-engine checkout "$FVE_REV" || git -C ../forensic-vfs-engine checkout main
-          bash scripts/checkout-forensic-forks.sh
+      - name: Prepare frozen sibling inputs
+        run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
 
       - name: Install Linux dependencies
         run: |

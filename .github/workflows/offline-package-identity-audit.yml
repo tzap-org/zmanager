@@ -21,6 +21,8 @@ env:
   PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
   PACKAGE_COMMIT: ${{ inputs.package_commit }}
   ZMANAGER_TEST_SKIP_REPORT: ${{ github.workspace }}/target/package-identity-skips.jsonl
+  ZMANAGER_BUILD_MODE: snapshot
+  ZMANAGER_BUILD_INPUTS_LOCK: .build-inputs/ci-sibling-inputs.lock
 
 jobs:
   linux:
@@ -44,13 +46,17 @@ jobs:
         run: |
           python3 scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
             --commit "$PACKAGE_COMMIT" --target "${{ matrix.target }}" --destination packages
+      - uses: actions/download-artifact@v7
+        name: Download package sibling snapshot
+        with:
+          name: ci-sibling-inputs
+          path: .build-inputs
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Prepare harness dependencies
+        shell: bash
         run: |
-          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
-          git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
-          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
-          git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
-          bash scripts/checkout-forensic-forks.sh
+          bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
           # Build the audit harness with the released tzap-core dependency.
           python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
           sudo apt-get update
@@ -132,17 +138,20 @@ jobs:
         run: |
           python scripts/download-offline-audit-package.py --run-id "$PACKAGE_RUN_ID" \
             --commit "$PACKAGE_COMMIT" --target "${{ matrix.target }}" --destination packages
+      - uses: actions/download-artifact@v7
+        name: Download package sibling snapshot
+        with:
+          name: ci-sibling-inputs
+          path: .build-inputs
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Prepare harness source dependencies
         shell: bash
         run: |
-          git clone https://github.com/frankmanzhu/localsend-rs.git ../localsend-rs
-          git -C ../localsend-rs checkout "$(cat localsend-rs-rev.txt)"
-          git clone https://github.com/frankmanzhu/forensic-vfs-engine.git ../forensic-vfs-engine
-          git -C ../forensic-vfs-engine checkout "$(cat forensic-vfs-engine-rev.txt)"
-          bash scripts/checkout-forensic-forks.sh
+          bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
           python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
       - name: Prepare native export debugger
         shell: pwsh

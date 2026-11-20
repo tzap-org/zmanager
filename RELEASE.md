@@ -40,6 +40,19 @@ those crates unless an external OpenSSL installation is configured.
 
 ## Release Checklist
 
+Before tagging, refresh and verify every controlled repository and sibling:
+
+```sh
+bash scripts/release-gate.sh prepare
+git diff -- release-build-inputs.lock
+bash scripts/release-gate.sh verify
+```
+
+Release TZAP before ZManager. The ZManager lock records the released TZAP
+source snapshot and all sibling checkout commits. Commit the reviewed lock
+before creating the ZManager release tag. Package workflows consume that lock
+without updating it.
+
 1. Run:
 
    ```sh

@@ -7,7 +7,7 @@ AFF4 and archive-core now share the patched ZIP 0.2 reader. ZIP 0.1 is absent
 from the core, fuzz and desktop lockfiles; its overrides, checkout pins and
 clean sibling checkout have been removed.
 
-The five fork revisions are recorded in `../forensic-forks.lock`. Desktop's
+The five fork revisions are recorded in `../release-build-inputs.lock`. Desktop's
 manifest, lockfile, fork pins and existing security inventory assertion have
 been aligned. The [five upstream PRs](FORENSIC_UPSTREAM_PRS.md) are now open
 from separate main-based branches; the integration pins below are unchanged.

@@ -39,7 +39,7 @@ cargo audit --deny unsound --deny yanked --file Cargo.lock
 cargo audit --deny unsound --deny yanked --file fuzz/Cargo.lock
 ```
 
-The exact commit pins are in `forensic-forks.lock`. Build/test and release
+The exact release commit pins are in `release-build-inputs.lock`. Build/test and release
 workflows use the same fork checkouts. Security Audit CI scans both committed
 lockfiles, which track the published TZAP release.
 The clone helper preserves existing development work and fails if an existing
@@ -77,7 +77,7 @@ release ordering.
 
 All five forks keep the tested release fixes on
 `macos/integration-codec-security`. The sibling checkouts remain at the exact
-revisions in `forensic-forks.lock`; they do not follow newer upstream APIs.
+revisions in `release-build-inputs.lock`; they do not follow newer upstream APIs.
 
 The separate `macos/upstream-codec-security` branches apply one focused commit
 to each current upstream `main`. See [the five PRs](FORENSIC_UPSTREAM_PRS.md)

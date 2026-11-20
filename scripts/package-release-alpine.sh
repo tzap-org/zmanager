@@ -32,24 +32,10 @@ fi
 cd "$ROOT"
 mkdir -p "$OUT_DIR"
 
-# zmanager-core path-depends on the forensic-vfs-engine sibling, and
-# zmanager-ffi path-depends on the localsend-rs sibling. From the container's
-# /workspace checkout those resolve to the mount points below.
-LOCALSEND_DIR="$ROOT/../localsend-rs"
-FVE_DIR="$ROOT/../forensic-vfs-engine"
-for d in "$LOCALSEND_DIR" "$FVE_DIR"; do
-  if [ ! -d "$d" ]; then
-    echo "sibling directory not found at $d — clone it first" >&2
-    exit 1
-  fi
-done
-
 docker_args=(
   run --rm
   --platform "$PLATFORM"
   -v "$ROOT:/workspace"
-  -v "$(cd "$LOCALSEND_DIR" && pwd):/localsend-rs"
-  -v "$(cd "$FVE_DIR" && pwd):/forensic-vfs-engine"
 )
 
 # The codec forks use sibling paths, just like forensic-vfs-engine. Keep their
@@ -62,15 +48,7 @@ while read -r checkout _; do
     exit 1
   fi
   docker_args+=(-v "$(cd "$sibling" && pwd):/$checkout")
-done < "$ROOT/forensic-forks.lock"
-
-# tzap-core is patched to the ../tzap sibling by default (see
-# .cargo/config.toml); only the release build resets that file to depend on
-# crates.io instead, in which case there's no sibling to mount.
-TZAP_DIR="$ROOT/../tzap"
-if [ -d "$TZAP_DIR" ]; then
-  docker_args+=(-v "$(cd "$TZAP_DIR" && pwd):/tzap")
-fi
+done < "$ROOT/release-build-inputs.lock"
 
 docker_args+=(
   -w /workspace
@@ -80,6 +58,9 @@ docker_args+=(
   -e CARGO_TARGET_DIR=/workspace/target
   -e HOST_UID="$(id -u)"
   -e HOST_GID="$(id -g)"
+  -e ZMANAGER_BUILD_MODE
+  -e ZMANAGER_BUILD_INPUTS_LOCK
+  -e ZMANAGER_RELEASE_INPUTS_VERIFIED
   -e ZMANAGER_BUILD_REV
   -e ZM_USE_SYSTEM_MUSL_TOOLCHAIN=1
   "$IMAGE"
@@ -113,7 +94,7 @@ docker_args+=(
 
     # Docker runs this build as root, while bind-mounted checkouts retain the
     # host runner ownership. Tell Git to trust only the mounted repositories
-    # so checkout-forensic-forks.sh can verify their pinned revisions.
+    # so prepare-sibling-inputs.sh can verify their locked revisions.
     git config --global --add safe.directory /workspace
     git config --global --add safe.directory /localsend-rs
     git config --global --add safe.directory /forensic-vfs-engine
@@ -121,7 +102,7 @@ docker_args+=(
       [ -z "$checkout" ] && continue
       case "$checkout" in \#*) continue ;; esac
       git config --global --add safe.directory "/$checkout"
-    done < /workspace/forensic-forks.lock
+    done < /workspace/release-build-inputs.lock
     if [ -d /tzap ]; then
       git config --global --add safe.directory /tzap
     fi
