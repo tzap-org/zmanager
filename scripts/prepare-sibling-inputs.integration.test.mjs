@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
@@ -76,7 +77,12 @@ function setRemoteUrl(fixture, checkout) {
 function localCloneEnvironment(fixture) {
   const shimDirectory = join(fixture.root, "git-shim");
   mkdirSync(shimDirectory);
-  const realGit = command("which", ["git"]);
+  const gitName = process.platform === "win32" ? "git.exe" : "git";
+  const realGit = process.env.GIT_EXECUTABLE ?? process.env.PATH
+    .split(delimiter)
+    .map((directory) => join(directory, gitName))
+    .find(existsSync);
+  assert.ok(realGit, "could not locate Git executable on PATH");
   const shim = join(shimDirectory, "git");
   writeFileSync(shim, `#!/bin/sh
 if [ "$1" = clone ]; then
