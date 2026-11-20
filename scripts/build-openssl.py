@@ -19,8 +19,23 @@ from urllib.request import urlopen
 VERSION = "3.5.9"
 RELEASE_SHA256 = "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
 RELEASE = f"https://github.com/openssl/openssl/releases/download/openssl-{VERSION}/openssl-{VERSION}.tar.gz"
-RSA_PSS_ALIAS_PATCH = "https://github.com/openssl/openssl/commit/af2aaf3271c0b0a193f33d5c0be07754b846759e.patch"
-RSA_PSS_ALIAS_PATCH_SHA256 = "e08c7ad5e3f31488eb622515da4434a858038873b07fa1f021271c98bed8e2fe"
+RSA_PSS_ALIAS_PATCH_SOURCE = "https://github.com/openssl/openssl/commit/af2aaf3271c0b0a193f33d5c0be07754b846759e.patch"
+RSA_PSS_ALIAS_UPSTREAM_PATCH_SHA256 = "e08c7ad5e3f31488eb622515da4434a858038873b07fa1f021271c98bed8e2fe"
+RSA_PSS_ALIAS_PATCH_SHA256 = "bf7a036ac607d6d8dc78429cd705ea72e8f98072caf7c043b76d8b2616bd167b"
+RSA_PSS_ALIAS_PATCH = b"""diff --git a/providers/implementations/include/prov/names.h b/providers/implementations/include/prov/names.h
+index a3107c96d9..e5cab7f1bb 100644
+--- a/providers/implementations/include/prov/names.h
++++ b/providers/implementations/include/prov/names.h
+@@ -400,7 +400,7 @@
+ #define PROV_NAMES_RSA_SHA3_384 "RSA-SHA3-384:id-rsassa-pkcs1-v1_5-with-sha3-384:2.16.840.1.101.3.4.3.15"
+ #define PROV_NAMES_RSA_SHA3_512 "RSA-SHA3-512:id-rsassa-pkcs1-v1_5-with-sha3-512:2.16.840.1.101.3.4.3.16"
+ #define PROV_DESCS_RSA "OpenSSL RSA implementation"
+-#define PROV_NAMES_RSA_PSS "RSA-PSS:RSASSA-PSS:1.2.840.113549.1.1.10"
++#define PROV_NAMES_RSA_PSS "RSA-PSS:RSASSA-PSS:rsassaPss:1.2.840.113549.1.1.10"
+ #define PROV_DESCS_RSA_PSS "OpenSSL RSA-PSS implementation"
+ #define PROV_NAMES_SM2 "SM2:1.2.156.10197.1.301"
+ #define PROV_DESCS_SM2 "OpenSSL SM2 implementation"
+"""
 RSA_PSS_ALIAS_HEADER = "providers/implementations/include/prov/names.h"
 TARGETS = {
     "aarch64-apple-darwin": "darwin64-arm64-cc",
@@ -68,7 +83,10 @@ def native_build(target: str, install: Path, work: Path) -> None:
     archive = work / "openssl.tar.gz"
     patch = work / "openssl-rsa-pss-alias.patch"
     download_verified(RELEASE, archive, RELEASE_SHA256)
-    download_verified(RSA_PSS_ALIAS_PATCH, patch, RSA_PSS_ALIAS_PATCH_SHA256)
+    patch_digest = hashlib.sha256(RSA_PSS_ALIAS_PATCH).hexdigest()
+    if patch_digest != RSA_PSS_ALIAS_PATCH_SHA256:
+        raise ValueError("SHA-256 verification failed for the embedded OpenSSL RSA-PSS alias patch")
+    patch.write_bytes(RSA_PSS_ALIAS_PATCH)
 
     env = os.environ.copy()
     target_env = target.replace("-", "_")
@@ -114,8 +132,9 @@ def native_build(target: str, install: Path, work: Path) -> None:
     (install / "THIRD-PARTY-NOTICES.txt").write_text(
         f"This ZManager binary statically links OpenSSL {VERSION} (Apache-2.0).\n"
         f"Source: {RELEASE}\n"
-        f"Upstream RSA-PSS provider alias diff ({RSA_PSS_ALIAS_HEADER}): {RSA_PSS_ALIAS_PATCH}\n"
-        f"Patch SHA-256: {RSA_PSS_ALIAS_PATCH_SHA256}\n"
+        f"Upstream RSA-PSS provider alias diff ({RSA_PSS_ALIAS_HEADER}): {RSA_PSS_ALIAS_PATCH_SOURCE}\n"
+        f"Patch SHA-256: {RSA_PSS_ALIAS_UPSTREAM_PATCH_SHA256}\n"
+        f"Embedded applied diff SHA-256: {RSA_PSS_ALIAS_PATCH_SHA256}\n"
         "See OPENSSL-LICENSE.txt for the upstream license and notices.\n",
         encoding="utf-8",
     )
@@ -134,7 +153,10 @@ def provision(target: str) -> Path:
     def complete(path: Path) -> bool:
         if not all((path / item).is_file() for item in expected):
             return False
-        if RSA_PSS_ALIAS_PATCH_SHA256 not in (path / notice).read_text(encoding="utf-8"):
+        notice_text = (path / notice).read_text(encoding="utf-8")
+        if RSA_PSS_ALIAS_UPSTREAM_PATCH_SHA256 not in notice_text:
+            return False
+        if RSA_PSS_ALIAS_PATCH_SHA256 not in notice_text:
             return False
         header = (path / version_header).read_text(encoding="utf-8")
         return re.search(rf'^# *define +OPENSSL_VERSION_STR +"{re.escape(VERSION)}"$', header, re.MULTILINE) is not None
