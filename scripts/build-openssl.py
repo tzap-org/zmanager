@@ -5,11 +5,14 @@ import argparse
 import hashlib
 import os
 from pathlib import Path
+import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -34,13 +37,31 @@ TARGETS = {
 
 
 def download_verified(url: str, destination: Path, sha256: str) -> None:
-    digest = hashlib.sha256()
-    with urlopen(url, timeout=60) as response, destination.open("wb") as output:
-        while chunk := response.read(1024 * 1024):
-            digest.update(chunk)
-            output.write(chunk)
-    if digest.hexdigest() != sha256:
-        raise ValueError(f"SHA-256 verification failed for {url}")
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    attempts = 5
+    for attempt in range(attempts):
+        digest = hashlib.sha256()
+        try:
+            with urlopen(url, timeout=60) as response, destination.open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    digest.update(chunk)
+                    output.write(chunk)
+        except URLError as error:
+            if isinstance(error, HTTPError) and error.code not in retryable_statuses:
+                raise
+            if attempt + 1 == attempts:
+                raise
+            delay = min(2**attempt, 16) + random.uniform(0, 1)
+            print(
+                f"Transient download failure for {url}: {error}; "
+                f"retrying in {delay:.1f}s ({attempt + 2}/{attempts})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
+        if digest.hexdigest() != sha256:
+            raise ValueError(f"SHA-256 verification failed for {url}")
+        return
 
 
 def native_build(target: str, install: Path, work: Path) -> None:
