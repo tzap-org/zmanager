@@ -80,8 +80,8 @@ function localCloneEnvironment(fixture) {
   const shim = join(shimDirectory, "git");
   writeFileSync(shim, `#!/bin/sh
 if [ "$1" = clone ]; then
-  "$REAL_GIT" "$@" || exit $?
   for destination do :; done
+  "$REAL_GIT" clone "$LOCAL_REMOTE" "$destination" || exit $?
   "$REAL_GIT" -C "$destination" remote set-url origin "$CANONICAL_ORIGIN"
 else
   exec "$REAL_GIT" "$@"
@@ -90,6 +90,7 @@ fi
   chmodSync(shim, 0o755);
   return {
     REAL_GIT: realGit,
+    LOCAL_REMOTE: fixture.remote,
     CANONICAL_ORIGIN: fixture.repoUrl,
     PATH: `${shimDirectory}:${process.env.PATH}`,
   };
@@ -136,9 +137,7 @@ test("snapshot mode clones a missing sibling cleanly before checking out its pin
   }
 
   const fixture = createFixture(t);
-  const gitConfig = join(fixture.root, "gitconfig");
-  git(fixture.root, "config", "--file", gitConfig, "--add", `url.file://${fixture.remote}.insteadOf`, fixture.repoUrl);
-  const env = { ...fixture.env, ...localCloneEnvironment(fixture), GIT_CONFIG_GLOBAL: gitConfig };
+  const env = { ...fixture.env, ...localCloneEnvironment(fixture) };
   const checkout = join(fixture.parent, "tzap");
 
   runResolver(fixture, ["--mode", "snapshot"], env);
