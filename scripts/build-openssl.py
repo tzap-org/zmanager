@@ -46,6 +46,7 @@ TARGETS = {
     "x86_64-unknown-linux-musl": "linux-x86_64",
     "aarch64-pc-windows-msvc": "VC-WIN64-ARM",
     "x86_64-pc-windows-msvc": "VC-WIN64A",
+    "aarch64-apple-ios": "ios64-xcrun",
     "aarch64-apple-ios-sim": "iossimulator-arm64-xcrun",
     "x86_64-apple-ios": "iossimulator-x86_64-xcrun",
 }
