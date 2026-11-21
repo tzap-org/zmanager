@@ -4984,8 +4984,6 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "tzap-core"
 version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25c298245232c85e249e10bcb8406da21e15994dd6a767a38cc43dbfd9cd3aae"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",

@@ -223,9 +223,13 @@ creation.
 git clone https://github.com/tzap-org/zmanager.git
 cd zmanager
 bash scripts/ensure-sibling-repos.sh
-cargo build -p zmanager-cli --release
+scripts/build-cli.sh
 ./target/release/zm --help
 ```
+
+The build script provisions the pinned, patched OpenSSL for the Rust host
+target before compiling the CLI. Extra Cargo build options can be passed after
+the script name.
 
 ## Test
 
