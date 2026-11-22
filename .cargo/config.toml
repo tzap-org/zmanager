@@ -11,3 +11,5 @@ git-fetch-with-cli = true
 # before they're released. The committed Cargo.lock tracks the published crate.
 # Build/test and release workflows remove this section before locked builds.
 # Security Audit CI scans the committed lockfiles directly.
+[patch.crates-io]
+tzap-core = { path = "../tzap/crates/tzap-core" }
