@@ -57,6 +57,9 @@ fi
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(basename "$root")" "$desktop_origin" "-" "${desktop_branch:-DETACHED}" "$desktop_sha" "$([[ -n "$desktop_dirty" ]] && echo dirty || echo clean)" "$mode" "$release_tag" >> "$report"
 while read -r name url branch sha extra; do
   [[ -z "${name:-}" || "$name" == \#* ]] && continue
+  # Windows checkouts may convert this lockfile to CRLF; Bash leaves the CR
+  # attached to the final field, which would make an otherwise valid SHA fail.
+  sha="${sha%$'\r'}"
   valid_entry "$name" "$url" "$branch" "$sha" "${extra:-}" || { echo "Invalid sibling input entry: $name $url ${branch:-} ${sha:-}" >&2; exit 1; }
   dir="$parent/$name"
   if [[ ! -e "$dir" ]]; then
