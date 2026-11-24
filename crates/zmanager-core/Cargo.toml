@@ -45,9 +45,9 @@ time = { version = "0.3.47", features = ["parsing"] }
 x509-parser = "0.18.1"
 sevenz-rust2 = { version = "0.21.0", default-features = false, features = ["aes256", "compress", "util"] }
 tar = "0.4.45"
-tzap-core = "0.2.9"
-tzap-plugin-keywrap = "0.2.9"
-tzap-plugin-signing = "0.2.9"
+tzap-core = "0.3.0"
+tzap-plugin-keywrap = "0.3.0"
+tzap-plugin-signing = "0.3.0"
 zip = "=9.6.1"
 tempfile = "3"
 zeroize = "1.8.2"
@@ -57,7 +57,8 @@ zmanager-wim = { workspace = true }
 zmanager-unrar = { workspace = true }
 
 zstd = { version = "0.14.3", features = ["zstdmt"] }
-# SquashFS reader. `parallel` is on because the reader parallelizes block decode.
+# SquashFS reader from the published upstream release. `parallel` is on because
+# the reader parallelizes block decode.
 # backhand's own `xz` and `lzo` features are deliberately OFF: `xz` pulls `liblzma`
 # (which declares `links = "lzma"` and collides with `lzma-sys`), while `lzo` pulls
 # `rust-lzo` (GPL-2.0). XZ, LZMA, and LZO are instead supplied under Apache-2.0 / MIT
@@ -71,8 +72,8 @@ delharc = { version = "0.8.0", default-features = false, features = ["std", "lh1
 # NTFS/FAT/ext4/UDF filesystems (SecurityRonin family, Apache-2.0/MIT, read-only).
 # Path dependency on the sibling checkout so engine/adapter bugs can be patched
 # locally and pushed to https://github.com/frankmanzhu/forensic-vfs-engine with an
-# upstream PR — the dpp precedent. Switch back to crates.io when the family
-# stabilizes: drop the `path` key and keep `version = "0.1"` (relax the exact pin).
+# upstream PR — the dpp precedent. The current VFS reader forks stay compatible
+# with the engine's forensic-vfs 0.7 contract.
 forensic-vfs-engine = { path = "../../../forensic-vfs-engine", version = "=0.1.10" }
 # The engine does not re-export the contract types (FileSystem, FsKind, ...);
 # same floor as the engine so cargo unifies to one copy.
@@ -102,7 +103,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 ad1 = { version = "0.1.1", package = "ad1-core", features = ["testfix"] }
-aff4 = { version = "0.2", features = ["test-helpers"] }
+aff4 = { version = "0.3.0", features = ["test-helpers"] }
 crc32c = "0.6"
 
 [[bench]]

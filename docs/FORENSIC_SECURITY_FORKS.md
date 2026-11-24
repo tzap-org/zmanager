@@ -1,35 +1,36 @@
 # Forensic codec security forks
 
-ZManager temporarily uses sibling forks because the published forensic readers
-require vulnerable codec versions. The full upstream workspaces live outside
-this repository, so their fixes can be reviewed and submitted upstream without
-copying dependency source into ZManager.
+ZManager now resolves the compatible fixed reader releases from crates.io:
 
-| Sibling checkout | Fork | Package version | Change |
-| --- | --- | --- | --- |
-| `../backhand` | [frankmanzhu/backhand](https://github.com/frankmanzhu/backhand) | `backhand 0.25.5` | `zstd 0.14.3`, `zstd-safe 8.2.0` |
-| `../dar-core` | [frankmanzhu/dar-core](https://github.com/frankmanzhu/dar-core/tree/macos/integration-codec-security) | `dar-core 0.7.1` | `ruzstd 0.9.1`, current decoder import, Rust floor 1.87 |
-| `../btrfs-core` | [frankmanzhu/btrfs-core](https://github.com/frankmanzhu/btrfs-core/tree/macos/integration-codec-security) | `btrfs-core 0.1.4` | `ruzstd 0.9.1` |
-| `../zfs-forensic-core` | [frankmanzhu/zfs-forensic-core](https://github.com/frankmanzhu/zfs-forensic-core/tree/macos/integration-codec-security) | `zfs-forensic-core 0.1.2` | `ruzstd 0.9.1` |
-| `../zip-forensic-core` | [frankmanzhu/zip-forensic-core](https://github.com/frankmanzhu/zip-forensic-core/tree/macos/integration-codec-security) | `zip-forensic-core 0.2.2` | `ruzstd 0.9.1`, `zip 9.0.5` test oracle |
-| `../aff4` | [frankmanzhu/aff4](https://github.com/frankmanzhu/aff4/tree/macos/integration-codec-security) | `aff4 0.2.6` | `zip-forensic-core 0.2.2`, `zip 9.0.5` for test helpers/oracles, Rust floor 1.88 |
+| Crate | Published version | Codec dependency |
+| --- | --- | --- |
+| `aff4` | `0.3.0` | Uses forensic ZIP `0.2.3` and ZIP 9 |
+| `dar-core` | `0.7.2` | `ruzstd 0.9.1` |
+| `zip-forensic-core` | `0.2.3` | `ruzstd 0.9.1`; ZIP 9 test oracle |
 
-`ruzstd 0.9.1` fixes
-[RUSTSEC-2026-0344](https://rustsec.org/advisories/RUSTSEC-2026-0344.html).
-ZIP 9 fixes RUSTSEC-2026-0367 through RUSTSEC-2026-0369. Both Rust floors remain
-below ZManager's existing 1.93 floor.
+Three local sibling overrides remain:
 
-Backhand 0.25.5 is built from the fork's upstream-compatible release line. Its
-zstd update removes the `zstd 0.13` / `zstd-safe 7` advisories while preserving
-the existing SquashFS API used by ZManager.
+| Sibling checkout | Fork package | Why it remains |
+| --- | --- | --- |
+| `../backhand` | `backhand 0.25.5` | Its fork uses `zstd 0.14.3` / `zstd-safe 8.2.0`; upstream 0.25.5 still requires affected `zstd 0.13.2` / `zstd-safe 7.2.1`. |
+| `../btrfs-core` | `btrfs-core 0.1.4` | Preserves a `forensic-vfs 0.7` adapter for the retained engine branch. The fixed upstream 0.2.0 adapter targets VFS 0.10. |
+| `../zfs-forensic-core` | `zfs-forensic-core 0.1.2` | Preserves a `forensic-vfs 0.7` adapter. The fixed upstream 0.2.1 adapter targets VFS 0.10. |
 
-## Reproduce the tested checkouts
+`ruzstd 0.9.1` fixes RUSTSEC-2026-0344. ZIP 9 fixes RUSTSEC-2026-0367 through
+RUSTSEC-2026-0369. The engine branch in `release-build-inputs.lock` still uses
+`forensic-vfs 0.7`; the published Btrfs and ZFS adapters use the incompatible
+0.10 contract. Their reader APIs can be called directly, but ZManager would
+then own format dispatch and adapt their file traversal and streaming into its
+extraction pipeline. That is a separate adapter change from a dependency bump.
 
-From the ZManager repository:
+The Backhand override remains necessary to avoid its upstream codec versions.
+Removing it would reintroduce known advisory ranges and make the RustSec audit
+fail; the dependency is not an advisory-clean upstream exception.
 
-These augment the existing `tzap`, `localsend-rs`, and `forensic-vfs-engine`
-sibling checkouts. For the locked local builds below, temporarily remove the
-TZAP patch from `.cargo/config.toml` and restore it after the run.
+## Reproduce the dependency checks
+
+The release lock pins `forensic-vfs-engine` and the three remaining forks.
+Cargo.lock and fuzz/Cargo.lock pin the published compatible reader releases.
 
 ```sh
 bash scripts/checkout-forensic-forks.sh
@@ -39,48 +40,5 @@ cargo audit --deny unsound --deny yanked --file Cargo.lock
 cargo audit --deny unsound --deny yanked --file fuzz/Cargo.lock
 ```
 
-The exact release commit pins are in `release-build-inputs.lock`. Build/test and release
-workflows use the same fork checkouts. Security Audit CI scans both committed
-lockfiles, which track the published TZAP release.
-The clone helper preserves existing development work and fails if an existing
-checkout is on a different commit. Alpine packaging mounts these siblings
-beside `/workspace` so Cargo resolves the same paths.
-
-The fixes start from the releases already resolved in ZManager's lockfile.
-AFF4 now requests the same ZIP 0.2 reader as archive-core, so both share
-one patched `zip-forensic-core` checkout. The ZIP 0.1 backport is no longer
-needed. Each fork retains the upstream repository structure; the actual
-library is under `core/`.
-
-## Workspace boundaries and eventual removal
-
-The main workspace and `fuzz/Cargo.toml` each declare the overrides because Cargo
-only reads `[patch]` from the active workspace root. Applications consuming
-ZManager must add equivalent overrides at their own workspace root and clone
-these siblings until the fixed dependencies are published.
-
-The crates.io publishing workflow audits after removing workspace patches. It
-remains blocked while published dependency constraints restore vulnerable
-codecs. CLI release packages build with the sibling forks.
-
-When fixed upstream releases are available, remove the corresponding overrides,
-fork pins, and checkouts from the clone list. Update both lockfiles and rerun
-the audits, workspace checks, and archive safety tests.
-
-## Validation
-
-See [the five-fork validation](FORENSIC_SECURITY_VALIDATION.md) for upstream
-tests, minimum-Rust checks, coverage, consumer checks and the ZIP-before-AFF4
-release ordering.
-
-## Integration and upstream branches
-
-All five forks keep the tested release fixes on
-`macos/integration-codec-security`. The sibling checkouts remain at the exact
-revisions in `release-build-inputs.lock`; they do not follow newer upstream APIs.
-
-The separate `macos/upstream-codec-security` branches apply one focused commit
-to each current upstream `main`. See [the five PRs](FORENSIC_UPSTREAM_PRS.md)
-for review links, validation and existing upstream CI blockers. After fixed
-releases are published, check their API compatibility before adopting them
-and removing the corresponding overrides.
+The audit commands can still fail on the upstream Backhand advisory ranges.
+Do not add broad advisory ignores to make the audit appear clean.

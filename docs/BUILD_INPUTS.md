@@ -19,8 +19,9 @@ immutable, committed snapshot of every sibling checkout.
   lock is missing, malformed, or disagrees with the checked-out commit.
 
 The release lock is the authoritative release pin and sibling checkout
-inventory. It includes the `tzap` release
-commit, LocalSend, the forensic engine, and each forensic fork. Do not keep a
+inventory. It includes the `tzap` release commit, LocalSend, the forensic engine,
+and the remaining Backhand, Btrfs, and ZFS forks. AFF4, DAR, and forensic ZIP
+resolve from crates.io and no longer need sibling checkouts. Do not keep a
 second pin for the same checkout in a workflow, script, or revision file.
 
 ## Release order and gate

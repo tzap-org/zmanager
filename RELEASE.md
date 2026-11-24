@@ -74,7 +74,7 @@ without updating it.
 3. Tag the CLI repository:
 
    ```sh
-   git tag v2.2.1
+   git tag v2.3.0
    git push origin main --tags
    ```
 
@@ -91,8 +91,8 @@ without updating it.
 
    ```sh
    scripts/generate-package-metadata.sh \
-     v2.2.1 \
-     https://github.com/tzap-org/zmanager/releases/download/v2.2.1 \
+     v2.3.0 \
+     https://github.com/tzap-org/zmanager/releases/download/v2.3.0 \
      dist/SHA256SUMS \
      dist/package-metadata
    ```
@@ -111,7 +111,7 @@ without updating it.
 7. Validate the generated WinGet manifests:
 
    ```powershell
-   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.2.1
+   winget validate .\dist\package-metadata\winget\TzapOrg.ZManagerCLI\2.3.0
    ```
 
 8. Validate the Linux static tarballs on Ubuntu 22.04 and 24.04:
@@ -151,6 +151,5 @@ ticket online when it evaluates the downloaded executable; see
 
 ## Release Notes
 
-Use [docs/release-notes/2.2.1.md](docs/release-notes/2.2.1.md) as the release
-notes source for the `v2.2.1` GitHub release. Update the versioned file first
-when preparing a later release.
+Use [docs/release-notes/2.3.0.md](docs/release-notes/2.3.0.md) as the release
+notes source for the `v2.3.0` GitHub release.

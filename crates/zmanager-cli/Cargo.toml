@@ -47,7 +47,7 @@ zmanager-tzap-hosted = { workspace = true, features = ["keyring"] }
 
 [dev-dependencies]
 ad1 = { version = "0.1.1", package = "ad1-core", features = ["testfix"] }
-aff4 = { version = "0.2", features = ["test-helpers"] }
+aff4 = { version = "0.3.0", features = ["test-helpers"] }
 flate2 = "1.1.9"
 sha2 = "0.10.9"
 tar = "0.4.45"

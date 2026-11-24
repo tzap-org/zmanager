@@ -102,7 +102,9 @@ dependencies = [
 
 [[package]]
 name = "aff4"
-version = "0.2.6"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc89221e4e9bac4967027c41ff4af6edf12964b63d4ea88a249680c2d56d9a8"
 dependencies = [
  "aes 0.8.4",
  "aes-kw",
@@ -959,7 +961,9 @@ dependencies = [
 
 [[package]]
 name = "dar-core"
-version = "0.7.1"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a10915c798328917841c257634c702e3e43763f9fb4ba3159e4850c4f65a99f"
 dependencies = [
  "bzip2-rs",
  "flate2",
@@ -3058,9 +3062,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "tzap-core"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25c298245232c85e249e10bcb8406da21e15994dd6a767a38cc43dbfd9cd3aae"
+checksum = "3c82ae0e321fe5bc61a7bcef5643c6505e73a78efe5a0967449d8cfdf168fbe8"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -3087,9 +3091,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-keywrap"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "206ebb2207c7e87931333fee879035a958e1cb36cc22e04e0a8ca4a62a2c5533"
+checksum = "b8b98a7bdb1f7ba7490dd0d733c18f4dd76235af2e779a5d90e9c1b082ac6700"
 dependencies = [
  "hpke",
  "openssl",
@@ -3102,9 +3106,9 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1681482b8ffbe8007391bf1397cc8ef47493e89b5cb78a9ff2823b59155fcdfb"
+checksum = "3aee397085d85f1a594eca0bd78ba0ebe1ccc1e0253e06681ad769ae97ba4685"
 dependencies = [
  "ed25519-dalek",
  "openssl",
@@ -3729,9 +3733,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.6.0"
+version = "9.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80cc68510ea7553c30a69c732de5278e94183f68765af6c642dbccefd6ec777e"
+checksum = "953a376f4930ed5af88e1e65948385f76866b45e7f75b21ac275327d0eeb9b46"
 dependencies = [
  "aes 0.9.2",
  "bzip2",
@@ -3759,7 +3763,9 @@ dependencies = [
 
 [[package]]
 name = "zip-forensic-core"
-version = "0.2.2"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "212c2b60895acefb7f6a8eea588573606f219d83b1ee15cf21b6b69476b3dd18"
 dependencies = [
  "aes 0.8.4",
  "bzip2-rs",
@@ -3785,14 +3791,14 @@ checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmanager-apple-archive"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "zmanager-core"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "adler2",
  "argon2",
@@ -3854,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-unrar"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "cc",
  "tempfile",
@@ -3863,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "zmanager-wim"
-version = "2.2.1"
+version = "2.3.0"
 dependencies = [
  "hex",
  "sha1 0.10.7",

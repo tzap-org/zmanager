@@ -1,10 +1,7 @@
 # checkout-name canonical-url integration-branch release-commit-sha
-aff4 https://github.com/frankmanzhu/aff4.git main 6f33d30179ecce9346953fdb3c657ce5b36f09e4
 backhand https://github.com/frankmanzhu/backhand.git master 3277340e9c6ccc61b4dae2d353dc229aad4b2008
 btrfs-core https://github.com/frankmanzhu/btrfs-core.git macos/fix-codec-advisories 1fa4270c0e304323c1f2972359636cea30a8933d
-dar-core https://github.com/frankmanzhu/dar-core.git macos/fix-codec-advisories 5c2b42f41adffcadd01ffb20d644b26aaed1a0ff
 forensic-vfs-engine https://github.com/frankmanzhu/forensic-vfs-engine.git macos/iso-0.8-vfs-0.7-compat 400c3d719c4afe354b3d21d67f71c39092059eee
 localsend-rs https://github.com/frankmanzhu/localsend-rs.git main 0686dcf80d645172fe3b144299c322c2c5a1899b
-tzap https://github.com/tzap-org/tzap.git main 69f53d71ad13876cbf74fac38f5f3aa2cf412920
+tzap https://github.com/tzap-org/tzap.git main 67bedbfc1f77190596ad9f0c2dc8b286e3d23d72
 zfs-forensic-core https://github.com/frankmanzhu/zfs-forensic-core.git macos/fix-codec-advisories 6b76a3d33e9f4df87cdbd228e3acd845c0d6b496
-zip-forensic-core https://github.com/frankmanzhu/zip-forensic-core.git main 53b490496bb4e7381704d8d40d72fae59aaa3f78
