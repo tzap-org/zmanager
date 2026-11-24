@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: ${{ inputs.notarization_test && github.ref || github.event.inputs.tag || github.ref_name }}
 
       - name: Set build revision
         shell: bash
