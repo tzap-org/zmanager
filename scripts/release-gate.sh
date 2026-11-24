@@ -68,6 +68,7 @@ case "$mode" in
     [[ -z "$root_dirty" ]] || { printf 'Product checkout is dirty:\n%s\n' "$root_dirty" >&2; exit 1; }
     while read -r name url branch sha extra; do
       [[ -z "${name:-}" || "$name" == \#* ]] && continue
+      sha="${sha%$'\r'}"
       dir="$parent/$name"
       actual="$(git -C "$dir" rev-parse HEAD)"
       origin="$(git -C "$dir" remote get-url origin)"
