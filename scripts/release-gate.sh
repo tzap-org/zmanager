@@ -7,6 +7,9 @@ lock="$root/release-build-inputs.lock"
 usage() { echo "Usage: scripts/release-gate.sh prepare|verify|verify-build"; }
 case "$mode" in prepare|verify|verify-build) ;; -h|--help) usage; exit 0 ;; *) usage >&2; exit 2 ;; esac
 lock_entry() { awk -v wanted="$1" '$1 == wanted { print $2 " " $4; found=1 } END { if (!found) exit 1 }' "$lock"; }
+package_lock_version() {
+  awk -v wanted="$1" '$0 == "[[package]]" { in_package=0 } $0 == "name = \"" wanted "\"" { in_package=1; next } in_package && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$2"
+}
 require_tagged_commit() {
   local name="$1" dir="$parent/$1" url sha tags
   read -r url sha <<< "$(lock_entry "$name")" || { echo "Release lock is missing $name" >&2; return 1; }
