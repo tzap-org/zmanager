@@ -24,7 +24,8 @@ permissions:
 env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
   ZMANAGER_BUILD_MODE: release
-  ZMANAGER_RELEASE_TAG: ${{ inputs.notarization_test && '' || github.event.inputs.tag || github.ref_name }}
+  ZMANAGER_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  ZMANAGER_NOTARIZATION_TEST: ${{ inputs.notarization_test }}
 
 jobs:
   package:

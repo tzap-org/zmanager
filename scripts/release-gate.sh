@@ -35,9 +35,11 @@ verify_tzap_resolution() {
 verify_product_release_tag() {
   local tag="${ZMANAGER_RELEASE_TAG:-}" tag_commit product_commit expected_version resolved package
   [[ -n "$tag" ]] || return 0
-  tag_commit="$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
-  product_commit="$(git -C "$root" rev-parse HEAD)"
-  [[ -n "$tag_commit" && "$tag_commit" == "$product_commit" ]] || { echo "Product checkout $product_commit does not match release tag $tag" >&2; return 1; }
+  if [[ "${ZMANAGER_NOTARIZATION_TEST:-false}" != "true" ]]; then
+    tag_commit="$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+    product_commit="$(git -C "$root" rev-parse HEAD)"
+    [[ -n "$tag_commit" && "$tag_commit" == "$product_commit" ]] || { echo "Product checkout $product_commit does not match release tag $tag" >&2; return 1; }
+  fi
   expected_version="${tag#v}"
   for package in zmanager-core zmanager-tzap-hosted zmanager-localsend; do
     resolved="$(awk -v wanted="$package" '$0 == "[[package]]" { in_package=0 } $0 == "name = \"" wanted "\"" { in_package=1; next } in_package && /^version = / { gsub(/"/, "", $3); print $3; exit }' "$root/Cargo.lock")"
