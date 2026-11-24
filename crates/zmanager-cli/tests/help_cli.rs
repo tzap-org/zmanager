@@ -951,7 +951,9 @@ fn linux_ci_and_release_builds_use_ubuntu_22_04_baseline() {
         assert_not_contains(&ci_test_job, newer_or_floating_linux_runner);
     }
 
-    assert_contains(&release_workflow, "  publish:\n    name: Publish GitHub release\n    runs-on: ubuntu-22.04");
+    let publish_job = section_between(&release_workflow, "  publish:\n", "\n    steps:\n");
+    assert_contains(&publish_job, "name: Publish GitHub release");
+    assert_contains(&publish_job, "runs-on: ubuntu-22.04");
     assert_not_contains(&release_workflow, "ubuntu-latest");
     assert_not_contains(&ci_workflow, "ubuntu-latest");
 }
