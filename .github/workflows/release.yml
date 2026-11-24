@@ -12,6 +12,11 @@ on:
       notes:
         description: "Release notes (markdown). Leave blank to auto-generate from commits."
         required: false
+      notarization_test:
+        description: "Build and notarize macOS CLI artifacts without publishing a release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -127,6 +132,92 @@ jobs:
           -Package
           -OutDir dist
 
+      - name: Sign and notarize macOS CLI artifacts
+        if: runner.os == 'macOS'
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          ZMANAGER_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for secret_name in APPLE_DEVELOPER_ID_P12_BASE64 APPLE_DEVELOPER_ID_P12_PASSWORD \
+            APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error::Configure the $secret_name repository Actions secret."
+              exit 1
+            fi
+          done
+
+          work="$RUNNER_TEMP/zmanager-cli-signing"
+          keychain="$RUNNER_TEMP/zmanager-cli-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          certificate="$work/developer-id.p12"
+          api_key="$work/AuthKey.p8"
+          response="$work/notary-response.json"
+          mkdir -p "$work/base" "$work/full" "$work/notary"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+
+          printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | base64 -D > "$certificate"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$api_key"
+          chmod 0600 "$certificate" "$api_key"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/Developer ID Application/ { print $2 }')"
+          if [[ -z "$identity" || "$(printf '%s\n' "$identity" | wc -l | tr -d ' ')" != 1 ]]; then
+            echo "::error::The P12 must contain exactly one valid Developer ID Application identity."
+            exit 1
+          fi
+
+          target="$ZMANAGER_TARGET"
+          base_archive="dist/zm-$target.tar.gz"
+          full_archive="dist/zm-full-$target.tar.gz"
+          tar -xzf "$base_archive" -C "$work/base"
+          tar -xzf "$full_archive" -C "$work/full"
+          codesign --force --options runtime --timestamp --identifier org.tzap-org.zmanager-cli \
+            --sign "$identity" "$work/base/zm"
+          codesign --force --options runtime --timestamp --identifier org.tzap-org.zmanager-cli.full \
+            --sign "$identity" "$work/full/zm-full"
+          codesign --verify --strict --verbose=2 "$work/base/zm"
+          codesign --verify --strict --verbose=2 "$work/full/zm-full"
+          cp "$work/base/zm" "$work/notary/zm"
+          cp "$work/full/zm-full" "$work/notary/zm-full"
+
+          notary_zip="$work/zmanager-cli-notary.zip"
+          ditto -c -k --keepParent "$work/notary" "$notary_zip"
+          xcrun notarytool submit "$notary_zip" --key "$api_key" \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 30m --output-format json > "$response"
+          status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' "$response")"
+          echo "Apple notarization status: $status"
+          if [[ "$status" != Accepted ]]; then
+            echo "::error::Apple did not accept the macOS CLI notarization submission."
+            exit 1
+          fi
+
+          tar -czf "$base_archive" -C "$work/base" zm README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man
+          tar -czf "$full_archive" -C "$work/full" zm-full README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man
+          shasum -a 256 "$base_archive" > "$base_archive.sha256"
+          shasum -a 256 "$full_archive" > "$full_archive.sha256"
+
+          tar -xOf "$base_archive" zm > "$work/verify-zm"
+          tar -xOf "$full_archive" zm-full > "$work/verify-zm-full"
+          codesign --verify --strict "$work/verify-zm"
+          codesign --verify --strict "$work/verify-zm-full"
+
       - name: Set pinned OpenSSL for test commands
         if: runner.os != 'Windows'
         run: |
@@ -177,6 +268,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
+    if: github.event_name != 'workflow_dispatch' || !inputs.notarization_test
     runs-on: ubuntu-22.04
     needs: package
 

@@ -126,6 +126,29 @@ without updating it.
 The Homebrew formula and WinGet manifests are generated from `SHA256SUMS`;
 do not hand-edit release asset hashes.
 
+## macOS CLI signing and notarization
+
+Tagged releases sign both macOS CLI executables (`zm` and `zm-full`) with a
+Developer ID Application identity, submit them to Apple in a ZIP, and only
+publish the macOS tarballs after Apple accepts notarization. Configure these
+repository Actions secrets:
+
+- `APPLE_DEVELOPER_ID_P12_BASE64`
+- `APPLE_DEVELOPER_ID_P12_PASSWORD`
+- `APPLE_API_KEY_BASE64`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER_ID`
+
+The workflow imports the P12 into a temporary runner keychain and removes the
+keychain and API key file when signing finishes. To validate the credentials
+without publishing, run the `Release` workflow manually with the release tag
+and `notarization_test` enabled. A tagged push uses the normal release path.
+
+Apple issues a notarization ticket for each standalone CLI binary, but tickets
+cannot be stapled directly to standalone binaries. Gatekeeper retrieves the
+ticket online when it evaluates the downloaded executable; see
+[Apple's notarization workflow documentation](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
 ## Release Notes
 
 Use [docs/release-notes/2.2.1.md](docs/release-notes/2.2.1.md) as the release
