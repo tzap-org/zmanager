@@ -104,6 +104,25 @@ dependencies = [
 
 [[package]]
 name = "aff4"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7396c40728940b651bfead87d6bfa7bf9a30a7a3ade83c1d1ec472346e70ead4"
+dependencies = [
+ "aes 0.8.4",
+ "aes-kw",
+ "flate2",
+ "lz4_flex 0.11.6",
+ "pbkdf2 0.12.2",
+ "safe-read 0.2.2",
+ "sha2 0.10.9",
+ "snap",
+ "thiserror",
+ "xts-mode",
+ "zip-forensic-core 0.1.0",
+]
+
+[[package]]
+name = "aff4"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edc89221e4e9bac4967027c41ff4af6edf12964b63d4ea88a249680c2d56d9a8"
@@ -119,7 +138,7 @@ dependencies = [
  "thiserror",
  "xts-mode",
  "zip",
- "zip-forensic-core",
+ "zip-forensic-core 0.2.3",
 ]
 
 [[package]]
@@ -289,7 +308,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror",
- "zip-forensic-core",
+ "zip-forensic-core 0.2.3",
 ]
 
 [[package]]
@@ -863,7 +882,7 @@ dependencies = [
  "flate2",
  "forensic-vfs",
  "lzo",
- "ruzstd",
+ "ruzstd 0.9.1",
  "thiserror",
 ]
 
@@ -1480,7 +1499,7 @@ dependencies = [
  "lz4_flex 0.11.6",
  "lzma-rs",
  "lzo",
- "ruzstd",
+ "ruzstd 0.9.1",
  "thiserror",
 ]
 
@@ -1963,7 +1982,7 @@ name = "forensic-vfs-engine"
 version = "0.1.10"
 dependencies = [
  "ad1-core",
- "aff4",
+ "aff4 0.2.6",
  "apfs-core",
  "apm-partition-core",
  "archive-core",
@@ -4038,6 +4057,15 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "ruzstd"
@@ -6156,7 +6184,7 @@ dependencies = [
  "flate2",
  "forensic-vfs",
  "lz4_flex 0.11.6",
- "ruzstd",
+ "ruzstd 0.9.1",
  "sha2 0.10.9",
  "thiserror",
 ]
@@ -6193,6 +6221,27 @@ dependencies = [
 
 [[package]]
 name = "zip-forensic-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd66ca0be2a86f374ac27bf8e9872246bed322d7ea894d617e2e4f6d4660151b"
+dependencies = [
+ "aes 0.8.4",
+ "bzip2-rs",
+ "constant_time_eq 0.3.1",
+ "crc32fast",
+ "ctr 0.9.2",
+ "deflate64",
+ "flate2",
+ "hmac 0.12.1",
+ "lzma-rs",
+ "pbkdf2 0.12.2",
+ "ruzstd 0.8.3",
+ "sha1 0.10.7",
+ "thiserror",
+]
+
+[[package]]
+name = "zip-forensic-core"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "212c2b60895acefb7f6a8eea588573606f219d83b1ee15cf21b6b69476b3dd18"
@@ -6208,7 +6257,7 @@ dependencies = [
  "hmac 0.12.1",
  "lzma-rs",
  "pbkdf2 0.12.2",
- "ruzstd",
+ "ruzstd 0.9.1",
  "sha1 0.10.7",
  "thiserror",
 ]
@@ -6231,7 +6280,7 @@ name = "zmanager-cli"
 version = "2.3.0"
 dependencies = [
  "ad1-core",
- "aff4",
+ "aff4 0.3.0",
  "anstream",
  "anstyle",
  "flate2",
@@ -6258,7 +6307,7 @@ version = "2.3.0"
 dependencies = [
  "ad1-core",
  "adler2",
- "aff4",
+ "aff4 0.3.0",
  "argon2",
  "backhand",
  "base64 0.22.1",
