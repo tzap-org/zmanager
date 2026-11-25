@@ -1090,8 +1090,8 @@ mod platform {
         // applied by the shared extraction layer.
         #[cfg(not(target_os = "ios"))]
         if metadata.uid.is_some() || metadata.gid.is_some() {
-            let uid = metadata.uid.map_or(u32::MAX, |value| value) as libc::uid_t;
-            let gid = metadata.gid.map_or(u32::MAX, |value| value) as libc::gid_t;
+            let uid = metadata.uid.unwrap_or(u32::MAX) as libc::uid_t;
+            let gid = metadata.gid.unwrap_or(u32::MAX) as libc::gid_t;
             // SAFETY: `path` is NUL-terminated and the scalar IDs are passed
             // by value. lchown intentionally does not follow symlinks.
             let status = unsafe { if symlink { libc::lchown(path.as_ptr(), uid, gid) } else { libc::chown(path.as_ptr(), uid, gid) } };
