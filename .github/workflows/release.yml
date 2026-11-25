@@ -201,13 +201,13 @@ jobs:
           ditto -c -k --keepParent "$work/notary" "$notary_zip"
           xcrun notarytool submit "$notary_zip" --key "$api_key" \
             --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
-            --wait --timeout 30m --output-format json > "$response"
-          status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' "$response")"
-          echo "Apple notarization status: $status"
-          if [[ "$status" != Accepted ]]; then
-            echo "::error::Apple did not accept the macOS CLI notarization submission."
+            --output-format json > "$response"
+          submission_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["id"])' "$response")"
+          if [[ -z "$submission_id" ]]; then
+            echo "::error::Apple did not return a notarization submission ID."
             exit 1
           fi
+          echo "Apple notarization submission: $submission_id"
 
           tar -czf "$base_archive" -C "$work/base" zm README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man
           tar -czf "$full_archive" -C "$work/full" zm-full README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md third-party-licenses completions man
@@ -218,6 +218,35 @@ jobs:
           tar -xOf "$full_archive" zm-full > "$work/verify-zm-full"
           codesign --verify --strict "$work/verify-zm"
           codesign --verify --strict "$work/verify-zm-full"
+
+          base_cdhash="$(codesign -dv --verbose=4 "$work/verify-zm" 2>&1 | awk -F= '/^CDHash=/ { print $2; exit }')"
+          full_cdhash="$(codesign -dv --verbose=4 "$work/verify-zm-full" 2>&1 | awk -F= '/^CDHash=/ { print $2; exit }')"
+          if [[ -z "$base_cdhash" || -z "$full_cdhash" ]]; then
+            echo "::error::Could not record the signed CLI code directory hashes."
+            exit 1
+          fi
+          python3 - "$submission_id" "$target" "$base_cdhash" "$full_cdhash" > "dist/notarization-$target.json" <<'PY'
+          import json
+          import sys
+
+          submission_id, target, base_cdhash, full_cdhash = sys.argv[1:]
+          print(json.dumps({
+              "target": target,
+              "submission_id": submission_id,
+              "binaries": {
+                  f"zm-{target}.tar.gz": {"path": "zm", "cdhash": base_cdhash},
+                  f"zm-full-{target}.tar.gz": {"path": "zm-full", "cdhash": full_cdhash},
+              },
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v6
+        if: runner.os == 'macOS'
+        with:
+          name: notarization-${{ matrix.target }}
+          path: dist/notarization-${{ matrix.target }}.json
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Set pinned OpenSSL for test commands
         if: runner.os != 'Windows'
@@ -268,7 +297,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub release
+    name: Stage draft GitHub release
     if: github.event_name != 'workflow_dispatch' || !inputs.notarization_test
     runs-on: ubuntu-22.04
     needs: package
@@ -287,6 +316,29 @@ jobs:
         run: |
           cd release-artifacts
           sha256sum *.tar.gz *.zip *.deps.txt > SHA256SUMS
+
+      - name: Prepare notarization manifest
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python3 - "$TAG_NAME" release-artifacts/notarization-submissions.json <<'PY'
+          import glob
+          import json
+          import sys
+
+          tag, output = sys.argv[1:]
+          records = []
+          for path in sorted(glob.glob("release-artifacts/notarization-*.json")):
+              with open(path, encoding="utf-8") as file:
+                  records.append(json.load(file))
+          targets = {record["target"] for record in records}
+          expected = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+          if targets != expected or len(records) != len(expected):
+              raise SystemExit(f"Expected notarization records for {sorted(expected)}, found {sorted(targets)}")
+          with open(output, "w", encoding="utf-8") as file:
+              json.dump({"schema_version": 1, "tag": tag, "submissions": records}, file, indent=2)
+              file.write("\n")
+          PY
 
       - name: Prepare package metadata
         env:
@@ -309,11 +361,12 @@ jobs:
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
           CUSTOM_NOTES: ${{ github.event.inputs.notes }}
         run: |
-          # Re-running this workflow fails if a release already exists for the
-          # tag (a manual release or a previous run). Delete it first so the
-          # step is idempotent; the tag itself is left intact.
+          # Never remove or replace an existing release. The poller publishes
+          # this draft only after Apple accepts both submissions and Gatekeeper
+          # accepts the downloaded binaries.
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release delete "$TAG_NAME" --yes
+            echo "::error::A release already exists for $TAG_NAME; refusing to overwrite it."
+            exit 1
           fi
           if [ -n "$CUSTOM_NOTES" ]; then
             NOTES_ARGS=(--notes "$CUSTOM_NOTES")
@@ -325,6 +378,8 @@ jobs:
             release-artifacts/*.zip \
             release-artifacts/*.deps.txt \
             release-artifacts/SHA256SUMS \
+            release-artifacts/notarization-submissions.json \
             --verify-tag \
+            --draft \
             --title "$TAG_NAME" \
             "${NOTES_ARGS[@]}"

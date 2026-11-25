@@ -129,9 +129,15 @@ do not hand-edit release asset hashes.
 ## macOS CLI signing and notarization
 
 Tagged releases sign both macOS CLI executables (`zm` and `zm-full`) with a
-Developer ID Application identity, submit them to Apple in a ZIP, and only
-publish the macOS tarballs after Apple accepts notarization. Configure these
-repository Actions secrets:
+Developer ID Application identity and submit them to Apple in a ZIP. Packaging
+does not wait for Apple: it saves the submission IDs and signed archives, then
+stages the complete release as a GitHub draft with generated release notes.
+The `Publish notarized draft releases` workflow checks drafts every 20 minutes.
+It publishes a draft only after both Apple submissions are accepted, the
+downloaded archive checksums and signed code hashes match the recorded values,
+and Gatekeeper accepts each executable with a quarantine attribute. You can
+also run that workflow manually for a single tag while investigating a
+submission. Configure these repository Actions secrets:
 
 - `APPLE_DEVELOPER_ID_P12_BASE64`
 - `APPLE_DEVELOPER_ID_P12_PASSWORD`
@@ -139,10 +145,12 @@ repository Actions secrets:
 - `APPLE_API_KEY_ID`
 - `APPLE_API_ISSUER_ID`
 
-The workflow imports the P12 into a temporary runner keychain and removes the
-keychain and API key file when signing finishes. To validate the credentials
-without publishing, run the `Release` workflow manually with the release tag
-and `notarization_test` enabled. A tagged push uses the normal release path.
+The signing job imports the P12 into a temporary runner keychain and removes
+the keychain and API key file when signing finishes. To validate the
+credentials without creating a draft, run the `Release` workflow manually with
+the release tag and `notarization_test` enabled. This test confirms upload and
+records the submission ID; Apple acceptance happens asynchronously. A tagged
+push uses the normal draft-release path.
 
 Apple issues a notarization ticket for each standalone CLI binary, but tickets
 cannot be stapled directly to standalone binaries. Gatekeeper retrieves the
