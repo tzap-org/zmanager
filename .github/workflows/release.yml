@@ -407,6 +407,8 @@ jobs:
           fi
           if [ -n "$CUSTOM_NOTES" ]; then
             NOTES_ARGS=(--notes "$CUSTOM_NOTES")
+          elif [ -f "docs/release-notes/${TAG_NAME#v}.md" ]; then
+            NOTES_ARGS=(--notes-file "docs/release-notes/${TAG_NAME#v}.md")
           else
             NOTES_ARGS=(--generate-notes)
           fi
