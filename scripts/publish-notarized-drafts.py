@@ -166,19 +166,25 @@ def process_release(release: dict) -> bool:
         manifest_path = work / "notarization-submissions.json"
         download_asset(manifest_asset, manifest_path)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("schema_version") != 1 or manifest.get("tag") != tag:
+        if manifest.get("schema_version") != 2 or manifest.get("tag") != tag:
             raise RuntimeError(f"Invalid notarization manifest for {tag}")
         submissions = manifest.get("submissions", [])
         expected_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
-        if {record.get("target") for record in submissions} != expected_targets or len(submissions) != 2:
-            raise RuntimeError(f"Draft {tag} is missing an architecture notarization record")
+        expected_archives = {
+            (target, f"zm-{target}.tar.gz") for target in expected_targets
+        } | {
+            (target, f"zm-full-{target}.tar.gz") for target in expected_targets
+        }
+        actual_archives = {(record.get("target"), record.get("archive")) for record in submissions}
+        if actual_archives != expected_archives or len(submissions) != 4:
+            raise RuntimeError(f"Draft {tag} is missing a per-binary notarization submission")
 
         statuses: list[tuple[str, str]] = []
         for record in submissions:
             submission_id = record["submission_id"]
             info = notary_info(submission_id)
             status = info.get("status", "Unknown")
-            print(f"{record['target']} {submission_id}: {status}")
+            print(f"{record['target']} {record['binary']} {submission_id}: {status}")
             statuses.append((submission_id, status))
             if status == "Invalid":
                 print(f"Apple rejection log for {submission_id}:")
@@ -199,16 +205,16 @@ def process_release(release: dict) -> bool:
                 expected_hashes[name.strip()] = checksum
 
         for record in submissions:
-            for archive_name, binary in record["binaries"].items():
-                asset = assets.get(archive_name)
-                if not asset:
-                    raise RuntimeError(f"Draft {tag} is missing {archive_name}")
-                archive = work / archive_name
-                download_asset(asset, archive)
-                expected_hash = expected_hashes.get(archive_name)
-                if not expected_hash or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_hash:
-                    raise RuntimeError(f"Checksum verification failed for {archive_name}")
-                verify_archive(archive, binary["path"], binary["cdhash"], work)
+            archive_name = record["archive"]
+            asset = assets.get(archive_name)
+            if not asset:
+                raise RuntimeError(f"Draft {tag} is missing {archive_name}")
+            archive = work / archive_name
+            download_asset(asset, archive)
+            expected_hash = expected_hashes.get(archive_name)
+            if not expected_hash or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_hash:
+                raise RuntimeError(f"Checksum verification failed for {archive_name}")
+            verify_archive(archive, record["binary"], record["cdhash"], work)
 
     release_url = f"{API}/repos/{REPOSITORY}/releases/{release['id']}"
     api_json(release_url, method="PATCH", payload={"draft": False})

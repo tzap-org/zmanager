@@ -129,11 +129,12 @@ do not hand-edit release asset hashes.
 ## macOS CLI signing and notarization
 
 Tagged releases sign both macOS CLI executables (`zm` and `zm-full`) with a
-Developer ID Application identity and submit them to Apple in a ZIP. Packaging
-does not wait for Apple: it saves the submission IDs and signed archives, then
-stages the complete release as a GitHub draft with generated release notes.
+Developer ID Application identity and submit each executable in its own ZIP
+for each architecture. Packaging does not wait for Apple: it saves all four
+submission IDs and the signed archives, then stages the complete release as a
+GitHub draft with generated release notes.
 The `Publish notarized draft releases` workflow checks drafts every 20 minutes.
-It publishes a draft only after both Apple submissions are accepted, the
+It publishes a draft only after all four Apple submissions are accepted, the
 downloaded archive checksums and signed code hashes match the recorded values,
 and Gatekeeper accepts each executable with a quarantine attribute. You can
 also run that workflow manually for a single tag while investigating a
