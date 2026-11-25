@@ -347,16 +347,11 @@ fn detect_content_format(path: &Path) -> Option<ArchiveFormatKind> {
     let mut file = File::open(path).ok()?;
     let mut prefix = Vec::new();
     file.by_ref().take(1024 * 1024).read_to_end(&mut prefix).ok()?;
-    let mut search_slice = &prefix[..];
-    while let Some(pos) = memchr::memchr(b'P', search_slice) {
-        if search_slice.len() < pos + 4 {
-            break;
-        }
-        let magic = &search_slice[pos..pos + 4];
-        if magic == b"PK\x03\x04" || magic == b"PK\x05\x06" || magic == b"PK\x07\x08" {
-            return Some(ArchiveFormatKind::Zip);
-        }
-        search_slice = &search_slice[pos + 1..];
+    // A ZIP signature can occur by chance inside compressed data (for
+    // example, newer LRZIP streams). Validate the directory before treating
+    // an unknown-extension input as a self-extracting ZIP.
+    if zip::ZipArchive::new(file).is_ok() {
+        return Some(ArchiveFormatKind::Zip);
     }
     if prefix.len() >= 265 && (&prefix[257..263] == b"ustar\0" || &prefix[257..263] == b"ustar ") {
         return Some(ArchiveFormatKind::Tar);
@@ -580,10 +575,24 @@ mod tests {
     #[test]
     fn content_detection_recognizes_zip_self_extracting_input() {
         let dir = TestDir::new("detect-zip-sfx");
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer.start_file("payload.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut writer, b"valid zip payload").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
         let mut input = vec![0_u8; 37];
-        input.extend_from_slice(b"PK\x03\x04synthetic zip payload");
+        input.extend_from_slice(&zip);
         fs::write(dir.path("installer.bin"), input).unwrap();
         assert_eq!(detect_archive_format(dir.path("installer.bin")), ArchiveFormatKind::Zip);
+    }
+
+    #[test]
+    fn content_detection_ignores_zip_magic_inside_unknown_data() {
+        let dir = TestDir::new("detect-embedded-zip-magic");
+        let mut input = b"LRZI".to_vec();
+        input.extend_from_slice(&[0x5a; 37]);
+        input.extend_from_slice(b"PK\x03\x04not a zip archive");
+        fs::write(dir.path("payload.lrz"), input).unwrap();
+        assert_eq!(detect_archive_format(dir.path("payload.lrz")), ArchiveFormatKind::Unknown);
     }
 
     #[test]
