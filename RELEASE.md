@@ -136,9 +136,13 @@ GitHub draft with generated release notes.
 The `Publish notarized draft releases` workflow checks drafts every 20 minutes.
 It publishes a draft only after all four Apple submissions are accepted, the
 downloaded archive checksums and signed code hashes match the recorded values,
-and Gatekeeper accepts each executable with a quarantine attribute. You can
-also run that workflow manually for a single tag while investigating a
-submission. Configure these repository Actions secrets:
+Apple's notarization ticket verifies for each CLI executable, and each
+executable launches with a quarantine attribute set. The poller uses
+`codesign --check-notarization` for the standalone binaries and tests launching
+them from a shell; `spctl --assess --type execute` is intended for app bundles,
+so it is not an appropriate check for these command-line tools. You can also
+run that workflow manually for a single tag while investigating a submission.
+Configure these repository Actions secrets:
 
 - `APPLE_DEVELOPER_ID_P12_BASE64`
 - `APPLE_DEVELOPER_ID_P12_PASSWORD`

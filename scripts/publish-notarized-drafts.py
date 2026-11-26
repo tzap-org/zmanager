@@ -136,20 +136,36 @@ def verify_archive(archive: pathlib.Path, binary_name: str, expected_cdhash: str
     )
     if actual_cdhash.lower() != expected_cdhash.lower():
         raise RuntimeError(f"Code directory hash mismatch for {archive.name}")
-    quarantine = f"0081;{int(time.time()):x};GitHub Actions;"
-    subprocess.run(["xattr", "-w", "com.apple.quarantine", quarantine, str(binary)], check=True)
-    assessment = subprocess.run(
-        ["spctl", "--assess", "--type", "execute", "--verbose=4", str(binary)],
+
+    notarization = subprocess.run(
+        ["codesign", "-vvvv", "-R=notarized", "--check-notarization", str(binary)],
         capture_output=True,
         text=True,
         check=False,
     )
-    if assessment.returncode:
+    if notarization.returncode:
         raise RuntimeError(
-            f"Gatekeeper has not accepted {archive.name}: "
-            f"{assessment.stderr.strip() or assessment.stdout.strip()}"
+            f"Apple's notarization ticket could not be verified for {archive.name}: "
+            f"{notarization.stderr.strip() or notarization.stdout.strip()}"
         )
-    print(f"Gatekeeper accepted {archive.name}: {assessment.stderr.strip() or assessment.stdout.strip()}")
+
+    quarantine = f"0081;{int(time.time()):x};GitHub Actions;"
+    subprocess.run(["xattr", "-w", "com.apple.quarantine", quarantine, str(binary)], check=True)
+    launch = subprocess.run(
+        [str(binary), "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if launch.returncode:
+        raise RuntimeError(
+            f"Quarantined CLI launch failed for {archive.name}: "
+            f"{launch.stderr.strip() or launch.stdout.strip()}"
+        )
+    print(
+        f"Apple notarization ticket verified and quarantined CLI launched: "
+        f"{archive.name}: {launch.stdout.strip()}"
+    )
     return binary
 
 
