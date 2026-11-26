@@ -18,8 +18,10 @@ jobs:
 
     steps:
       - name: Validate tag format
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
+          set -euo pipefail
           if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::tag '$TAG' does not look like a semver tag (expected e.g. v2.0.1)"
             exit 1
@@ -28,11 +30,12 @@ jobs:
       - name: Download and extract package-metadata from release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
+          set -euo pipefail
 
           # The release workflow uploads package-metadata.tar.gz which contains
-          # the pre-generated Homebrew formula at homebrew/Formula/zmanager.rb
+          # both pre-generated Homebrew formulas under homebrew/Formula/.
           gh release download "$TAG" \
             --repo tzap-org/zmanager \
             --pattern "package-metadata.tar.gz" \
@@ -40,21 +43,22 @@ jobs:
 
           tar -xzf package-metadata.tar.gz
 
-          FORMULA="homebrew/Formula/zmanager.rb"
-
-          if [ ! -f "$FORMULA" ]; then
-            echo "::error::Formula not found at '$FORMULA' in package-metadata.tar.gz"
-            exit 1
-          fi
-
-          echo "Formula extracted from release:"
-          cat "$FORMULA"
+          for formula in zmanager zmanager-full; do
+            path="homebrew/Formula/$formula.rb"
+            if [ ! -f "$path" ]; then
+              echo "::error::Formula not found at '$path' in package-metadata.tar.gz"
+              exit 1
+            fi
+            echo "Formula extracted from release: $path"
+            cat "$path"
+          done
 
       - name: Push updated formula to homebrew-zmanager
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
+          set -euo pipefail
 
           if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
             echo "::error::HOMEBREW_TAP_TOKEN is not configured"
@@ -66,13 +70,15 @@ jobs:
             tap
 
           mkdir -p tap/Formula
-          cp homebrew/Formula/zmanager.rb tap/Formula/zmanager.rb
+          for formula in zmanager zmanager-full; do
+            cp "homebrew/Formula/$formula.rb" "tap/Formula/$formula.rb"
+          done
           cd tap
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add Formula/zmanager.rb
+          git add Formula/zmanager.rb Formula/zmanager-full.rb
 
           if git diff --cached --quiet; then
             echo "Formula already up to date."

@@ -241,8 +241,9 @@ steps behave the same as release installs. Preview artifacts are kept for
 
 ## Homebrew
 
-The Homebrew tap repository should be named `homebrew-zmanager`. After the
-generated formula is copied to the tap, users install with:
+The Homebrew tap repository should be named `homebrew-zmanager`. The
+`Update Homebrew tap` GitHub Actions workflow copies both generated formulas
+from a release into the tap. Users install either flavor with:
 
 ```sh
 brew install tzap-org/zmanager/zmanager
@@ -262,8 +263,11 @@ scripts/generate-package-metadata.sh \
   dist/package-metadata
 ```
 
-Copy `dist/package-metadata/homebrew/Formula/zmanager.rb` to
-`tzap-org/homebrew-zmanager`.
+Copy both files from `dist/package-metadata/homebrew/Formula/` to
+`tzap-org/homebrew-zmanager/Formula/`:
+
+- `zmanager.rb`
+- `zmanager-full.rb`
 
 ## WinGet
 
