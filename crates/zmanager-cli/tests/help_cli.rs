@@ -796,7 +796,9 @@ fn package_channel_metadata_uses_release_checksums() {
 
     for required in [
         "SHA256SUMS",
-        "package-metadata/homebrew/Formula/zmanager.rb",
+        "package-metadata/homebrew/Formula/",
+        "zmanager.rb",
+        "zmanager-full.rb",
         "package-metadata\\winget\\TzapOrg.ZManagerCLI",
         "brew install tzap-org/zmanager/zmanager",
         "winget validate",
