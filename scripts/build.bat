@@ -14,4 +14,4 @@ if "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     set VSCOMPONENT=Microsoft.VisualStudio.Component.VC.Tools.x86.x64
 )
 
-powershell -ExecutionPolicy Bypass -File "%~dp0ci-windows.ps1" -Target "%TARGET%" -Triplet "%TRIPLET%" -VcArch "%VCARCH%" -VsComponent "%VSCOMPONENT%" %*
+powershell -ExecutionPolicy Bypass -File "%~dp0ci-windows.ps1" -Target "%TARGET%" -Triplet "%TRIPLET%" -VcArch "%VCARCH%" -VsComponent "%VSCOMPONENT%" -BuildCli %*
