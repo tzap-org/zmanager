@@ -62,30 +62,3 @@ pub(crate) fn ensure_file_destination_available(path: &Path, replace_existing: b
         Err(source) => Err(source),
     }
 }
-
-/// Removes every existing volume destination before an overwrite write.
-pub(crate) fn remove_split_destinations_for_replace(destination: &Path, existing_volume_paths: &[PathBuf], replace_existing: bool) -> io::Result<()> {
-    if !replace_existing {
-        return Ok(());
-    }
-    for path in existing_volume_paths {
-        remove_file_destination_for_replace(path)?;
-    }
-    remove_file_destination_for_replace(destination)
-}
-
-/// Removes one existing volume file, refusing to remove a directory.
-///
-/// Deliberately stricter than `safety::remove_destination_for_replace`,
-/// which replaces directories: a split writer must never mistake a directory
-/// for a volume it is about to create.
-pub(crate) fn remove_file_destination_for_replace(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
-        }
-        Ok(_) => fs::remove_file(path),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(source),
-    }
-}

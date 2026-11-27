@@ -8,9 +8,11 @@
 //! tokio runtime that bridges the two worlds; nothing above this module
 //! needs to know `LocalSend` is async at all.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use localsend_rs::client::client::ProgressCallback;
 use localsend_rs::protocol::{DeviceInfo, FileId, Protocol};
@@ -20,6 +22,12 @@ use serde::{Deserialize, Serialize};
 use tokio::task::AbortHandle;
 
 const MAX_QUEUED_EVENTS: usize = 512;
+const TRANSFER_CONSENT_TTL: Duration = Duration::from_secs(60);
+// Give the bridge's user-facing consent window time to expire before the
+// LocalSend server drops its responder. The request event is consumed
+// asynchronously, so the server-side timeout must not be shorter than the
+// registry's timeout measured from event handling.
+const SERVER_TRANSFER_CONSENT_TTL: Duration = Duration::from_secs(90);
 
 static REGISTRY: OnceLock<Arc<LocalSendRegistry>> = OnceLock::new();
 
@@ -37,11 +45,14 @@ pub struct LocalSendRegistry {
     /// [`LocalSendRegistry::set_identity_dir`]; until then the identity lives
     /// only as long as this process.
     identity_dir: Mutex<Option<PathBuf>>,
+    receiver_starting: AtomicBool,
 }
 
 #[derive(Default)]
 struct RegistryState {
     server: Option<LocalSendServer>,
+    receiver_generation: u64,
+    receiver_event_pump: Option<tokio::task::JoinHandle<()>>,
     /// The official `LocalSend` app keeps discovery alive alongside its HTTP
     /// server so a receiver can answer announcements and register back with
     /// the announcing peer. Keep that lifecycle in the shared Rust registry,
@@ -77,7 +88,7 @@ struct RegistryState {
     /// keeps this store alive across discovery sweeps and merges confirmations
     /// from both directions (our probes and incoming `/register` events).
     confirmed_devices: HashMap<String, ConfirmedDevice>,
-    pending_requests: HashMap<String, PendingRequest>,
+    pending_requests: HashMap<String, PendingTransferRequest>,
     next_request_id: u64,
     events: VecDeque<QueuedEvent>,
     /// Abort handles for in-flight `send_file` tasks, keyed by the
@@ -88,6 +99,47 @@ struct RegistryState {
     /// loop aren't reachable from here the way they were in the native
     /// per-platform implementations this crate replaces.
     active_sends: HashMap<String, AbortHandle>,
+}
+
+struct PendingTransferRequest {
+    request: PendingRequest,
+    expires_at: Instant,
+}
+
+struct ReceiverStartReservation<'a>(&'a AtomicBool);
+
+impl Drop for ReceiverStartReservation<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn remove_transfer_request_event(events: &mut VecDeque<QueuedEvent>, request_id: &str) {
+    events.retain(|event| !matches!(event, QueuedEvent::TransferRequest { request_id: queued_id, .. } if queued_id == request_id));
+}
+
+fn prune_expired_requests_locked(state: &mut RegistryState) {
+    let now = Instant::now();
+    let mut expired = HashSet::new();
+    state.pending_requests.retain(|request_id, pending| {
+        let keep = pending.expires_at > now;
+        if !keep {
+            expired.insert(request_id.clone());
+        }
+        keep
+    });
+    if !expired.is_empty() {
+        state.events.retain(|event| !matches!(event, QueuedEvent::TransferRequest { request_id, .. } if expired.contains(request_id)));
+    }
+}
+
+fn push_event_locked(state: &mut RegistryState, event: QueuedEvent) {
+    if state.events.len() >= MAX_QUEUED_EVENTS
+        && let Some(QueuedEvent::TransferRequest { request_id, .. }) = state.events.pop_front()
+    {
+        state.pending_requests.remove(&request_id);
+    }
+    state.events.push_back(event);
 }
 
 /// Returns the shared registry, creating it (and its runtime) on first use.
@@ -107,6 +159,7 @@ pub fn registry() -> Arc<LocalSendRegistry> {
                 state: Mutex::new(RegistryState::default()),
                 tls_certificate: Mutex::new(None),
                 identity_dir: Mutex::new(None),
+                receiver_starting: AtomicBool::new(false),
             })
         })
         .clone()
@@ -229,6 +282,10 @@ impl LocalSendRegistry {
     ///
     /// Panics if the registry state mutex is poisoned.
     pub fn start_receiver(&self, request: StartReceiverRequest) -> BridgeResult<()> {
+        if self.receiver_starting.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err(LocalSendBridgeError::ReceiverAlreadyRunning);
+        }
+        let _reservation = ReceiverStartReservation(&self.receiver_starting);
         {
             let state = self.state.lock().expect("registry lock poisoned");
             if state.server.is_some() {
@@ -237,8 +294,13 @@ impl LocalSendRegistry {
         }
 
         let protocol = if request.https { Protocol::Https } else { Protocol::Http };
-        let mut builder =
-            LocalSendServer::builder().alias(request.alias).port(request.port).save_dir(&request.save_dir).protocol(protocol).auto_accept(request.auto_accept);
+        let mut builder = LocalSendServer::builder()
+            .alias(request.alias)
+            .port(request.port)
+            .save_dir(&request.save_dir)
+            .protocol(protocol)
+            .auto_accept(request.auto_accept)
+            .accept_timeout(SERVER_TRANSFER_CONSENT_TTL);
         if let Some(pin) = request.pin.as_ref() {
             builder = builder.pin(pin.clone());
         }
@@ -278,15 +340,23 @@ impl LocalSendRegistry {
         }
 
         let registry_for_pump = registry();
-        self.runtime.spawn(async move {
-            while let Some(event) = events_rx.recv().await {
-                registry_for_pump.absorb_event(event);
-            }
-        });
-
         let mut state = self.state.lock().expect("registry lock poisoned");
+        state.receiver_generation = state.receiver_generation.saturating_add(1);
+        let generation = state.receiver_generation;
         state.server = Some(server);
         state.discovery = Some(discovery);
+        state.receiver_event_pump = Some(self.runtime.spawn(async move {
+            let mut expiry_tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    event = events_rx.recv() => match event {
+                        Some(event) => registry_for_pump.absorb_receiver_event(event, generation),
+                        None => break,
+                    },
+                    _ = expiry_tick.tick() => registry_for_pump.prune_expired_requests(),
+                }
+            }
+        }));
         Ok(())
     }
 
@@ -301,18 +371,25 @@ impl LocalSendRegistry {
     ///
     /// Panics if the registry state mutex is poisoned.
     pub fn stop_receiver(&self) -> BridgeResult<()> {
-        let (mut discovery, server) = {
+        let (mut discovery, mut server, event_pump) = {
             let mut state = self.state.lock().expect("registry lock poisoned");
+            let Some(server) = state.server.take() else {
+                return Err(LocalSendBridgeError::NoReceiverRunning);
+            };
+            state.receiver_generation = state.receiver_generation.saturating_add(1);
             state.pending_requests.clear();
-            (state.discovery.take(), state.server.take())
-        };
-        let Some(mut server) = server else {
-            return Err(LocalSendBridgeError::NoReceiverRunning);
+            state.events.retain(|event| !matches!(event, QueuedEvent::TransferRequest { .. }));
+            (state.discovery.take(), server, state.receiver_event_pump.take())
         };
         if let Some(discovery) = discovery.as_mut() {
             discovery.stop();
         }
         self.runtime.block_on(server.stop());
+        if let Some(event_pump) = event_pump {
+            // The generation was invalidated before stopping the server, so
+            // any buffered transfer request is ignored while the pump drains.
+            let _ = self.runtime.block_on(event_pump);
+        }
         Ok(())
     }
 
@@ -348,60 +425,82 @@ impl LocalSendRegistry {
     /// their descriptive fields are queued; the app responds later via
     /// [`LocalSendRegistry::respond_to_transfer`].
     fn absorb_event(&self, event: ServerEvent) {
-        let queued = {
-            let mut state = self.state.lock().expect("registry lock poisoned");
-            match event {
-                ServerEvent::PeerRegistered(device) => {
-                    state.confirmed_devices.insert(
-                        device.fingerprint.clone(),
-                        ConfirmedDevice { device: device.clone(), last_seen: std::time::Instant::now(), last_seen_unix_seconds: unix_now_seconds() },
-                    );
-                    if let Some(discovery) = state.active_discovery.as_ref() {
-                        discovery.add_device(device.clone());
-                    }
-                    QueuedEvent::PeerRegistered { device: device.into() }
+        self.absorb_event_for_generation(event, None);
+    }
+
+    fn absorb_receiver_event(&self, event: ServerEvent, generation: u64) {
+        self.absorb_event_for_generation(event, Some(generation));
+    }
+
+    fn absorb_event_for_generation(&self, event: ServerEvent, generation: Option<u64>) {
+        let mut state = self.state.lock().expect("registry lock poisoned");
+        if generation.is_some_and(|generation| generation != state.receiver_generation) {
+            return;
+        }
+        // The temporary listener used during discovery exists only to collect
+        // peer registrations. It must not surface transfer requests from a
+        // socket that will be closed as soon as the sweep ends.
+        if generation.is_none() && matches!(&event, ServerEvent::TransferRequest(_)) {
+            return;
+        }
+        prune_expired_requests_locked(&mut state);
+        let queued = match event {
+            ServerEvent::PeerRegistered(device) => {
+                state.confirmed_devices.insert(
+                    device.fingerprint.clone(),
+                    ConfirmedDevice { device: device.clone(), last_seen: std::time::Instant::now(), last_seen_unix_seconds: unix_now_seconds() },
+                );
+                if let Some(discovery) = state.active_discovery.as_ref() {
+                    discovery.add_device(device.clone());
                 }
-                ServerEvent::TransferRequest(pending) => {
-                    state.next_request_id = state.next_request_id.saturating_add(1);
-                    let request_id = format!("transfer-{}-{}", std::process::id(), state.next_request_id);
-                    let sender = pending.sender().clone().into();
-                    let files: Vec<TransferFile> = pending
-                        .files()
-                        .values()
-                        .map(|metadata| TransferFile {
-                            id: metadata.id.as_str().to_owned(),
-                            file_name: metadata.file_name.clone(),
-                            size: metadata.size,
-                            file_type: metadata.file_type.clone(),
-                        })
-                        .collect();
-                    state.pending_requests.insert(request_id.clone(), pending);
-                    QueuedEvent::TransferRequest { request_id, sender, files }
-                }
-                ServerEvent::TextReceived { session_id, text, sender_alias } => {
-                    QueuedEvent::TextReceived { session_id: session_id.as_str().to_owned(), text, sender_alias }
-                }
-                ServerEvent::FileReceiveProgress { session_id, file_id, file_name, sender_alias, bytes_received, total_bytes, file_count } => {
-                    QueuedEvent::FileReceiveProgress {
-                        session_id: session_id.as_str().to_owned(),
-                        file_id: file_id.as_str().to_owned(),
-                        file_name,
-                        sender_alias,
-                        bytes_received,
-                        total_bytes,
-                        file_count,
-                    }
-                }
-                ServerEvent::FileReceived { session_id, file_id, file_name, path, .. } => {
-                    QueuedEvent::FileReceived { session_id: session_id.as_str().to_owned(), file_id: file_id.as_str().to_owned(), file_name, path }
-                }
-                ServerEvent::SessionDone { session_id } => QueuedEvent::SessionDone { session_id: session_id.as_str().to_owned() },
-                // Web Share (browser-facing) events are out of scope for the
-                // device-to-device workflows this crate wraps; drop them.
-                ServerEvent::WebShareRequest(_) | ServerEvent::WebShareDownloadProgress { .. } | ServerEvent::WebShareSessionDone { .. } => return,
+                QueuedEvent::PeerRegistered { device: device.into() }
             }
+            ServerEvent::TransferRequest(pending) => {
+                state.next_request_id = state.next_request_id.saturating_add(1);
+                let request_id = format!("transfer-{}-{}", std::process::id(), state.next_request_id);
+                let sender = pending.sender().clone().into();
+                let files: Vec<TransferFile> = pending
+                    .files()
+                    .values()
+                    .map(|metadata| TransferFile {
+                        id: metadata.id.as_str().to_owned(),
+                        file_name: metadata.file_name.clone(),
+                        size: metadata.size,
+                        file_type: metadata.file_type.clone(),
+                    })
+                    .collect();
+                state
+                    .pending_requests
+                    .insert(request_id.clone(), PendingTransferRequest { request: pending, expires_at: Instant::now() + TRANSFER_CONSENT_TTL });
+                QueuedEvent::TransferRequest { request_id, sender, files }
+            }
+            ServerEvent::TextReceived { session_id, text, sender_alias } => {
+                QueuedEvent::TextReceived { session_id: session_id.as_str().to_owned(), text, sender_alias }
+            }
+            ServerEvent::FileReceiveProgress { session_id, file_id, file_name, sender_alias, bytes_received, total_bytes, file_count } => {
+                QueuedEvent::FileReceiveProgress {
+                    session_id: session_id.as_str().to_owned(),
+                    file_id: file_id.as_str().to_owned(),
+                    file_name,
+                    sender_alias,
+                    bytes_received,
+                    total_bytes,
+                    file_count,
+                }
+            }
+            ServerEvent::FileReceived { session_id, file_id, file_name, path, .. } => {
+                QueuedEvent::FileReceived { session_id: session_id.as_str().to_owned(), file_id: file_id.as_str().to_owned(), file_name, path }
+            }
+            ServerEvent::SessionDone { session_id } => QueuedEvent::SessionDone { session_id: session_id.as_str().to_owned() },
+            // Web Share (browser-facing) events are out of scope for the
+            // device-to-device workflows this crate wraps; drop them.
+            ServerEvent::WebShareRequest(_) | ServerEvent::WebShareDownloadProgress { .. } | ServerEvent::WebShareSessionDone { .. } => return,
         };
-        self.push_event(queued);
+        push_event_locked(&mut state, queued);
+    }
+
+    fn prune_expired_requests(&self) {
+        prune_expired_requests_locked(&mut self.state.lock().expect("registry lock poisoned"));
     }
 
     /// Appends one event to the shared, bounded queue `poll_events` drains.
@@ -410,10 +509,7 @@ impl LocalSendRegistry {
     /// into the same queue, so the eviction policy only needs to live once.
     fn push_event(&self, event: QueuedEvent) {
         let mut state = self.state.lock().expect("registry lock poisoned");
-        if state.events.len() >= MAX_QUEUED_EVENTS {
-            state.events.pop_front();
-        }
-        state.events.push_back(event);
+        push_event_locked(&mut state, event);
     }
 
     /// Drains and returns all queued receiver and sender events.
@@ -431,7 +527,8 @@ impl LocalSendRegistry {
     /// # Errors
     ///
     /// Returns [`LocalSendBridgeError::UnknownRequestId`] when the request is
-    /// no longer pending, or an error from the underlying transfer responder.
+    /// no longer pending. Builds using the patched sibling also return it when
+    /// the server has already closed the transfer responder channel.
     ///
     /// # Panics
     ///
@@ -439,17 +536,37 @@ impl LocalSendRegistry {
     pub fn respond_to_transfer(&self, request: RespondToTransferRequest) -> BridgeResult<()> {
         let pending = {
             let mut state = self.state.lock().expect("registry lock poisoned");
-            state.pending_requests.remove(&request.request_id).ok_or_else(|| LocalSendBridgeError::UnknownRequestId(request.request_id.clone()))?
+            prune_expired_requests_locked(&mut state);
+            let pending =
+                state.pending_requests.remove(&request.request_id).ok_or_else(|| LocalSendBridgeError::UnknownRequestId(request.request_id.clone()))?;
+            remove_transfer_request_event(&mut state.events, &request.request_id);
+            pending.request
         };
-        match request.decision {
-            TransferDecisionKind::Accept => pending.accept(),
+        let decision = match request.decision {
+            TransferDecisionKind::Accept => localsend_rs::server::events::TransferDecision::Accept,
             TransferDecisionKind::AcceptFiles => {
                 let ids = request.file_ids.into_iter().map(FileId).collect();
-                pending.accept_files(ids);
+                localsend_rs::server::events::TransferDecision::AcceptFiles(ids)
             }
-            TransferDecisionKind::Decline => pending.decline(),
-            TransferDecisionKind::Refuse => pending.refuse(request.reason.unwrap_or_else(|| "rejected".to_owned())),
+            TransferDecisionKind::Decline => localsend_rs::server::events::TransferDecision::Decline,
+            TransferDecisionKind::Refuse => {
+                localsend_rs::server::events::TransferDecision::Refuse { reason: request.reason.unwrap_or_else(|| "rejected".to_owned()) }
+            }
+        };
+        #[cfg(localsend_rs_try_respond)]
+        pending.try_respond(decision).map_err(|_| LocalSendBridgeError::UnknownRequestId(request.request_id))?;
+
+        // crates.io still provides the upstream 0.1.2 API, whose responder
+        // methods intentionally discard a closed oneshot channel. Workspace
+        // builds use the sibling fork above to report that case precisely.
+        #[cfg(not(localsend_rs_try_respond))]
+        match decision {
+            localsend_rs::server::events::TransferDecision::Accept => pending.accept(),
+            localsend_rs::server::events::TransferDecision::AcceptFiles(ids) => pending.accept_files(ids),
+            localsend_rs::server::events::TransferDecision::Decline => pending.decline(),
+            localsend_rs::server::events::TransferDecision::Refuse { reason } => pending.refuse(reason),
         }
+
         Ok(())
     }
 
@@ -744,73 +861,85 @@ impl LocalSendRegistry {
         let progress_registry = registry();
         let progress_send_id = send_id.clone();
 
-        let task = self.runtime.spawn(async move {
-            use localsend_rs::{LocalSendClient, TlsTrustPolicy};
-
-            let protocol = if https { Protocol::Https } else { Protocol::Http };
-            let self_device = DeviceInfoBuilder::new(alias, self_port).protocol(protocol).build();
-            // `LocalSendClient::new` builds a plain reqwest client that does
-            // ordinary TLS validation — it will always reject a LocalSend
-            // peer's self-signed cert. HTTPS targets need the pinned trust
-            // policy instead, keyed off the fingerprint `discover()` already
-            // returned for this device (LocalSend's actual security model:
-            // trust is established by the fingerprint shown to the user at
-            // send time, not by a CA chain).
-            let client = if matches!(target.protocol, Protocol::Https) {
-                match client_certificate.as_ref() {
-                    Some(certificate) => LocalSendClient::with_trust_policy_and_client_certificate(
-                        self_device,
-                        TlsTrustPolicy::PinnedFingerprint(target.fingerprint.clone()),
-                        certificate,
-                    )?,
-                    None => LocalSendClient::with_trust_policy(self_device, TlsTrustPolicy::PinnedFingerprint(target.fingerprint.clone()))?,
-                }
-            } else {
-                LocalSendClient::new(self_device)
-            };
-
-            let metadata = localsend_rs::build_file_metadata(&file_path).await?;
-            let file_id = metadata.id.clone();
-            let file_name = metadata.file_name.clone();
-            let mut files = HashMap::new();
-            files.insert(file_id.clone(), metadata);
-
-            let prepared = client.prepare_upload(&target, files, pin.as_deref()).await?;
-            let token = prepared
-                .files
-                .get(&file_id)
-                .ok_or_else(|| LocalSendBridgeError::InvalidRequest("receiver did not return an upload token for the offered file".to_owned()))?
-                .clone();
-
-            let session_id = prepared.session_id.clone();
-            let progress: ProgressCallback = {
-                let registry = progress_registry.clone();
-                let send_id = progress_send_id.clone();
-                let session_id = session_id.as_str().to_owned();
-                let file_id = file_id.as_str().to_owned();
-                let file_name = file_name.clone();
-                Box::new(move |bytes_sent, total_bytes, rate_bytes_per_second| {
-                    registry.push_event(QueuedEvent::FileSendProgress {
-                        send_id: send_id.clone(),
-                        session_id: session_id.clone(),
-                        file_id: file_id.clone(),
-                        file_name: file_name.clone(),
-                        bytes_sent,
-                        total_bytes,
-                        rate_bytes_per_second,
-                    });
-                })
-            };
-
-            client.upload_file_with_rate_limit(&target, &session_id, &file_id, &token, &file_path, Some(progress), None).await?;
-
-            Ok::<SendFileResult, LocalSendBridgeError>(SendFileResult { session_id: session_id.as_str().to_owned(), file_id: file_id.as_str().to_owned() })
-        });
-
-        {
+        let (start_task, wait_for_start) = tokio::sync::oneshot::channel();
+        let task = {
+            // Publish the abort handle before allowing the task to execute.
+            // Otherwise an immediate cancel can observe no active send in the
+            // interval between `spawn` and the following state update.
             let mut state = self.state.lock().expect("registry lock poisoned");
+            if state.active_sends.contains_key(&send_id) {
+                return Err(LocalSendBridgeError::InvalidRequest(format!("send id is already active: {send_id}")));
+            }
+            let task = self.runtime.spawn(async move {
+                use localsend_rs::{LocalSendClient, TlsTrustPolicy};
+
+                if wait_for_start.await.is_err() {
+                    return Err(LocalSendBridgeError::SendCancelled);
+                }
+
+                let protocol = if https { Protocol::Https } else { Protocol::Http };
+                let self_device = DeviceInfoBuilder::new(alias, self_port).protocol(protocol).build();
+                // `LocalSendClient::new` builds a plain reqwest client that does
+                // ordinary TLS validation — it will always reject a LocalSend
+                // peer's self-signed cert. HTTPS targets need the pinned trust
+                // policy instead, keyed off the fingerprint `discover()` already
+                // returned for this device (LocalSend's actual security model:
+                // trust is established by the fingerprint shown to the user at
+                // send time, not by a CA chain).
+                let client = if matches!(target.protocol, Protocol::Https) {
+                    match client_certificate.as_ref() {
+                        Some(certificate) => LocalSendClient::with_trust_policy_and_client_certificate(
+                            self_device,
+                            TlsTrustPolicy::PinnedFingerprint(target.fingerprint.clone()),
+                            certificate,
+                        )?,
+                        None => LocalSendClient::with_trust_policy(self_device, TlsTrustPolicy::PinnedFingerprint(target.fingerprint.clone()))?,
+                    }
+                } else {
+                    LocalSendClient::new(self_device)
+                };
+
+                let metadata = localsend_rs::build_file_metadata(&file_path).await?;
+                let file_id = metadata.id.clone();
+                let file_name = metadata.file_name.clone();
+                let mut files = HashMap::new();
+                files.insert(file_id.clone(), metadata);
+
+                let prepared = client.prepare_upload(&target, files, pin.as_deref()).await?;
+                let token = prepared
+                    .files
+                    .get(&file_id)
+                    .ok_or_else(|| LocalSendBridgeError::InvalidRequest("receiver did not return an upload token for the offered file".to_owned()))?
+                    .clone();
+
+                let session_id = prepared.session_id.clone();
+                let progress: ProgressCallback = {
+                    let registry = progress_registry.clone();
+                    let send_id = progress_send_id.clone();
+                    let session_id = session_id.as_str().to_owned();
+                    let file_id = file_id.as_str().to_owned();
+                    let file_name = file_name.clone();
+                    Box::new(move |bytes_sent, total_bytes, rate_bytes_per_second| {
+                        registry.push_event(QueuedEvent::FileSendProgress {
+                            send_id: send_id.clone(),
+                            session_id: session_id.clone(),
+                            file_id: file_id.clone(),
+                            file_name: file_name.clone(),
+                            bytes_sent,
+                            total_bytes,
+                            rate_bytes_per_second,
+                        });
+                    })
+                };
+
+                client.upload_file_with_rate_limit(&target, &session_id, &file_id, &token, &file_path, Some(progress), None).await?;
+
+                Ok::<SendFileResult, LocalSendBridgeError>(SendFileResult { session_id: session_id.as_str().to_owned(), file_id: file_id.as_str().to_owned() })
+            });
             state.active_sends.insert(send_id.clone(), task.abort_handle());
-        }
+            task
+        };
+        let _ = start_task.send(());
 
         let result = self.runtime.block_on(task);
 
@@ -1104,6 +1233,32 @@ pub struct CancelSendRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transfer_event(request_id: &str) -> QueuedEvent {
+        QueuedEvent::TransferRequest {
+            request_id: request_id.to_owned(),
+            sender: DeviceInfoDto {
+                alias: "peer".to_owned(),
+                fingerprint: "fingerprint".to_owned(),
+                port: 53317,
+                protocol: Protocol::Http.as_str().to_owned(),
+                ip: None,
+                device_model: None,
+                last_seen_unix_seconds: None,
+            },
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn removing_a_transfer_responder_also_removes_its_queued_event() {
+        let mut events = VecDeque::from([transfer_event("expired"), transfer_event("live")]);
+
+        remove_transfer_request_event(&mut events, "expired");
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events.front(), Some(QueuedEvent::TransferRequest { request_id, .. }) if request_id == "live"));
+    }
 
     fn confirmed(fingerprint: &str, age: std::time::Duration) -> ConfirmedDevice {
         ConfirmedDevice {

@@ -426,7 +426,7 @@ Require 'zm extract --restore ' 'content'
 Require 'zm tzap sign --output sp' "'space archive.zip'"
 Require 'zm tzap verify --custom-trust-root-cert sp' "'space archive.zip'"
 # A Full binary still exposes the online command and help topics.
-function global:zm { 'zm 2.3.0 (full, test)' }
+function global:zm { 'zm 2.3.1-dev (full, test)' }
 Require 'zm ' 'auth'
 Require 'zm help ' 'auth'
 Require 'zm auth ' 'login'
@@ -816,7 +816,7 @@ fn package_channel_metadata_uses_release_checksums() {
 
 #[test]
 fn release_validation_artifacts_are_declared() {
-    assert_eq!(env!("CARGO_PKG_VERSION"), "2.3.0");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "2.3.1-dev");
 
     for required in ["*.deps.txt", "package-metadata.tar.gz", "SHA256SUMS", "sha256sum package-metadata.tar.gz >> SHA256SUMS"] {
         assert_contains(RELEASE_WORKFLOW, required);

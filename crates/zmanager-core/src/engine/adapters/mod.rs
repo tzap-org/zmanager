@@ -69,9 +69,16 @@ pub(crate) fn selected_extract_each(
     let mut report = ExtractReport::default();
     for &entry_id in entry_ids {
         let mut resolver = overwrite_resolver.as_deref_mut().map(ReborrowedResolver::new);
+        let mut entry_policy = policy.clone();
+        if let Some(limit) = entry_policy.limits.max_expanded_bytes.as_mut() {
+            *limit = limit.saturating_sub(report.written_bytes);
+        }
+        if let Some(limit) = entry_policy.limits.max_entries.as_mut() {
+            *limit = limit.saturating_sub(report.written_entries);
+        }
         let mut entry_options = SelectedExtractOptions {
             destination: destination.clone(),
-            policy: policy.clone(),
+            policy: entry_policy,
             tzap_restore_options: *tzap_restore_options,
             cancellation: cancellation.clone(),
             event_sink: batch_sink.as_mut().map(|sink| sink as &mut dyn JobEventSink),

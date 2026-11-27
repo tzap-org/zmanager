@@ -509,6 +509,9 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
                 }
                 OverwritePolicy::Replace => {
+                    if !matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                        return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
+                    }
                     replace_existing = !matches!(entry.kind, ExtractionEntryKind::Directory) || !metadata.file_type().is_dir();
                 }
                 OverwritePolicy::Rename => {
@@ -524,6 +527,9 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     let decision = self.resolve_overwrite_conflict(entry, &destination_path)?;
                     match decision {
                         OverwriteDecision::Replace => {
+                            if !matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                                return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
+                            }
                             replace_existing = true;
                         }
                         OverwriteDecision::Skip => {
@@ -1081,7 +1087,7 @@ pub fn archive_pattern_matches(pattern: &str, path: &str) -> bool {
     CompiledPattern::new(pattern).matches(path)
 }
 
-fn strip_archive_components(path: &str, count: usize) -> Option<String> {
+pub(crate) fn strip_archive_components(path: &str, count: usize) -> Option<String> {
     let components = path.split('/').skip(count).collect::<Vec<_>>();
     if components.is_empty() { None } else { Some(components.join("/")) }
 }

@@ -178,6 +178,8 @@ pub enum ArchiveBrowserError {
     Safety(ExtractionSafetyError),
     /// Selected entry was not found.
     EntryNotFound { path: String },
+    /// Selected entry was removed by the strip-components policy.
+    EntrySkipped { path: String },
     /// Selected entry cannot be materialized by the browser yet.
     UnsupportedEntry { path: String, kind: BrowserEntryKind },
     /// Selected operation is not supported by the format.
@@ -193,6 +195,7 @@ impl fmt::Display for ArchiveBrowserError {
             Self::Io { path, source } => write!(f, "I/O failed for {}: {source}", path.display()),
             Self::Safety(source) => write!(f, "extraction safety rejected entry: {source}"),
             Self::EntryNotFound { path } => write!(f, "archive entry not found: {path}"),
+            Self::EntrySkipped { path } => write!(f, "archive entry produced no output after applying strip-components: {path}"),
             Self::UnsupportedEntry { path, kind } => {
                 write!(f, "unsupported preview/extract entry {path}: {kind:?}")
             }
@@ -214,6 +217,7 @@ impl std::error::Error for ArchiveBrowserError {
             Self::Io { source, .. } => Some(source),
             Self::Safety(source) => Some(source),
             Self::EntryNotFound { .. } => None,
+            Self::EntrySkipped { .. } => None,
             Self::UnsupportedEntry { .. } => None,
             Self::UnsupportedOperation(_) => None,
         }
@@ -390,6 +394,22 @@ pub struct BrowserExtractJob<'a> {
     pub event_sink: Option<&'a mut dyn JobEventSink>,
 }
 
+struct BrowserExtractReportSink<'a> {
+    delegate: Option<&'a mut dyn JobEventSink>,
+    written_bytes_by_path: std::collections::HashMap<String, std::collections::VecDeque<u64>>,
+}
+
+impl JobEventSink for BrowserExtractReportSink<'_> {
+    fn emit(&mut self, event: crate::jobs::JobEvent) {
+        if let crate::jobs::JobEvent::EntryFinished { path, bytes } = &event {
+            self.written_bytes_by_path.entry(crate::safety::normalize_selector(path)).or_default().push_back(*bytes);
+        }
+        if let Some(delegate) = self.delegate.as_deref_mut() {
+            delegate.emit(event);
+        }
+    }
+}
+
 /// Like [`extract_selected_entries_from_engine_handle`], run as a job: the
 /// engine checks `job.cancellation` while it extracts, including inside large
 /// entries, and reports live progress to `job.event_sink`.
@@ -442,6 +462,23 @@ pub fn extract_selected_entries_from_engine_handle_with_job(
         return Err(ArchiveBrowserError::EntryNotFound { path: entry_paths[0].clone() });
     }
 
+    // Entries whose entire path is removed by `strip_components` are skipped
+    // by the safety planner. Exclude them from preflight accounting and from
+    // the reports so a skipped file cannot trigger a false size-limit error
+    // or be reported as written to the destination root.
+    let mut retained_entries = Vec::with_capacity(selected_entries.len());
+    let mut stripped_paths = Vec::with_capacity(selected_entries.len());
+    for entry in selected_entries {
+        if let Some(stripped_path) = strip_entry_components(&entry.path, policy.strip_components)? {
+            retained_entries.push(entry);
+            stripped_paths.push(stripped_path);
+        }
+    }
+    let selected_entries = retained_entries;
+    if selected_entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
     // Resolve selectors against the retained listing once, in archive order.
     // Matching each selector independently would extract duplicate physical
     // entries repeatedly when the archive contains duplicate names or the
@@ -450,10 +487,9 @@ pub fn extract_selected_entries_from_engine_handle_with_job(
     let mut planned_expanded_bytes = 0_u64;
     let mut seen_paths = std::collections::HashMap::new();
 
-    let entry_ids: Vec<crate::engine::EntryId> = selected_entries.iter().map(|entry| entry.id).collect();
-    for entry in &selected_entries {
+    for (entry, stripped_path) in selected_entries.iter().zip(&stripped_paths) {
         if options.overwrite != OverwritePolicy::Replace {
-            let collision_key = crate::safety::case_collision_key(&entry.path);
+            let collision_key = crate::safety::case_collision_key(&stripped_path.to_string_lossy());
             if let Some(previous) = seen_paths.insert(collision_key, entry.path.clone()) {
                 return Err(ArchiveBrowserError::Safety(crate::safety::ExtractionSafetyError::NameCollision {
                     archive_path: entry.path.clone(),
@@ -476,6 +512,8 @@ pub fn extract_selected_entries_from_engine_handle_with_job(
         }
     }
 
+    let entry_ids: Vec<crate::engine::EntryId> = selected_entries.iter().map(|entry| entry.id).collect();
+    let mut report_sink = BrowserExtractReportSink { delegate: job.event_sink, written_bytes_by_path: std::collections::HashMap::new() };
     let mut selected_options = crate::engine::SelectedExtractOptions {
         destination: destination_root.clone(),
         policy: policy.clone(),
@@ -485,20 +523,22 @@ pub fn extract_selected_entries_from_engine_handle_with_job(
             allow_absolute_symlinks: options.tzap_allow_absolute_symlinks,
         }),
         cancellation: job.cancellation,
-        event_sink: job.event_sink,
+        event_sink: Some(&mut report_sink),
         overwrite_resolver: None,
     };
     let batch_report =
         handle.extract_selected_many(&entry_ids, &mut selected_options).map_err(|source| ArchiveBrowserError::Engine { format: Some(format), source })?;
+    drop(selected_options);
 
-    for entry in selected_entries {
+    for (entry, stripped_path) in selected_entries.into_iter().zip(stripped_paths) {
+        let written_bytes = report_sink
+            .written_bytes_by_path
+            .get_mut(&crate::safety::normalize_selector(&entry.path))
+            .and_then(std::collections::VecDeque::pop_front)
+            .unwrap_or(0);
         reports.push((
             entry.path.clone(),
-            EntryExtractReport {
-                destination_path: destination_root.join(&entry.path),
-                written_bytes: entry.size.unwrap_or(0),
-                metadata_diagnostics: batch_report.warnings.clone(),
-            },
+            EntryExtractReport { destination_path: destination_root.join(stripped_path), written_bytes, metadata_diagnostics: batch_report.warnings.clone() },
         ));
     }
     Ok(reports)
@@ -586,8 +626,22 @@ fn extract_entry_via_engine(
     if matching_entries.is_empty() {
         return Err(ArchiveBrowserError::EntryNotFound { path: entry_path.to_owned() });
     }
+    // A selected file stripped to an empty path is intentionally skipped by
+    // the safety planner. The single-entry API cannot return an empty report
+    // list, so report that outcome explicitly instead of pointing callers at
+    // the destination root. A selected directory may itself strip to empty
+    // while its descendants still have retained output paths.
+    let mut has_retained_output = false;
+    for entry in &matching_entries {
+        has_retained_output |= strip_entry_components(&entry.path, policy.strip_components)?.is_some();
+    }
+    if !has_retained_output {
+        return Err(ArchiveBrowserError::EntrySkipped { path: entry_path.to_owned() });
+    }
+
     // The native Apple Archive operation preserves the historical behavior of
-    // extracting a selected directory and its descendants in one call.
+    // extracting a selected directory and its descendants in one call. Check
+    // retention before reducing the selection to the directory entry itself.
     if format == crate::engine::FormatId::APPLE_ARCHIVE {
         matching_entries.truncate(1);
     }
@@ -613,8 +667,13 @@ fn extract_entry_via_engine(
     let written_bytes = report.written_bytes;
     let metadata_diagnostics = report.warnings;
 
-    let destination_path = destination.join(entry_path.replace('\\', "/").trim_matches('/'));
+    let destination_path = destination.join(strip_entry_components(entry_path, policy.strip_components)?.unwrap_or_default());
     Ok(EntryExtractReport { destination_path, written_bytes, metadata_diagnostics })
+}
+
+fn strip_entry_components(path: &str, strip_components: usize) -> Result<Option<PathBuf>, ExtractionSafetyError> {
+    let normalized = crate::safety::normalize_archive_path(path)?;
+    Ok(crate::safety::strip_archive_components(&normalized, strip_components).map(PathBuf::from))
 }
 
 /// Copies selected regular-file entries through one retained engine handle.
@@ -752,6 +811,24 @@ mod tests {
         assert_eq!(report.written_bytes, 1);
         assert_eq!(fs::read_to_string(temp.path("out/project/b.txt")).unwrap(), "b");
         assert!(!temp.path("out/project/a.txt").exists());
+    }
+
+    #[test]
+    fn single_entry_stripped_to_empty_returns_a_skip_error() {
+        let temp = TestDir::new("browser_single_entry_strip_all");
+        let archive = temp.path("archive.zip");
+        write_zip(&archive, &[("top.txt", b"payload".as_slice())]);
+
+        let error = super::extract_entry_with_options(
+            &archive,
+            "top.txt",
+            temp.path("out"),
+            super::BrowserExtractOptions { strip_components: 1, ..Default::default() },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, ArchiveBrowserError::EntrySkipped { path } if path == "top.txt"));
+        assert!(!temp.path("out/top.txt").exists());
     }
 
     #[test]
@@ -1017,7 +1094,102 @@ mod tests {
         .unwrap();
 
         assert_eq!(reports.len(), 2, "each physical duplicate should be extracted once");
+        assert_eq!(reports[0].1.written_bytes, 5);
+        assert_eq!(reports[1].1.written_bytes, 6);
         assert_eq!(fs::read_to_string(temp.path("out/duplicate/file.txt")).unwrap(), "second");
+    }
+
+    #[test]
+    fn selected_entry_stripped_to_empty_is_not_counted_or_reported_as_written() {
+        let temp = TestDir::new("browser_strip_all_components");
+        let archive = temp.path("archive.zip");
+        write_zip(&archive, &[("top.txt", b"payload".as_slice())]);
+        let engine = crate::engine::create_default_engine().unwrap();
+        let mut handle = engine.open(crate::engine::ArchiveSource::from_path_autodetect(&archive), crate::engine::OpenOptions::default()).unwrap();
+
+        let reports = super::extract_selected_entries_from_engine_handle(
+            &mut handle,
+            &["top.txt".to_owned()],
+            temp.path("out"),
+            super::BrowserExtractOptions {
+                strip_components: 1,
+                limits: Some(crate::safety::ExtractionLimits { max_expanded_bytes: Some(0), max_entry_expansion_ratio: None, max_entries: Some(0) }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 0);
+        assert!(!temp.path("out/top.txt").exists());
+    }
+
+    #[test]
+    fn strip_components_uses_the_safety_planners_normalized_path() {
+        let temp = TestDir::new("browser_strip_normalized_components");
+        let cases = [("./top.txt", 1), ("root/./top.txt", 2)];
+
+        for (index, (entry_path, strip_components)) in cases.into_iter().enumerate() {
+            let archive = temp.path(format!("archive-{index}.zip"));
+            write_zip(&archive, &[(entry_path, b"payload".as_slice())]);
+            let engine = crate::engine::create_default_engine().unwrap();
+            let mut handle = engine.open(crate::engine::ArchiveSource::from_path_autodetect(&archive), crate::engine::OpenOptions::default()).unwrap();
+
+            let reports = super::extract_selected_entries_from_engine_handle(
+                &mut handle,
+                &[entry_path.to_owned()],
+                temp.path(format!("out-{index}")),
+                super::BrowserExtractOptions {
+                    strip_components,
+                    limits: Some(crate::safety::ExtractionLimits { max_expanded_bytes: Some(0), max_entry_expansion_ratio: None, max_entries: Some(0) }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            assert!(reports.is_empty(), "{entry_path} should be skipped after normalization and component stripping");
+        }
+    }
+
+    #[test]
+    fn stripped_selected_entry_reports_actual_bytes_and_destination() {
+        let temp = TestDir::new("browser_strip_report");
+        let archive = temp.path("archive.zip");
+        write_zip(&archive, &[("root/dir/file.txt", b"payload".as_slice())]);
+        let engine = crate::engine::create_default_engine().unwrap();
+        let mut handle = engine.open(crate::engine::ArchiveSource::from_path_autodetect(&archive), crate::engine::OpenOptions::default()).unwrap();
+
+        let reports = super::extract_selected_entries_from_engine_handle(
+            &mut handle,
+            &["root/dir/file.txt".to_owned()],
+            temp.path("out"),
+            super::BrowserExtractOptions { strip_components: 1, ..Default::default() },
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1.written_bytes, 7);
+        assert_eq!(reports[0].1.destination_path, temp.path("out").canonicalize().unwrap().join("dir/file.txt"));
+        assert_eq!(fs::read(temp.path("out/dir/file.txt")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn stripped_path_collisions_fail_preflight_before_writing_entries() {
+        let temp = TestDir::new("browser_strip_collision_preflight");
+        let archive = temp.path("archive.zip");
+        write_zip(&archive, &[("left/collision.txt", b"one".as_slice()), ("right/collision.txt", b"two".as_slice())]);
+        let engine = crate::engine::create_default_engine().unwrap();
+        let mut handle = engine.open(crate::engine::ArchiveSource::from_path_autodetect(&archive), crate::engine::OpenOptions::default()).unwrap();
+
+        let error = super::extract_selected_entries_from_engine_handle(
+            &mut handle,
+            &["left/collision.txt".to_owned(), "right/collision.txt".to_owned()],
+            temp.path("out"),
+            super::BrowserExtractOptions { strip_components: 1, ..Default::default() },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::archive_browser::ArchiveBrowserError::Safety(crate::safety::ExtractionSafetyError::NameCollision { .. })));
+        assert!(!temp.path("out/collision.txt").exists());
     }
 
     #[test]

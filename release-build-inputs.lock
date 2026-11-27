@@ -3,6 +3,6 @@
 backhand https://github.com/frankmanzhu/backhand.git master 3277340e9c6ccc61b4dae2d353dc229aad4b2008
 btrfs-core https://github.com/frankmanzhu/btrfs-core.git macos/fix-codec-advisories 96086596bdd36601c1df92b49ddd1c1d9424c681
 forensic-vfs-engine https://github.com/frankmanzhu/forensic-vfs-engine.git macos/iso-0.8-vfs-0.7-compat 77ebf15727aae533ad30aeff34036477c2d677bc
-localsend-rs https://github.com/frankmanzhu/localsend-rs.git main 0686dcf80d645172fe3b144299c322c2c5a1899b
+localsend-rs https://github.com/frankmanzhu/localsend-rs.git main 6374bf3b2010d9dcb24b0cfe52253cdd01ad51f3
 tzap https://github.com/tzap-org/tzap.git main 67bedbfc1f77190596ad9f0c2dc8b286e3d23d72
 zfs-forensic-core https://github.com/frankmanzhu/zfs-forensic-core.git macos/fix-codec-advisories 6b76a3d33e9f4df87cdbd228e3acd845c0d6b496

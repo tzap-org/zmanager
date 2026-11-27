@@ -14,7 +14,7 @@ pub use format::FormatId;
 pub use handle::{ArchiveEngine, ArchiveHandle};
 pub use plugins::{ArchivePlugin, build_engine_with_plugins};
 pub use registry::{AdapterDescriptor, AdapterRegistry, ArchiveEngineBuilder, CreateAdapterFactory, ReadAdapterFactory, ReadAdapterSession};
-pub use source::{ArchiveSource, SourceAccess, SourceFingerprint, discover_split_zip_volumes, is_split_zip_archive_path};
+pub use source::{ArchiveSource, SourceAccess, SourceFingerprint, discover_split_zip_volume_candidates, discover_split_zip_volumes, is_split_zip_archive_path};
 pub use types::{
     AppleArchiveCompression, AppleArchiveCreateOptions, ArchiveError, ArchiveListing, ArchiveOperation, ArchivePluginRole, CopyReport, CreateOptions,
     CreateReport, CreateRequest, CredentialRequirement, DetectedArchive, EngineEntry, EntryId, ErrorKind, ExtractOptions, ExtractReport, FormatCapabilities,

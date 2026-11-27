@@ -1695,6 +1695,13 @@ fn zm_create_tzap_sidecar_toggle_behavior() {
     assert!(sidecar_file.exists(), "sidecar MUST exist with --sidecar");
     assert!(fs::metadata(&sidecar_file).unwrap().len() > 0, "sidecar must be non-empty");
 
+    let replace_without_sidecar = Command::new(zm_path())
+        .args(["create", sidecar_archive.to_str().unwrap(), source.to_str().unwrap(), "--format", "tzap", "--force", "--no-sidecar"])
+        .output()
+        .unwrap();
+    assert_success("zm create tzap --force --no-sidecar", &replace_without_sidecar);
+    assert!(!sidecar_file.exists(), "replacing a TZAP archive without a sidecar must remove the old sidecar");
+
     // 3. With explicit --no-sidecar flag, sidecar is disabled
     let no_sidecar_archive = temp.path("no_sidecar.tzap");
     let no_sidecar_file = temp.path("no_sidecar.sidecar");

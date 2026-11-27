@@ -71,6 +71,13 @@ pub(crate) fn map_archive_browser_error(error: ArchiveBrowserError) -> ZmanagerG
             BridgeSeverity::Warning,
             false,
         ),
+        ArchiveBrowserError::EntrySkipped { path } => bridge_error(
+            ERROR_OPERATION_FAILED,
+            format!("Archive entry was skipped by the strip-components policy: {path}"),
+            None,
+            BridgeSeverity::Warning,
+            false,
+        ),
         ArchiveBrowserError::UnsupportedEntry { path, .. } => {
             bridge_error(ERROR_UNSUPPORTED_FORMAT, format!("Entry cannot be extracted or previewed here: {path}"), None, BridgeSeverity::Warning, false)
         }

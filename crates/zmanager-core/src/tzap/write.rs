@@ -275,6 +275,7 @@ fn ensure_tzap_destinations_available(
     for path in unique_paths(volume_paths, existing_volume_paths) {
         ensure_file_destination_available(path, replace_existing)?;
     }
+    ensure_file_destination_available(&tzap_bootstrap_sidecar_path(destination), replace_existing)?;
     Ok(())
 }
 
@@ -290,28 +291,6 @@ fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Res
         }
         Ok(_) if !replace_existing => Err(io_error(path, io::ErrorKind::AlreadyExists, format!("destination already exists: {}", path.display()))),
         Ok(_) => Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(TzapError::Io { path: path.to_path_buf(), source }),
-    }
-}
-
-fn remove_tzap_destinations_for_replace(destination: &Path, existing_volume_paths: &[PathBuf], replace_existing: bool) -> Result<(), TzapError> {
-    if !replace_existing {
-        return Ok(());
-    }
-
-    for path in existing_volume_paths {
-        remove_file_destination_for_replace(path)?;
-    }
-    remove_file_destination_for_replace(destination)
-}
-
-fn remove_file_destination_for_replace(path: &Path) -> Result<(), TzapError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Err(io_error(path, io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())))
-        }
-        Ok(_) => fs::remove_file(path).map_err(|source| TzapError::Io { path: path.to_path_buf(), source }),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(TzapError::Io { path: path.to_path_buf(), source }),
     }
@@ -734,17 +713,25 @@ impl TzapArchiveFileSink {
             return Err(TzapError::Format(FormatError::WriterInvariant("TZAP output sink did not open every planned volume")));
         }
 
-        remove_tzap_destinations_for_replace(&self.destination, &self.existing_volume_paths, self.replace_existing)?;
-
-        for (output, volume_path) in self.outputs.into_iter().zip(self.volume_paths) {
-            output.commit_with_file_replace(self.replace_existing).map_err(|source| TzapError::Io { path: volume_path, source })?;
-        }
-
+        let sidecar_path = tzap_bootstrap_sidecar_path(&self.destination);
+        let mut outputs = self.outputs;
         if self.emit_bootstrap_sidecar
             && let Some(sidecar) = self.bootstrap_sidecar.filter(|bytes| !bytes.is_empty())
         {
-            commit_bootstrap_sidecar(&self.destination, &sidecar, self.replace_existing)?;
+            let mut output = AtomicOutputFile::create(&sidecar_path).map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?;
+            output
+                .file_mut()
+                .map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?
+                .write_all(&sidecar)
+                .map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?;
+            output.close();
+            outputs.push(output);
         }
+        let mut previous_paths = self.existing_volume_paths;
+        previous_paths.push(self.destination.clone());
+        previous_paths.push(sidecar_path);
+        crate::atomic_file::commit_file_set(outputs, &previous_paths, self.replace_existing)
+            .map_err(|source| TzapError::Io { path: self.destination, source })?;
 
         Ok(volume_count)
     }
@@ -775,22 +762,6 @@ pub fn tzap_bootstrap_sidecar_path(destination: &Path) -> PathBuf {
 /// carries the manifest footer and index-root block records consumed by
 /// tzap-core's `open_seekable_archive_with_bootstrap_sidecar` recovery API,
 /// so discarding it would permanently lose the archive's bootstrap material.
-fn commit_bootstrap_sidecar(destination: &Path, bytes: &[u8], replace_existing: bool) -> Result<(), TzapError> {
-    let sidecar_path = tzap_bootstrap_sidecar_path(destination);
-    if replace_existing {
-        remove_file_destination_for_replace(&sidecar_path)?;
-    } else {
-        ensure_file_destination_available(&sidecar_path, false)?;
-    }
-    let mut output = AtomicOutputFile::create(&sidecar_path).map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?;
-    output
-        .file_mut()
-        .map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?
-        .write_all(bytes)
-        .map_err(|source| TzapError::Io { path: sidecar_path.clone(), source })?;
-    output.commit_with_file_replace(replace_existing).map_err(|source| TzapError::Io { path: sidecar_path, source })
-}
-
 impl ArchiveWriteSink for TzapArchiveFileSink {
     fn begin_archive(&mut self, volume_count: usize) -> Result<(), ArchiveWriteError> {
         check_tzap_write_cancelled(&self.cancellation_token)?;

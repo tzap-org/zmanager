@@ -474,6 +474,7 @@ pub(crate) struct TestRequest {
     pub(crate) include: Vec<String>,
     pub(crate) exclude: Vec<String>,
     pub(crate) password_stdin: bool,
+    pub(crate) password: Option<zmanager_core::secrets::SecretString>,
     pub(crate) recipient_key: Option<PathBuf>,
     pub(crate) public_no_key: bool,
     pub(crate) trusted_ca_certs: Vec<PathBuf>,
@@ -552,7 +553,10 @@ fn peel_leading_global_options(args: &mut Vec<String>, global: &mut GlobalOption
 }
 
 fn has_classic_action(args: &[String]) -> bool {
-    expand_short_options(args).iter().any(|arg| matches!(arg.as_str(), "-c" | "--create" | "-x" | "--extract" | "-t" | "--list" | "-T" | "--test"))
+    expand_short_options(args)
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| matches!(arg.as_str(), "-c" | "--create" | "-x" | "--extract" | "-t" | "--list" | "-T" | "--test"))
 }
 
 fn run_classic_command(args: &[String], global: GlobalOptions) -> ExitCode {
@@ -560,7 +564,7 @@ fn run_classic_command(args: &[String], global: GlobalOptions) -> ExitCode {
     let mut action = None;
     let mut create_seen = false;
 
-    for arg in &expanded {
+    for arg in expanded.iter().take_while(|arg| arg.as_str() != "--") {
         match arg.as_str() {
             "-c" | "--create" => {
                 action = Some(Action::Create);
@@ -874,26 +878,23 @@ pub(crate) fn create_test_archive_path(destination: &Path, format: ArchiveFormat
 
 pub(crate) fn publish_archive(temp: &Path, destination: &Path, force: bool) -> io::Result<()> {
     if force {
-        remove_file_destination_for_publish(destination)?;
+        let metadata = match fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+                return Err(io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", destination.display())));
+            }
+            Ok(_) => Some(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if metadata.is_some() {
+            zmanager_core::atomic_file::replace_file_from_path(temp, destination)?;
+            return Ok(());
+        }
     }
 
     fs::hard_link(temp, destination)?;
     let _ = fs::remove_file(temp);
     Ok(())
-}
-
-fn remove_file_destination_for_publish(path: &Path) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-
-    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-        return Err(io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())));
-    }
-
-    fs::remove_file(path)
 }
 
 pub(crate) fn default_extract_destination(archive: &str) -> PathBuf {

@@ -496,7 +496,7 @@ fn cli_extracts_extractable_fixture_archives() {
 fn cli_tests_all_fixture_archives() {
     for fixture in fixture_manifest().into_iter().filter(fixture_supported_on_target) {
         let output = Command::new(cli_path()).arg("test").arg(fixture.path()).output().unwrap();
-        assert_success(&format!("zm test {}", fixture.filename), &output);
+        assert_test_result(&fixture, &output);
     }
 }
 
@@ -602,7 +602,7 @@ fn cli_lists_tests_and_extracts_msi_fixture() {
     assert!(!list_stdout.contains("payload/./"), "entries must not carry ./ prefixes: {list_stdout}");
 
     let test = Command::new(cli_path()).arg("test").arg(&fixture).output().unwrap();
-    assert_success("zm test basic.msi", &test);
+    assert_unsupported_test("basic.msi", &test);
 
     let out = temp.path("out");
     let extract = Command::new(cli_path()).arg("extract").arg(&fixture).arg("-C").arg(&out).arg("--overwrite").arg("always").output().unwrap();
@@ -1343,7 +1343,7 @@ fn cli_lists_tests_and_extracts_apple_dmg_pkg_fixtures() {
         assert_eq!(kind_for("payload/nested/readme-link.txt"), "symlink", "symlink kind for {filename}");
 
         let test = Command::new(cli_path()).arg("test").arg(&fixture).output().unwrap();
-        assert_success(&format!("zm test {filename}"), &test);
+        assert_unsupported_test(filename, &test);
 
         let out = temp.path("out");
         let extract = Command::new(cli_path()).arg("extract").arg(&fixture).arg("-C").arg(&out).arg("--overwrite").arg("always").output().unwrap();
@@ -2590,6 +2590,26 @@ fn zm_create_split_zip_lists_extracts_and_7zip_tests_when_available() {
 }
 
 #[test]
+fn zm_create_single_zip_requires_force_to_replace_orphaned_split_volume() {
+    let temp = TestDir::new("zm_replace_orphaned_split_zip_volume");
+    let source = temp.path("payload.txt");
+    fs::write(&source, "replacement payload\n").unwrap();
+    let archive = temp.path("project.zip");
+    let orphan = temp.path("project.z02");
+    fs::write(&orphan, b"orphaned old split volume").unwrap();
+
+    let create = Command::new(zm_path()).arg("create").arg(&archive).arg(&source).arg("--format").arg("zip").output().unwrap();
+    assert_failure("zm create refuses orphaned split ZIP volume without --force", &create);
+    assert!(!archive.exists());
+    assert_eq!(fs::read(&orphan).unwrap(), b"orphaned old split volume");
+
+    let replace = Command::new(zm_path()).arg("create").arg(&archive).arg(&source).arg("--format").arg("zip").arg("--force").output().unwrap();
+    assert_success("zm create replaces orphaned split ZIP volume with --force", &replace);
+    assert!(archive.is_file());
+    assert!(!orphan.exists());
+}
+
+#[test]
 fn zm_create_split_7z_lists_extracts_and_7zip_tests_when_available() {
     let temp = TestDir::new("zm_split_7z");
     fs::create_dir_all(temp.path("project")).unwrap();
@@ -3612,6 +3632,23 @@ fn fixture_manifest() -> Vec<Fixture> {
 
 fn fixture_supported_on_target(fixture: &Fixture) -> bool {
     fixture.format != "AAR" || cfg!(any(target_os = "macos", target_os = "ios"))
+}
+
+fn assert_test_result(fixture: &Fixture, output: &std::process::Output) {
+    if matches!(fixture.format.as_str(), "MSI" | "DMG" | "PKG") {
+        assert_unsupported_test(&fixture.filename, output);
+    } else {
+        assert_success(&format!("zm test {}", fixture.filename), output);
+    }
+}
+
+fn assert_unsupported_test(filename: &str, output: &std::process::Output) {
+    assert_failure(&format!("zm test {filename}"), output);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("test unavailable"),
+        "expected an unsupported-test diagnostic for {filename}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn sha256_hex(path: &Path) -> String {

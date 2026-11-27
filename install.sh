@@ -7,6 +7,11 @@ INSTALL_DIR="${ZMANAGER_INSTALL_DIR:-$HOME/.local/bin}"
 TMPDIR="${TMPDIR:-/tmp}"
 install_stage=""
 
+case "$INSTALL_DIR" in
+  /*) ;;
+  *) INSTALL_DIR="$(pwd)/$INSTALL_DIR" ;;
+esac
+
 # Default: the offline signer. --full installs the enrollment-capable build;
 # `zm --version` reports which flavor.
 FULL=0
@@ -256,6 +261,15 @@ build_from_source() {
 
   (
     cd source
+    bash scripts/prepare-sibling-inputs.sh --mode release
+    if [ -f .cargo/config.toml ]; then
+      awk '
+        /^\[patch\.crates-io\]$/ { in_patch = 1; next }
+        in_patch && /^\[/ { in_patch = 0 }
+        !in_patch { print }
+      ' .cargo/config.toml > .cargo/config.release.toml
+      mv .cargo/config.release.toml .cargo/config.toml
+    fi
     if [ "$FULL" = "1" ]; then
       cargo build --locked --release -p zmanager-cli --bin zm --features tzap-online
     else

@@ -6,6 +6,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TEMP_PREFIX: &str = ".zmanager";
 const TEMP_SUFFIX: &str = ".tmp";
 const MAX_TEMP_ATTEMPTS: u32 = 100;
+type StagedFile = (PathBuf, PathBuf);
+type StageFailure = (io::Error, Vec<StagedFile>);
+
+/// Atomically publishes an existing sibling file over a destination file.
+/// The source must be on the same filesystem as the destination.
+pub fn replace_file_from_path(source: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", destination.display())));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    replace_file_over_existing(source, destination)
+}
 
 pub(crate) struct AtomicOutputFile {
     final_path: PathBuf,
@@ -59,8 +75,7 @@ impl AtomicOutputFile {
     pub(crate) fn commit_with_file_replace(mut self, replace_existing: bool) -> io::Result<()> {
         drop(self.file.take());
         if replace_existing {
-            remove_file_destination_for_replace(&self.final_path)?;
-            fs::rename(&self.temp_path, &self.final_path)?;
+            replace_file_from_path(&self.temp_path, &self.final_path)?;
         } else {
             atomic_no_clobber_rename(&self.temp_path, &self.final_path)?;
         }
@@ -106,6 +121,106 @@ impl AtomicOutputFile {
         self.committed = true;
         Ok(())
     }
+}
+
+/// Publishes a set of prepared sibling files as one recoverable operation.
+/// Existing outputs and obsolete siblings are staged under unique backup
+/// names before any new output is committed. If a stage or commit fails, new
+/// outputs are removed and every staged original is restored.
+pub(crate) fn commit_file_set(outputs: Vec<AtomicOutputFile>, previous_paths: &[PathBuf], replace_existing: bool) -> io::Result<()> {
+    let output_paths = outputs.iter().map(|output| output.final_path.clone()).collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    for path in output_paths.iter().chain(previous_paths) {
+        if !paths.contains(path) {
+            paths.push(path.clone());
+        }
+    }
+
+    let backups = if replace_existing {
+        match stage_existing_files(&paths) {
+            Ok(backups) => backups,
+            Err((error, backups)) => return Err(rollback_file_set(&[], &backups, error)),
+        }
+    } else {
+        Vec::new()
+    };
+
+    let mut committed_paths = Vec::new();
+    for output in outputs {
+        let path = output.final_path.clone();
+        if let Err(error) = output.commit_with_file_replace(false) {
+            return Err(rollback_file_set(&committed_paths, &backups, error));
+        }
+        committed_paths.push(path);
+    }
+
+    // Old versions are no longer needed once every output has been published.
+    // If permissions prevent cleanup, leave the uniquely named hidden backup
+    // in place rather than reporting a failed write after publication.
+    for (_, backup) in &backups {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn stage_existing_files(paths: &[PathBuf]) -> Result<Vec<StagedFile>, StageFailure> {
+    let mut backups = Vec::new();
+    for path in paths {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err((error, backups)),
+        };
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            return Err((io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())), backups));
+        }
+
+        let backup = match create_backup_placeholder(path) {
+            Ok(backup) => backup,
+            Err(error) => return Err((error, backups)),
+        };
+        if let Err(error) = replace_file_from_path(path, &backup) {
+            let _ = fs::remove_file(&backup);
+            return Err((error, backups));
+        }
+        backups.push((path.clone(), backup));
+    }
+    Ok(backups)
+}
+
+fn create_backup_placeholder(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("archive");
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..MAX_TEMP_ATTEMPTS {
+        let backup = parent.join(format!("{TEMP_PREFIX}-backup-{name}-{}-{now}-{attempt}{TEMP_SUFFIX}", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(file) => {
+                drop(file);
+                return Ok(backup);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("could not allocate backup path for {}", path.display())))
+}
+
+fn rollback_file_set(committed_paths: &[PathBuf], backups: &[StagedFile], cause: io::Error) -> io::Error {
+    let mut rollback_errors = Vec::new();
+    for path in committed_paths.iter().rev() {
+        if let Err(error) = fs::remove_file(path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            rollback_errors.push(format!("removing new output {} failed: {error}", path.display()));
+        }
+    }
+    for (path, backup) in backups.iter().rev() {
+        if let Err(error) = replace_file_from_path(backup, path) {
+            rollback_errors.push(format!("restoring {} failed: {error}", path.display()));
+        }
+    }
+    if rollback_errors.is_empty() { cause } else { io::Error::other(format!("{cause}; rollback also failed: {}", rollback_errors.join("; "))) }
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "android", not(any(target_os = "macos", target_os = "ios", windows))))]
@@ -305,20 +420,6 @@ fn replace_file_over_existing(temporary: &Path, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn remove_file_destination_for_replace(path: &Path) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-
-    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-        return Err(io::Error::new(io::ErrorKind::IsADirectory, format!("cannot replace directory {}", path.display())));
-    }
-
-    fs::remove_file(path)
-}
-
 impl Drop for AtomicOutputFile {
     fn drop(&mut self) {
         if !self.committed {
@@ -330,7 +431,7 @@ impl Drop for AtomicOutputFile {
 
 #[cfg(test)]
 mod tests {
-    use super::AtomicOutputFile;
+    use super::{AtomicOutputFile, commit_file_set};
     use crate::test_support::TestDir;
     use std::fs;
     use std::io::Write as _;
@@ -400,6 +501,65 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
         assert!(final_path.is_dir());
+    }
+
+    #[test]
+    fn file_set_failure_restores_replaced_and_obsolete_files() {
+        let temp = TestDir::new("atomic_set_rollback");
+        let first_path = temp.path("archive.z01");
+        let second_path = temp.path("archive.zip");
+        let obsolete_path = temp.path("archive.z02");
+        fs::write(&first_path, b"old first").unwrap();
+        fs::write(&second_path, b"old second").unwrap();
+        fs::write(&obsolete_path, b"old obsolete").unwrap();
+
+        let mut first = AtomicOutputFile::create(&first_path).unwrap();
+        first.file_mut().unwrap().write_all(b"new first").unwrap();
+        let mut second = AtomicOutputFile::create(&second_path).unwrap();
+        second.file_mut().unwrap().write_all(b"new second").unwrap();
+        fs::remove_file(second.temp_path()).unwrap();
+
+        let error = commit_file_set(vec![first, second], std::slice::from_ref(&obsolete_path), true).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(fs::read(&first_path).unwrap(), b"old first");
+        assert_eq!(fs::read(&second_path).unwrap(), b"old second");
+        assert_eq!(fs::read(&obsolete_path).unwrap(), b"old obsolete");
+        assert_eq!(fs::read_dir(temp.path(".")).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn file_set_failure_without_replace_removes_earlier_new_outputs() {
+        let temp = TestDir::new("atomic_set_no_replace_rollback");
+        let first_path = temp.path("first.zip");
+        let second_path = temp.path("second.zip");
+        fs::write(&second_path, b"existing").unwrap();
+        let mut first = AtomicOutputFile::create(&first_path).unwrap();
+        first.file_mut().unwrap().write_all(b"new first").unwrap();
+        let mut second = AtomicOutputFile::create(&second_path).unwrap();
+        second.file_mut().unwrap().write_all(b"new second").unwrap();
+
+        let error = commit_file_set(vec![first, second], &[], false).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!first_path.exists());
+        assert_eq!(fs::read(&second_path).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn file_set_success_removes_obsolete_siblings() {
+        let temp = TestDir::new("atomic_set_remove_obsolete");
+        let output_path = temp.path("archive.zip");
+        let obsolete_path = temp.path("archive.z01");
+        fs::write(&obsolete_path, b"stale").unwrap();
+        let mut output = AtomicOutputFile::create(&output_path).unwrap();
+        output.file_mut().unwrap().write_all(b"new archive").unwrap();
+
+        commit_file_set(vec![output], std::slice::from_ref(&obsolete_path), true).unwrap();
+
+        assert_eq!(fs::read(&output_path).unwrap(), b"new archive");
+        assert!(!obsolete_path.exists());
+        assert_eq!(fs::read_dir(temp.path(".")).unwrap().count(), 1);
     }
 
     #[test]

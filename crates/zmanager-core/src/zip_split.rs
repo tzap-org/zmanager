@@ -502,11 +502,6 @@ fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Res
     crate::archive_split::ensure_file_destination_available(path, replace_existing).map_err(|source| ZipBackendError::Io { path: path.to_path_buf(), source })
 }
 
-fn remove_split_destinations_for_replace(destination: &Path, existing_volume_paths: &[PathBuf], replace_existing: bool) -> Result<(), ZipBackendError> {
-    crate::archive_split::remove_split_destinations_for_replace(destination, existing_volume_paths, replace_existing)
-        .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })
-}
-
 fn existing_split_zip_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, ZipBackendError> {
     let base = split_zip_base_path(destination)?;
     let Some(base_name) = base.file_name().and_then(|name| name.to_str()) else {
@@ -584,10 +579,10 @@ impl<'a> ZipSplitVolumeWriter<'a> {
         if self.completed.len() != self.paths.len() {
             return Err(unsupported_split_zip("ZIP split writer did not fill all volumes"));
         }
-        remove_split_destinations_for_replace(destination, existing_volume_paths, replace_existing)?;
-        for (output, path) in self.completed.into_iter().zip(self.paths) {
-            output.commit_with_file_replace(replace_existing).map_err(|source| ZipBackendError::Io { path: path.clone(), source })?;
-        }
+        let mut previous_paths = existing_volume_paths.to_vec();
+        previous_paths.push(destination.to_path_buf());
+        crate::atomic_file::commit_file_set(self.completed, &previous_paths, replace_existing)
+            .map_err(|source| ZipBackendError::Io { path: destination.to_path_buf(), source })?;
         Ok(())
     }
 

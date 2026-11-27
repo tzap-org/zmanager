@@ -1,5 +1,5 @@
 use crate::cli::app::{GenericEntry, ListRequest, PlanRequest, TestRequest, expand_short_options};
-use crate::cli::format::{FORMAT_TZAP, TZAP_SINGLE_VOLUME_LOSS_TOLERANCE, TZAP_SPLIT_VOLUME_LOSS_TOLERANCE, is_apple_archive, is_tzap_archive};
+use crate::cli::format::{FORMAT_TZAP, TZAP_SINGLE_VOLUME_LOSS_TOLERANCE, TZAP_SPLIT_VOLUME_LOSS_TOLERANCE, is_tzap_archive};
 use crate::cli::options::{
     GlobalOptions, parse_archive_format, parse_global_option, read_optional_password_stdin, resolve_input_path, take_value, validate_recipient_key_open_option,
 };
@@ -98,10 +98,6 @@ fn run_list_request(request: &ListRequest, global: &GlobalOptions) -> ExitCode {
     }
     if request.password_stdin && zmanager_core::engine::is_raw_stream_path(&request.archive) {
         print_error_line(global, format_args!("list failed: raw streams are not encrypted; remove --password-stdin"));
-        return ExitCode::from(2);
-    }
-    if is_apple_archive(&request.archive) && request.password_stdin {
-        print_error_line(global, format_args!("list failed: AAR archives are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
     let password = match read_optional_password_stdin(request.password_stdin, global) {
@@ -267,13 +263,12 @@ pub(crate) fn run_test_request(request: &TestRequest, global: &GlobalOptions) ->
         print_error_line(global, format_args!("test failed: raw streams are not encrypted; remove --password-stdin"));
         return ExitCode::from(2);
     }
-    if is_apple_archive(&request.archive) && request.password_stdin {
-        print_error_line(global, format_args!("test failed: AAR archives are not encrypted; remove --password-stdin"));
-        return ExitCode::from(2);
-    }
-    let password = match read_optional_password_stdin(request.password_stdin, global) {
-        Ok(password) => password,
-        Err(code) => return code,
+    let password = match request.password.clone() {
+        Some(password) => Some(password),
+        None => match read_optional_password_stdin(request.password_stdin, global) {
+            Ok(password) => password,
+            Err(code) => return code,
+        },
     };
 
     match run_engine_test(request, password.as_ref().map(zmanager_core::secrets::SecretString::expose_secret)) {
@@ -301,8 +296,12 @@ pub(crate) fn run_test_request(request: &TestRequest, global: &GlobalOptions) ->
             },
         ),
         Err(error) if error.kind == zmanager_core::engine::ErrorKind::UnsupportedOperation => {
-            print_warning_stderr(global, format_args!("test unavailable: {}", error.message));
-            ExitCode::SUCCESS
+            if global.json {
+                println!("{{\"ok\":false,\"error\":\"unsupported_operation\",\"message\":\"{}\"}}", json_escape(&error.message));
+            } else {
+                print_error_line(global, format_args!("test unavailable: {}", error.message));
+            }
+            ExitCode::FAILURE
         }
         Err(error) => {
             print_error_line(global, format_args!("test failed: {error}"));
@@ -317,7 +316,8 @@ fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(Str
         zmanager_core::engine::ArchiveSource::from_path_autodetect(&request.archive),
         zmanager_core::engine::OpenOptions { password: password.map(str::to_owned), recipient_key: request.recipient_key.clone(), ..Default::default() },
     )?;
-    let selected_paths = if request.include.is_empty() && request.exclude.is_empty() {
+    let select_all = request.include.is_empty() && request.exclude.is_empty();
+    let selected_paths = if select_all {
         Vec::new()
     } else {
         let includes = compile_patterns(&request.include);
@@ -326,6 +326,7 @@ fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(Str
     };
     let report = handle.test(&zmanager_core::engine::TestOptions {
         selected_paths,
+        selection_is_explicit: !select_all,
         recipient_key: request.recipient_key.clone(),
         recipient_key_bytes: None,
         tzap_x509_trust: is_tzap_archive(&request.archive).then(|| test_request_x509_trust(request)),

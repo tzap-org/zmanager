@@ -59,6 +59,20 @@ jobs:
         with:
           ref: ${{ inputs.notarization_test && github.ref || github.event.inputs.tag || github.ref_name }}
 
+      - name: Verify release tag matches the stable workspace version
+        shell: bash
+        run: |
+          version=$(awk '
+            /^\[workspace\.package\]$/ { in_workspace = 1; next }
+            /^\[/ { in_workspace = 0 }
+            in_workspace && /^version = / { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.toml)
+          tag_version="${ZMANAGER_RELEASE_TAG#v}"
+          if [[ "$ZMANAGER_NOTARIZATION_TEST" != "true" && ( "$version" == *-* || "$version" != "$tag_version" ) ]]; then
+            echo "Release tag $ZMANAGER_RELEASE_TAG does not match stable workspace version $version"
+            exit 1
+          fi
+
       - name: Set build revision
         shell: bash
         run: echo "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"

@@ -356,6 +356,10 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     }
 
     if request.archive == "-" {
+        if request.test_after {
+            print_error_line(global, format_args!("create failed: --test-after requires a file archive destination"));
+            return ExitCode::from(2);
+        }
         return create_stream(format, &manifest, request, password, global);
     }
 
@@ -364,8 +368,41 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         print_error_line(global, format_args!("create failed: destination exists: {}; pass --force to replace it", destination.display()));
         return ExitCode::FAILURE;
     }
+    let destination_sidecar = zmanager_core::engine::tzap::tzap_bootstrap_sidecar_path(&destination);
+    if format == ArchiveFormat::Tzap {
+        match fs::symlink_metadata(&destination_sidecar) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+                print_error_line(global, format_args!("create failed: sidecar destination is a directory: {}", destination_sidecar.display()));
+                return ExitCode::FAILURE;
+            }
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                print_error_line(global, format_args!("create failed: sidecar destination cannot be a symbolic link: {}", destination_sidecar.display()));
+                return ExitCode::FAILURE;
+            }
+            Ok(_) if !request.force => {
+                print_error_line(
+                    global,
+                    format_args!("create failed: sidecar destination exists: {}; pass --force to replace it", destination_sidecar.display()),
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                print_error_line(global, format_args!("create failed: unable to inspect sidecar destination {}: {error}", destination_sidecar.display()));
+                return ExitCode::FAILURE;
+            }
+            Ok(_) => {}
+        }
+    }
 
     let split_output = request.volume_size.is_some();
+    let previous_split_volumes = (!split_output).then(|| zmanager_core::engine::discover_split_zip_volume_candidates(&destination));
+    if !request.force
+        && let Some(existing_volume) = previous_split_volumes.as_ref().into_iter().flatten().find(|volume| *volume != &destination)
+    {
+        print_error_line(global, format_args!("create failed: split ZIP volume exists: {}; pass --force to replace it", existing_volume.display()));
+        return ExitCode::FAILURE;
+    }
     let temp = temp_archive_path(&destination);
     if let Some(parent) = destination.parent()
         && !parent.as_os_str().is_empty()
@@ -380,40 +417,119 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
     let token = CancellationToken::new();
     let create_destination = if split_output { destination.as_path() } else { temp.as_path() };
     let backend_replace_existing = split_output && request.force;
+    let verify_password = password.clone();
     let options = match build_engine_create_options(format, request, password, backend_replace_existing, global) {
         Ok(options) => options,
         Err(code) => return code,
     };
+    let split_sidecar_backup = if split_output && format == ArchiveFormat::Tzap {
+        match backup_existing_sidecar(&destination_sidecar) {
+            Ok(backup) => backup,
+            Err(error) => {
+                progress.emit(JobEvent::Failed { message: error.to_string() });
+                print_error_line(global, format_args!("create failed: could not stage existing sidecar {}: {error}", destination_sidecar.display()));
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let outcome_result = run_engine_create_backend(&manifest, create_destination, options, &temp, split_output, &mut progress, &token, global);
     let outcome = match outcome_result {
         Ok(outcome) => outcome,
-        Err(code) => return code,
+        Err(code) => {
+            if let Err(error) = restore_sidecar_backup(&destination_sidecar, split_sidecar_backup.as_deref()) {
+                print_error_line(global, format_args!("create failed: restoring sidecar {} also failed: {error}", destination_sidecar.display()));
+            }
+            return code;
+        }
     };
 
     if !split_output {
         let temp_sidecar = zmanager_core::engine::tzap::tzap_bootstrap_sidecar_path(&temp);
-        if let Err(error) = publish_archive(&temp, &destination, request.force) {
-            let _ = fs::remove_file(&temp);
-            let _ = fs::remove_file(&temp_sidecar);
-            progress.emit(JobEvent::Failed { message: error.to_string() });
-            print_error_line(global, format_args!("create failed: failed to move {} to {}: {error}", temp.display(), destination.display()));
-            return ExitCode::FAILURE;
-        }
-        if temp_sidecar.exists() {
-            let dest_sidecar = zmanager_core::engine::tzap::tzap_bootstrap_sidecar_path(&destination);
-            if let Err(error) = publish_archive(&temp_sidecar, &dest_sidecar, request.force) {
+        let split_volume_backups = match backup_previous_split_volumes(previous_split_volumes, &destination) {
+            Ok(backups) => backups,
+            Err(error) => {
                 let _ = fs::remove_file(&temp_sidecar);
+                let _ = fs::remove_file(&temp);
                 progress.emit(JobEvent::Failed { message: error.to_string() });
-                print_error_line(global, format_args!("create failed: failed to move {} to {}: {error}", temp_sidecar.display(), dest_sidecar.display()));
+                print_error_line(global, format_args!("create failed: could not stage old split ZIP volumes: {error}"));
                 return ExitCode::FAILURE;
             }
+        };
+        let sidecar_backup = if format == ArchiveFormat::Tzap {
+            match backup_existing_sidecar(&destination_sidecar) {
+                Ok(backup) => backup,
+                Err(error) => {
+                    let _ = fs::remove_file(&temp_sidecar);
+                    let _ = fs::remove_file(&temp);
+                    let restore_error = restore_split_volume_backups(&split_volume_backups).err();
+                    let message =
+                        restore_error.map_or_else(|| error.to_string(), |restore| format!("{error}; restoring split ZIP volumes also failed: {restore}"));
+                    progress.emit(JobEvent::Failed { message: message.clone() });
+                    print_error_line(global, format_args!("create failed: could not stage existing sidecar {}: {message}", destination_sidecar.display()));
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            None
+        };
+        let mut sidecar_published = false;
+        if temp_sidecar.exists() {
+            if let Err(error) = publish_archive(&temp_sidecar, &destination_sidecar, false) {
+                let sidecar_error = restore_sidecar_backup(&destination_sidecar, sidecar_backup.as_deref())
+                    .err()
+                    .map(|restore| format!("restoring sidecar {} failed: {restore}", destination_sidecar.display()));
+                let volume_error = restore_split_volume_backups(&split_volume_backups).err();
+                let details = sidecar_error.into_iter().chain(volume_error).collect::<Vec<_>>().join("; ");
+                let message = if details.is_empty() { error.to_string() } else { format!("{error}; {details}") };
+                let _ = fs::remove_file(&temp_sidecar);
+                let _ = fs::remove_file(&temp);
+                progress.emit(JobEvent::Failed { message: message.clone() });
+                print_error_line(
+                    global,
+                    format_args!("create failed: failed to move {} to {}: {message}", temp_sidecar.display(), destination_sidecar.display()),
+                );
+                return ExitCode::FAILURE;
+            }
+            sidecar_published = true;
         }
+        if let Err(error) = publish_archive(&temp, &destination, request.force) {
+            let sidecar_rollback = if sidecar_published || sidecar_backup.is_some() {
+                rollback_sidecar(&destination_sidecar, sidecar_published, sidecar_backup.as_deref()).err()
+            } else {
+                None
+            };
+            let volume_error = restore_split_volume_backups(&split_volume_backups).err();
+            let details = sidecar_rollback.into_iter().chain(volume_error).collect::<Vec<_>>().join("; ");
+            let message = if details.is_empty() { error.to_string() } else { format!("{error}; {details}") };
+            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(&temp_sidecar);
+            progress.emit(JobEvent::Failed { message: message.clone() });
+            print_error_line(global, format_args!("create failed: failed to publish {}: {message}", destination.display()));
+            return ExitCode::FAILURE;
+        }
+        if let Some(backup) = sidecar_backup
+            && let Err(error) = fs::remove_file(&backup)
+        {
+            progress.emit(JobEvent::Warning { message: format!("could not remove staged old sidecar {}: {error}", backup.display()) });
+        }
+        for (_, backup) in split_volume_backups {
+            if let Err(error) = fs::remove_file(&backup) {
+                progress.emit(JobEvent::Warning { message: format!("could not remove staged old split ZIP volume {}: {error}", backup.display()) });
+            }
+        }
+    } else if let Some(backup) = split_sidecar_backup
+        && let Err(error) = fs::remove_file(&backup)
+    {
+        progress.emit(JobEvent::Warning { message: format!("could not remove staged old sidecar {}: {error}", backup.display()) });
     }
     progress.emit(JobEvent::Completed { entries: outcome.entries, bytes: outcome.bytes });
     print_create_summary(&destination, &outcome, global);
     if request.test_after {
         let archive = create_test_archive_path(&destination, format, split_output).to_string_lossy().into_owned();
-        return run_test_request(&TestRequest { archive, ..TestRequest::default() }, global);
+        let test_code = run_test_request(&TestRequest { archive, password: verify_password, ..TestRequest::default() }, global);
+        return if outcome.warnings > 0 { ExitCode::from(1) } else { test_code };
     }
     // The archive exists and is valid, but does not contain everything that was
     // asked for. 7-Zip exits 1 here and GNU tar exits 2; a script that only looks
@@ -422,6 +538,73 @@ fn run_create_request(request: &CreateRequest, global: &GlobalOptions) -> ExitCo
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+fn backup_previous_split_volumes(volumes: Option<Vec<PathBuf>>, destination: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut backups = Vec::new();
+    for volume in volumes.into_iter().flatten().filter(|volume| volume != destination) {
+        let metadata = fs::symlink_metadata(&volume)?;
+        if !metadata.file_type().is_file() {
+            let error = io::Error::new(io::ErrorKind::InvalidInput, format!("split ZIP volume is not a regular file: {}", volume.display()));
+            let restore_error = restore_split_volume_backups(&backups).err();
+            return Err(match restore_error {
+                Some(restore) => io::Error::other(format!("{error}; restoring already staged volumes failed: {restore}")),
+                None => error,
+            });
+        }
+        let backup = temp_archive_path(&volume);
+        if let Err(error) = fs::rename(&volume, &backup) {
+            let restore_error = restore_split_volume_backups(&backups).err();
+            return Err(match restore_error {
+                Some(restore) => io::Error::other(format!("{error}; restoring already staged volumes failed: {restore}")),
+                None => error,
+            });
+        }
+        backups.push((volume, backup));
+    }
+    Ok(backups)
+}
+
+fn backup_existing_sidecar(sidecar: &Path) -> io::Result<Option<PathBuf>> {
+    let metadata = match fs::symlink_metadata(sidecar) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("sidecar is not a regular file: {}", sidecar.display())));
+    }
+    let backup = temp_archive_path(sidecar);
+    fs::rename(sidecar, &backup)?;
+    Ok(Some(backup))
+}
+
+fn restore_sidecar_backup(sidecar: &Path, backup: Option<&Path>) -> io::Result<()> {
+    if let Some(backup) = backup {
+        fs::rename(backup, sidecar)?;
+    }
+    Ok(())
+}
+
+fn rollback_sidecar(sidecar: &Path, published: bool, backup: Option<&Path>) -> Result<(), String> {
+    if published {
+        match fs::remove_file(sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("removing newly published sidecar {} failed: {error}", sidecar.display())),
+        }
+    }
+    restore_sidecar_backup(sidecar, backup).map_err(|error| format!("restoring sidecar {} failed: {error}", sidecar.display()))
+}
+
+fn restore_split_volume_backups(backups: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (volume, backup) in backups.iter().rev() {
+        if let Err(error) = fs::rename(backup, volume) {
+            errors.push(format!("{}: {error}", volume.display()));
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join(", ")) }
 }
 
 fn build_engine_create_options(
@@ -508,6 +691,7 @@ fn build_engine_create_options(
                 compression,
                 preserve_metadata: !request.no_metadata,
                 replace_existing,
+                password: password.as_ref().map(|password| password.expose_secret().to_owned()),
                 ..zmanager_core::engine::AppleArchiveCreateOptions::default()
             })
         }
@@ -628,7 +812,7 @@ fn create_stream(
                     report.warnings.len(),
                 ),
             );
-            ExitCode::SUCCESS
+            if report.warnings.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(1) }
         }
         Err(error) => {
             print_error_line(global, format_args!("create failed: {error}"));
@@ -702,7 +886,8 @@ pub(crate) fn validate_create_options(format: ArchiveFormat, request: &CreateReq
                     return Err("split ZIP output must use a .zip archive path".to_owned());
                 }
             }
-            ArchiveFormat::SevenZ | ArchiveFormat::Tzap | ArchiveFormat::AppleArchive => {}
+            ArchiveFormat::SevenZ | ArchiveFormat::Tzap => {}
+            ArchiveFormat::AppleArchive => return Err("--volume-size is not supported for Apple Archive output".to_owned()),
             ArchiveFormat::TarZst | ArchiveFormat::Tgz => {
                 return Err("--volume-size is supported only for ZIP, TZAP, and 7z archives".to_owned());
             }

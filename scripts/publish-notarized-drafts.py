@@ -254,9 +254,15 @@ def main() -> int:
     if not eligible:
         print(f"No notarization draft releases found{f' for {ONLY_TAG}' if ONLY_TAG else ''}.")
         return 0
+    failed = False
     for release in eligible:
-        process_release(release)
-    return 0
+        try:
+            process_release(release)
+        except Exception as error:
+            failed = True
+            tag = release.get("tag_name", "<unknown>")
+            print(f"::error::Failed to process notarization draft {tag}: {error}", file=sys.stderr)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

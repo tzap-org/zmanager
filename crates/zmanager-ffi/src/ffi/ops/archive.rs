@@ -221,7 +221,7 @@ pub fn materializePreview(request: MaterializePreviewRequest) -> Result<Material
 }
 
 pub(crate) fn sanitize_selected_paths(selected_paths: Vec<String>) -> Vec<String> {
-    selected_paths.into_iter().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).collect()
+    selected_paths.into_iter().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()).collect()
 }
 
 pub(crate) struct TestArchiveReport {

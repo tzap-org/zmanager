@@ -12,14 +12,14 @@ path = "src/lib.rs"
 
 [dependencies]
 # Fork of CrossCopy/localsend-rs (MIT) — see NOTICE / THIRD_PARTY_NOTICES.md.
-# Active co-development intentionally resolves the sibling checkout so desktop,
-# mobile, and CLI builds exercise the patched working tree. CI and release
-# workflows resolve the configured sibling branch for CI or use the release lock.
-localsend-rs = { path = "../../../localsend-rs", default-features = false, features = [
+# Active co-development resolves the patched sibling checkout. Cargo publish
+# converts this path-plus-version dependency to registry `0.1.2`; crates.io
+# does not permit external Git dependencies in published packages.
+localsend-rs = { path = "../../../localsend-rs", version = "0.1.2", default-features = false, features = [
     "https",
 ] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 thiserror = "2"
 
 [dev-dependencies]

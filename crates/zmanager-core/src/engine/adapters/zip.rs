@@ -54,7 +54,7 @@ struct ZipReadSession {
     archive: ZipArchive<Box<dyn crate::zip_split::ReadSeek>>,
     path: PathBuf,
     password: Option<String>,
-    retained_entries: Vec<(EntryId, usize)>,
+    retained_entries: std::collections::HashMap<EntryId, usize>,
 }
 
 fn zip_archive_error(path: &std::path::Path, error: &ZipBackendError) -> ArchiveError {
@@ -78,7 +78,7 @@ impl ReadAdapterSession for ZipReadSession {
             self.retained_entries.clear();
             for (index, entry) in listing.entries.into_iter().enumerate() {
                 let id = crate::engine::adapters::listing_entry_id(index);
-                self.retained_entries.push((id, index));
+                self.retained_entries.insert(id, index);
                 entries.push(EngineEntry {
                     id,
                     path: entry.name,
@@ -149,8 +149,8 @@ impl ReadAdapterSession for ZipReadSession {
     fn selected_extract(&mut self, entry_id: EntryId, options: &mut SelectedExtractOptions<'_>) -> Result<ExtractReport, ArchiveError> {
         let entry_index = self
             .retained_entries
-            .iter()
-            .find_map(|(retained_id, index)| (*retained_id == entry_id).then_some(*index))
+            .get(&entry_id)
+            .copied()
             .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, format!("ZIP entry ID {entry_id} is not present in the session listing")))?;
         let dummy_token = crate::jobs::CancellationToken::new();
         let token = options.cancellation.as_ref().unwrap_or(&dummy_token);
@@ -181,8 +181,8 @@ impl ReadAdapterSession for ZipReadSession {
         for &entry_id in entry_ids {
             let entry_index = self
                 .retained_entries
-                .iter()
-                .find_map(|(retained_id, index)| (*retained_id == entry_id).then_some(*index))
+                .get(&entry_id)
+                .copied()
                 .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, format!("ZIP entry ID {entry_id} is not present in the session listing")))?;
             indices.push(entry_index);
         }
@@ -213,8 +213,8 @@ impl ReadAdapterSession for ZipReadSession {
     fn copy_to_writer(&mut self, entry_id: EntryId, writer: &mut dyn std::io::Write) -> Result<CopyReport, ArchiveError> {
         let entry_index = self
             .retained_entries
-            .iter()
-            .find_map(|(retained_id, index)| (*retained_id == entry_id).then_some(*index))
+            .get(&entry_id)
+            .copied()
             .ok_or_else(|| ArchiveError::usable(ErrorKind::InvalidFormat, format!("ZIP entry ID {entry_id} is not present in the session listing")))?;
         let written_bytes = crate::zip_backend::copy_zip_entry_from_archive(&mut self.archive, &self.path, self.password.as_deref(), entry_index, writer)
             .map_err(|error| zip_archive_error(&self.path, &error))?;
@@ -246,6 +246,6 @@ impl ReadAdapterFactory for ZipListAdapter {
         };
         let zip_archive = ZipArchive::new(reader)
             .map_err(|error| ArchiveError::unusable(ErrorKind::CorruptData, format!("Failed to parse ZIP central directory: {error}")).with_path(&path))?;
-        Ok(Box::new(ZipReadSession { archive: zip_archive, path, password: options.password, retained_entries: Vec::new() }))
+        Ok(Box::new(ZipReadSession { archive: zip_archive, path, password: options.password, retained_entries: std::collections::HashMap::new() }))
     }
 }

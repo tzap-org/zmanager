@@ -184,6 +184,9 @@ pub fn merge_contact_snapshots(
     // 1. Collect all tombstones, keeping the newest removed_at per contact_id.
     let mut tombstones = BTreeMap::<String, u64>::new();
     for t in base.removed.iter().chain(incoming.removed.iter()) {
+        if now_unix_seconds.saturating_sub(t.removed_at) > TOMBSTONE_RETENTION_SECONDS {
+            continue;
+        }
         tombstones.entry(t.contact_id.clone()).and_modify(|existing| *existing = (*existing).max(t.removed_at)).or_insert(t.removed_at);
     }
 

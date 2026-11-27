@@ -309,6 +309,7 @@ impl<'a, T: TzapAuthHttpTransport> TzapCertificateLifecycleClient<'a, T> {
         inventory.enrolled_certificates[predecessor_index].state = TzapLocalCertificateState::RenewalPending;
         inventory.pending_certificate_operations.push(pending_operation.clone());
         store.save_inventory(&request.account_key, inventory.clone())?;
+        inventory.storage_revision = Some(inventory.storage_revision.map_or(1, |revision| revision.saturating_add(1)));
 
         let response = self.submit_renewal(session, request, new_signing_key, csr_der, &challenge, old_signature.as_deref())?;
         parse_renewal_barriers(&response.body)?;

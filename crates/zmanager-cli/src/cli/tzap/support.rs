@@ -196,25 +196,28 @@ pub(super) fn http_json_request(
     if options.cancellation.as_ref().is_some_and(zmanager_tzap_hosted::auth_client::TzapAuthCancellation::is_cancelled) {
         return Err("hosted HTTPS request was cancelled".to_owned());
     }
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(options.connect_timeout)
-        .timeout(options.request_timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| format!("could not initialize hosted HTTPS client: {error}"))?;
-    let request = build_hosted_http_request(&client, method, url, bearer_token, body, headers)?;
-    let response = client.execute(request).map_err(|error| format!("hosted HTTPS request failed: {error}"))?;
-    if options.cancellation.as_ref().is_some_and(zmanager_tzap_hosted::auth_client::TzapAuthCancellation::is_cancelled) {
-        return Err("hosted HTTPS request was cancelled".to_owned());
-    }
-    let status_code = response.status().as_u16();
-    let response_headers =
-        response.headers().iter().filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_owned(), value.to_owned()))).collect();
-    let response_body = response.bytes().map_err(|error| format!("could not read hosted HTTPS response: {error}"))?.to_vec();
+    use zmanager_tzap_hosted::auth_client::{TzapAuthHttpMethod, TzapAuthHttpRequest, TzapAuthHttpTransport, TzapBearerToken};
+    let method = match method {
+        "GET" => TzapAuthHttpMethod::Get,
+        "POST" => TzapAuthHttpMethod::Post,
+        "PUT" => TzapAuthHttpMethod::Put,
+        "DELETE" => TzapAuthHttpMethod::Delete,
+        _ => return Err(format!("invalid hosted HTTP method: {method}")),
+    };
+    let request = TzapAuthHttpRequest {
+        method,
+        url: url.to_owned(),
+        bearer_token: bearer_token.map(|token| TzapBearerToken::new(token.to_owned())).transpose().map_err(|error| error.to_string())?,
+        body: body.cloned(),
+        options: options.clone(),
+        headers: headers.to_vec(),
+    };
+    let response = zmanager_tzap_hosted::reqwest_transport::ReqwestTransport.send(&request).map_err(|error| error.to_string())?;
+    let status_code = response.status_code;
 
     #[cfg(feature = "staging-e2e-fault-injection")]
     let crash_after_issuance_commit = (200..300).contains(&status_code)
-        && method == "POST"
+        && method == TzapAuthHttpMethod::Post
         && reqwest::Url::parse(url).is_ok_and(|parsed| {
             if parsed.scheme() != "https" || parsed.host_str() != Some("staging.tzap.org") {
                 return false;
@@ -236,30 +239,7 @@ pub(super) fn http_json_request(
         std::process::exit(86);
     }
 
-    Ok(zmanager_tzap_hosted::auth_client::TzapAuthHttpResponse { status_code, body: response_body, headers: response_headers })
-}
-
-#[cfg(feature = "tzap-online")]
-pub(crate) fn build_hosted_http_request(
-    client: &reqwest::blocking::Client,
-    method: &str,
-    url: &str,
-    bearer_token: Option<&str>,
-    body: Option<&Value>,
-    headers: &[(String, String)],
-) -> Result<reqwest::blocking::Request, String> {
-    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| format!("invalid hosted HTTP method: {error}"))?;
-    let mut request = client.request(method, url).header(reqwest::header::ACCEPT, "application/json");
-    if let Some(token) = bearer_token {
-        request = request.bearer_auth(token);
-    }
-    for (name, value) in headers {
-        request = request.header(name.as_str(), value.as_str());
-    }
-    if let Some(body) = body {
-        request = request.json(body);
-    }
-    request.build().map_err(|error| format!("invalid hosted HTTPS request: {error}"))
+    Ok(response)
 }
 
 /// Builds a `tzap_service` JSON request carrying the CLI context (CR-113:

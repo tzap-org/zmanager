@@ -109,6 +109,11 @@ jobs:
               | jq -r --arg crate "$crate" \
                 '.packages[] | select(.name == $crate) | .version')
 
+            if [[ "$version" == *-* ]]; then
+              echo "Refusing to publish prerelease version $crate v$version"
+              exit 1
+            fi
+
             echo "Checking $crate v$version..."
 
             if is_published "$crate" "$version"; then
@@ -117,13 +122,19 @@ jobs:
               echo "Publishing $crate v$version..."
               cargo publish -p "$crate"
               echo "Waiting for $crate v$version to appear in crates.io index..."
+              indexed=false
               for i in {1..12}; do
                 if is_published "$crate" "$version"; then
                   echo "✓ $crate v$version index updated"
+                  indexed=true
                   break
                 fi
                 sleep 10
               done
+              if [[ "$indexed" != "true" ]]; then
+                echo "::error::Timed out waiting for $crate v$version to appear in crates.io index"
+                exit 1
+              fi
             fi
           }
 
@@ -131,5 +142,7 @@ jobs:
           publish_if_needed zmanager-unrar
           publish_if_needed zmanager-wim
           publish_if_needed zmanager-core
+          publish_if_needed zmanager-tzap-hosted
+          publish_if_needed zmanager-localsend
           publish_if_needed zmanager-ffi
           publish_if_needed zmanager-cli

@@ -15,6 +15,9 @@ pub struct ReqwestTransport;
 
 impl TzapAuthHttpTransport for ReqwestTransport {
     fn send(&self, request: &TzapAuthHttpRequest) -> Result<TzapAuthHttpResponse, TzapAuthError> {
+        if request.options.cancellation.as_ref().is_some_and(crate::auth_client::TzapAuthCancellation::is_cancelled) {
+            return Err(TzapAuthError::Transport { message: "hosted HTTPS request was cancelled".to_owned() });
+        }
         if let Some(token) = &request.bearer_token {
             token.require_destination(&request.url)?;
         }
@@ -44,10 +47,16 @@ impl TzapAuthHttpTransport for ReqwestTransport {
         }
 
         let response = builder.send().map_err(|error| TzapAuthError::Transport { message: error.to_string() })?;
+        if request.options.cancellation.as_ref().is_some_and(crate::auth_client::TzapAuthCancellation::is_cancelled) {
+            return Err(TzapAuthError::Transport { message: "hosted HTTPS request was cancelled".to_owned() });
+        }
         let status_code = response.status().as_u16();
         let headers =
             response.headers().iter().filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str().to_owned(), value.to_owned()))).collect();
         let body = response.bytes().map_err(|error| TzapAuthError::Transport { message: error.to_string() })?.to_vec();
+        if request.options.cancellation.as_ref().is_some_and(crate::auth_client::TzapAuthCancellation::is_cancelled) {
+            return Err(TzapAuthError::Transport { message: "hosted HTTPS request was cancelled".to_owned() });
+        }
         Ok(TzapAuthHttpResponse { status_code, body, headers })
     }
 }

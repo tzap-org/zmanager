@@ -256,6 +256,7 @@ mod tests {
             created_at_unix_seconds: 1,
             label: None,
         });
+        inventory.storage_revision = fixture.catalogue.load_catalog("default").unwrap().map(|catalog| catalog.revision);
         store_file_inventory_as_catalog(&mut fixture.catalogue, &mut fixture.secrets, "default", &inventory).unwrap();
         let published = fixture.catalogue.load_catalog("default").unwrap().unwrap();
         assert_eq!(published.recipient_keys.len(), 1);

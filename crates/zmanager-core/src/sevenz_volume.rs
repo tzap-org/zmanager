@@ -43,10 +43,10 @@ pub(crate) fn split_7z_temp_archive(archive_path: &Path, destination: &Path, vol
     }
 
     let created_volume_count = volume_paths.len();
-    remove_split_destinations_for_replace(destination, &existing_volume_paths, replace_existing)?;
-    for (output, volume_path) in volume_outputs.into_iter().zip(volume_paths) {
-        output.commit_with_file_replace(replace_existing).map_err(|source| SevenZError::Io { path: volume_path, source })?;
-    }
+    let mut previous_paths = existing_volume_paths;
+    previous_paths.push(destination.to_path_buf());
+    crate::atomic_file::commit_file_set(volume_outputs, &previous_paths, replace_existing)
+        .map_err(|source| SevenZError::Io { path: destination.to_path_buf(), source })?;
 
     Ok(created_volume_count)
 }
@@ -81,11 +81,6 @@ fn ensure_split_destinations_available(
 
 fn ensure_file_destination_available(path: &Path, replace_existing: bool) -> Result<(), SevenZError> {
     crate::archive_split::ensure_file_destination_available(path, replace_existing).map_err(|source| SevenZError::Io { path: path.to_path_buf(), source })
-}
-
-fn remove_split_destinations_for_replace(destination: &Path, existing_volume_paths: &[PathBuf], replace_existing: bool) -> Result<(), SevenZError> {
-    crate::archive_split::remove_split_destinations_for_replace(destination, existing_volume_paths, replace_existing)
-        .map_err(|source| SevenZError::Io { path: destination.to_path_buf(), source })
 }
 
 fn existing_7z_volume_paths(destination: &Path) -> Result<Vec<PathBuf>, SevenZError> {

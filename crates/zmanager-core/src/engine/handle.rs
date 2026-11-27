@@ -246,8 +246,8 @@ impl ArchiveHandle {
         let factory = self.engine_registry.resolve(self.detected.format, operation).ok_or_else(|| {
             ArchiveError::usable(ErrorKind::UnsupportedOperation, format!("No {operation:?} adapter registered for format '{}'", self.detected.format))
         })?;
+        self.validate_source()?;
         if self.session.is_none() {
-            self.validate_source()?;
             match factory.open(self.detected.clone(), self.options.clone()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => {

@@ -207,7 +207,7 @@ impl ArchiveSource {
 /// by format detection and source ownership. Sidecar volumes match `.z`
 /// followed by at least two digits (`.z01`, `.z001`, ...); numbered raw
 /// segments match a base ending in `.zip` plus a three-digit suffix
-/// (`.zip.001`); a final `.zip` qualifies when a `.z01` sibling exists.
+/// (`.zip.001`); a final `.zip` qualifies when a complete sidecar set exists.
 #[must_use]
 pub fn is_split_zip_archive_path(path: &Path) -> bool {
     let filename = match path.file_name().and_then(|n| n.to_str()) {
@@ -217,12 +217,8 @@ pub fn is_split_zip_archive_path(path: &Path) -> bool {
     if is_split_zip_sidecar_extension(&filename) || is_numbered_zip_volume_name(&filename) {
         return true;
     }
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
-        let parent = path.parent().unwrap_or_else(|| Path::new(""));
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if parent.join(format!("{stem}.z01")).is_file() {
-            return true;
-        }
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) && discover_split_zip_volumes(path).is_some() {
+        return true;
     }
     false
 }
@@ -273,41 +269,18 @@ fn parse_split_zip_part(name: &str) -> Option<(&str, SplitZipPart)> {
 /// otherwise the set is considered incomplete and `None` is returned.
 #[must_use]
 pub fn discover_split_zip_volumes(path: &Path) -> Option<Vec<PathBuf>> {
-    let file_name = path.file_name()?.to_str()?;
-    let lower_name = file_name.to_ascii_lowercase();
-    let (base, _) = parse_split_zip_part(&lower_name)?;
-    // A bare relative file name (`archive.z01`, no directory component) has
-    // `parent() == Some("")`, not `None`; `unwrap_or_else` only substitutes
-    // "." on `None`, so `read_dir` used to receive the empty path and fail,
-    // silently discovering zero sidecar volumes for the most common way to
-    // invoke this against an archive in the current directory (the same bug
-    // class fixed for TZAP volume discovery in `tzap::open`).
-    let directory = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let entries = std::fs::read_dir(directory).ok()?;
-
     let mut sidecars = std::collections::BTreeMap::new();
     let mut numbered = std::collections::BTreeMap::new();
     let mut final_zip = None;
-    for entry in entries.flatten() {
-        let candidate_name = entry.file_name();
-        let Some(candidate_name) = candidate_name.to_str() else {
-            continue;
-        };
-        let candidate_lower = candidate_name.to_ascii_lowercase();
-        let Some((candidate_base, part)) = parse_split_zip_part(&candidate_lower) else {
-            continue;
-        };
-        if candidate_base != base {
-            continue;
-        }
+    for (candidate, part) in split_zip_sibling_parts(path)? {
         match part {
             SplitZipPart::Sidecar(index) => {
-                sidecars.insert(index, entry.path());
+                sidecars.insert(index, candidate);
             }
             SplitZipPart::Numbered(index) => {
-                numbered.insert(index, entry.path());
+                numbered.insert(index, candidate);
             }
-            SplitZipPart::Final => final_zip = Some(entry.path()),
+            SplitZipPart::Final => final_zip = Some(candidate),
         }
     }
 
@@ -328,6 +301,37 @@ pub fn discover_split_zip_volumes(path: &Path) -> Option<Vec<PathBuf>> {
         return Some(volumes);
     }
     None
+}
+
+/// Returns every sibling path that has a split-ZIP name for `path`, even when
+/// the set is incomplete. This is useful for replacement preflight and cleanup:
+/// an incomplete set is not readable as an archive, but its files still belong
+/// to the requested output name.
+#[must_use]
+pub fn discover_split_zip_volume_candidates(path: &Path) -> Vec<PathBuf> {
+    split_zip_sibling_parts(path).unwrap_or_default().into_iter().map(|(candidate, _)| candidate).collect()
+}
+
+fn split_zip_sibling_parts(path: &Path) -> Option<Vec<(PathBuf, SplitZipPart)>> {
+    let file_name = path.file_name()?.to_str()?;
+    let lower_name = file_name.to_ascii_lowercase();
+    let (base, _) = parse_split_zip_part(&lower_name)?;
+    // A bare relative file name (`archive.z01`, no directory component) has
+    // `parent() == Some("")`, not `None`; use `.` so relative archive names
+    // still discover their sibling volumes.
+    let directory = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let entries = std::fs::read_dir(directory).ok()?;
+    Some(
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let lower_name = name.to_str()?.to_ascii_lowercase();
+                let (candidate_base, part) = parse_split_zip_part(&lower_name)?;
+                (candidate_base == base).then(|| (entry.path(), part))
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

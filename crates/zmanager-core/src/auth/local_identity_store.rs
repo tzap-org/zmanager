@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 pub const DEFAULT_IDENTITY_INVENTORY_ACCOUNT: &str = "default";
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct TzapLocalIdentityInventory {
     pub device_signing_keys: Vec<TzapDeviceSigningKeyRecord>,
     pub recipient_encryption_keys: Vec<TzapRecipientEncryptionKeyRecord>,
@@ -30,7 +30,36 @@ pub struct TzapLocalIdentityInventory {
     /// backup/restore round trip instead of being resurrected by a union
     /// merge. Absent on inventories written before this field existed.
     pub removed_contacts: Vec<TzapContactTombstone>,
+    /// Catalog revision observed by `load_inventory`; stale snapshots are
+    /// rejected on save.
+    pub storage_revision: Option<u64>,
 }
+
+impl PartialEq for TzapLocalIdentityInventory {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.device_signing_keys,
+            &self.recipient_encryption_keys,
+            &self.enrolled_certificates,
+            &self.certificate_status_cache,
+            &self.emergency_blocklist,
+            &self.contacts,
+            &self.pending_certificate_operations,
+            &self.removed_contacts,
+        ) == (
+            &other.device_signing_keys,
+            &other.recipient_encryption_keys,
+            &other.enrolled_certificates,
+            &other.certificate_status_cache,
+            &other.emergency_blocklist,
+            &other.contacts,
+            &other.pending_certificate_operations,
+            &other.removed_contacts,
+        )
+    }
+}
+
+impl Eq for TzapLocalIdentityInventory {}
 
 impl TzapLocalIdentityInventory {
     #[must_use]
@@ -44,6 +73,7 @@ impl TzapLocalIdentityInventory {
             contacts: Vec::new(),
             pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
+            storage_revision: None,
         }
     }
 
@@ -184,10 +214,10 @@ impl TzapPendingCertificateOperation {
         validate_non_empty_id("pending_certificate_operations.signing_key_id", &self.signing_key_id)?;
         validate_sha256("pending_certificate_operations.public_key_fingerprint", &self.public_key_fingerprint)?;
         validate_sha256("pending_certificate_operations.csr_sha256", &self.csr_sha256)?;
-        if let Some(csr_der) = &self.csr_der {
-            if csr_der.is_empty() || csr_der.len() > 16 * 1024 || crate::device_identity::csr_fingerprint(csr_der) != self.csr_sha256 {
-                return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.csr_der" });
-            }
+        if let Some(csr_der) = &self.csr_der
+            && (csr_der.is_empty() || csr_der.len() > 16 * 1024 || crate::device_identity::csr_fingerprint(csr_der) != self.csr_sha256)
+        {
+            return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.csr_der" });
         }
         if self.requested_validity_seconds == 0 {
             return Err(TzapLocalIdentityStoreError::InvalidField { field: "pending_certificate_operations.requested_validity_seconds" });
@@ -606,6 +636,12 @@ impl TzapLocalIdentityStore for InMemoryTzapLocalIdentityStore {
     fn save_inventory(&mut self, account_key: &str, inventory: TzapLocalIdentityInventory) -> Result<(), TzapLocalIdentityStoreError> {
         validate_non_empty_id("account_key", account_key)?;
         inventory.validate()?;
+        let actual = self.inventories.get(account_key).and_then(|stored| stored.storage_revision);
+        if inventory.storage_revision != actual {
+            return Err(crate::identity_catalog::TzapIdentityCatalogError::RevisionConflict { expected: inventory.storage_revision, actual }.into());
+        }
+        let mut inventory = inventory;
+        inventory.storage_revision = Some(actual.map_or(1, |revision| revision.saturating_add(1)));
         self.inventories.insert(account_key.to_owned(), inventory);
         Ok(())
     }
@@ -804,6 +840,7 @@ mod tests {
             contacts: Vec::new(),
             pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
+            storage_revision: None,
         };
 
         store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
@@ -849,7 +886,9 @@ mod tests {
         // no temporary sibling files behind.
         let expected = inventory.clone();
         store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, inventory).unwrap();
-        store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, expected.clone()).unwrap();
+        let mut second_save = expected.clone();
+        second_save.storage_revision = store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap().storage_revision;
+        store.save_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT, second_save).unwrap();
 
         assert_eq!(store.load_inventory(DEFAULT_IDENTITY_INVENTORY_ACCOUNT).unwrap(), expected);
 
@@ -1045,6 +1084,7 @@ mod tests {
             }],
             pending_certificate_operations: Vec::new(),
             removed_contacts: Vec::new(),
+            storage_revision: None,
         }
     }
 

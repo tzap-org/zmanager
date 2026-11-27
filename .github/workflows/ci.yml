@@ -166,6 +166,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup toolchain install 1.95.0 --profile minimal
           rustup default stable
 
       - name: Build pinned OpenSSL
@@ -185,6 +186,10 @@ jobs:
 
       - name: Format
         run: cargo fmt --check
+
+      - name: Check declared MSRV
+        if: runner.os == 'Linux'
+        run: cargo +1.95.0 check --locked --workspace
 
       - name: Verify reduced artifact profiles
         run: bash scripts/verify-artifact-profiles.sh

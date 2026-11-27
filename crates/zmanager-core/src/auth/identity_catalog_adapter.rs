@@ -279,6 +279,7 @@ pub fn store_inventory_as_catalog(
 ) -> Result<(), TzapIdentityCatalogError> {
     let (mut catalog, mut signing_refs, mut recipient_refs) = build_catalog_from_inventory(inventory)?;
     let existing = catalog_store.load_catalog(account_key)?;
+    verify_inventory_revision(inventory.storage_revision, existing.as_ref().map(|catalog| catalog.revision))?;
     let mut obsolete_signing_refs = Vec::new();
     let mut obsolete_recipient_refs = Vec::new();
     if let Some(existing) = &existing {
@@ -388,6 +389,10 @@ pub fn store_inventory_as_catalog(
     Ok(())
 }
 
+fn verify_inventory_revision(expected: Option<u64>, actual: Option<u64>) -> Result<(), TzapIdentityCatalogError> {
+    if expected == actual { Ok(()) } else { Err(TzapIdentityCatalogError::RevisionConflict { expected, actual }) }
+}
+
 fn catalog_secret_references(catalog: &TzapIdentityCatalog) -> HashSet<(TzapSecretPurpose, TzapSecretRef)> {
     catalog
         .signing_identities
@@ -452,6 +457,7 @@ pub fn load_inventory_from_catalog(
 ) -> Result<Option<TzapLocalIdentityInventory>, TzapIdentityCatalogError> {
     let Some(catalog) = catalog_store.load_catalog(account_key)? else { return Ok(None) };
     let mut inventory = TzapLocalIdentityInventory::empty();
+    inventory.storage_revision = Some(catalog.revision);
     inventory.pending_certificate_operations.clone_from(&catalog.pending_certificate_operations);
     // Validate every issued public chain before touching any private material.
     // Key-only records deliberately have no certificate chain yet.
@@ -824,7 +830,9 @@ mod tests {
         catalogs.save_catalog("default", None, catalog).unwrap();
         let mut secrets = InMemoryTzapSecretMaterialStore::new();
         secrets.put_at(TzapSecretPurpose::SigningKey, &reference, SecretBytes::from(fixture.leaf_key.private_key_to_der().unwrap())).unwrap();
-        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &recipient_inventory(1)).unwrap();
+        let mut inventory = recipient_inventory(1);
+        inventory.storage_revision = catalogs.load_catalog("default").unwrap().map(|catalog| catalog.revision);
+        store_inventory_as_catalog(&mut catalogs, &mut secrets, "default", &inventory).unwrap();
         let stored = catalogs.load_catalog("default").unwrap().unwrap();
         assert_eq!(stored.signing_identities, [bad]);
         assert_eq!(stored.recipient_keys.len(), 1);
