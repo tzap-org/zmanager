@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml/badge.svg)](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml)
 [![Release](https://github.com/tzap-org/zmanager/actions/workflows/release.yml/badge.svg)](https://github.com/tzap-org/zmanager/actions/workflows/release.yml)
-[![Release version](https://img.shields.io/github/v/release/tzap-org/zmanager?include_prereleases&label=release)](https://github.com/tzap-org/zmanager/releases)
+[![Release version](https://img.shields.io/github/v/release/tzap-org/zmanager?label=release)](https://github.com/tzap-org/zmanager/releases)
 [![Downloads](https://img.shields.io/github/downloads/tzap-org/zmanager/total)](https://github.com/tzap-org/zmanager/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-100%25%20lines-brightgreen.svg)](https://github.com/tzap-org/zmanager/actions/workflows/ci.yml)
