@@ -2111,6 +2111,19 @@ fn preserves_all_metadata_in_tzap_round_trip() {
     fs::write(&file_path, payload).unwrap();
     fs::create_dir(&directory_path).unwrap();
 
+    #[cfg(target_os = "macos")]
+    let resource_fork_payload = {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        (0..2 * 1024 * 1024 + 31)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect::<Vec<_>>()
+    };
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2124,7 +2137,7 @@ fn preserves_all_metadata_in_tzap_round_trip() {
         xattr::set(&directory_path, "com.tzap.test", b"zmanager directory metadata").unwrap();
         xattr::set(&file_path, "com.apple.FinderInfo", &[0x5a; 32]).unwrap();
         xattr::set(&directory_path, "com.apple.FinderInfo", &[0x5b; 32]).unwrap();
-        fs::write(file_path.join("..namedfork/rsrc"), vec![0x6b; 2 * 1024 * 1024 + 31]).unwrap();
+        fs::write(file_path.join("..namedfork/rsrc"), &resource_fork_payload).unwrap();
         let acl_status = std::process::Command::new("/bin/chmod").args(["+a", "everyone deny delete"]).arg(&file_path).status().expect("failed to set ACL");
         assert!(acl_status.success(), "chmod +a failed");
         let directory_acl_status =
@@ -2382,7 +2395,7 @@ fn preserves_all_metadata_in_tzap_round_trip() {
         assert_eq!(xattr::get(&restored_link, "com.tzap.link").unwrap().as_deref(), Some(b"zmanager link metadata".as_slice()));
         assert_eq!(xattr::get(&restored, "com.apple.FinderInfo").unwrap().as_deref(), Some([0x5a; 32].as_slice()));
         assert_eq!(xattr::get(&restored_directory, "com.apple.FinderInfo").unwrap().as_deref(), Some([0x5b; 32].as_slice()));
-        assert_eq!(fs::read(restored.join("..namedfork/rsrc")).unwrap(), vec![0x6b; 2 * 1024 * 1024 + 31]);
+        assert_eq!(fs::read(restored.join("..namedfork/rsrc")).unwrap(), resource_fork_payload);
         for restored_path in [&restored, &restored_directory, &restored_link] {
             let acl = std::process::Command::new("/bin/ls").args(["-lde"]).arg(restored_path).output().unwrap();
             assert!(acl.status.success());
