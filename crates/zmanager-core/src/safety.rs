@@ -42,6 +42,8 @@ pub struct ExtractionPolicy {
     pub exclude_patterns: Vec<String>,
     /// Drop this many leading path components before writing.
     pub strip_components: usize,
+    /// Write regular files by basename and omit directories and links.
+    pub flatten_paths: bool,
     /// Expanded-size guardrails.
     pub limits: ExtractionLimits,
     /// Whether to ignore symbolic links during extraction.
@@ -56,6 +58,7 @@ impl Default for ExtractionPolicy {
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             strip_components: 0,
+            flatten_paths: false,
             limits: ExtractionLimits::default(),
             ignore_symlinks: false,
         }
@@ -254,6 +257,8 @@ pub struct ExtractionSafetyPlanner<'a> {
     compiled_includes: Vec<CompiledPattern>,
     compiled_excludes: Vec<CompiledPattern>,
     seen_paths: HashMap<String, String>,
+    planned_flat_paths: HashSet<String>,
+    renamed_directories: HashMap<PathBuf, PathBuf>,
     planned_symlinks: HashSet<String>,
     required_non_symlink_paths: HashSet<String>,
     planned_expanded_bytes: u64,
@@ -329,6 +334,8 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             compiled_includes,
             compiled_excludes,
             seen_paths: HashMap::new(),
+            planned_flat_paths: HashSet::new(),
+            renamed_directories: HashMap::new(),
             planned_symlinks: HashSet::new(),
             required_non_symlink_paths: HashSet::new(),
             planned_expanded_bytes: 0,
@@ -354,7 +361,22 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         if !self.is_path_selected(&normalized_archive_path) {
             return Ok(ExtractionDecision::Skip { normalized_archive_path, reason: "filtered by include/exclude policy".to_owned() });
         }
-        if self.policy.strip_components > 0 {
+        if self.policy.flatten_paths {
+            let reason = match entry.kind {
+                ExtractionEntryKind::Directory => Some("directory omitted by no-paths layout"),
+                ExtractionEntryKind::Symlink { .. } | ExtractionEntryKind::Hardlink { .. } => Some("link target cannot be preserved in no-paths layout"),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                return Ok(ExtractionDecision::Skip { normalized_archive_path, reason: reason.to_owned() });
+            }
+            if self.policy.overwrite != OverwritePolicy::Replace {
+                self.reject_collision(&normalized_archive_path)?;
+            }
+            if let Some((_, basename)) = normalized_archive_path.rsplit_once('/') {
+                normalized_archive_path = basename.to_owned();
+            }
+        } else if self.policy.strip_components > 0 {
             let stripped = strip_archive_components(&normalized_archive_path, self.policy.strip_components);
             let Some(stripped) = stripped else {
                 return Ok(ExtractionDecision::Skip { normalized_archive_path, reason: "path removed by strip-components policy".to_owned() });
@@ -362,8 +384,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             normalized_archive_path = stripped;
         }
         self.reserve_entry(&normalized_archive_path)?;
-        let destination_path = self.destination_root.join(&normalized_archive_path);
-        let destination_path = lexically_normalize(&destination_path);
+        let destination_path = self.destination_for_archive_path(Path::new(&normalized_archive_path));
         ensure_inside_destination(&self.destination_root, &destination_path, &entry.archive_path)?;
 
         let link_target_path = match &entry.kind {
@@ -385,7 +406,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
             ExtractionEntryKind::File | ExtractionEntryKind::Directory => None,
         };
 
-        if self.policy.overwrite != OverwritePolicy::Replace {
+        if !self.policy.flatten_paths && self.policy.overwrite != OverwritePolicy::Replace {
             self.reject_collision(&normalized_archive_path)?;
         }
 
@@ -462,9 +483,16 @@ impl<'a> ExtractionSafetyPlanner<'a> {
     }
 
     fn record_write_paths(&mut self, entry: &ExtractionEntry, plan: &PlannedWrite) {
+        if self.policy.flatten_paths {
+            self.planned_flat_paths.insert(case_collision_key(&plan.destination_path.to_string_lossy()));
+        }
         let mut required = self.destination_ancestors(&plan.destination_path);
         if matches!(entry.kind, ExtractionEntryKind::Directory) {
             required.push(plan.destination_path.clone());
+            let archive_path = Path::new(&plan.normalized_archive_path);
+            if plan.destination_path != self.destination_for_archive_path(archive_path) {
+                self.renamed_directories.insert(archive_path.to_path_buf(), plan.destination_path.clone());
+            }
         }
         if let Some(target) = &plan.link_target_path {
             required.extend(self.destination_ancestors(target));
@@ -484,6 +512,19 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         }
     }
 
+    fn destination_for_archive_path(&self, archive_path: &Path) -> PathBuf {
+        if !self.renamed_directories.is_empty() {
+            for ancestor in archive_path.ancestors().skip(1) {
+                if let Some(destination) = self.renamed_directories.get(ancestor)
+                    && let Ok(suffix) = archive_path.strip_prefix(ancestor)
+                {
+                    return lexically_normalize(&destination.join(suffix));
+                }
+            }
+        }
+        lexically_normalize(&self.destination_root.join(archive_path))
+    }
+
     fn plan_destination_write(
         &mut self,
         entry: &ExtractionEntry,
@@ -500,34 +541,40 @@ impl<'a> ExtractionSafetyPlanner<'a> {
         // directory after its child files.
         let mut replace_existing = matches!(self.policy.overwrite, OverwritePolicy::Replace) && !matches!(entry.kind, ExtractionEntryKind::Directory);
         let destination_metadata = std::fs::symlink_metadata(&destination_path);
-        if let Ok(metadata) = destination_metadata {
+        if let Err(error) = &destination_metadata
+            && !destination_is_absent(error)
+        {
+            return Err(ExtractionSafetyError::DestinationProbe { archive_path: entry.archive_path.clone(), destination_path, message: error.to_string() });
+        }
+        if destination_metadata.is_ok() || self.flat_path_is_reserved(&destination_path) {
+            let destination_is_directory = destination_metadata.is_ok_and(|metadata| metadata.file_type().is_dir());
             match self.policy.overwrite {
                 OverwritePolicy::Refuse => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && destination_is_directory {
                         return Ok(PlannedWrite { normalized_archive_path, destination_path, link_target_path, replace_existing: false }.into());
                     }
                     return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
                 }
                 OverwritePolicy::Replace => {
-                    if !matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                    if !matches!(entry.kind, ExtractionEntryKind::Directory) && destination_is_directory {
                         return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
                     }
-                    replace_existing = !matches!(entry.kind, ExtractionEntryKind::Directory) || !metadata.file_type().is_dir();
+                    replace_existing = !matches!(entry.kind, ExtractionEntryKind::Directory) || !destination_is_directory;
                 }
                 OverwritePolicy::Rename => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && destination_is_directory {
                         return Ok(PlannedWrite { normalized_archive_path, destination_path, link_target_path, replace_existing: false }.into());
                     }
                     destination_path = self.rename_candidate_or_error(entry, destination_path)?;
                 }
                 OverwritePolicy::Ask => {
-                    if matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                    if matches!(entry.kind, ExtractionEntryKind::Directory) && destination_is_directory {
                         return Ok(PlannedWrite { normalized_archive_path, destination_path, link_target_path, replace_existing: false }.into());
                     }
                     let decision = self.resolve_overwrite_conflict(entry, &destination_path)?;
                     match decision {
                         OverwriteDecision::Replace => {
-                            if !matches!(entry.kind, ExtractionEntryKind::Directory) && metadata.file_type().is_dir() {
+                            if !matches!(entry.kind, ExtractionEntryKind::Directory) && destination_is_directory {
                                 return Err(ExtractionSafetyError::DestinationExists { archive_path: entry.archive_path.clone(), destination_path });
                             }
                             replace_existing = true;
@@ -544,13 +591,13 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                     }
                 }
             }
-        } else if let Err(error) = destination_metadata
-            && !destination_is_absent(&error)
-        {
-            return Err(ExtractionSafetyError::DestinationProbe { archive_path: entry.archive_path.clone(), destination_path, message: error.to_string() });
         }
 
         Ok(PlannedWrite { normalized_archive_path, destination_path, link_target_path, replace_existing }.into())
+    }
+
+    fn flat_path_is_reserved(&self, path: &Path) -> bool {
+        self.policy.flatten_paths && self.planned_flat_paths.contains(&case_collision_key(&path.to_string_lossy()))
     }
 
     fn resolve_overwrite_conflict(&mut self, entry: &ExtractionEntry, destination_path: &Path) -> Result<OverwriteDecision, ExtractionSafetyError> {
@@ -572,7 +619,13 @@ impl<'a> ExtractionSafetyPlanner<'a> {
     /// linear rather than re-walking the taken suffixes for every entry.
     fn rename_candidate_or_error(&mut self, entry: &ExtractionEntry, destination_path: PathBuf) -> Result<PathBuf, ExtractionSafetyError> {
         let start_index = self.next_rename_index.get(&destination_path).copied().unwrap_or(FIRST_RENAME_INDEX);
-        let Some((candidate, resume_index)) = next_available_destination_path_from(&destination_path, start_index, MAX_RENAME_CANDIDATES) else {
+        let available = next_available_destination_path_from(&destination_path, start_index, MAX_RENAME_CANDIDATES, |path| self.flat_path_is_reserved(path))
+            .map_err(|error| ExtractionSafetyError::DestinationProbe {
+                archive_path: entry.archive_path.clone(),
+                destination_path: destination_path.clone(),
+                message: error.to_string(),
+            })?;
+        let Some((candidate, resume_index)) = available else {
             return Err(ExtractionSafetyError::RenameDestinationExhausted { archive_path: entry.archive_path.clone(), destination_path });
         };
 
@@ -645,7 +698,7 @@ impl<'a> ExtractionSafetyPlanner<'a> {
                 .ok_or_else(|| ExtractionSafetyError::LinkTargetEscapes { target: target.to_path_buf() })?;
         }
 
-        let target_path = lexically_normalize(&self.destination_root.join(normalized_target));
+        let target_path = self.destination_for_archive_path(Path::new(&normalized_target));
         if target_path.starts_with(&self.destination_root) {
             return Ok(target_path);
         }
@@ -1108,10 +1161,22 @@ const FIRST_RENAME_INDEX: u64 = 2;
 /// name should resume from. The `candidate_budget` ceiling is absolute, so
 /// resuming from a higher `start_index` narrows the search without moving the
 /// point at which the candidate space is considered exhausted.
-fn next_available_destination_path_from(path: &Path, start_index: u64, candidate_budget: u64) -> Option<(PathBuf, u64)> {
-    if !path.exists() {
+fn next_available_destination_path_from(
+    path: &Path,
+    start_index: u64,
+    candidate_budget: u64,
+    is_reserved: impl Fn(&Path) -> bool,
+) -> io::Result<Option<(PathBuf, u64)>> {
+    // A broken symlink occupies its name even though following it would return
+    // NotFound. Fail closed if the filesystem cannot confirm availability.
+    let is_vacant = |path: &Path| match path.symlink_metadata() {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    };
+    if !is_reserved(path) && is_vacant(path)? {
         // The base name was free, so the numbered space is untouched.
-        return Some((path.to_path_buf(), start_index));
+        return Ok(Some((path.to_path_buf(), start_index)));
     }
 
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
@@ -1122,12 +1187,12 @@ fn next_available_destination_path_from(path: &Path, start_index: u64, candidate
     for index in start_index..=candidate_budget.saturating_add(1) {
         let file_name = if let Some(extension) = extension { format!("{stem} {index}.{extension}") } else { format!("{stem} {index}") };
         let candidate = parent.join(file_name);
-        if !candidate.exists() {
-            return Some((candidate, index.saturating_add(1)));
+        if !is_reserved(&candidate) && is_vacant(&candidate)? {
+            return Ok(Some((candidate, index.saturating_add(1))));
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Whether a failed destination probe means nothing exists at that path.
@@ -1275,7 +1340,8 @@ mod tests {
             fs::write(temp.path(format!("file {index}.txt")), b"taken").unwrap();
         }
 
-        let candidate = |path: PathBuf, budget| next_available_destination_path_from(&path, FIRST_RENAME_INDEX, budget).map(|(path, _)| path);
+        let candidate =
+            |path: PathBuf, budget| next_available_destination_path_from(&path, FIRST_RENAME_INDEX, budget, |_| false).unwrap().map(|(path, _)| path);
 
         // A non-conflicting path does not need renaming.
         assert_eq!(candidate(temp.path("free.txt"), 3), Some(temp.path("free.txt")));
@@ -1295,19 +1361,19 @@ mod tests {
 
         // Nothing numbered exists yet, so a fresh search takes " 2" and reports
         // 3 as the resume point.
-        let (first, resume) = next_available_destination_path_from(&temp.path("file.txt"), FIRST_RENAME_INDEX, 10).unwrap();
+        let (first, resume) = next_available_destination_path_from(&temp.path("file.txt"), FIRST_RENAME_INDEX, 10, |_| false).unwrap().unwrap();
         assert_eq!(first, temp.path("file 2.txt"));
         assert_eq!(resume, 3);
 
         // Resuming skips " 2" even though it is still free on disk, which is
         // what keeps a colliding batch from re-probing the same suffixes.
-        let (second, resume) = next_available_destination_path_from(&temp.path("file.txt"), resume, 10).unwrap();
+        let (second, resume) = next_available_destination_path_from(&temp.path("file.txt"), resume, 10, |_| false).unwrap().unwrap();
         assert_eq!(second, temp.path("file 3.txt"));
         assert_eq!(resume, 4);
 
         // The budget ceiling stays absolute rather than shifting with the
         // resume point.
-        assert!(next_available_destination_path_from(&temp.path("file.txt"), 12, 10).is_none());
+        assert!(next_available_destination_path_from(&temp.path("file.txt"), 12, 10, |_| false).unwrap().is_none());
     }
 
     #[test]
@@ -1420,7 +1486,7 @@ mod tests {
         let temp = TestDir::new("asks_overwrite_resolver_for_conflicts");
         temp.write_file("out/file.txt", b"existing");
         let policy = ExtractionPolicy { overwrite: OverwritePolicy::Ask, ..ExtractionPolicy::default() };
-        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Skip);
+        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Skip, "file.txt");
         let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(temp.path("out"), policy, &mut resolver);
 
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
@@ -1429,11 +1495,39 @@ mod tests {
     }
 
     #[test]
+    fn flattening_applies_overwrite_policy_to_planned_names_before_writes() {
+        let temp = TestDir::new("flattened-planned-names");
+        let destination = temp.path("out");
+        let policy = ExtractionPolicy { flatten_paths: true, ..ExtractionPolicy::default() };
+        let mut refuse = ExtractionSafetyPlanner::new(&destination, policy.clone());
+        assert!(matches!(refuse.validate_entry(&file_entry("first/report.txt")).unwrap(), ExtractionDecision::Write { .. }));
+        assert!(matches!(refuse.validate_entry(&file_entry("other/report.txt")).unwrap_err(), ExtractionSafetyError::DestinationExists { .. }));
+
+        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Rename, "third/report.txt");
+        let mut ask =
+            ExtractionSafetyPlanner::new_with_overwrite_resolver(&destination, ExtractionPolicy { overwrite: OverwritePolicy::Ask, ..policy }, &mut resolver);
+        for (input, output) in [("first/report.txt", "report.txt"), ("second/report 2.txt", "report 2.txt"), ("third/report.txt", "report 3.txt")] {
+            let decision = ask.validate_entry(&file_entry(input)).unwrap();
+            assert!(matches!(decision, ExtractionDecision::Write { destination_path, .. } if destination_path == destination.join(output)));
+        }
+    }
+
+    #[test]
+    fn flattening_skips_links_with_archive_relative_targets() {
+        let temp = TestDir::new("flattened-links");
+        let mut planner = ExtractionSafetyPlanner::new(temp.path("out"), ExtractionPolicy { flatten_paths: true, ..ExtractionPolicy::default() });
+        for kind in [ExtractionEntryKind::Symlink { target: "target.txt".into() }, ExtractionEntryKind::Hardlink { target: "nested/target.txt".into() }] {
+            let decision = planner.validate_entry(&ExtractionEntry { kind, ..file_entry("nested/link.txt") }).unwrap();
+            assert!(matches!(decision, ExtractionDecision::Skip { .. }));
+        }
+    }
+
+    #[test]
     fn ask_overwrite_renames_conflicts_safely() {
         let temp = TestDir::new("ask_overwrite_renames_conflicts_safely");
         temp.write_file("out/file.txt", b"existing");
         let policy = ExtractionPolicy { overwrite: OverwritePolicy::Ask, ..ExtractionPolicy::default() };
-        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Rename);
+        let mut resolver = FixedOverwriteResolver(OverwriteDecision::Rename, "file.txt");
         let mut planner = ExtractionSafetyPlanner::new_with_overwrite_resolver(temp.path("out"), policy, &mut resolver);
 
         let decision = planner.validate_entry(&file_entry("file.txt")).unwrap();
@@ -1671,11 +1765,11 @@ mod tests {
         ExtractionEntry { archive_path: archive_path.to_owned(), kind: ExtractionEntryKind::File, uncompressed_size: Some(uncompressed_size), compressed_size }
     }
 
-    struct FixedOverwriteResolver(OverwriteDecision);
+    struct FixedOverwriteResolver(OverwriteDecision, &'static str);
 
     impl OverwriteResolver for FixedOverwriteResolver {
         fn decide(&mut self, conflict: &OverwriteConflict) -> OverwriteDecision {
-            assert_eq!(conflict.archive_path, "file.txt");
+            assert_eq!(conflict.archive_path, self.1);
             self.0
         }
     }

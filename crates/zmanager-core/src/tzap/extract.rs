@@ -679,7 +679,11 @@ fn extract_tzap_inner(
     let destination_root = crate::safety::prepare_destination_root(destination).map_err(|source| TzapError::Io { path: destination.to_path_buf(), source })?;
     let opened = open_tzap_archive_with_key_options_multi(archive, password, recipient_private_key, recipient_private_key_bytes_list.as_deref())?;
     let entries = opened.list_files()?;
-    if overwrite_resolver.is_none() && policy.strip_components == 0 && matches!(policy.overwrite, OverwritePolicy::Refuse | OverwritePolicy::Replace) {
+    if overwrite_resolver.is_none()
+        && policy.strip_components == 0
+        && !policy.flatten_paths
+        && matches!(policy.overwrite, OverwritePolicy::Refuse | OverwritePolicy::Replace)
+    {
         return extract_opened_tzap_with_core_restore(&opened, &destination_root, policy, &entries, restore_options, context);
     }
     opened.plan_metadata_restore(restore_options.core_options(false))?;
