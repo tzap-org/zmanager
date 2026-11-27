@@ -11,13 +11,16 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-tzap-core = "0.3.0"
+tzap-core = "0.3.1-dev"
 zip = "=9.6.1"
 zmanager-core = { path = "../crates/zmanager-core" }
 
 # Cargo does not inherit patches across workspace roots. Keep remaining sibling
 # security forks aligned with the main workspace.
 [patch.crates-io]
+tzap-core = { path = "../../tzap/crates/tzap-core" }
+tzap-plugin-keywrap = { path = "../../tzap/crates/tzap-plugin-keywrap" }
+tzap-plugin-signing = { path = "../../tzap/crates/tzap-plugin-signing" }
 btrfs-core = { path = "../../btrfs-core/core" }
 zfs-forensic-core = { path = "../../zfs-forensic-core/core" }
 backhand = { path = "../../backhand/backhand" }

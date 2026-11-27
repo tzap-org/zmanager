@@ -832,12 +832,13 @@ fn release_validation_artifacts_are_declared() {
 }
 
 #[test]
-fn unix_packages_embed_the_checked_out_revision_after_cargo_config_rewrite() {
+fn unix_packages_embed_the_checked_out_revision_before_packaging() {
     let revision_step = "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)";
-    for workflow in [RELEASE_WORKFLOW, PACKAGE_PREVIEW_WORKFLOW] {
-        assert_contains(workflow, revision_step);
-        assert!(workflow.find(revision_step).unwrap() < workflow.find("Use published tzap-core").unwrap());
-    }
+    assert_contains(RELEASE_WORKFLOW, revision_step);
+    assert!(RELEASE_WORKFLOW.find(revision_step).unwrap() < RELEASE_WORKFLOW.find("Use published tzap-core").unwrap());
+    assert_contains(PACKAGE_PREVIEW_WORKFLOW, revision_step);
+    assert!(PACKAGE_PREVIEW_WORKFLOW.find(revision_step).unwrap() < PACKAGE_PREVIEW_WORKFLOW.find("name: Package Unix").unwrap());
+    assert!(!PACKAGE_PREVIEW_WORKFLOW.contains("Use published tzap-core"));
     assert_contains(PACKAGE_RELEASE_ALPINE_SH, "-e ZMANAGER_BUILD_REV");
 }
 

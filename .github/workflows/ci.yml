@@ -73,9 +73,6 @@ jobs:
         shell: bash
         run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
 
-      - name: Use published tzap-core dependency
-        run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
-
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         # These packages provide third-party fixture creators and comparison
@@ -423,10 +420,6 @@ jobs:
       - name: Prepare frozen sibling snapshot
         shell: bash
         run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
-
-      - name: Use published tzap-core dependency
-        shell: bash
-        run: python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
 
       - name: Prepare native export debugger
         shell: pwsh

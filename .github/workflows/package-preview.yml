@@ -83,9 +83,6 @@ jobs:
         shell: bash
         run: echo "ZMANAGER_BUILD_REV=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
-      - name: Use published tzap-core dependency
-        run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
-
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake libb2 lz4 xz zstd

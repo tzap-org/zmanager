@@ -30,6 +30,18 @@ jobs:
       - name: Install cargo-audit
         run: cargo +stable install cargo-audit --locked --version 0.22.2
 
-      # Audit the committed resolution, including the published TZAP versions.
+      # Audit registry dependencies in both committed ZManager lockfiles.
       - name: Check vulnerabilities, unsound crates, and yanked dependencies
         run: cargo +stable audit --deny unsound --deny yanked --file "${{ matrix.lockfile }}"
+
+      - name: Check out TZAP development source
+        if: matrix.lockfile == 'Cargo.lock'
+        uses: actions/checkout@v6
+        with:
+          repository: tzap-org/tzap
+          ref: main
+          path: _sibling/tzap
+
+      - name: Audit TZAP development lockfile
+        if: matrix.lockfile == 'Cargo.lock'
+        run: cargo +stable audit --deny unsound --deny yanked --file _sibling/tzap/Cargo.lock

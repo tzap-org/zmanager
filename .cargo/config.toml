@@ -6,10 +6,10 @@
 [net]
 git-fetch-with-cli = true
 
-# Development default: build tzap-core from the ../tzap sibling checkout
-# instead of the published crate, so in-progress tzap fixes are picked up
-# before they're released. The committed Cargo.lock tracks the published crate.
-# Build/test and release workflows remove this section before locked builds.
-# Security Audit CI scans the committed lockfiles directly.
+# Development default: build the complete TZAP crate family from the ../tzap
+# sibling checkout. This keeps local development and CI snapshots on the same
+# prerelease source. Release builds remove these patches and use stable crates.
 [patch.crates-io]
 tzap-core = { path = "../tzap/crates/tzap-core" }
+tzap-plugin-keywrap = { path = "../tzap/crates/tzap-plugin-keywrap" }
+tzap-plugin-signing = { path = "../tzap/crates/tzap-plugin-signing" }

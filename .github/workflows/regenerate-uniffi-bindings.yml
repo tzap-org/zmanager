@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+env:
+  ZMANAGER_BUILD_MODE: snapshot
+  ZMANAGER_BUILD_INPUTS_LOCK: .build-inputs/ci-sibling-inputs.lock
+
 jobs:
   regenerate:
     name: Regenerate UniFFI bindings
@@ -26,9 +30,12 @@ jobs:
         with:
           ref: main
 
+      - name: Resolve sibling branch snapshot
+        run: bash scripts/prepare-sibling-inputs.sh --lockfile release-build-inputs.lock --resolve-ci .build-inputs/ci-sibling-inputs.lock
+
       - name: Check out locked sibling inputs
         shell: bash
-        run: bash scripts/prepare-sibling-inputs.sh --mode release
+        run: bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
 
       - name: Install Linux dependencies
         run: |
@@ -51,9 +58,6 @@ jobs:
 
       - name: Install cargo-audit
         run: cargo +stable install cargo-audit --locked --version 0.22.2
-
-      - name: Use published tzap-core dependency
-        run: python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
 
       - name: Build pinned OpenSSL
         run: |

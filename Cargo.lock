@@ -4987,9 +4987,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "tzap-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c82ae0e321fe5bc61a7bcef5643c6505e73a78efe5a0967449d8cfdf168fbe8"
+version = "0.3.1-dev"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
@@ -5016,9 +5014,7 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-keywrap"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b98a7bdb1f7ba7490dd0d733c18f4dd76235af2e779a5d90e9c1b082ac6700"
+version = "0.3.1-dev"
 dependencies = [
  "hpke",
  "openssl",
@@ -5031,9 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "tzap-plugin-signing"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aee397085d85f1a594eca0bd78ba0ebe1ccc1e0253e06681ad769ae97ba4685"
+version = "0.3.1-dev"
 dependencies = [
  "ed25519-dalek",
  "openssl",

@@ -57,8 +57,6 @@ jobs:
         shell: bash
         run: |
           bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
-          # Build the audit harness with the released tzap-core dependency.
-          python3 -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
           sudo apt-get update
           sudo apt-get install -y build-essential musl-tools clang libclang-dev cmake pkg-config libssl-dev liblzma-dev libbz2-dev liblz4-dev libzstd-dev libexpat1-dev nettle-dev zlib1g-dev dbus dbus-x11 gnome-keyring strace xauth xvfb xdotool
           rustup toolchain install stable --profile minimal
@@ -68,8 +66,7 @@ jobs:
           export "CC_${target_env}=musl-gcc" "AR_${target_env}=musl-ar"
           openssl_dir="$(python3 scripts/build-openssl.py "${{ matrix.target }}")"
           printf '%s\n' "OPENSSL_DIR=$openssl_dir" OPENSSL_STATIC=1 OPENSSL_NO_VENDOR=1 >> "$GITHUB_ENV"
-          # Resolve the published tzap-core dependency after dropping the
-          # development path patch. The test run below then uses this lockfile.
+          # Resolve the same frozen TZAP sibling used by the package build.
           cargo test --release -p zmanager-cli --no-default-features --test offline_tzap_cli --no-run
       - name: Test installed identities with outbound networking denied
         timeout-minutes: 10
@@ -152,7 +149,6 @@ jobs:
         shell: bash
         run: |
           bash scripts/prepare-sibling-inputs.sh --mode snapshot --lockfile "$ZMANAGER_BUILD_INPUTS_LOCK"
-          python -c 'from pathlib import Path; p=Path(".cargo/config.toml"); p.write_text(p.read_text().split("[patch.crates-io]",1)[0])'
       - name: Prepare native export debugger
         shell: pwsh
         timeout-minutes: 10

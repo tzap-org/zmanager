@@ -605,23 +605,8 @@ Write-Host "cmake:"
 cmake --version
 Write-Host ("INCLUDE=" + [Environment]::GetEnvironmentVariable("INCLUDE", "Process"))
 
-$cargoConfigPath = Join-Path $RepositoryRoot ".cargo\config.toml"
-$cargoConfigOriginal = [System.IO.File]::ReadAllBytes($cargoConfigPath)
-$cargoConfigText = [System.Text.Encoding]::UTF8.GetString($cargoConfigOriginal)
-$developmentPatchIndex = $cargoConfigText.IndexOf("[patch.crates-io]", [System.StringComparison]::Ordinal)
 $previousBuildRevision = [Environment]::GetEnvironmentVariable("ZMANAGER_BUILD_REV", "Process")
 try {
-    if ($developmentPatchIndex -ge 0) {
-        # Locked release/test builds must use the published crates tracked by
-        # Cargo.lock, rather than the local development patch in .cargo/config.
-        $configWithoutDevelopmentPatch = $cargoConfigText.Substring(0, $developmentPatchIndex)
-        [System.IO.File]::WriteAllText(
-            $cargoConfigPath,
-            $configWithoutDevelopmentPatch,
-            [System.Text.UTF8Encoding]::new($false)
-        )
-    }
-
     if ([string]::IsNullOrWhiteSpace($previousBuildRevision)) {
         $buildRevision = & git -C $RepositoryRoot rev-parse --short HEAD
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($buildRevision)) {
@@ -632,8 +617,8 @@ try {
 
     if ($AuditOfflinePackage) {
         $archive = (Resolve-Path $AuditOfflinePackage).Path
-        # The audit workflow removes the development source patch. Resolve the
-        # published dependency while compiling, then reuse that lockfile offline.
+        # Resolve the frozen sibling dependency while compiling, then reuse
+        # that lockfile offline.
         Invoke-NativeLogged `
             -Title "offline package identity harness compilation failed" `
             -LogName "cargo-package-identity-$Target.log" `
@@ -658,6 +643,5 @@ try {
         Invoke-CargoBuildRelease -TargetTriple $Target
     }
 } finally {
-    [System.IO.File]::WriteAllBytes($cargoConfigPath, $cargoConfigOriginal)
     [Environment]::SetEnvironmentVariable("ZMANAGER_BUILD_REV", $previousBuildRevision, "Process")
 }
