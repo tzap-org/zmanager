@@ -11,6 +11,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$VsComponent,
 
+    [switch]$BuildCli,
+
     [switch]$Package,
 
     [string]$AuditOfflinePackage,
@@ -34,7 +36,7 @@ if (-not (Test-Path $gitBash)) {
     throw "Git Bash was not found beside $($gitCommand.Source)"
 }
 $forensicCheckoutScript = Join-Path $RepositoryRoot "scripts\checkout-forensic-forks.sh"
-Write-Host "Checking forensic sibling checkouts against the repository pins"
+Write-Host "Checking forensic sibling checkouts"
 & $gitBash $forensicCheckoutScript
 if ($LASTEXITCODE -ne 0) {
     throw "Forensic sibling checkout verification failed"
@@ -638,6 +640,16 @@ try {
         New-ReleasePackage -TargetTriple $Target
         Invoke-CargoBuildRelease -TargetTriple $Target -Full
         New-FullReleasePackage -TargetTriple $Target
+    } elseif ($BuildCli) {
+        # Match scripts/build-cli.sh: build the local checkout and current
+        # sibling HEADs with Cargo's normal lockfile resolution, without CI's
+        # locked workspace test pass.
+        Invoke-NativeLogged `
+            -Title "cargo build failed on $Target" `
+            -LogName "cargo-build-cli-windows-$Target.log" `
+            -FilePath "cargo" `
+            -Arguments @("build", "--release", "--target", $Target, "-p", "zmanager-cli", "--bin", "zm")
+        Write-Host ("Built " + (Join-Path $RepositoryRoot "target\$Target\release\zm.exe"))
     } else {
         Invoke-CargoTest -TargetTriple $Target
         Invoke-CargoBuildRelease -TargetTriple $Target
