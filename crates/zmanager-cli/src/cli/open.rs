@@ -279,7 +279,7 @@ pub(crate) fn run_test_request(request: &TestRequest, global: &GlobalOptions) ->
             }
             ExitCode::SUCCESS
         }
-        Err(error) if error.kind == zmanager_core::engine::ErrorKind::PasswordRequired && password.is_none() => retry_password_required(
+        Err(error) if error.archive_error_kind() == Some(zmanager_core::engine::ErrorKind::PasswordRequired) && password.is_none() => retry_password_required(
             global,
             "test failed: ",
             Some("Archive password: "),
@@ -295,11 +295,14 @@ pub(crate) fn run_test_request(request: &TestRequest, global: &GlobalOptions) ->
                 }
             },
         ),
-        Err(error) if error.kind == zmanager_core::engine::ErrorKind::UnsupportedOperation => {
+        Err(error) if error.archive_error_kind() == Some(zmanager_core::engine::ErrorKind::UnsupportedOperation) => {
             if global.json {
-                println!("{{\"ok\":false,\"error\":\"unsupported_operation\",\"message\":\"{}\"}}", json_escape(&error.message));
+                println!(
+                    "{{\"ok\":false,\"error\":\"unsupported_operation\",\"message\":\"{}\"}}",
+                    json_escape(error.archive_error_message().unwrap_or_default())
+                );
             } else {
-                print_error_line(global, format_args!("test unavailable: {}", error.message));
+                print_error_line(global, format_args!("test unavailable: {}", error.archive_error_message().unwrap_or_default()));
             }
             ExitCode::FAILURE
         }
@@ -310,7 +313,43 @@ pub(crate) fn run_test_request(request: &TestRequest, global: &GlobalOptions) ->
     }
 }
 
-fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(String, zmanager_core::engine::TestReport), zmanager_core::engine::ArchiveError> {
+enum EngineTestError {
+    Archive(zmanager_core::engine::ArchiveError),
+    NoMatchingEntries,
+}
+
+impl EngineTestError {
+    fn archive_error_kind(&self) -> Option<zmanager_core::engine::ErrorKind> {
+        match self {
+            Self::Archive(error) => Some(error.kind),
+            Self::NoMatchingEntries => None,
+        }
+    }
+
+    fn archive_error_message(&self) -> Option<&str> {
+        match self {
+            Self::Archive(error) => Some(&error.message),
+            Self::NoMatchingEntries => None,
+        }
+    }
+}
+
+impl std::fmt::Display for EngineTestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Archive(error) => std::fmt::Display::fmt(error, f),
+            Self::NoMatchingEntries => f.write_str("no archive entries matched the test filters"),
+        }
+    }
+}
+
+impl From<zmanager_core::engine::ArchiveError> for EngineTestError {
+    fn from(error: zmanager_core::engine::ArchiveError) -> Self {
+        Self::Archive(error)
+    }
+}
+
+fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(String, zmanager_core::engine::TestReport), EngineTestError> {
     let engine = zmanager_core::engine::create_default_engine()?;
     let mut handle = engine.open(
         zmanager_core::engine::ArchiveSource::from_path_autodetect(&request.archive),
@@ -324,9 +363,11 @@ fn run_engine_test(request: &TestRequest, password: Option<&str>) -> Result<(Str
         let excludes = compile_patterns(&request.exclude);
         handle.list()?.entries.into_iter().filter(|entry| compiled_pattern_matches_any(&entry.path, &includes, &excludes)).map(|entry| entry.path).collect()
     };
+    if !select_all && selected_paths.is_empty() {
+        return Err(EngineTestError::NoMatchingEntries);
+    }
     let report = handle.test(&zmanager_core::engine::TestOptions {
         selected_paths,
-        selection_is_explicit: !select_all,
         recipient_key: request.recipient_key.clone(),
         recipient_key_bytes: None,
         tzap_x509_trust: is_tzap_archive(&request.archive).then(|| test_request_x509_trust(request)),

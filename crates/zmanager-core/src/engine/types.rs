@@ -236,9 +236,6 @@ pub struct ArchiveListing {
 pub struct TestOptions {
     /// Exact archive paths to verify.
     pub selected_paths: Vec<String>,
-    /// Whether `selected_paths` came from an explicit filter request. This
-    /// distinguishes an explicit empty match from the default all-entry test.
-    pub selection_is_explicit: bool,
     /// Optional recipient key used by encrypted TZAP archives.
     pub recipient_key: Option<PathBuf>,
     /// Optional in-memory recipient key candidates used by encrypted TZAP
@@ -254,7 +251,6 @@ impl fmt::Debug for TestOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestOptions")
             .field("selected_paths", &self.selected_paths)
-            .field("selection_is_explicit", &self.selection_is_explicit)
             .field("recipient_key", &self.recipient_key)
             .field("recipient_key_bytes", &self.recipient_key_bytes.as_ref().map(Vec::len))
             .field("tzap_x509_trust", &self.tzap_x509_trust)
@@ -267,26 +263,13 @@ impl TestOptions {
     /// Returns whether an entry path is selected by this request.
     #[must_use]
     pub fn selects(&self, path: &str) -> bool {
-        if self.selected_paths.is_empty() { !self.selection_is_explicit } else { self.selected_paths.iter().any(|selected| selected == path) }
+        self.selected_paths.is_empty() || self.selected_paths.iter().any(|selected| selected == path)
     }
 
     /// Returns whether the operation was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.as_ref().is_some_and(CancellationToken::is_cancelled)
-    }
-}
-
-#[cfg(test)]
-mod test_options_tests {
-    use super::TestOptions;
-
-    #[test]
-    fn selection_distinguishes_default_all_from_an_explicit_empty_match() {
-        assert!(TestOptions::default().selects("entry.txt"));
-        assert!(!TestOptions { selection_is_explicit: true, ..TestOptions::default() }.selects("entry.txt"));
-        assert!(TestOptions { selected_paths: vec!["chosen.txt".to_owned()], ..TestOptions::default() }.selects("chosen.txt"));
-        assert!(!TestOptions { selected_paths: vec!["chosen.txt".to_owned()], ..TestOptions::default() }.selects("other.txt"));
     }
 }
 
